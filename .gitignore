@@ -1,53 +1,25 @@
+# Dependencies
+node_modules/
+npm-debug.log
+yarn-debug.log
+yarn-error.log
 
-# Mac file
-.DS_Store
-
-# Log file
-*.log
-
-# Code coverage files
-.coverage
-
-# Gradle files
-.gradle
-
-# BlueJ files
-*.ctxt
-
-# Mobile Tools for Java (J2ME)
-.mtj.tmp/
-
-# Package Files #
-*.jar
-*.war
-*.nar
-*.ear
-*.zip
-*.tar.gz
-*.rar
-
-# virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
-hs_err_pid*
-
-scratch*
-*.flake8
-.vscode
-.idea/
-*.iml
-
-# environment file
+# Environment
 .env
+.env.local
+.env.*.local
 
-# log file
-*.json
-!devcontainer.json
-
-
-# Python compiled files and env
-__pycache__/
-*.py[cod]
-.python-version
-.venv/
-
-# Build files
+# Build
 dist/
+build/
+coverage/
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# System
+.DS_Store
+Thumbs.db
