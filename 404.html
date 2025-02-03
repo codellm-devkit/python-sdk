@@ -1,0 +1,652 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="A library for streamlined code analysis insights for CodeLLM development and deployment.">
+      
+      
+      
+      
+      
+      
+      <link rel="icon" href="/assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.2">
+    
+    
+<title> · Codellm-Devkit</title>
+
+    
+      <link rel="stylesheet" href="/assets/stylesheets/main.d7758b05.min.css">
+      
+        
+        <link rel="stylesheet" href="/assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=IBM+Plex+Sans:300,300i,400,400i,700,700i%7CIBM+Plex+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"IBM Plex Sans";--md-code-font:"IBM Plex Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="/assets/_mkdocstrings.css">
+    
+      <link rel="stylesheet" href="/assets/css/theme.css">
+    
+      <link rel="stylesheet" href="/assets/css/mkdocstrings.css">
+    
+    <script>__md_scope=new URL("/",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+
+<script>
+  (function(h,o,u,n,d) {
+    h=h[d]=h[d]||{q:[],onReady:function(c){h.q.push(c)}}
+    d=o.createElement(u);d.async=1;d.src=n
+    n=o.getElementsByTagName(u)[0];n.parentNode.insertBefore(d,n)
+  })(window,document,'script','https://www.datadoghq-browser-agent.com/us1/v4/datadog-rum.js','DD_RUM')
+  window.DD_RUM.onReady(function() {
+    window.DD_RUM.init({
+      clientToken: 'blank',
+      applicationId: 'blank',
+      site: 'datadoghq.com',
+      service: window.location.hostname.replace("trunk-docs", "docs"),
+      env: window.location.hostname.startsWith("docs") ? 'production' : 'development',
+      sessionSampleRate: 100,
+      sessionReplaySampleRate: 100,
+      trackUserInteractions: true,
+      trackResources: true,
+      trackLongTasks: true,
+    });
+
+    window.DD_RUM.startSessionReplayRecording();
+  })
+</script>
+
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow md-header--lifted" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="/." title="Codellm-Devkit" class="md-header__button md-logo" aria-label="Codellm-Devkit" data-md-component="logo">
+      
+  <img src="/assets/images/logo-white.svg" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Codellm-Devkit
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label=""  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="m14.3 16-.7-2h-3.2l-.7 2H7.8L11 7h2l3.2 9zM20 8.69V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12zm-9.15 3.96h2.3L12 9z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label=""  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="" for="__palette_2" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="indigo" data-md-color-accent="indigo"  aria-label=""  type="radio" name="__palette" id="__palette_2">
+    
+      <label class="md-header__button md-icon" title="" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      <label class="md-header__button md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+      </label>
+      <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/IBM/codellm-devkit" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    IBM/codellm-devkit
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+    
+      
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="/." class="md-tabs__link">
+          
+  
+    
+      <?xml version="1.0" encoding="utf-8"?>
+<!-- Generator: Adobe Illustrator 17.1.0, SVG Export Plug-In . SVG Version: 6.00 Build 0)  -->
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" id="Layer_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px"
+	 viewBox="0 0 20 20" enable-background="new 0 0 20 20" xml:space="preserve">
+<g>
+	<path d="M0.5,6.9L0.5,6.9l9,5l0,0C9.7,12,9.8,12,10,12s0.3,0,0.5-0.1l0,0l9-5l0,0C19.8,6.7,20,6.4,20,6c0-0.4-0.2-0.7-0.5-0.9l0,0
+		l-9-5l0,0C10.3,0,10.2,0,10,0S9.7,0,9.5,0.1l0,0l-9,5l0,0C0.2,5.3,0,5.6,0,6C0,6.4,0.2,6.7,0.5,6.9z"/>
+	<path d="M19,9c-0.2,0-0.3,0-0.5,0.1l0,0L10,13.9L1.5,9.1l0,0C1.3,9,1.2,9,1,9c-0.6,0-1,0.4-1,1c0,0.4,0.2,0.7,0.5,0.9l0,0l9,5l0,0
+		C9.7,16,9.8,16,10,16s0.3,0,0.5-0.1l0,0l9-5l0,0c0.3-0.2,0.5-0.5,0.5-0.9C20,9.4,19.6,9,19,9z"/>
+	<path d="M19,13c-0.2,0-0.3,0-0.5,0.1l0,0L10,17.9l-8.5-4.7l0,0C1.3,13,1.2,13,1,13c-0.6,0-1,0.4-1,1c0,0.4,0.2,0.7,0.5,0.9l0,0l9,5
+		l0,0C9.7,20,9.8,20,10,20s0.3,0,0.5-0.1l0,0l9-5l0,0c0.3-0.2,0.5-0.5,0.5-0.9C20,13.4,19.6,13,19,13z"/>
+</g>
+</svg>
+    
+  
+  Home
+
+        </a>
+      </li>
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+    
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="/." title="Codellm-Devkit" class="md-nav__button md-logo" aria-label="Codellm-Devkit" data-md-component="logo">
+      
+  <img src="/assets/images/logo-white.svg" alt="logo">
+
+    </a>
+    Codellm-Devkit
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/IBM/codellm-devkit" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    IBM/codellm-devkit
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+          
+        
+      
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="/." class="md-nav__link ">
+              
+  
+    <?xml version="1.0" encoding="utf-8"?>
+<!-- Generator: Adobe Illustrator 17.1.0, SVG Export Plug-In . SVG Version: 6.00 Build 0)  -->
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" id="Layer_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px"
+	 viewBox="0 0 20 20" enable-background="new 0 0 20 20" xml:space="preserve">
+<g>
+	<path d="M0.5,6.9L0.5,6.9l9,5l0,0C9.7,12,9.8,12,10,12s0.3,0,0.5-0.1l0,0l9-5l0,0C19.8,6.7,20,6.4,20,6c0-0.4-0.2-0.7-0.5-0.9l0,0
+		l-9-5l0,0C10.3,0,10.2,0,10,0S9.7,0,9.5,0.1l0,0l-9,5l0,0C0.2,5.3,0,5.6,0,6C0,6.4,0.2,6.7,0.5,6.9z"/>
+	<path d="M19,9c-0.2,0-0.3,0-0.5,0.1l0,0L10,13.9L1.5,9.1l0,0C1.3,9,1.2,9,1,9c-0.6,0-1,0.4-1,1c0,0.4,0.2,0.7,0.5,0.9l0,0l9,5l0,0
+		C9.7,16,9.8,16,10,16s0.3,0,0.5-0.1l0,0l9-5l0,0c0.3-0.2,0.5-0.5,0.5-0.9C20,9.4,19.6,9,19,9z"/>
+	<path d="M19,13c-0.2,0-0.3,0-0.5,0.1l0,0L10,17.9l-8.5-4.7l0,0C1.3,13,1.2,13,1,13c-0.6,0-1,0.4-1,1c0,0.4,0.2,0.7,0.5,0.9l0,0l9,5
+		l0,0C9.7,20,9.8,20,10,20s0.3,0,0.5-0.1l0,0l9-5l0,0c0.3-0.2,0.5-0.5,0.5-0.9C20,13.4,19.6,13,19,13z"/>
+</g>
+</svg>
+  
+  <span class="md-ellipsis">
+    Home
+    
+  </span>
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_1" id="__nav_1_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            Home
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="/quickstart/" class="md-nav__link">
+        
+  
+    <?xml version="1.0" encoding="utf-8"?>
+<!-- Generator: Adobe Illustrator 18.1.0, SVG Export Plug-In . SVG Version: 6.00 Build 0)  -->
+<svg version="1.1" id="Layer_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px"
+     viewBox="0 0 20 20" enable-background="new 0 0 20 20" xml:space="preserve">
+<g id="layout_auto_3_">
+	<g>
+        <path d="M11.6223011,0 C11.6223011,1.70940171 12.1128933,3.07692308 13.0940778,4.1025641 C16.3646926,6.4957265 18,9.23076923 18,12.3076923 C18,15.7264957 16.0376311,18.2905983 12.1128933,20 C15,17 14.5658545,15.7692308 11.6223011,12 C8.5,13.5 9,14.5 9.5,16.5 C8.45242566,16.5 7.5,16.5 7,16 C7,16.6837607 8.19671588,18.5 8.95242566,20 C5.02768789,18.974359 0.829272269,12.8205128 2.30104893,12.3076923 C3.28223337,11.965812 4.42694856,12.1367521 5.73519448,12.8205128 C4.09988708,6.66666667 6.06225596,2.39316239 11.6223011,0 Z" />
+	</g>
+</g>
+</svg>
+  
+  <span class="md-ellipsis">
+    Quick Start
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="/installing/" class="md-nav__link">
+        
+  
+    <?xml version="1.0" encoding="utf-8"?>
+<!-- Generator: Adobe Illustrator 17.1.0, SVG Export Plug-In . SVG Version: 6.00 Build 0)  -->
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" id="Layer_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px"
+	 viewBox="0 0 16 16" enable-background="new 0 0 16 16" xml:space="preserve">
+<g id="code_2_">
+	<g>
+		<path fill-rule="evenodd" clip-rule="evenodd" d="M15.71,7.29l-3-3C12.53,4.11,12.28,4,12,4c-0.55,0-1,0.45-1,1
+			c0,0.28,0.11,0.53,0.29,0.71L13.59,8l-2.29,2.29C11.11,10.47,11,10.72,11,11c0,0.55,0.45,1,1,1c0.28,0,0.53-0.11,0.71-0.29l3-3
+			C15.89,8.53,16,8.28,16,8C16,7.72,15.89,7.47,15.71,7.29z M5,5c0-0.55-0.45-1-1-1C3.72,4,3.47,4.11,3.29,4.29l-3,3
+			C0.11,7.47,0,7.72,0,8c0,0.28,0.11,0.53,0.29,0.71l3,3C3.47,11.89,3.72,12,4,12c0.55,0,1-0.45,1-1c0-0.28-0.11-0.53-0.29-0.71
+			L2.41,8l2.29-2.29C4.89,5.53,5,5.28,5,5z M9,2C8.52,2,8.13,2.35,8.04,2.81l-2,10C6.03,12.87,6,12.93,6,13c0,0.55,0.45,1,1,1
+			c0.48,0,0.87-0.35,0.96-0.81l2-10C9.97,3.13,10,3.07,10,3C10,2.45,9.55,2,9,2z"/>
+	</g>
+</g>
+</svg>
+  
+  <span class="md-ellipsis">
+    Installation
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="/core-concepts/" class="md-nav__link">
+        
+  
+    <?xml version="1.0" encoding="utf-8"?>
+<!-- Generator: Adobe Illustrator 18.1.0, SVG Export Plug-In . SVG Version: 6.00 Build 0)  -->
+<svg version="1.1" id="Layer_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px"
+     viewBox="0 0 20 20" enable-background="new 0 0 20 20" xml:space="preserve">
+<g id="layout_auto_3_">
+	<g>
+        <path fill-rule="evenodd" clip-rule="evenodd" d="M5.00001 4.66375C5.00001 2.09125 7.24138 0 10 0C12.7586 0 14.9909 2.09125 15 4.66375C15 7.245 10 14 10 14C10 14 5.00001 7.245 5.00001 4.66375ZM8 5C8 6.104 8.89601 7 10 7C11.104 7 12 6.104 12 5C12 3.896 11.104 3 10 3C8.89601 3 8 3.896 8 5ZM0.503892 12.1317L4.80581 9.67361C5.12786 10.2499 5.46799 10.8192 5.80131 11.3555L5.82552 11.3944L2.53199 13.2763L6.46838 18.0002L13.5316 18L17.468 13.2764L14.1745 11.3944L14.1987 11.3555C14.532 10.8192 14.8721 10.2499 15.1942 9.67363L19.4961 12.1318C19.7529 12.2785 19.9316 12.5314 19.9841 12.8225C20.0366 13.1136 19.9576 13.413 19.7682 13.6402L14.7682 19.6402C14.5782 19.8682 14.2968 20 14 20L6.00003 20.0002C5.70323 20.0002 5.42177 19.8684 5.23177 19.6404L0.231774 13.6401C0.0424251 13.4129 -0.0366174 13.1135 0.0158932 12.8224C0.0684037 12.5313 0.24708 12.2784 0.503892 12.1317Z"/>
+	</g>
+</g>
+</svg>
+  
+  <span class="md-ellipsis">
+    Core Concepts
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+  <h1>404 - Not found</h1>
+
+              </article>
+            </div>
+          
+          
+  <script>var tabs=__md_get("__tabs");if(Array.isArray(tabs))e:for(var set of document.querySelectorAll(".tabbed-set")){var labels=set.querySelector(".tabbed-labels");for(var tab of tabs)for(var label of labels.getElementsByTagName("label"))if(label.innerText.trim()===tab){var input=document.getElementById(label.htmlFor);input.checked=!0;continue e}}</script>
+
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      Copyright &copy; 2024-2025 IBM
+    </div>
+  
+  
+</div>
+      
+        <div class="md-social">
+  
+    
+    
+    
+    
+    <a href="https://twitter.com/IBM" target="_blank" rel="noopener" title="IBM on Twitter" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M459.37 151.716c.325 4.548.325 9.097.325 13.645 0 138.72-105.583 298.558-298.558 298.558-59.452 0-114.68-17.219-161.137-47.106 8.447.974 16.568 1.299 25.34 1.299 49.055 0 94.213-16.568 130.274-44.832-46.132-.975-84.792-31.188-98.112-72.772 6.498.974 12.995 1.624 19.818 1.624 9.421 0 18.843-1.3 27.614-3.573-48.081-9.747-84.143-51.98-84.143-102.985v-1.299c13.969 7.797 30.214 12.67 47.431 13.319-28.264-18.843-46.781-51.005-46.781-87.391 0-19.492 5.197-37.36 14.294-52.954 51.655 63.675 129.3 105.258 216.365 109.807-1.624-7.797-2.599-15.918-2.599-24.04 0-57.828 46.782-104.934 104.934-104.934 30.213 0 57.502 12.67 76.67 33.137 23.715-4.548 46.456-13.32 66.599-25.34-7.798 24.366-24.366 44.833-46.132 57.827 21.117-2.273 41.584-8.122 60.426-16.243-14.292 20.791-32.161 39.308-52.628 54.253"/></svg>
+    </a>
+  
+    
+    
+    
+    
+    <a href="https://www.linkedin.com/company/IBM" target="_blank" rel="noopener" title="IBM on LinkedIn" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M416 32H31.9C14.3 32 0 46.5 0 64.3v383.4C0 465.5 14.3 480 31.9 480H416c17.6 0 32-14.5 32-32.3V64.3c0-17.8-14.4-32.3-32-32.3M135.4 416H69V202.2h66.5V416zm-33.2-243c-21.3 0-38.5-17.3-38.5-38.5S80.9 96 102.2 96c21.2 0 38.5 17.3 38.5 38.5 0 21.3-17.2 38.5-38.5 38.5m282.1 243h-66.4V312c0-24.8-.5-56.7-34.5-56.7-34.6 0-39.9 27-39.9 54.9V416h-66.4V202.2h63.7v29.2h.9c8.9-16.8 30.6-34.5 62.9-34.5 67.2 0 79.7 44.3 79.7 101.9z"/></svg>
+    </a>
+  
+    
+    
+    
+    
+      
+      
+    
+    <a href="https://pypi.org/project/cldk" target="_blank" rel="noopener" title="pypi.org" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.8 200.5c-7.7-30.9-22.3-54.2-53.4-54.2h-40.1v47.4c0 36.8-31.2 67.8-66.8 67.8H172.7c-29.2 0-53.4 25-53.4 54.3v101.8c0 29 25.2 46 53.4 54.3 33.8 9.9 66.3 11.7 106.8 0 26.9-7.8 53.4-23.5 53.4-54.3v-40.7H226.2v-13.6h160.2c31.1 0 42.6-21.7 53.4-54.2 11.2-33.5 10.7-65.7 0-108.6M286.2 404c11.1 0 20.1 9.1 20.1 20.3 0 11.3-9 20.4-20.1 20.4-11 0-20.1-9.2-20.1-20.4.1-11.3 9.1-20.3 20.1-20.3M167.8 248.1h106.8c29.7 0 53.4-24.5 53.4-54.3V91.9c0-29-24.4-50.7-53.4-55.6-35.8-5.9-74.7-5.6-106.8.1-45.2 8-53.4 24.7-53.4 55.6v40.7h106.9v13.6h-147c-31.1 0-58.3 18.7-66.8 54.2-9.8 40.7-10.2 66.1 0 108.6 7.6 31.6 25.7 54.2 56.8 54.2H101v-48.8c0-35.3 30.5-66.4 66.8-66.4m-6.7-142.6c-11.1 0-20.1-9.1-20.1-20.3.1-11.3 9-20.4 20.1-20.4 11 0 20.1 9.2 20.1 20.4s-9 20.3-20.1 20.3"/></svg>
+    </a>
+  
+    
+    
+    
+    
+    <a href="https://github.com/IBM/codellm-devkit" target="_blank" rel="noopener" title="CLDK on GitHub" class="md-social__link">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8M97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+    </a>
+  
+    
+    
+    
+    
+    <a href="https://ibm.github.io/codellm-devkit" target="_blank" rel="noopener" title="The CLDK Library" class="md-social__link">
+      <?xml version="1.0" encoding="UTF-8"?>
+<svg fill="#FFFFFF" width="100pt" height="100pt" version="1.1" viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg">
+ <g>
+  <path d="m16.328 49.148c3.5117 1.8203 7.4492 2.8086 11.391 2.8711h11.559v0.32812c-0.14062 4.7383-0.16016 9.4805-0.14844 14.219v1.7812c0 0.35938 0 0.41016-0.019531 0.57812-0.019531 0.14062-0.050781 0.28906-0.10156 0.42188-0.19141 0.55078-0.62891 1.0195-1.1719 1.2617-0.28125 0.12109-0.53125 0.17188-0.89063 0.17188h-1.7812-3.5586c-2.3711-0.011719-4.7383-0.039062-7.1094-0.10156l-0.92188-0.019532c-0.35938 0-0.71875 0-1.0898 0.039063-0.71875 0.050781-1.4492 0.17188-2.1484 0.35156-1.4219 0.35156-2.7812 0.94922-4.0195 1.7617-1.2383 0.80859-2.3516 1.8398-3.2695 3.0312l-2.2383 2.8203c-1.5 1.8516-3.0391 3.6602-4.6406 5.4414-1.4883 1.6602-3.5898 4.1094 0.60938 6.8281 3.4492 2.2305 4.7383-0.55078 5.8906-2.2383 1.3008-1.9219 2.5703-3.8594 3.8203-5.8086l1.8711-2.9414 0.35156-0.55078c0.10937-0.14062 0.21094-0.28906 0.32031-0.42969 0.21875-0.28906 0.48047-0.53125 0.75-0.78125 1.1016-0.96094 2.5-1.5312 4.0586-1.5703 2.3203-0.050781 4.6406-0.089843 6.9492-0.089843h3.6406 1.8203 0.44922 0.57812c0.55078-0.019532 1.1016-0.089844 1.6406-0.23047 2.1602-0.53906 4.0391-2.0117 5.0703-3.9805 0.51953-0.98047 0.82031-2.0781 0.89062-3.1797l0.019532-0.41016v-0.26172-0.44922-0.91016l-0.019532-14.539c0-0.16016 0.011719-0.32812 0.019532-0.5h4.1094 5.3203 2.6797c1.0312-0.078125 2.0586-0.050781 3.0781-0.23047 4.0781-0.55078 8.0781-2.0391 11.41-4.5 6.75-4.75 10.879-13.07 10.48-21.34-0.21094-8.2812-4.8789-16.281-11.969-20.52-2.2812-1.4492-5.4102-2.9492-8.1602-3.2695-2.7617-0.30859-4.8711 0.42969-4.9805 2.2305-0.078126 0.98828 0.32031 1.6914 0.94922 2.1797 0.32031 0.25 0.71094 0.42969 1.1406 0.58984 0.42969 0.19922 0.89844 0.35938 1.4102 0.48828 2.0117 0.57031 4.5586 1.25 6.2891 2.3086 5.4219 3.1797 9.0781 9.0703 9.5195 15.301 0.23047 3.1094-0.26953 6.2617-1.4609 9.1289-1.2383 2.8516-3.1484 5.4102-5.5312 7.4219-2.4219 1.9609-5.2891 3.3594-8.3281 4.0195-0.76953 0.12109-1.5312 0.26953-2.3086 0.33984-0.80078 0.019531-1.5 0.10937-2.4102 0.089843h-5.1992l-20.789 0.011719c-0.83984-0.011719-1.7812 0.019531-2.5508-0.03125-0.78125-0.050781-1.5586-0.050781-2.3281-0.21094l-1.1484-0.17969-1.1289-0.30078c-0.76172-0.16016-1.4805-0.48828-2.2109-0.73828-2.8906-1.1602-5.4297-3.1016-7.4414-5.4492-2.0117-2.3711-3.3594-5.25-4.0195-8.25-0.67969-3.0117-0.5-6.1914 0.32031-9.1094 0.37891-1.4805 1.0508-2.8711 1.75-4.2109 0.80859-1.2812 1.6602-2.5508 2.75-3.6094 1.0195-1.1211 2.25-2.0195 3.4805-2.8594 1.3008-0.75 2.6289-1.4492 4.0586-1.8711 1.3984-0.5 2.8789-0.71094 4.3398-0.85156 0.75-0.03125 1.4414-0.019531 2.2383-0.019531l2.6016 0.10156 10.379 0.46094c6.4609 0.32031 15.828 0.69922 15.609-4.3008-0.17188-4.1016-9.0312-3.6406-14.988-3.6602h-10.172-2.5391c-0.44141 0-0.80859 0-1.3008 0.011719l-1.5 0.078125c-2.0117 0.10938-3.9883 0.53906-5.9219 1.1016-3.8281 1.2383-7.3398 3.3906-10.199 6.1914-2.8594 2.8086-4.9805 6.3203-6.25 10.109-2.5586 7.5898-1.1992 16.301 3.4688 22.719 2.3281 3.1992 5.3594 5.8906 8.8711 7.7109z"/>
+  <path d="m24.578 26.422c-0.71094 6.9688 10.609 6.0703 8.6289-0.32031-0.85938-4.9883-8.2891-4.8008-8.6289 0.32031z"/>
+  <path d="m51.539 26.422c-0.71094 6.9688 10.609 6.0703 8.6289-0.32031-0.85938-4.9883-8.2891-4.8008-8.6289 0.32031z"/>
+  <path d="m55.301 85.371c0 0.19141-0.019531 0.39062-0.011719 0.64844 0 0.48828 0.011719 0.98828 0.078126 1.4805 0.10156 0.98828 0.35156 1.9688 0.69922 2.9102 1.3906 3.7891 4.7617 6.9688 9.1797 8.1289 0.26172 0.058594 0.53125 0.12109 0.80859 0.16016 0.28125 0.039062 0.60937 0.078125 0.76953 0.078125 0.39844 0 0.80859-0.078125 1.1602-0.32031 0.71094-0.48828 1.2305-1.6406 1.1992-4.1406-0.019532-2.0508-0.53125-2.9609-1.2109-3.3594-0.33984-0.19922-0.71875-0.26953-1.1016-0.28906h-0.28125l-0.16016-0.019531h-0.30078c-0.83984-0.10156-1.6406-0.37109-2.3789-0.80859-0.71094-0.46094-1.3789-1.0703-1.8086-1.8516-0.25-0.37109-0.37891-0.80078-0.53125-1.2188-0.03125-0.21875-0.12109-0.44141-0.12891-0.67188l-0.039062-0.33984c-0.019532-0.10937-0.019532-0.35937-0.019532-0.53906-0.050781-1.5391-0.089844-3.0703-0.089844-4.6094v-4.8203c0-0.46875 0.03125-0.62891 0.03125-0.89062 0.03125-0.23828 0.058594-0.48047 0.10938-0.71875 0.10156-0.46875 0.28906-0.92188 0.5-1.3594 0.92187-1.7188 2.7812-2.8906 4.7383-2.9102 0.96875-0.019531 2.6016 0.98047 2.6484-2.7109 0.070313-3.9805-1.5703-2.8594-2.5781-2.9102-3.8711-0.17187-7.8008 2.0117-9.7109 5.4492-1 1.6914-1.4805 3.6602-1.4883 5.6016v4.7188c0 1.5703-0.039062 3.1406-0.10156 4.7109l-0.019531 0.58984z"/>
+  <path d="m84.59 71.41c0.33984 0.19922 0.71875 0.26953 1.1016 0.28906h0.28125l0.16016 0.019531h0.30078c0.83984 0.10156 1.6406 0.37109 2.3789 0.80859 0.71094 0.46094 1.3789 1.0703 1.8086 1.8516 0.25 0.37109 0.37891 0.80078 0.53125 1.2188 0.03125 0.21875 0.12109 0.44141 0.12891 0.67188l0.039062 0.33984c0.019532 0.10938 0.019532 0.35938 0.019532 0.53906 0.050781 1.5391 0.089844 3.0703 0.089844 4.6094v4.8203c0 0.46875-0.03125 0.62891-0.03125 0.89062-0.03125 0.23828-0.058594 0.48047-0.10938 0.71875-0.10156 0.46875-0.28906 0.92188-0.5 1.3594-0.92187 1.7188-2.7812 2.8906-4.7383 2.9102-0.96875 0.019531-2.6016-0.98047-2.6484 2.7109-0.070313 3.9805 1.5703 2.8594 2.5781 2.9102 3.8711 0.17188 7.8008-2.0117 9.7109-5.4492 1-1.6914 1.4688-3.6602 1.4883-5.6016v-4.7188c0-1.5703 0.039062-3.1406 0.10156-4.7109l0.019531-0.58984c0-0.19141 0.019531-0.39062 0.011719-0.64844 0-0.48828-0.011719-0.98828-0.078125-1.4805-0.10156-0.98828-0.35156-1.9688-0.69922-2.9102-1.3906-3.7891-4.7617-6.9609-9.1797-8.1289-0.26172-0.058594-0.53125-0.12109-0.80859-0.16016-0.28125-0.039063-0.60938-0.078126-0.76953-0.078126-0.39844 0-0.80859 0.078126-1.1602 0.32031-0.71094 0.48828-1.2305 1.6406-1.1992 4.1406 0.019531 2.0508 0.53125 2.9609 1.2109 3.3594z"/>
+ </g>
+</svg>
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    <script id="__config" type="application/json">{"base": "/", "features": ["announce.dismiss", "content.code.copy", "content.code.prettify", "content.code.annotate", "content.tabs.link", "navigation.indexes", "navigation.footer", "navigation.sections", "navigation.tabs", "navigation.tabs.sticky", "search.highlight", "search.suggest", "toc.follow"], "search": "/assets/javascripts/workers/search.f8cc74c7.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}}</script>
+    
+    
+      <script src="/assets/javascripts/bundle.f13b1293.min.js"></script>
+      
+        <script src="/assets/javascript/mathjax.js"></script>
+      
+        <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+      
+        <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>

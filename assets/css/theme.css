@@ -1,0 +1,173 @@
+html {
+  overscroll-behavior-y: none;
+}
+
+.md-typeset h5 {
+  text-transform: none; /* undo uppercasing of h5 applied by theme */
+}
+
+/* Branded header styles */
+.md-header,
+.md-tabs {
+  background-image: url('../images/background.svg');
+  background-size: cover;
+}
+.md-tabs {
+  background-position-y: -48px; /* exact height of .md-header on medium-width viewports */
+}
+@media screen and (min-width: 1600px) {
+  .md-tabs {
+    background-position-y: -52.8px; /* exact height of .md-header on wide viewports */
+  }
+}
+@media screen and (min-width: 2000px) {
+  .md-tabs {
+    background-position-y: -57.6px; /* exact height of .md-header on ultrawide viewports */
+  }
+}
+
+/* Nav styling */
+.md-nav__link {
+  align-items: center;
+}
+.md-nav__link svg {
+  height: 1em;
+}
+.md-nav__link:not(:hover, .md-nav__link--active) > svg {
+  color: var(--md-default-fg-color--light); /* slightly muted nav icons */
+}
+@media screen and (min-width: 76.25em) {
+  .md-nav__item--section {
+    margin: 2em 0;
+  }
+}
+
+/* smaller figcaptions */
+figcaption {
+  font-size: 0.8em;
+}
+
+/* Disable interactivity styles on grid cards, which are not interactive */
+.md-typeset .grid.cards>ul>li:hover {
+  border: .05rem solid var(--md-default-fg-color--lightest); /* copy from base grid card styles */
+  box-shadow: unset;
+}
+
+/* hide math overflow */
+.md-typeset div.arithmatex {
+  overflow-y: hidden;
+}
+
+/* Apply IBM branding colors on top of 'default' scheme */
+[data-md-color-scheme="default"] {
+  --md-primary-fg-color: #0F62FE;
+  --md-primary-fg-color--dark: #452485;
+  --md-primary-fg-color--light: #d4e3ff;
+
+  --md-typeset-a-color: #0F62FE; /* manually set link color to indigo */
+
+  --md-mg-positive-color: #008e10;
+  --md-mg-negative-color: #ac0000;
+
+  --md-mg-substitution-color: #008e10;
+  --md-mg-deletion-color: #ac0000;
+  --md-mg-insertion-color: #3e57d3;
+}
+
+/* Apply IBM branding on top of 'slate' (dark) scheme */
+@media screen {
+  [data-md-color-scheme="slate"] {
+    --md-primary-fg-color: #0F62FE;
+    --md-primary-fg-color--dark: #332362;
+    --md-primary-fg-color--light: #835dcd;
+
+    --md-typeset-a-color:              #5f72ff; /* manually set link color to indigo */
+
+    --md-hue: 216;
+
+    --md-default-fg-color:             hsla(var(--md-hue), 25%, 95%, 1);
+    --md-default-fg-color--light:      hsla(var(--md-hue), 25%, 90%, 0.62);
+    --md-default-fg-color--lighter:    hsla(var(--md-hue), 25%, 90%, 0.32);
+    --md-default-fg-color--lightest:   hsla(var(--md-hue), 25%, 90%, 0.12);
+    --md-default-bg-color:             hsla(var(--md-hue), 7%, 13%, 1);
+    --md-default-bg-color--light:      hsla(var(--md-hue), 7%, 13%, 0.54);
+    --md-default-bg-color--lighter:    hsla(var(--md-hue), 7%, 13%, 0.26);
+    --md-default-bg-color--lightest:   hsla(var(--md-hue), 7%, 13%, 0.07);
+
+    --md-code-fg-color:                hsla(var(--md-hue), 7%, 90%, 1);
+    --md-code-bg-color:                hsla(var(--md-hue), 7%, 17%, 1);
+    --md-code-bg-color--light:         hsla(var(--md-hue), 7%, 17%, 0.75);
+    --md-code-bg-color--lighter:       hsla(var(--md-hue), 7%, 17%, 0.5);
+
+    --md-footer-bg-color:              hsla(var(--md-hue), 7%, 10%, 0.87);
+    --md-footer-bg-color--dark:        hsla(var(--md-hue), 7%, 8%, 1);
+
+    --md-mg-positive-color: #b6ffc4;
+    --md-mg-negative-color: #ffbcbf;
+
+    --md-mg-substitution-color: #b6ffc4;
+    --md-mg-deletion-color: #ffbcbf;
+    --md-mg-insertion-color: #948aff;
+  }
+}
+
+/* custom admonition type for FAQ */
+:root {
+  --md-admonition-icon--faq: url('data:image/svg+xml;charset=utf-8,<svg version="1.1" id="Layer_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px" viewBox="0 0 16 16" enable-background="new 0 0 16 16" xml:space="preserve"><g id="flag_1_"><path fill-rule="evenodd" clip-rule="evenodd" d="M2.99,2.99c-0.55,0-1,0.45-1,1v11c0,0.55,0.45,1,1,1s1-0.45,1-1v-11C3.99,3.44,3.54,2.99,2.99,2.99z M2.99-0.01c-0.55,0-1,0.45-1,1s0.45,1,1,1s1-0.45,1-1S3.54-0.01,2.99-0.01z M4.99,3.02v7.23c2.07-2.11,5.92,1.75,9,0V3.02C10.99,5.09,7.05,0.99,4.99,3.02z"/></g></svg>');
+  --md-tip-border-color: #0F62FE;
+  --md-tip-bg-color: #0F62FE;
+  --md-tip-text-color: #edf3ff;
+}
+
+[data-md-color-scheme="dark"] {
+  --md-tip-text-color: var(--md-default-fg-color--lighter);
+}
+
+.md-typeset .admonition.tip,
+.md-typeset details.tip {
+  border-color: var(--md-tip-border-color);
+}
+
+.md-typeset .tip > .admonition-title,
+.md-typeset .tip > summary {
+  background-color: var(--md-tip-bg-color);
+  color: var(--md-tip-text-color);
+}
+
+.md-typeset .tip > .admonition-title::before,
+.md-typeset .tip > summary::before {
+  background-color: #edf3ff;
+  -webkit-mask-image: var(--md-admonition-icon--tip);
+          mask-image: var(--md-admonition-icon--tip);
+}
+
+.md-typeset .admonition.faq,
+.md-typeset details.faq {
+  border-color: var(--md-typeset-table-color);
+}
+.md-typeset .faq > .admonition-title,
+.md-typeset .faq > summary {
+  background-color: var(--md-typeset-table-color--light);
+}
+.md-typeset .faq > .admonition-title::before,
+.md-typeset .faq > summary::before {
+  background-color: var(--md-accent-fg-color);
+  -webkit-mask-image: var(--md-admonition-icon--faq);
+          mask-image: var(--md-admonition-icon--faq);
+}
+.mg-cell-color-positive {
+  color: var(--md-mg-positive-color);
+}
+.mg-cell-color-negative {
+  color: var(--md-mg-negative-color);
+}
+
+.mg-color-substitution {
+  color: var(--md-mg-substitution-color);
+}
+.mg-color-deletion {
+  color: var(--md-mg-deletion-color);
+}
+.mg-color-insertion {
+  color: var(--md-mg-insertion-color);
+}

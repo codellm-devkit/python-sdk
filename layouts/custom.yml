@@ -1,0 +1,63 @@
+definitions:
+  - &page_title_with_site_name "{{ page.title }} - {{ config.site_name }}"
+  - &page_description "{% if (page.meta is defined and page.meta.description is defined) %}{{ page.meta.description }}{% else %}{{ config.site_description }}{% endif %}"
+  - &font_family "DM Sans"
+  - &color "white"
+
+tags:  # adapted from mkdocs-material-insiders layouts/default.yml
+  og:type: website
+  og:title: *page_title_with_site_name
+  og:description: *page_description
+  og:image: "{{ image.url }}"
+  og:image:type: "{{ image.type }}"
+  og:image:width: "{{ image.width }}"
+  og:image:height: "{{ image.height }}"
+  og:url: "{{ page.canonical_url }}"
+  twitter:card: summary_large_image
+  twitter:title: *page_title_with_site_name
+  twitter:description: *page_description
+  twitter:image: "{{ image.url }}"
+
+size: { width: 1200, height: 630 }
+layers:
+  - background:
+      color: "#452485"  # darkened primary
+  - background:
+      image: docs/assets/images/card-background.png
+
+  #
+  # the following blocks are adapted from mkdocs-material-insiders layouts/default.yml
+  #
+
+  # Logo
+  - size: { width: 144, height: 144 }
+    offset: { x: 992, y: 64 }
+    icon: { value: cldk/logo-white, color: white }
+
+  # Site name
+  - size: { width: 832, height: 42 }
+    offset: { x: 64, y: 64 }
+    typography:
+      content: "{{ config.site_name }}"
+      color: *color
+      font: { family: *font_family, style: Bold }
+
+  # Page title
+  - size: { width: 832, height: 310 }
+    offset: { x: 62, y: 160 }
+    typography:
+      content: "{{ page.title | striptags }}"  # strip out any HTML tags, e.g. <code>
+      align: start
+      color: *color
+      line: { amount: 3, height: 1.25 }
+      font: { family: *font_family, style: Bold }
+
+  # Page description
+  - size: { width: 832, height: 66 }
+    offset: { x: 64, y: 512 }
+    typography:
+      content: *page_description
+      align: start
+      color: *color
+      line: { amount: 2, height: 1.5 }
+      font: { family: Inter, style: Regular }
