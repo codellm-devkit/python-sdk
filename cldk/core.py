@@ -24,6 +24,7 @@ import logging
 from typing import List
 
 from cldk.analysis import AnalysisLevel
+from cldk.analysis.c import CAnalysis
 from cldk.analysis.java import JavaAnalysis
 from cldk.analysis.java.treesitter import JavaSitter
 from cldk.utils.exceptions import CldkInitializationException
@@ -128,6 +129,8 @@ class CLDK:
                 target_files=target_files,
                 eager_analysis=eager,
             )
+        elif self.language == "c":
+            return CAnalysis(project_dir=project_path)
         else:
             raise NotImplementedError(f"Analysis support for {self.language} is not implemented yet.")
 
@@ -146,7 +149,7 @@ class CLDK:
         else:
             raise NotImplementedError(f"Treesitter parser for {self.language} is not implemented yet.")
 
-    def tree_sitter_utils(self, source_code: str) -> [TreesitterSanitizer | NotImplementedError]:
+    def tree_sitter_utils(self, source_code: str) -> [TreesitterSanitizer | NotImplementedError]:  # type: ignore
         """
         Parse the project using treesitter.
 
