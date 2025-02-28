@@ -1079,8 +1079,10 @@ class JCodeanalyzer:
         Returns:
             Dict[str, List[str]]: Dictionary of file paths and their corresponding docstrings.
         """
-        docstrings = []
+        docstrings = {}
         for file_path, list_of_comments in self.get_all_comments().items():
-            docstrings += [(file_path, docstring) for docstring in list_of_comments if docstring.is_javadoc]
+            javadoc_comments = [docstring for docstring in list_of_comments if docstring.is_javadoc]
+            if javadoc_comments:
+                docstrings[file_path] = javadoc_comments
 
         return docstrings
