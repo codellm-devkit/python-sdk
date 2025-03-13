@@ -1059,9 +1059,12 @@ def test_get_all_docstrings(test_fixture, analysis_json):
 
         all_docstrings = java_analysis.get_all_docstrings()
         assert all_docstrings is not None
-        assert isinstance(all_docstrings, List)
+        assert isinstance(all_docstrings, dict)
         assert len(all_docstrings) > 0
-        for file_name, docstring in all_docstrings:
+        for file_name, docstring in all_docstrings.items():
             print(f"File name: {file_name}")
-            assert isinstance(docstring, JComment)
-            print(f"Docstring: {docstring.content}")
+            assert isinstance(docstring, List)
+            for doc in docstring:
+                assert isinstance(doc, JComment)
+                if doc.content:
+                    print(f"Docstring: {doc.content}")
