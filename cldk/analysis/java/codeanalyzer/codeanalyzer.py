@@ -48,40 +48,6 @@ class JCodeanalyzer:
             If None, the analysis will be read from the pipe.
         analysis_level (str): The level of analysis ('symbol_table' or 'call_graph').
         eager_analysis (bool): If True, the analysis will be performed every time the object is created.
-
-    Methods:
-        _init_codeanalyzer(analysis_level=1):
-            Initializes the codeanalyzer database.
-
-        _download_or_update_code_analyzer(filepath: Path) -> str:
-            Downloads the codeanalyzer jar from the latest release on GitHub.
-
-        _get_application() -> JApplication:
-            Returns the application view of the Java code.
-
-        _get_codeanalyzer_exec() -> List[str]:
-            Returns the executable command for codeanalyzer.
-
-        _codeanalyzer_single_file() -> JApplication:
-            Invokes codeanalyzer in a single file mode.
-
-        get_symbol_table() -> Dict[str, JCompilationUnit]:
-            Returns the symbol table of the Java code.
-
-        get_application_view() -> JApplication:
-            Returns the application view of the Java code.
-
-        get_system_dependency_graph() -> list[JGraphEdges]:
-            Runs the codeanalyzer to get the system dependency graph.
-
-        _generate_call_graph(using_symbol_table: bool) -> nx.DiGraph:
-            Generates the call graph of the Java code.
-
-        get_class_hierarchy() -> nx.DiGraph:
-            Returns the class hierarchy of the Java code.
-
-        get_call_graph() -> nx.DiGraph:
-            Returns the call graph of the Java code.
     """
 
     def __init__(
@@ -276,10 +242,11 @@ class JCodeanalyzer:
         Returns:
             list[JGraphEdges]: The system dependency graph.
         """
-        if self.application.system_dependency_graph is None:
+        if self.application.system_dependency_graph is None or self.application.call_graph is None:
             self.application = self._init_codeanalyzer(analysis_level=2)
 
-        return self.application.system_dependency_graph
+        logger.warning("System dependency graph is not yet implemented. Returning the call graph instead.")
+        return self.application.call_graph
 
     def _generate_call_graph(self, using_symbol_table) -> nx.DiGraph:
         """Generates the call graph of the Java code.

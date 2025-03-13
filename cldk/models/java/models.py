@@ -477,6 +477,7 @@ class JApplication(BaseModel):
     """
 
     symbol_table: Dict[str, JCompilationUnit]
+    call_graph: List[JGraphEdges] = None
     system_dependency_graph: List[JGraphEdges] = None
 
     @field_validator("symbol_table", mode="after")
