@@ -19,7 +19,7 @@ Models module
 """
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, Tuple, List
 
 from tree_sitter import Node
 
