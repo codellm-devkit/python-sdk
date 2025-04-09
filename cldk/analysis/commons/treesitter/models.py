@@ -47,10 +47,8 @@ class Captures:
         node: Node
         name: str
 
-    def __init__(self, captures: Dict[str, List[Node]]):
-        self.captures = []
-        for capture_name, captures in captures.items():
-            self.captures = [self.Capture(node=node, name=capture_name) for node in captures]
+    def __init__(self, captures: List[Tuple[Node, str]]):         
+        self.captures = [self.Capture(node=node, name=text) for node, text in captures]
 
     def __getitem__(self, index: int) -> Capture:
         """Get the capture at the specified index.
