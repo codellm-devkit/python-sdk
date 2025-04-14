@@ -30,7 +30,8 @@ def test_method_is_not_in_class(test_fixture):
     java_sitter = TreesitterJava()
 
     # Get a test source file and send its contents
-    filename = os.path.join(test_fixture, "src/main/java/com/ibm/websphere/samples/daytrader/beans/MarketSummaryDataBean.java")
+    filename = os.path.join(test_fixture,
+                            "src/main/java/com/ibm/websphere/samples/daytrader/beans/MarketSummaryDataBean.java")
     with open(filename, "r", encoding="utf-8") as file:
         class_body = file.read()
 
@@ -48,7 +49,8 @@ def test_is_parsable(test_fixture):
     java_sitter = TreesitterJava()
 
     # Get a test source file and send its contents
-    filename = os.path.join(test_fixture, "src/main/java/com/ibm/websphere/samples/daytrader/beans/MarketSummaryDataBean.java")
+    filename = os.path.join(test_fixture,
+                            "src/main/java/com/ibm/websphere/samples/daytrader/beans/MarketSummaryDataBean.java")
     with open(filename, "r", encoding="utf-8") as file:
         code = file.read()
 
@@ -161,7 +163,8 @@ def test_get_all_interfaces(test_fixture):
     java_sitter = TreesitterJava()
 
     # Get a test source file with interfaces
-    filename = os.path.join(test_fixture, "src/main/java/com/ibm/websphere/samples/daytrader/impl/direct/TradeDirect.java")
+    filename = os.path.join(test_fixture,
+                            "src/main/java/com/ibm/websphere/samples/daytrader/impl/direct/TradeDirect.java")
     with open(filename, "r", encoding="utf-8") as file:
         code = file.read()
 
@@ -261,6 +264,29 @@ def test_get_call_targets():
     # TODO: This test case needs to be written
 
 
+def test_conditional_statement():
+    """conditional statement"""
+    java_sitter = TreesitterJava()
+
+    source_method_code = """
+    public static BigDecimal computeHoldingsTotal(Collection<?> holdingDataBeans) {
+        BigDecimal holdingsTotal = new BigDecimal(0.0).setScale(SCALE);
+        if (holdingDataBeans == null) {
+            return holdingsTotal;
+        }
+        Iterator<?> it = holdingDataBeans.iterator();
+        while (it.hasNext()) {
+            HoldingDataBean holdingData = (HoldingDataBean) it.next();
+            BigDecimal total = holdingData.getPurchasePrice().multiply(new BigDecimal(holdingData.getQuantity()));
+            holdingsTotal = holdingsTotal.add(total);
+        }
+        return holdingsTotal.setScale(SCALE);
+    }
+    """
+    conditional_statements = java_sitter.get_all_conditional_statements(source_code=source_method_code)
+    assert len(conditional_statements) > 0
+
+
 def test_get_calling_lines():
     """get the calling lines"""
     java_sitter = TreesitterJava()
@@ -301,7 +327,8 @@ def test_get_test_methods(test_fixture):
     # TODO: Need to find an example with test methods
 
     # Get a test source file with interfaces
-    filename = os.path.join(test_fixture, "src/main/java/com/ibm/websphere/samples/daytrader/impl/direct/TradeDirect.java")
+    filename = os.path.join(test_fixture,
+                            "src/main/java/com/ibm/websphere/samples/daytrader/impl/direct/TradeDirect.java")
     with open(filename, "r", encoding="utf-8") as file:
         code = file.read()
 
@@ -316,7 +343,8 @@ def test_get_methods_with_annotations(test_fixture):
     java_sitter = TreesitterJava()
 
     # Get a test source file with annotations
-    filename = os.path.join(test_fixture, "src/main/java/com/ibm/websphere/samples/daytrader/web/prims/PingJDBCRead2JSP.java")
+    filename = os.path.join(test_fixture,
+                            "src/main/java/com/ibm/websphere/samples/daytrader/web/prims/PingJDBCRead2JSP.java")
     with open(filename, "r", encoding="utf-8") as file:
         code = file.read()
 
@@ -337,7 +365,8 @@ def test_get_all_type_invocations(test_fixture):
     java_sitter = TreesitterJava()
 
     # Get a test source file
-    filename = os.path.join(test_fixture, "src/main/java/com/ibm/websphere/samples/daytrader/web/prims/PingJDBCRead2JSP.java")
+    filename = os.path.join(test_fixture,
+                            "src/main/java/com/ibm/websphere/samples/daytrader/web/prims/PingJDBCRead2JSP.java")
     with open(filename, "r", encoding="utf-8") as file:
         code = file.read()
 
@@ -380,7 +409,8 @@ def test_get_lexical_tokens(test_fixture):
     java_sitter = TreesitterJava()
 
     # Get a test source file
-    filename = os.path.join(test_fixture, "src/main/java/com/ibm/websphere/samples/daytrader/web/prims/PingJDBCRead2JSP.java")
+    filename = os.path.join(test_fixture,
+                            "src/main/java/com/ibm/websphere/samples/daytrader/web/prims/PingJDBCRead2JSP.java")
     with open(filename, "r", encoding="utf-8") as file:
         code = file.read()
 
@@ -396,7 +426,8 @@ def test_remove_all_comments(test_fixture):
     java_sitter = TreesitterJava()
 
     # Get a test source file
-    filename = os.path.join(test_fixture, "src/main/java/com/ibm/websphere/samples/daytrader/web/prims/PingJDBCRead2JSP.java")
+    filename = os.path.join(test_fixture,
+                            "src/main/java/com/ibm/websphere/samples/daytrader/web/prims/PingJDBCRead2JSP.java")
     with open(filename, "r", encoding="utf-8") as file:
         code = file.read()
 
@@ -413,7 +444,8 @@ def test_make_pruned_code_prettier(test_fixture):
     java_sitter = TreesitterJava()
 
     # Get a test source file
-    filename = os.path.join(test_fixture, "src/main/java/com/ibm/websphere/samples/daytrader/web/prims/PingJDBCRead2JSP.java")
+    filename = os.path.join(test_fixture,
+                            "src/main/java/com/ibm/websphere/samples/daytrader/web/prims/PingJDBCRead2JSP.java")
     with open(filename, "r", encoding="utf-8") as file:
         code = file.read()
 

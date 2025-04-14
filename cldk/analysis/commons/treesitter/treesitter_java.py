@@ -94,6 +94,64 @@ class TreesitterJava:
         """
         return self.parser.parse(bytes(code, "utf-8"))
 
+    def get_all_conditional_statements(self, source_code: str) -> List[dict]:
+        """
+        Get all conditional statements given a Java code
+        Args:
+            source_code:
+
+        Returns:
+            List[dict]: Each element represents a conditional statement. Key start line number,
+            value : {"condition":, "code":, "start_line":, "end_line":,
+            "condition_type":[FOR|WHILE|DOWHILE|IF|ELSE|CATCH]}
+        """
+        tree = self.parser.parse(source_code.encode('utf-8'))
+        root = tree.root_node
+
+        conditionals = []
+
+        def traverse(node):
+            condition_type = None
+            condition_node = None
+            if node.type == 'if_statement':
+                condition_type = 'IF'
+                condition_node = node.child_by_field_name('condition')
+            elif node.type == 'for_statement':
+                condition_type = 'FOR'
+                condition_node = node.child_by_field_name('condition') or node
+            elif node.type == 'while_statement':
+                condition_type = 'WHILE'
+                condition_node = node.child_by_field_name('condition')
+            elif node.type == 'do_statement':
+                condition_type = 'DOWHILE'
+                condition_node = node.child_by_field_name('condition')
+            elif node.type == 'catch_clause':
+                condition_type = 'CATCH'
+                condition_node = node.child_by_field_name('parameter')
+            elif node.type == 'else_clause':
+                condition_type = 'ELSE'
+                condition_node = None
+
+            if condition_type:
+                condition_text = str(self.__get_node_text(source_code, condition_node)) if condition_node else None
+                code_text = str(self.__get_node_text(source_code, node),  'utf-8')
+                conditionals.append({
+                    "condition": condition_text,
+                    "code": code_text,
+                    "start_line": node.start_point[0] + 1,
+                    "end_line": node.end_point[0] + 1,
+                    "condition_type": condition_type
+                })
+
+            for child in node.children:
+                traverse(child)
+
+        traverse(root)
+        return conditionals
+
+    def __get_node_text(self, source_code, node):
+        return source_code[node.start_byte:node.end_byte].encode('utf-8')
+
     def get_all_imports(self, source_code: str) -> Set[str]:
         """Get a list of all the imports in a class.
 
