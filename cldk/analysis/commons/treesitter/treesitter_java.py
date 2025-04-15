@@ -25,6 +25,8 @@ import tree_sitter_java as tsjava
 from cldk.analysis.commons.treesitter.models import Captures
 
 logger = logging.getLogger(__name__)
+language: Language = Language(tsjava.language())
+parser: Parser = Parser(language)
 
 
 # pylint: disable=too-many-public-methods
@@ -34,8 +36,7 @@ class TreesitterJava:
     """
 
     def __init__(self) -> None:
-        self.language: Language = Language(tsjava.language())
-        self.parser: Parser = Parser(self.language)
+        pass
 
     def method_is_not_in_class(self, method_name: str, class_body: str) -> bool:
         """Check if a method is in a class.
@@ -78,7 +79,7 @@ class TreesitterJava:
 
             return False
 
-        tree = self.parser.parse(bytes(code, "utf-8"))
+        tree = parser.parse(bytes(code, "utf-8"))
         if tree is not None:
             return not syntax_error(tree.root_node)
         return False
@@ -92,7 +93,7 @@ class TreesitterJava:
         Returns:
             Tree: the raw AST
         """
-        return self.parser.parse(bytes(code, "utf-8"))
+        return parser.parse(bytes(code, "utf-8"))
 
     def get_all_imports(self, source_code: str) -> Set[str]:
         """Get a list of all the imports in a class.
@@ -176,8 +177,8 @@ class TreesitterJava:
         code_to_process : str
             The code to process.
         """
-        framed_query: Query = self.language.query(query)
-        tree = self.parser.parse(bytes(code_to_process, "utf-8"))
+        framed_query: Query = language.query(query)
+        tree = parser.parse(bytes(code_to_process, "utf-8"))
         return Captures(framed_query.captures(tree.root_node))
 
     def get_method_name_from_declaration(self, method_name_string: str) -> str:
@@ -392,7 +393,7 @@ class TreesitterJava:
         return {type_id.node.text.decode() for type_id in type_references}
 
     def get_method_return_type(self, source_code: str) -> str:
-        """Get the return type of a method.
+        """Get the return type of method.
 
         Parameters
         ----------
@@ -424,7 +425,7 @@ class TreesitterJava:
         List of lexical tokens
 
         """
-        tree = self.parser.parse(bytes(code, "utf-8"))
+        tree = parser.parse(bytes(code, "utf-8"))
         root_node = tree.root_node
         lexical_tokens = []
 
@@ -432,9 +433,9 @@ class TreesitterJava:
             if len(node.children) == 0:
                 if filter_by_node_type is not None:
                     if node.type in filter_by_node_type:
-                        lexical_tokens.append(code[node.start_byte : node.end_byte])
+                        lexical_tokens.append(code[node.start_byte: node.end_byte])
                 else:
-                    lexical_tokens.append(code[node.start_byte : node.end_byte])
+                    lexical_tokens.append(code[node.start_byte: node.end_byte])
             else:
                 for child in node.children:
                     collect_leaf_token_values(child)
