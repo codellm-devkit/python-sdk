@@ -103,8 +103,8 @@ class TreesitterJava:
         Returns:
             Set[str]: A set of all the imports in the class.
         """
-        import_declerations: Captures = self.frame_query_and_capture_output(query="(import_declaration (scoped_identifier) @name)", code_to_process=source_code)
-        return {capture.node.text.decode() for capture in import_declerations}
+        import_declarations: Captures = self.frame_query_and_capture_output(query="(import_declaration (scoped_identifier) @name)", code_to_process=source_code)
+        return {capture.node.text.decode() for capture in import_declarations}
 
     # TODO: This typo needs to be fixed (i.e., package not pacakge)
     def get_pacakge_name(self, source_code: str) -> str:

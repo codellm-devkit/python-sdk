@@ -86,11 +86,11 @@ class TreesitterSanitizer:
         + Finally, remove all the unused imports from the source code and prettify it.
         """
         pruned_source_code: str = deepcopy(sanitized_code)
-        import_declerations: Captures = self.__javasitter.frame_query_and_capture_output(query="((import_declaration) @imports)", code_to_process=self.source_code)
+        import_declarations: Captures = self.__javasitter.frame_query_and_capture_output(query="((import_declaration) @imports)", code_to_process=self.source_code)
 
         unused_imports: Set = set()
         ids_and_typeids: Set = set()
-        class_bodies: Captures = self.__javasitter.frame_query_and_capture_output(query="((class_declaration) @class_decleration)", code_to_process=self.source_code)
+        class_bodies: Captures = self.__javasitter.frame_query_and_capture_output(query="((class_declaration) @class_declaration)", code_to_process=self.source_code)
         for class_body in class_bodies:
             all_type_identifiers_in_class: Captures = self.__javasitter.frame_query_and_capture_output(
                 query="((type_identifier) @type_id)",
@@ -103,17 +103,17 @@ class TreesitterSanitizer:
             ids_and_typeids.update({type_id.node.text.decode() for type_id in all_type_identifiers_in_class})
             ids_and_typeids.update({other_id.node.text.decode() for other_id in all_other_identifiers_in_class})
 
-        for import_decleration in import_declerations:
-            wildcard_import: Captures = self.__javasitter.frame_query_and_capture_output(query="((asterisk) @wildcard)", code_to_process=import_decleration.node.text.decode())
+        for import_declaration in import_declarations:
+            wildcard_import: Captures = self.__javasitter.frame_query_and_capture_output(query="((asterisk) @wildcard)", code_to_process=import_declaration.node.text.decode())
             if len(wildcard_import) > 0:
                 continue
 
             import_statement: Captures = self.__javasitter.frame_query_and_capture_output(
-                query="((scoped_identifier) @scoped_identifier)", code_to_process=import_decleration.node.text.decode()
+                query="((scoped_identifier) @scoped_identifier)", code_to_process=import_declaration.node.text.decode()
             )
             import_str = import_statement.captures[0].node.text.decode()
             if not import_str.split(".")[-1] in ids_and_typeids:
-                unused_imports.add(import_decleration.node.text.decode())
+                unused_imports.add(import_declaration.node.text.decode())
 
         for unused_import in unused_imports:
             pruned_source_code = pruned_source_code.replace(unused_import, "")

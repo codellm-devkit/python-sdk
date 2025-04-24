@@ -592,7 +592,7 @@ class JCodeanalyzer:
         if ci is None:
             logging.warning(f"Class {qualified_class_name} not found in the application view.")
             return list()
-        nested_classes = ci.nested_type_declerations
+        nested_classes = ci.nested_type_declarations
         return [self.get_class(c) for c in nested_classes]  # Assuming qualified nested class names
 
     def get_extended_classes(self, qualified_class_name) -> List[str]:

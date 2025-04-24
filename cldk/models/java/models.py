@@ -350,7 +350,7 @@ class JType(BaseModel):
     modifiers: List[str] | None = []
     annotations: List[str] | None = []
     parent_type: str
-    nested_type_declerations: List[str] | None = []
+    nested_type_declarations: List[str] | None = []
     callable_declarations: Dict[str, JCallable] = {}
     field_declarations: List[JField] = []
     enum_constants: List[JEnumConstant] | None = []
@@ -427,7 +427,7 @@ class JGraphEdges(BaseModel):
     @classmethod
     def validate_source(cls, value) -> JMethodDetail:
         _, type_declaration, signature = value["file_path"], value["type_declaration"], value["signature"]
-        j_callable = _CALLABLES_LOOKUP_TABLE.get(
+        j_callable: JCallable = _CALLABLES_LOOKUP_TABLE.get(
             (type_declaration, signature),
             JCallable(
                 comments=[],

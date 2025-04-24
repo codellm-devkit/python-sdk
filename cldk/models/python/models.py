@@ -29,6 +29,7 @@ class PyArg(BaseModel):
 
 class PyImport(BaseModel):
     from_statement: str
+    # code_body: str
     imports: List[str]
 
 
