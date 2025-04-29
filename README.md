@@ -71,6 +71,7 @@ For any questions, feedback, or suggestions, please contact the authors:
     - [Python](#python)
     - [C](#c)
   - [3. **Utilities and Extensions**](#3-utilities-and-extensions)
+- [Contributing](#contributing)
   - [Publication (papers and blogs related to CLDK)](#publication-papers-and-blogs-related-to-cldk)
 
 
@@ -237,6 +238,11 @@ The `cldk.utils` module provides additional support functionality:
 - **Sanitization logic** (especially for Java, via `sanitization.java.treesitter_sanitizer`)
 
 These modules ensure robustness and clean error management across backend interactions and user API layers.
+
+## Contributing
+
+We invite contributors of all levels of experience! We would love to see you get involved in the project. See the [CONTRIBUTING](./CONTRIBUTING.md) guide to get started.
+
 
 ### Publication (papers and blogs related to CLDK)
 1. Krishna, Rahul, Rangeet Pan, Raju Pavuluri, Srikanth Tamilselvam, Maja Vukovic, and Saurabh Sinha. "[Codellm-Devkit: A Framework for Contextualizing Code LLMs with Program Analysis Insights.](https://arxiv.org/pdf/2410.13007)" arXiv preprint arXiv:2410.13007 (2024).
