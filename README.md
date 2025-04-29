@@ -1,7 +1,7 @@
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/images/cldk-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="docs/images/cldk-light.png">
-  <img src="docs/assets/img-light.png" alt="Logo">
+  <source media="(prefers-color-scheme: dark)" srcset="https://github.com/codellm-devkit/.github/blob/main/profile/assets/cldk-dark.png">
+  <source media="(prefers-color-scheme: light)" srcset="https://github.com/codellm-devkit/.github/blob/main/profile/assets/cldk-light.png">
+  <img alt="Logo">
 </picture>
 
 <p align='center'>
@@ -54,23 +54,86 @@ Codellm-Devkit is an ongoing project, developed at IBM Research.
 
 For any questions, feedback, or suggestions, please contact the authors:
 
-| Name | Email |
-| ---- | ----- |
-| Rahul Krishna | [i.m.ralk@gmail.com](mailto:imralk+oss@gmail.com) |
-| Rangeet Pan | [rangeet.pan@ibm.com](mailto:rangeet.pan@gmail.com) |
-| Saurabh Sihna | [sinhas@us.ibm.com](mailto:sinhas@us.ibm.com) |
+| Name          | Email                                               |
+| ------------- | --------------------------------------------------- |
+| Rahul Krishna | [i.m.ralk@gmail.com](mailto:imralk+oss@gmail.com)   |
+| Rangeet Pan   | [rangeet.pan@ibm.com](mailto:rangeet.pan@gmail.com) |
+| Saurabh Sihna | [sinhas@us.ibm.com](mailto:sinhas@us.ibm.com)       |
 ## Table of Contents
 
 - [Contact](#contact)
 - [Table of Contents](#table-of-contents)
+- [Quick Start](#quick-start)
 - [Architectural and Design Overview](#architectural-and-design-overview)
-- [Quick Start: Example Walkthrough](#quick-start-example-walkthrough)
-  - [Prerequisites](#prerequisites)
-  - [Step 1:  Set up an Ollama server](#step-1--set-up-an-ollama-server)
-    - [Pull the latest version of Granite 8b instruct model from ollama](#pull-the-latest-version-of-granite-8b-instruct-model-from-ollama)
-  - [Step 2:  Install CLDK](#step-2--install-cldk)
-  - [Step 3:  Build a code summarization pipeline](#step-3--build-a-code-summarization-pipeline)
+  - [1. **Data Models**](#1-data-models)
+  - [2. **Analysis Backends**](#2-analysis-backends)
+    - [Java](#java)
+    - [Python](#python)
+    - [C](#c)
+  - [3. **Utilities and Extensions**](#3-utilities-and-extensions)
   - [Publication (papers and blogs related to CLDK)](#publication-papers-and-blogs-related-to-cldk)
+
+
+## Quick Start
+
+In this section, we will walk through a simple example to demonstrate how to get started with CLDK.
+
+1. Install the CLDK package using pip:
+ 
+   ```bash
+   pip install cldk
+   ```
+
+
+2. To use CLDK, just import the `CLDK` class from the `cldk` module:
+  
+   ```python
+   from cldk import CLDK
+   ```
+
+3. Next, to select a language for analysis, create an instance of the `CLDK` class with the desired language:
+
+   ```python
+   cldk = CLDK(language="java")  # For Java analysis
+   ```
+
+4. Create an analysis object over the Java application by providing the path to the project:
+
+   ```python
+   analysis = cldk.analysis(project_path="/path/to/your/java/project")
+   ```
+   This will initialize the analysis pipeline for the specified project. The analysis engine, in the backend, will parse the java project and build a symbol table representing the program structure and return the artifact to CLDK which will map it to the CLDK data schema (`cldk/models/java/models.py`).
+
+   Depending on the size of the project, this step may take some time as it involves parsing, building, and statically analyzing the codebase.
+
+5. Once the analysis is complete, you can call the various methods provided by the `analysis` object to interact with the analyzed codebase. For  example, you can retrieve method bodies, signatures, and call graphs.
+
+    ```python
+    # Iterate over all the files in the project
+    from CLDK import cldk
+
+    analysis: JavaAnalysis = CLDK(language="java").analysis(project_path="/path/to/your/java/project")
+    
+    all_files = [file_path for file_path, class_file in analysis.get_symbol_table().items()]
+
+    # Process each file
+    for file_path in all_files:
+        # Additional processing can be done here
+        pass 
+    ```
+
+    Likewise, you can also retrieve method bodies.
+
+    ```python
+    from cldk import CLDK
+
+    analysis: JavaAnalysis = CLDK(language="java").analysis(project_path="/path/to/your/java/project")
+    for class_file in analysis.get_symbol_table().values():
+        for type_name, type_declaration in class_file.type_declarations.items():
+            for method in type_declaration.callable_declarations.values():
+                method_body = analysis.get_method_body(method.declaration)
+                print(f"Method: {method.declaration}\nBody: {method_body}\n")
+    ```
 
 ## Architectural and Design Overview
 
@@ -80,231 +143,100 @@ Below is a very high-level overview of the architectural of CLDK:
 ```mermaid
 graph TD
 User <--> A[CLDK]
-    A --> 15[Retrieval ‡]
-    A --> 16[Prompting ‡]
-    A[CLDK] <--> B[Languages]
-        B --> C[Java, Python, Go ‡, C ‡, JavaScript ‡, TypeScript ‡, Rust ‡]
-            C --> D[Data Models]
-                D --> 13{Pydantic}
-            13 --> 7            
-            C --> 7{backends}
-                7 <--> 9[WALA]
-                    9 <--> 14[Analysis]
-                7 <--> 10[Tree-sitter] 
-                    10 <--> 14[Analysis]
-                7 <--> 11[LLVM ‡]
-                    11 <--> 14[Analysis]
-                7 <--> 12[CodeQL ‡]
-                    12 <--> 14[Analysis]
 
+    A --> A1[cldk.analysis]
     
+    A1 --> A2[cldk.analysis.java]
+    A2 --> A3[codeanalyzer → WALA]
+    A3 --> JA[Analysis]
 
-X[‡ Yet to be implemented]
-```
+    A1 --> A4[cldk.analysis.c]
+    A4 --> A5[clang]
+    A5 --> CA[Analysis]
 
-The user interacts by invoking the CLDK API. The CLDK API is responsible for handling the user requests and delegating them to the appropriate language-specific modules. 
+    A1 --> A6[cldk.analysis.python]
+    A6 --> A7[treesitter_python]
+    A7 --> PA[Analysis]
 
-Each language comprises of two key components: data models and backends.
+    A1 --> A8[cldk.analysis.commons]
+    A8 --> LSP[LSP]
+    A8 --> TS[treesitter base]
+    A8 --> TU[treesitter utils]
 
-1. **Data Models:** These are high level abstractions that represent the various language constructs and componentes in a structured format using pydantic. This confers a high degree of flexibility and extensibility to the models as well as allowing for easy accees of various data components via a simple dot notation. In addition, the data models are designed to be easily serializable and deserializable, making it easy to store and retrieve data from various sources.
+    A --> M[cldk.models]
+    M --> MJ[Java models]
+    M --> MP[Python models]
+    M --> MC[C models]
+    M --> MT[treesitter models]
 
-2. **Analysis Backends:** These are the components that are responsible for interfacing with the various program analysis tools. The core backends are Treesitter, Javaparse, WALA, LLVM, and CodeQL. The backends are responsible for handling the user requests and delegating them to the appropriate analysis tools. The analysis tools perfrom the requisite analysis and return the results to the user. The user merely calls one of several high-level API functions such as `get_method_body`, `get_method_signature`, `get_call_graph`, etc. and the backend takes care of the rest. 
-
-    Some langugages may have multiple backends. For example, Java has WALA, Javaparser, Treesitter, and CodeQL backends. The user has freedom to choose the backend that best suits their needs. 
-
-We are currently working on implementing the retrieval and prompting components. The retrieval component will be responsible for retrieving the relevant code snippets from the codebase for RAG usecases. The prompting component will be responsible for generating the prompts for the CodeLLMs using popular prompting frameworks such as `PDL`, `Guidance`, or `LMQL`.  
-
-## Quick Start: Example Walkthrough
-
-In this section, we will walk through a simple example to demonstrate how to use CLDK. We will:
-
-* Set up a local ollama server to interact with CodeLLMs
-* Build a simple code summarization pipeline for a Java and a Python application.
-
-### Prerequisites
-
-Before we begin, make sure you have the following prerequisites installed:
-
-  * Python 3.11 or later
-  * Ollama v0.3.4 or later
-
-If you are using [Visual Studio Code](https://code.visualstudio.com) with the [Dev Containers](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers) extension along with [Docker Desktop](https://www.docker.com/products/docker-desktop) or [Rancher Desktop](https://w3.ibm.com/w3publisher/docker-desktop/rancher-desktop), this project contains a Dev Container environment for you to develop in. 
-
-Use the following commands:
-
-```bash
-git clone https://github.com/codellm-devkit/python-sdk.git
-cd python-dsk
-code .
-```
-
-When Visual Studio Code starts, select the option to **Reopen in Container** and a development environment with Python, Java, C, and Rust will be available to you. See [Developing inside a Container](https://code.visualstudio.com/docs/devcontainers/containers) for more detailed instructions.
-
-### Step 1:  Set up an Ollama server
-
-If don't already have ollama, please download and install it from here: [Ollama](https://ollama.com/download). 
-
-Once you have ollama, start the server and make sure it is running.
-
-If you're on MacOS, Linux, or WSL, you can check to make sure the server is running by running the following command:
-
-```bash
-sudo systemctl status ollama
-```
-
-You should see an output similar to the following:
-
-```bash
-➜ sudo systemctl status ollama
-● ollama.service - Ollama Service
-     Loaded: loaded (/etc/systemd/system/ollama.service; enabled; preset: enabled)
-     Active: active (running) since Sat 2024-08-10 20:39:56 EDT; 17s ago
-   Main PID: 23069 (ollama)
-      Tasks: 19 (limit: 76802)
-     Memory: 1.2G (peak: 1.2G)
-        CPU: 6.745s
-     CGroup: /system.slice/ollama.service
-             └─23069 /usr/local/bin/ollama serve
-```
-
-If not, you may have to start the server manually. You can do this by running the following command:
-
-```bash
-sudo systemctl start ollama
-```
-
-#### Pull the latest version of Granite 8b instruct model from ollama
-
-To pull the latest version of the Granite 8b instruct model from ollama, run the following command:
-
-```bash
-ollama pull granite-code:8b-instruct
-```
-
-Check to make sure the model was successfully pulled by running the following command:
-
-```bash
-ollama run granite-code:8b-instruct 'Write a function to print hello world in python'
-```
-
-The output should be similar to the following:
+    A --> U[cldk.utils]
+    U --> UX[exceptions]
+    U --> UL[logging]
+    U --> US[sanitization]
+    US --> USJ[java sanitization]
 
 ```
-➜ ollama run granite-code:8b-instruct 'Write a function to print hello world in python'
 
-def say_hello():
-    print("Hello World!")
-```
+The user interacts with the CLDK API via the top-level `CLDK` interface exposed in `core.py`. This interface is responsible for configuring the analysis session, initializing language-specific pipelines, and exposing a high-level, language-agnostic API for interacting with program structure and semantics.
 
-### Step 2:  Install CLDK
+CLDK is currently implemented with full support for **Java**, **Python**, and **C**. Each language module is structured around two core components: **data models** and **analysis backends**.
 
-You may install the latest version of CLDK from [PyPi](https://pypi.org/project/cldk/):
+
+### 1. **Data Models**
+
+Each supported language has its own set of Pydantic-based data models, located in the `cldk.models` module (e.g., `cldk.models.java`, `cldk.models.python`, `cldk.models.c`). These models provide:
+
+- **Structured representations** of language elements such as classes, methods, annotations, fields, and statements.
+- **Typed access** using dot notation (e.g., `method.return_type` or `klass.methods`), promoting developer productivity.
+- **Serialization support** to and from JSON and other formats, enabling easy storage, inspection, and exchange of analysis results.
+- **Consistency** across languages via shared modeling conventions and base abstractions, including a common treesitter schema.
+
+
+
+### 2. **Analysis Backends**
+
+Each language has a dedicated analysis backend implemented under `cldk.analysis.<language>`, responsible for coordinating concrete analysis steps using language-specific tooling:
+
+#### Java
+- **Backend:** `cldk.analysis.java`  
+- **Tools:** JavaParser, WALA (via CodeAnalyzer JAR)  
+- **Capabilities:** Bytecode-level call graphs, symbol resolution, method declarations, type hierarchies
+
+#### Python
+- **Backend:** `cldk.analysis.python`  
+- **Tools:** Tree-sitter  
+- **Capabilities:** Lightweight structural parsing, method/function boundaries, control/data flow approximation
+
+#### C
+- **Backend:** `cldk.analysis.c`  
+- **Tools:** Clang frontend  
+- **Capabilities:** Structural symbol resolution and method/function layout using Clang AST
+
+All analysis backends share common infrastructure defined in `cldk.analysis.commons`, including:
+- **Tree-sitter utilities** (`treesitter_java`, `treesitter_python`)
+- **LSP integration hooks**
+- **Generic model builders and transformation utilities**
+
+Backends are internally orchestrated such that the user does not interact with them directly. Instead, they simply call high-level SDK methods such as:
 
 ```python
-pip install cldk
+get_method_body(...)
+get_method_signature(...)
+get_call_graph(...)
 ```
 
-Once CLDK is installed, you can import it into your Python code:
+CLDK handles tool coordination, language resolution, parsing, transformation, and data marshalling under the hood.
 
-```python
-from cldk import CLDK
-```
+---
 
-### Step 3:  Build a code summarization pipeline
+### 3. **Utilities and Extensions**
 
-Now that we have set up the ollama server and installed CLDK, we can build a simple code summarization pipeline for a Java application.
+The `cldk.utils` module provides additional support functionality:
+- **Exception handling utilities**
+- **Logging configuration**
+- **Sanitization logic** (especially for Java, via `sanitization.java.treesitter_sanitizer`)
 
-1. Let's download a sample Java (apache-commons-cli):
-
-    * Download and unzip the sample Java application:
-        ```bash
-        wget https://github.com/apache/commons-cli/archive/refs/tags/rel/commons-cli-1.7.0.zip -O commons-cli-1.7.0.zip && unzip commons-cli-1.7.0.zip
-        ```
-    * Record the path to the sample Java application:
-        ```bash
-        export JAVA_APP_PATH=/path/to/commons-cli-1.7.0 
-      ```
-
-Below is a simple code summarization pipeline for a Java application using CLDK. It does the following things:
-
-* Creates a new instance of the CLDK class (see comment `# (1)`)
-* Creates an analysis object over the Java application (see comment `# (2)`)
-* Iterates over all the files in the project (see comment `# (3)`)
-* Iterates over all the classes in the file (see comment `# (4)`)
-* Iterates over all the methods in the class (see comment `# (5)`)
-* Gets the code body of the method (see comment `# (6)`)
-* Initializes the treesitter utils for the class file content (see comment `# (7)`)
-* Sanitizes the class for analysis (see comment `# (8)`)
-* Formats the instruction for the given focal method and class (see comment `# (9)`)
-* Prompts the local model on Ollama (see comment `# (10)`)
-* Prints the instruction and LLM output (see comment `# (11)`)
-
-```python
-# code_summarization_for_java.py
-
-from cldk import CLDK
-
-
-def format_inst(code, focal_method, focal_class):
-    """
-    Format the instruction for the given focal method and class.
-    """
-    inst = f"Question: Can you write a brief summary for the method `{focal_method}` in the class `{focal_class}` below?\n"
-
-    inst += "\n"
-    inst += f"```{language}\n"
-    inst += code
-    inst += "```" if code.endswith("\n") else "\n```"
-    inst += "\n"
-    return inst
-
-def prompt_ollama(message: str, model_id: str = "granite-code:8b-instruct") -> str:
-    """Prompt local model on Ollama"""
-    response_object = ollama.generate(model=model_id, prompt=message)
-    return response_object["response"]
-
-
-if __name__ == "__main__":
-    # (1) Create a new instance of the CLDK class
-    cldk = CLDK(language="java")
-
-    # (2) Create an analysis object over the java application
-    analysis = cldk.analysis(project_path=os.getenv("JAVA_APP_PATH"))
-
-    # (3) Iterate over all the files in the project
-    for file_path, class_file in analysis.get_symbol_table().items():
-        class_file_path = Path(file_path).absolute().resolve()
-        # (4) Iterate over all the classes in the file
-        for type_name, type_declaration in class_file.type_declarations.items():
-            # (5) Iterate over all the methods in the class
-            for method in type_declaration.callable_declarations.values():
-                
-                # (6) Get code body of the method
-                code_body = class_file_path.read_text()
-                
-                # (7) Initialize the treesitter utils for the class file content
-                tree_sitter_utils = cldk.tree_sitter_utils(source_code=code_body)
-                
-                # (8) Sanitize the class for analysis
-                sanitized_class = tree_sitter_utils.sanitize_focal_class(method.declaration)
-
-                # (9) Format the instruction for the given focal method and class
-                instruction = format_inst(
-                    code=sanitized_class,
-                    focal_method=method.declaration,
-                    focal_class=type_name,
-                )
-
-                # (10) Prompt the local model on Ollama
-                llm_output = prompt_ollama(
-                    message=instruction,
-                    model_id="granite-code:20b-instruct",
-                )
-
-                # (11) Print the instruction and LLM output
-                print(f"Instruction:\n{instruction}")
-                print(f"LLM Output:\n{llm_output}")
-```
+These modules ensure robustness and clean error management across backend interactions and user API layers.
 
 ### Publication (papers and blogs related to CLDK)
 1. Krishna, Rahul, Rangeet Pan, Raju Pavuluri, Srikanth Tamilselvam, Maja Vukovic, and Saurabh Sinha. "[Codellm-Devkit: A Framework for Contextualizing Code LLMs with Program Analysis Insights.](https://arxiv.org/pdf/2410.13007)" arXiv preprint arXiv:2410.13007 (2024).

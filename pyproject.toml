@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "cldk"
-version = "0.5.1"
+version = "1.0.0"
 description = "The official Python SDK for Codellm-Devkit."
 authors = ["Rahul Krishna <i.m.ralk@gmail.com>", "Rangeet Pan <rangeet.pan@ibm.com>", "Saurabh Sinhas <sinhas@us.ibm.com>",
             "Raju Pavuluri <pavuluri@us.ibm.com>"]
@@ -27,14 +27,18 @@ include = [
     "cldk/analysis/java/codeanalyzer/jar/*.jar"
 ]
 
+
+[tool.backend-versions]
+codeanalyzer-java = "2.3.3"
+
 [tool.poetry.dependencies]
 python = ">=3.11"
 pydantic = "^2.10.6"
 pandas = "^2.2.3"
 networkx = "^3.4.2"
-pyarrow = "19.0.0"
+pyarrow = "20.0.0"
 tree-sitter = "0.24.0"
-rich = "13.9.4"
+rich = "14.0.0"
 wget = "3.2"
 requests = "^2.32.3"
 tree-sitter-java = "0.23.5"
@@ -52,7 +56,7 @@ ipython = "^8.32.0"
 [tool.poetry.group.test.dependencies]
 # Test dependencies
 toml = "^0.10.2"
-pytest = "8.3.4"
+pytest = "8.3.5"
 pytest-pspec = "^0.0.4"
 pytest-cov = "^6.0.0"
 pylint = "^3.3.4"
