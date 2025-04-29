@@ -25,8 +25,9 @@ jobs:
         uses: graalvm/setup-graalvm@v1
         with:
           java-version: '11'
-          distribution: 'graalvm-community'
+          distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
+          native-image-job-reports: 'true'
 
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
