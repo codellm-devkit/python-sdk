@@ -24,7 +24,7 @@ jobs:
       - name: Set up GraalVM CE Java 11
         uses: graalvm/setup-graalvm@v1
         with:
-          java-version: '11'
+          java-version: '21'
           distribution: 'graalvm'
           github-token: ${{ secrets.GITHUB_TOKEN }}
           native-image-job-reports: 'true'
