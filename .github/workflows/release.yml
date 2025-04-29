@@ -12,46 +12,55 @@ jobs:
   release:
     runs-on: ubuntu-latest
 
-    env:
-      JAVA_HOME: ${{ github.workspace }}/graalvm-ce-java11-22.3.3
-    
     steps:
       - name: Check out code
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Set up JDK 11 from GraalVM
-        run: |
-          echo "${{ env.JAVA_HOME }}/bin" >> $GITHUB_PATH
-          wget https://github.com/graalvm/graalvm-ce-builds/releases/download/vm-22.3.3/graalvm-ce-java11-linux-amd64-22.3.3.tar.gz
-          tar -xvzf graalvm-ce-java11-linux-amd64-22.3.3.tar.gz
-          ${{ env.JAVA_HOME }}/bin/gu install native-image
+      - name: Set up GraalVM CE Java 11
+        uses: graalvm/setup-graalvm@v1
+        with:
+          java-version: '11'
+          distribution: 'graalvm-community'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
 
       - name: Install Poetry
         run: |
           curl -sSL https://install.python-poetry.org | python3 -
           echo "${HOME}/.local/bin" >> $GITHUB_PATH
+          export PATH="${HOME}/.local/bin:$PATH"
 
-      - name: Configure Poetry
-        run: poetry config virtualenvs.in-project true
-
-      - name: Install Dependencies
-        run: poetry install --no-root
+      - name: Install Python package dependencies
+        run: |
+          poetry config virtualenvs.create false
+          poetry install --sync --no-interaction
 
       - name: Run Tests
-        id: build
-        continue-on-error: true  # Allow workflow continuation on failure
+        id: test
+        continue-on-error: true
         run: poetry run make test
 
       - name: Delete tag on failure
-        if: steps.build.outcome != 'success'
+        if: steps.test.conclusion == 'failure'
         run: |
+          echo "Tests failed. Deleting tag ${GITHUB_REF#refs/tags/}..."
           git push --delete origin ${GITHUB_REF#refs/tags/}
-          exit 1  # Fail the workflow
+          exit 1
+
+      - name: Inject the latest Code Analyzer JAR
+        run: |
+          CODE_ANALYZER_URL=$(curl -s https://api.github.com/repos/codellm-devkit/codeanalyzer-java/releases/latest | jq -r '.assets[] | select(.name | endswith(".jar")) | .browser_download_url')
+          echo "Downloading: $CODE_ANALYZER_URL"
+          wget -q "$CODE_ANALYZER_URL"
+          mkdir -p ${{ github.workspace }}/cldk/analysis/java/codeanalyzer/jar/
+          mv codeanalyzer-*.jar ${{ github.workspace }}/cldk/analysis/java/codeanalyzer/jar/
 
       - name: Build Package
         run: poetry build
@@ -72,3 +81,6 @@ jobs:
           body: ${{ steps.gen_changelog.outputs.changelog }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish package distributions to PyPI
+        run: poetry publish --username __token__ --password ${{ secrets.PYPI_API_TOKEN }}
