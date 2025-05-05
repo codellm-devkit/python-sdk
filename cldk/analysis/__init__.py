@@ -24,7 +24,12 @@ from enum import Enum
 class AnalysisLevel(str, Enum):
     """Analysis levels"""
 
+    # Upper case defaults
+    SYMBOL_TABLE = "symbol table"
+    CALL_GRAPH = "call graph"
+    PROGRAM_DEPENDENCY_GRAPH = "program dependency graph"
+
+    # Lower case for backward compatibility
     symbol_table = "symbol table"
     call_graph = "call graph"
     program_dependency_graph = "program dependency graph"
-    system_dependency_graph = "system dependency graph"
