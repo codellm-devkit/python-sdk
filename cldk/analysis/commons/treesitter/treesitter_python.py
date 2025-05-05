@@ -28,6 +28,9 @@ from cldk.models.python.models import PyMethod, PyClass, PyArg, PyImport, PyModu
 from cldk.analysis.commons.treesitter.models import Captures
 from cldk.analysis.commons.treesitter.utils.treesitter_utils import TreeSitterUtils
 
+LANGUAGE: Language = Language(tspython.language())
+PARSER: Parser = Parser(LANGUAGE)
+
 
 class TreesitterPython:
     """
@@ -35,8 +38,6 @@ class TreesitterPython:
     """
 
     def __init__(self) -> None:
-        self.language: Language = Language(tspython.language())
-        self.parser: Parser = Parser(self.language)
         self.utils: TreeSitterUtils = TreeSitterUtils()
 
     def is_parsable(self, code: str) -> bool:
@@ -62,7 +63,7 @@ class TreesitterPython:
 
             return False
 
-        tree = self.parser.parse(bytes(code, "utf-8"))
+        tree = PARSER.parse(bytes(code, "utf-8"))
         if tree is not None:
             return not syntax_error(tree.root_node)
         return False
@@ -76,7 +77,7 @@ class TreesitterPython:
         Returns:
             Tree: the raw AST
         """
-        return self.parser.parse(bytes(code, "utf-8"))
+        return PARSER.parse(bytes(code, "utf-8"))
 
     def get_all_methods(self, module: str) -> List[PyMethod]:
         """
@@ -163,8 +164,8 @@ class TreesitterPython:
             List[str]: List of imports
         """
         import_list = []
-        captures_from_import: Captures = self.utils.frame_query_and_capture_output(self.parser, self.language, "(((import_from_statement) @imports))", module)
-        captures_import: Captures = self.utils.frame_query_and_capture_output(self.parser, self.language, "(((import_statement) @imports))", module)
+        captures_from_import: Captures = self.utils.frame_query_and_capture_output(PARSER, LANGUAGE, "(((import_from_statement) @imports))", module)
+        captures_import: Captures = self.utils.frame_query_and_capture_output(PARSER, LANGUAGE, "(((import_statement) @imports))", module)
         for capture in captures_import:
             import_list.append(capture.node.text.decode())
         for capture in captures_from_import:
@@ -188,8 +189,8 @@ class TreesitterPython:
             List[PyImport]: List of imports
         """
         import_list = []
-        captures_from_import: Captures = self.utils.frame_query_and_capture_output(self.parser, self.language, "(((import_from_statement) @imports))", module)
-        captures_import: Captures = self.utils.frame_query_and_capture_output(self.parser, self.language, "(((import_statement) @imports))", module)
+        captures_from_import: Captures = self.utils.frame_query_and_capture_output(PARSER, LANGUAGE, "(((import_from_statement) @imports))", module)
+        captures_import: Captures = self.utils.frame_query_and_capture_output(PARSER, LANGUAGE, "(((import_statement) @imports))", module)
         for capture in captures_import:
             imports = []
             for import_name in capture.node.children:
@@ -223,7 +224,7 @@ class TreesitterPython:
             List[PyClass]: returns details of all classes in it
         """
         classes: List[PyClass] = []
-        all_class_details: Captures = self.utils.frame_query_and_capture_output(self.parser, self.language, "(((class_definition) @class_name))", module)
+        all_class_details: Captures = self.utils.frame_query_and_capture_output(PARSER, LANGUAGE, "(((class_definition) @class_name))", module)
         for class_name in all_class_details:
             code_body = class_name.node.text.decode()
             class_full_signature = ""  # TODO: what to fill here
@@ -331,7 +332,7 @@ class TreesitterPython:
         is_constructor = False
         is_static = False
         call_sites: List[PyCallSite] = []
-        call_nodes: Captures = self.utils.frame_query_and_capture_output(self.parser, self.language, "(((call) @call_name))", node.text.decode())
+        call_nodes: Captures = self.utils.frame_query_and_capture_output(PARSER, LANGUAGE, "(((call) @call_name))", node.text.decode())
         for call_node in call_nodes:
             call_sites.append(self.__get_call_site_details(call_node.node))
         for function_detail in node.children:
@@ -390,9 +391,9 @@ class TreesitterPython:
         return function
 
     def __get_class_nodes(self, module: str) -> Captures:
-        captures: Captures = self.utils.frame_query_and_capture_output(self.parser, self.language, "(((class_definition) @class_name))", module)
+        captures: Captures = self.utils.frame_query_and_capture_output(PARSER, LANGUAGE, "(((class_definition) @class_name))", module)
         return captures
 
     def __get_method_nodes(self, module: str) -> Captures:
-        captures: Captures = self.utils.frame_query_and_capture_output(self.parser, self.language, "(((function_definition) @function_name))", module)
+        captures: Captures = self.utils.frame_query_and_capture_output(PARSER, LANGUAGE, "(((function_definition) @function_name))", module)
         return captures
