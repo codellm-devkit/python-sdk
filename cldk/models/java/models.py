@@ -363,11 +363,15 @@ class JCompilationUnit(BaseModel):
     """Represents a compilation unit in Java.
 
     Attributes:
+        file_path (str): The path to the source file.
+        package_name (str): The name of the package for the comppilation unit.
         comments (List[JComment]): A list of comments in the compilation unit.
         imports (List[str]): A list of import statements in the compilation unit.
         type_declarations (Dict[str, JType]): A dictionary mapping type names to their corresponding JType representations.
     """
 
+    file_path: str
+    package_name: str
     comments: List[JComment]
     imports: List[str]
     type_declarations: Dict[str, JType]

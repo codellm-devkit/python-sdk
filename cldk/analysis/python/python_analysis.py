@@ -30,17 +30,11 @@ class PythonAnalysis:
 
     def __init__(
         self,
-        eager_analysis: bool,
         project_dir: str | Path | None,
         source_code: str | None,
-        analysis_backend_path: str | None,
-        analysis_json_path: str | Path | None,
     ) -> None:
         self.project_dir = project_dir
         self.source_code = source_code
-        self.analysis_json_path = analysis_json_path
-        self.analysis_backend_path = analysis_backend_path
-        self.eager_analysis = eager_analysis
         self.analysis_backend: TreesitterPython = TreesitterPython()
 
     def get_methods(self) -> List[PyMethod]:

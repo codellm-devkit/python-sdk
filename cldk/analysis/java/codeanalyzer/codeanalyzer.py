@@ -67,7 +67,10 @@ class JCodeanalyzer:
         self.eager_analysis = eager_analysis
         self.analysis_level = analysis_level
         self.target_files = target_files
-        self.application = self._init_codeanalyzer(analysis_level=1 if analysis_level == AnalysisLevel.symbol_table else 2)
+        if self.source_code is None:
+            self.application = self._init_codeanalyzer(analysis_level=1 if analysis_level == AnalysisLevel.symbol_table else 2)
+        else:
+            self.application = self._codeanalyzer_single_file()
         # Attributes related the Java code analysis...
         if analysis_level == AnalysisLevel.call_graph:
             self.call_graph: nx.DiGraph = self._generate_call_graph(using_symbol_table=False)

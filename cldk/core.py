@@ -27,6 +27,7 @@ from cldk.analysis import AnalysisLevel
 from cldk.analysis.c import CAnalysis
 from cldk.analysis.java import JavaAnalysis
 from cldk.analysis.commons.treesitter import TreesitterJava
+from cldk.analysis.python.python_analysis import PythonAnalysis
 from cldk.utils.exceptions import CldkInitializationException
 from cldk.utils.sanitization.java import TreesitterSanitizer
 
@@ -117,6 +118,11 @@ class CLDK:
                 analysis_json_path=analysis_json_path,
                 target_files=target_files,
                 eager_analysis=eager,
+            )
+        elif self.language == "python":
+            return PythonAnalysis(
+                project_dir=project_path,
+                source_code=source_code,
             )
         elif self.language == "c":
             return CAnalysis(project_dir=project_path)
