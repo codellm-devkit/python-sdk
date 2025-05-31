@@ -270,6 +270,7 @@ class JCallable(BaseModel):
         code (str): The code block of the callable.
         start_line (int): The starting line number of the callable in the source file.
         end_line (int): The ending line number of the callable in the source file.
+        code_start_line (int): The starting line number of the code block of a callable in the source file.
         referenced_types (List[str]): The types referenced within the callable.
         accessed_fields (List[str]): Fields accessed in the callable.
         call_sites (List[JCallSite]): Call sites in the callable.
@@ -293,6 +294,7 @@ class JCallable(BaseModel):
     code: str
     start_line: int
     end_line: int
+    code_start_line: int
     referenced_types: List[str]
     accessed_fields: List[str]
     call_sites: List[JCallSite]
