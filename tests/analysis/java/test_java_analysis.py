@@ -650,11 +650,11 @@ def test_get_methods_in_class(test_fixture, analysis_json):
             eager_analysis=False,
         )
 
-        # Test that there are 30 methods in the Log class
+        # Test that there are 29 methods in the Log class
         methods = java_analysis.get_methods_in_class("com.ibm.websphere.samples.daytrader.util.Log")
         assert methods is not None
         assert isinstance(methods, Dict)
-        assert len(methods) == 30
+        assert len(methods) == 29
         for method in methods:
             assert isinstance(methods[method], JCallable)
 

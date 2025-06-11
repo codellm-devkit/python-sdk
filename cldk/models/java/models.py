@@ -436,11 +436,10 @@ class JGraphEdges(BaseModel):
         j_callable: JCallable = _CALLABLES_LOOKUP_TABLE.get(
             (type_declaration, signature),
             JCallable(
-                comments=[],
                 signature=signature,
                 is_implicit=True,
                 is_constructor="<init>" in value["callable_declaration"],
-                comment="",
+                comments=[],
                 annotations=[],
                 modifiers=[],
                 thrown_exceptions=[],
@@ -449,12 +448,15 @@ class JGraphEdges(BaseModel):
                     JCallableParameter(name=None, type=t, annotations=[], modifiers=[], start_column=-1, end_column=-1, start_line=-1, end_line=-1)
                     for t in value["callable_declaration"].split("(")[1].split(")")[0].split(",")
                 ],
+                return_type=None,
                 code="",
                 start_line=-1,
                 end_line=-1,
+                code_start_line=-1,
                 referenced_types=[],
                 accessed_fields=[],
                 call_sites=[],
+                is_entrypoint=False,
                 variable_declarations=[],
                 crud_operations=[],
                 crud_queries=[],
