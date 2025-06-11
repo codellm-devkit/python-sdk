@@ -75,7 +75,7 @@ def codeanalyzer_jar_path():
     # Load the configuration
     config = toml.load(pyproject_path)
 
-    return Path(config["tool"]["cldk"]["testing"]["codeanalyzer-jar-path"]) / "2.3.0"
+    return Path(config["tool"]["cldk"]["testing"]["codeanalyzer-jar-path"])
 
 
 @pytest.fixture(scope="session", autouse=True)
