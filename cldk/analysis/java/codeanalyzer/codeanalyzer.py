@@ -124,6 +124,22 @@ class JCodeanalyzer:
 
         # set_trace()
         return JApplication(**json.loads(data))
+    
+    @staticmethod
+    def check_exisiting_analysis_file_level(analysis_json_path_file: Path, analysis_level: int) -> bool:
+        analysis_file_compatible = True
+        if not analysis_json_path_file.exists():
+            analysis_file_compatible = False
+        else:
+            with open(analysis_json_path_file) as f:
+                data = json.load(f)
+                if analysis_level == 2 and "call_graph" not in data:
+                    analysis_file_compatible = False
+                elif analysis_level == 1 and "symbol_table" not in data:
+                    analysis_file_compatible = False
+        return analysis_file_compatible
+
+
 
     def _init_codeanalyzer(self, analysis_level=1) -> JApplication:
         """Should initialize the Codeanalyzer.
@@ -170,7 +186,7 @@ class JCodeanalyzer:
                 )
                 is_run_code_analyzer = True
             else:
-                if not analysis_json_path_file.exists() or self.eager_analysis:
+                if not self.check_exisiting_analysis_file_level(analysis_json_path_file, analysis_level) or self.eager_analysis:
                     # If the analysis file does not exist, we'll run the analysis. Alternately, if the eager_analysis
                     # flag is set, we'll run the analysis every time the object is created. This will happen regradless
                     # of the existence of the analysis file.
