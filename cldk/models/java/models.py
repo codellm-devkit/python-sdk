@@ -270,6 +270,7 @@ class JCallable(BaseModel):
         code (str): The code block of the callable.
         start_line (int): The starting line number of the callable in the source file.
         end_line (int): The ending line number of the callable in the source file.
+        code_start_line (int): The starting line number of the code block of a callable in the source file.
         referenced_types (List[str]): The types referenced within the callable.
         accessed_fields (List[str]): Fields accessed in the callable.
         call_sites (List[JCallSite]): Call sites in the callable.
@@ -293,6 +294,7 @@ class JCallable(BaseModel):
     code: str
     start_line: int
     end_line: int
+    code_start_line: int
     referenced_types: List[str]
     accessed_fields: List[str]
     call_sites: List[JCallSite]
@@ -363,11 +365,15 @@ class JCompilationUnit(BaseModel):
     """Represents a compilation unit in Java.
 
     Attributes:
+        file_path (str): The path to the source file.
+        package_name (str): The name of the package for the comppilation unit.
         comments (List[JComment]): A list of comments in the compilation unit.
         imports (List[str]): A list of import statements in the compilation unit.
         type_declarations (Dict[str, JType]): A dictionary mapping type names to their corresponding JType representations.
     """
 
+    file_path: str
+    package_name: str
     comments: List[JComment]
     imports: List[str]
     type_declarations: Dict[str, JType]
@@ -430,11 +436,10 @@ class JGraphEdges(BaseModel):
         j_callable: JCallable = _CALLABLES_LOOKUP_TABLE.get(
             (type_declaration, signature),
             JCallable(
-                comments=[],
                 signature=signature,
                 is_implicit=True,
                 is_constructor="<init>" in value["callable_declaration"],
-                comment="",
+                comments=[],
                 annotations=[],
                 modifiers=[],
                 thrown_exceptions=[],
@@ -443,12 +448,15 @@ class JGraphEdges(BaseModel):
                     JCallableParameter(name=None, type=t, annotations=[], modifiers=[], start_column=-1, end_column=-1, start_line=-1, end_line=-1)
                     for t in value["callable_declaration"].split("(")[1].split(")")[0].split(",")
                 ],
+                return_type=None,
                 code="",
                 start_line=-1,
                 end_line=-1,
+                code_start_line=-1,
                 referenced_types=[],
                 accessed_fields=[],
                 call_sites=[],
+                is_entrypoint=False,
                 variable_declarations=[],
                 crud_operations=[],
                 crud_queries=[],

@@ -28,6 +28,7 @@ from cldk.analysis.c import CAnalysis
 from cldk.analysis.java import JavaAnalysis
 from cldk.analysis.commons.treesitter import TreesitterJava
 from cldk.analysis.python.python_analysis import PythonAnalysis
+from cldk.analysis.python.python_analysis import PythonAnalysis
 from cldk.utils.exceptions import CldkInitializationException
 from cldk.utils.sanitization.java import TreesitterSanitizer
 
@@ -123,9 +124,6 @@ class CLDK:
             return PythonAnalysis(
                 project_dir=project_path,
                 source_code=source_code,
-                analysis_backend_path=analysis_backend_path,
-                analysis_json_path=analysis_json_path,
-                eager_analysis=eager,
             )
         elif self.language == "c":
             return CAnalysis(project_dir=project_path)

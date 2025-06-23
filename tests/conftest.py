@@ -75,7 +75,7 @@ def codeanalyzer_jar_path():
     # Load the configuration
     config = toml.load(pyproject_path)
 
-    return Path(config["tool"]["cldk"]["testing"]["codeanalyzer-jar-path"]) / "2.3.0"
+    return Path(config["tool"]["cldk"]["testing"]["codeanalyzer-jar-path"])
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -190,3 +190,24 @@ def test_fixture_binutils():
     for directory in Path(test_data_path).iterdir():
         if directory.exists() and directory.is_dir():
             shutil.rmtree(directory)
+
+@pytest.fixture(scope="session", autouse=True)
+def java_code() -> str:
+    """
+    Returns sample Java source code for analysis.
+
+    Yields:
+        str : Java code to be analyzed.
+    """
+    # ----------------------------------[ SETUP ]----------------------------------
+    # Path to your pyproject.toml
+    pyproject_path = Path(__file__).parent.parent / "pyproject.toml"
+
+    # Load the configuration
+    config = toml.load(pyproject_path)
+
+    # Access the test data path
+    test_data_path = config["tool"]["cldk"]["testing"]["sample-application"]
+    javafile = Path(test_data_path).absolute() / ("WeatherServlet.java")
+    with open(javafile) as f:
+        return f.read()

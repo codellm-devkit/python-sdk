@@ -50,6 +50,24 @@ def test_get_symbol_table_is_not_null(test_fixture, analysis_json):
         )
         assert analysis.get_symbol_table() is not None
 
+def test_get_symbol_table_source_code(java_code):
+    """Should return a symbol table for source analysis with expected class/method count"""
+
+    # Initialize the CLDK object with the project directory, language, and analysis_backend
+    cldk = CLDK(language="java")
+    analysis = cldk.analysis(
+        source_code=java_code,
+        analysis_backend_path=None,
+        eager=True,
+        analysis_level=AnalysisLevel.symbol_table,
+    )
+
+    # assert on expected class name and method count in the symbol table
+    expected_class_name = "com.acme.modres.WeatherServlet"
+    assert analysis.get_symbol_table() is not None
+    assert len(analysis.get_symbol_table().keys()) == 1
+    assert expected_class_name in analysis.get_methods().keys()
+    assert len(analysis.get_methods().get(expected_class_name).keys()) == 9
 
 def test_get_imports(test_fixture, analysis_json):
     """Should return NotImplemented for get_imports()"""
@@ -632,11 +650,11 @@ def test_get_methods_in_class(test_fixture, analysis_json):
             eager_analysis=False,
         )
 
-        # Test that there are 30 methods in the Log class
+        # Test that there are 29 methods in the Log class
         methods = java_analysis.get_methods_in_class("com.ibm.websphere.samples.daytrader.util.Log")
         assert methods is not None
         assert isinstance(methods, Dict)
-        assert len(methods) == 30
+        assert len(methods) == 29
         for method in methods:
             assert isinstance(methods[method], JCallable)
 
