@@ -370,7 +370,7 @@ def test_get_callers(test_fixture, analysis_json):
         )
 
         # Test using call graph
-        callers = java_analysis.get_callers("com.ibm.websphere.samples.daytrader.util.Log", "log(String)", False)
+        callers = java_analysis.get_callers("com.ibm.websphere.samples.daytrader.util.Log", "log(java.lang.String)", False)
         assert callers is not None
         assert isinstance(callers, Dict)
         assert "caller_details" in callers
@@ -383,7 +383,7 @@ def test_get_callers(test_fixture, analysis_json):
         # Uncomment this next test section when fixed
 
         # Test using symbol table
-        callers = java_analysis.get_callers("com.ibm.websphere.samples.daytrader.util.Log", "log(String)", True)
+        callers = java_analysis.get_callers("com.ibm.websphere.samples.daytrader.util.Log", "log(java.lang.String)", True)
         assert callers is not None
         assert isinstance(callers, Dict)
         assert "caller_details" in callers
@@ -415,14 +415,14 @@ def test_get_callees(test_fixture, analysis_json):
         )
 
         # Test with a class that has no callees
-        callees = java_analysis.get_callees("com.ibm.websphere.samples.daytrader.util.Log", "log(String)", False)
+        callees = java_analysis.get_callees("com.ibm.websphere.samples.daytrader.util.Log", "log(java.lang.String)", False)
         assert callees is not None
         assert isinstance(callees, Dict)
         assert "callee_details" in callees
         assert len(callees["callee_details"]) == 0
 
         # Test with a class that has callees
-        callees = java_analysis.get_callees("com.ibm.websphere.samples.daytrader.web.websocket.ActionMessage", "doDecoding(String)", False)
+        callees = java_analysis.get_callees("com.ibm.websphere.samples.daytrader.web.websocket.ActionMessage", "doDecoding(java.lang.String)", False)
         assert callees is not None
         assert isinstance(callees, Dict)
         assert "callee_details" in callees
@@ -435,7 +435,7 @@ def test_get_callees(test_fixture, analysis_json):
         # Uncomment this next test section when fixed
 
         # # Test using symbol table
-        callees = java_analysis.get_callees("com.ibm.websphere.samples.daytrader.web.websocket.ActionMessage", "doDecoding(String)", True)
+        callees = java_analysis.get_callees("com.ibm.websphere.samples.daytrader.web.websocket.ActionMessage", "doDecoding(java.lang.String)", True)
         assert callees is not None
         assert isinstance(callees, Dict)
         assert "callee_details" in callees
@@ -572,7 +572,7 @@ def test_get_method(test_fixture, analysis_json):
             eager_analysis=False,
         )
 
-        the_method = java_analysis.get_method("com.ibm.websphere.samples.daytrader.util.Log", "trace(String)")
+        the_method = java_analysis.get_method("com.ibm.websphere.samples.daytrader.util.Log", "trace(java.lang.String)")
         assert the_method is not None
         assert isinstance(the_method, JCallable)
         assert the_method.declaration == "public static void trace(String message)"
@@ -594,7 +594,7 @@ def test_get_method_parameters(test_fixture, analysis_json):
             eager_analysis=False,
         )
 
-        the_method_parameters = java_analysis.get_method_parameters("com.ibm.websphere.samples.daytrader.util.Log", "trace(String)")
+        the_method_parameters = java_analysis.get_method_parameters("com.ibm.websphere.samples.daytrader.util.Log", "trace(java.lang.String)")
         assert the_method_parameters is not None
         assert isinstance(the_method_parameters, List)
         assert len(the_method_parameters) == 1
