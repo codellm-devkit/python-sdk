@@ -66,7 +66,21 @@ jobs:
       - name: Build Package
         run: poetry build
 
-      - name: Build Changelog
+      - name: Get version from tag
+        id: tag_name
+        run: |
+          echo "current_version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        shell: bash
+        
+      - name: Read Changelog Entry
+        id: changelog_reader
+        uses: mindsers/changelog-reader-action@v2
+        with:
+          validation_level: warn
+          version: ${{ steps.tag_name.outputs.current_version }}
+          path: ./CHANGELOG.md
+
+      - name: Build changelog
         id: gen_changelog
         uses: mikepenz/release-changelog-builder-action@v5
         with:
@@ -74,7 +88,7 @@ jobs:
           configuration: .github/workflows/release_config.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+  
       - name: Publish Release on GitHub
         uses: softprops/action-gh-release@v1
         with:
