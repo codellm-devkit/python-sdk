@@ -342,7 +342,7 @@ def test_get_all_callers(test_fixture, analysis_json):
         )
 
         # Call without using symbol table
-        all_callers = code_analyzer.get_all_callers("com.ibm.websphere.samples.daytrader.util.Log", "log(String)", False)
+        all_callers = code_analyzer.get_all_callers("com.ibm.websphere.samples.daytrader.util.Log", "log(java.lang.String)", False)
         assert all_callers is not None
         assert isinstance(all_callers, Dict)
         assert len(all_callers) > 0
@@ -355,7 +355,7 @@ def test_get_all_callers(test_fixture, analysis_json):
 
         # TODO: This currently doesn't work. Code has bad call as seen in this error message:
         # TypeError: TreesitterJava.get_calling_lines() missing 1 required positional argument: 'is_target_method_a_constructor'
-        all_callers = code_analyzer.get_all_callers("com.ibm.websphere.samples.daytrader.util.Log", "log(String)", True)
+        all_callers = code_analyzer.get_all_callers("com.ibm.websphere.samples.daytrader.util.Log", "log(java.lang.String)", True)
         assert all_callers is not None
         assert isinstance(all_callers, Dict)
         assert "caller_details" in all_callers
@@ -378,7 +378,7 @@ def test_get_all_callees(test_fixture, analysis_json):
         )
 
         # Call without using symbol table
-        all_callees = code_analyzer.get_all_callees("com.ibm.websphere.samples.daytrader.util.Log", "printCollection(String, Collection)", False)
+        all_callees = code_analyzer.get_all_callees("com.ibm.websphere.samples.daytrader.util.Log", "printCollection(java.lang.String, java.util.Collection)", False)
         assert all_callees is not None
         assert isinstance(all_callees, Dict)
         assert "callee_details" in all_callees
@@ -388,7 +388,7 @@ def test_get_all_callees(test_fixture, analysis_json):
 
         # TODO: Throws the following exception
         # TypeError: TreesitterJava.get_calling_lines() missing 1 required positional argument: 'is_target_method_a_constructor'
-        all_callees = code_analyzer.get_all_callees("com.ibm.websphere.samples.daytrader.util.Log", "printCollection(String, Collection)", True)
+        all_callees = code_analyzer.get_all_callees("com.ibm.websphere.samples.daytrader.util.Log", "printCollection(java.lang.String, java.util.Collection)", True)
         assert all_callees is not None
         assert isinstance(all_callees, Dict)
         assert "callee_details" in all_callees
@@ -458,7 +458,7 @@ def test_get_method(test_fixture, analysis_json):
             target_files=None,
         )
 
-        method = code_analyzer.get_method("com.ibm.websphere.samples.daytrader.impl.direct.TradeDirect", "publishQuotePriceChange(QuoteDataBean, BigDecimal, BigDecimal, double)")
+        method = code_analyzer.get_method("com.ibm.websphere.samples.daytrader.impl.direct.TradeDirect", "publishQuotePriceChange(com.ibm.websphere.samples.daytrader.entities.QuoteDataBean, java.math.BigDecimal, java.math.BigDecimal, double)")
         assert method is not None
         assert isinstance(method, JCallable)
 
@@ -730,7 +730,7 @@ def test_get_class_call_graph(test_fixture, analysis_json):
 
         # Call with method signature
         class_call_graph = code_analyzer.get_class_call_graph(
-            "com.ibm.websphere.samples.daytrader.impl.direct.TradeDirect", "createHolding(Connection, int, String, double, BigDecimal)"
+            "com.ibm.websphere.samples.daytrader.impl.direct.TradeDirect", "createHolding(java.sql.Connection, int, java.lang.String, double, java.math.BigDecimal)"
         )
         assert class_call_graph is not None
         assert isinstance(class_call_graph, List)

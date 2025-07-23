@@ -158,6 +158,7 @@ class JCallSite(BaseModel):
         receiver_expr (str): Expression for the receiver of the method call.
         receiver_type (str): Name of type declaring the called method.
         argument_types (List[str]): Types of actual parameters for the call.
+        argument_expr (List[str]): Actual parameter expressions for the call.
         return_type (str): Return type of the method call (resolved type of the method call expression; empty string if expression is unresolved).
         callee_signature (str): Signature of the callee.
         is_static_call (bool): Flag indicating whether the call is a static call.
@@ -179,6 +180,7 @@ class JCallSite(BaseModel):
     receiver_expr: str = ""
     receiver_type: str
     argument_types: List[str]
+    argument_expr: List[str]
     return_type: str = ""
     callee_signature: str = ""
     is_static_call: bool | None = None

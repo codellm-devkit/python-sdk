@@ -729,20 +729,21 @@ class JCodeanalyzer:
                     source_class = ""
                     callee_signature = ""
                     if call_site.callee_signature != "":
-                        pattern = r"\b(?:[a-zA-Z_][\w\.]*\.)+([a-zA-Z_][\w]*)\b|<[^>]*>"
-
-                        # Find the part within the parentheses
-                        start = call_site.callee_signature.find("(") + 1
-                        end = call_site.callee_signature.rfind(")")
-
-                        # Extract the elements inside the parentheses
-                        elements = call_site.callee_signature[start:end].split(",")
-
-                        # Apply the regex to each element
-                        simplified_elements = [re.sub(pattern, r"\1", element.strip()) for element in elements]
-
-                        # Reconstruct the string with simplified elements
-                        callee_signature = f"{call_site.callee_signature[:start]}{', '.join(simplified_elements)}{call_site.callee_signature[end:]}"
+                        # pattern = r"\b(?:[a-zA-Z_][\w\.]*\.)+([a-zA-Z_][\w]*)\b|<[^>]*>"
+                        #
+                        # # Find the part within the parentheses
+                        # start = call_site.callee_signature.find("(") + 1
+                        # end = call_site.callee_signature.rfind(")")
+                        #
+                        # # Extract the elements inside the parentheses
+                        # elements = call_site.callee_signature[start:end].split(",")
+                        #
+                        # # Apply the regex to each element
+                        # simplified_elements = [re.sub(pattern, r"\1", element.strip()) for element in elements]
+                        #
+                        # # Reconstruct the string with simplified elements
+                        # callee_signature = f"{call_site.callee_signature[:start]}{', '.join(simplified_elements)}{call_site.callee_signature[end:]}"
+                        callee_signature = call_site.callee_signature
 
                     if call_site.receiver_type != "":
                         # call to any class
@@ -796,20 +797,21 @@ class JCodeanalyzer:
                 # Currently the callee signature returns the fully qualified type, whereas
                 # the key for JCallable does not. The below logic converts the fully qualified signature
                 # to the desider format. Only limitation is the nested generic type.
-                pattern = r"\b(?:[a-zA-Z_][\w\.]*\.)+([a-zA-Z_][\w]*)\b|<[^>]*>"
-
-                # Find the part within the parentheses
-                start = call_site.callee_signature.find("(") + 1
-                end = call_site.callee_signature.rfind(")")
-
-                # Extract the elements inside the parentheses
-                elements = call_site.callee_signature[start:end].split(",")
-
-                # Apply the regex to each element
-                simplified_elements = [re.sub(pattern, r"\1", element.strip()) for element in elements]
-
-                # Reconstruct the string with simplified elements
-                callee_signature = f"{call_site.callee_signature[:start]}{', '.join(simplified_elements)}{call_site.callee_signature[end:]}"
+                # pattern = r"\b(?:[a-zA-Z_][\w\.]*\.)+([a-zA-Z_][\w]*)\b|<[^>]*>"
+                #
+                # # Find the part within the parentheses
+                # start = call_site.callee_signature.find("(") + 1
+                # end = call_site.callee_signature.rfind(")")
+                #
+                # # Extract the elements inside the parentheses
+                # elements = call_site.callee_signature[start:end].split(",")
+                #
+                # # Apply the regex to each element
+                # simplified_elements = [re.sub(pattern, r"\1", element.strip()) for element in elements]
+                #
+                # # Reconstruct the string with simplified elements
+                # callee_signature = f"{call_site.callee_signature[:start]}{', '.join(simplified_elements)}{call_site.callee_signature[end:]}"
+                callee_signature = call_site.callee_signature
 
             if call_site.receiver_type != "":
                 # call to any class
