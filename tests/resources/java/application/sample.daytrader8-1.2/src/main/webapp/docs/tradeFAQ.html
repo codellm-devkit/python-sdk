@@ -1,0 +1,190 @@
+<!-- 
+ * (C) Copyright IBM Corporation 2015.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+-->
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN"><!-- Sample HTML file -->
+
+<HTML>
+<HEAD>
+<META http-equiv="Content-Style-Type" content="text/css">
+<TITLE>Frequently Asked Questions</TITLE>
+</HEAD>
+
+<BODY BGCOLOR="#FFFFFF">
+<HR>
+<TABLE width="100%">
+  <TBODY>
+    <TR>
+      <TD>
+      <H3><FONT face="Times New Roman">Frequently Asked Questions</FONT></H3>
+      </TD>
+      <TD align="right"></TD>
+    </TR>
+  </TBODY>
+</TABLE>
+
+<P>The Apache Software Foundation<SUP>&reg;</SUP> DayTrader Performance Benchmark Sample
+provides a suite of workloads for characterizing performance of J2EE 1.4 Application 
+Servers. The workloads consist of an end-to-end Web application and a full set of Web
+primitives. The applications are a collection of Java<SUP>TM</SUP> classes, Java servlets,
+Java ServerPages<SUP>TM</SUP> (JSP<SUP>TM</SUP>) files and Enterprise JavaBeans<SUP>TM</SUP> (EJB<SUP>TM</SUP>) built to open Java 2 Platform, Enterprise Edition (J2EE<SUP>TM</SUP>) APIs. Together, the Trade application and Web primitives provide versatile and portable test cases that are designed to measure aspects
+of scalability and performance.</P><HR>
+
+<P><FONT size="+1" color="#000099"><B>Application Design</B></FONT></P>
+
+<P><B>What is DayTrader?</B></P>
+<P>DayTrader is an end-to-end Web application that is modeled after an on-line stock brokerage.
+DayTrader leverages J2EE components such as servlets, JSP files, enterprise beans, 
+message-driven beans (MDBs) and Java database connectivity (JDBC<SUP>TM</SUP>) to
+provide a set of user services such as login/logout, stock quotes, buy,
+sell, account details, and so on through  standards-based HTTP and Web services protocols.</P>
+
+<P><B>What are Web Primitives?</B></P>
+<P>The Web primitives leverage the DayTrader infrastructure to test specific features
+of the Application Servers implementing the J2EE 1.4 programming model. A description of each of the Web 
+primitives is provided on the <A href="../web_prmtv.html">main web primitive 
+page</A>.</P>
+
+
+<P><B>What software is required to run DayTrader?</B></P>
+<UL>
+    <LI>Any J2EE 1.4 Compliant Application Server</LI>
+    <LI>A database that has a suitable JDBC driver for both XA and non-XA connectivity.</LI>
+</UL>
+
+<P><B>What are the most common configuration scenarios?</B><UL>
+    <LI><B><B>Single server with a remote database</B></B> - The DayTrader application runs on a stand alone WebSphere Application Server instance. The required database software and the associated Trade database are located on a different system from the Application Server. The Application Server system must have the necessary database client software to connect to the remote database. <B></B></LI>
+	<LI><B>Single server with a local database</B> - Same as the previous scenario; however, the required database software and the 
+	associated DayTrader database are located on the same system as the Application Server.</LI>
+</UL>
+
+
+<HR>
+<P><FONT size="+1" color="#000099"><FONT color="#000099"><B>Run-time Configuration</B></FONT></FONT></P>
+
+<P><B>What does the ResetDayTrader link do?</B></P>
+<P>The ResetDayTrader link on the configuration page must be clicked between DayTrader runs. 
+This link sets the database to a consistent size by removing all the newly registered users created during 
+a DayTrader run. The reset also sets all outstanding orders to a consistent state. Resetting the database 
+to a consistent size ensures repeatable throughput on subsequent DayTrader runs. </P>
+
+<P><B>How are the DayTrader configuration parameters modified?</B></P>
+<P>The Trade <A HREF="../config">configuration page</A> provides a dynamic mechanism to set
+the run-time configuration for a DayTrader run. These settings control the application
+run-time characteristics such as the run-time mode, the order processing mode, and other run-time 
+variations supported in DayTrader. All settings are reset to defaults when the DayTrader application 
+server is restarted.</P>
+
+<P><B>Can you make configuration changes permanent?</B></P>
+<P>Yes. Normally, Trade configuration parameters return to defaults whenever the Trade application 
+server is restarted. Settings can be made permanent by setting the configuration values in the 
+servlet init parameters of the TradeApp servlet and the TradeScenario servlet. Modify the 
+servlet init parameters in the web.xml file of the Trade Web application to change these parameters.</P>
+
+<P><B>What are the run-time modes?</B></P>
+<P>DayTrader provides two server implementations of the emulated DayTrader brokerage services.</P>
+<UL>
+    <LI><B>EJB</B> - Database access uses EJB 2.1 technology to drive transactional trading operations.</LI>
+    <LI><B>Direct</B> - This mode uses database and messaging access through direct JDBC and JMS code.</LI>
+</UL>
+
+<P><B>What are the order processing modes?</B></P>
+<P>DayTrader provides an asynchronous order processing mode through messaging with MDBs. The order 
+processing mode determines the mode for completing stock purchase and sell operations. Synchronous 
+mode completes the order immediately. Asynchronous mode uses MDB and JMS to queue the order to a 
+TradeBroker agent to complete the order. Asychronous_2-Phase performs a two-phase commit over the EJB 
+database and messaging transactions.</P>
+<UL>   
+	<LI><B>Synchronous</B> - Orders are completed immediately by the DayTrader session enterprise bean and entity enterprise beans.</LI>
+	<LI><B>Asynchronous 2-phase</B> - Orders are queued to the TradeBrokerMDB for asynchronous processing.</LI>
+</UL>
+
+<P><B>What are the access modes?</B></P>
+<P>DayTrader provides multiple access modes to the server-side brokerage services.</P>
+<UL>
+	
+	<LI><B>Standard</B> - Servlets access the Trade enterprise beans through the standard RMI protocol</LI>   
+	<LI><B>WebServices</B> - Servlets access DayTrader services through the Web services implementation in 
+    the System Under Test (SUT). Each trading service is available as a standard Web service through the SOAP 
+    Remote Procedure Call (RPC) protocol. Because DayTrader is wrapped to provide SOAP services, each DayTrader
+    operation (login, quote, buy, and son on) is available as a SOAP service.</LI>
+	
+</UL>
+
+<P><B>What is the Primitive Iteration setting?</B></P>
+<P>By default, the DayTrader primitives run one operation per Web request. Setting this value alters
+the number of operations performed per client request. This is useful for reducing the amount of work
+that is performed by the Web Container and for stressing other components within the application server.
+
+</P>
+<HR>
+<P><FONT size="+1" color="#000099"><FONT color="#000099"><B>Benchmarking</B></FONT></FONT></P>
+
+<P><B>What is the TradeScenario servlet?</B></P>
+<P>The TradeScenario servlet provides a simple mechanism to drive the DayTrader application.
+The Trade database is initially populated with a set of fictitious users with names ranging 
+from <CODE>uid:0</CODE> to <CODE>uid:49</CODE> and a set of stocks ranging from <CODE>s:0</CODE> to <CODE>s:99</CODE>. 
+The TradeScenario servlet emulates a population of Web users by generating a specific DayTrader operation for
+a randomly chosen user on each access to the URL. To run the TradeScenario servlet  use the single 
+<A HREF="../scenario">TradeScenario URL</A> (http://<I>hostname</I>/daytrader/scenario) with a load generation tool.</P>
+
+<P>Although TradeScenario servlet provides a simple mechanism for driving the DayTrader application, 
+there is a drawback to using this method versus using a series of load generation scripts 
+that drive the operations directly. This servlet consumes processing resources on the server
+to manage incoming clients and dispatch these simple client requests to complex Trade actions. This
+action artificially decreases server throughput because the server is emulating tasks that are normally
+ performed by a standard client or a more complex load generation tool.</P>
+
+<P><B>What is the typical procedure for collecting performance measurements with DayTrader?</B>
+<P>When DayTrader is successfully installed on the application server and the supporting
+database is populated, you can us the DayTrader application to collect performance measurements.
+The following list provides the typical process for gathering performance measurements with DayTrader.</P>
+<OL>
+    <LI>Select the DayTrader run-time configuration parameters from the <A HREF="../config">configuration 
+    page</A> (EJB, synchronous, and so on).</LI>
+    <LI>Reset the DayTrader run-time using the <A HREF="../config?action=resetTrade">Reset DayTrader link</A>.</LI>
+    <LI>Warm-up the application server JVM<SUP>TM</SUP> by applying load for a short period of time. The load generation tool  
+    may access the TradeScenario servlet, 
+    web primitives, or use custom scripts to drive the various operations of TradeApp servlet. To warm-up the
+     JVM, each code path within DayTrader must be processed enough times to esnure that the JIT compiler
+     has compiled and optimzed the application and server paths; generally, about 3000 iterations should do the trick.
+     Remember that the same code path is not necessarily run on each request unless primitives are being 
+    run. Therefore, perform an adequate number of requests to stabilize the performance results.</LI>
+    <LI>Stop the load generation tool.</LI>
+    <LI>Reset the Trade run-time again</LI>
+    <LI>Restart the load generation tool and record measurements after the driver completes the requests.</LI>
+    <LI>Repeat steps 5 and 6 to obtain additional measurements.</LI>    
+</OL>
+
+<P><B>Where did DayTrader come from?</B>
+<P>DayTrader was originally an application designed by IBM to test their commercial Application Server.
+The application was designed around common development patterns as well as to use the majority of the 
+J2EE programming model.  The original author was Stan Cox where he developed Trade (the original name) 
+for J2EE 1.3.  Since then Stan has evolved Trade and several other individuals have contributed to the project.
+Christopher Blythe has been instrumental in stabilizing the long running capability of the benchmark and Andrew
+Spyker introduced the Application Clients.  The Application Clients (Streamer and WSAppClient) provide remote
+capability to validate remote J2EE functionality and database consistency as well as provide a remote 
+WebServices client.  Matt Hogstrom has used Trade extensively for performance analysis and brought Trade 
+to the Apache Software Foundation Geronimo Project.  He has removed (hopefully) all WebSphere specific items
+in the application and introduced additional functionality for gathering server compliance information 
+and low-level diagnostic information.</P>
+<P><B>Where is DayTrader now?</B>
+<P>David Hare developed DayTrader 3.0 internally at IBM. Daytrader 3.0 updated the Daytrader benchmark to 
+Java EE6 and added some jsf and jax-rs functionality. The Application Clients were removed. Daytrader 3.0 
+was made public on IBMs WebSphere Performance page. Joe McClure is now adding functionality and improvements 
+for Java EE7.</P>
+<HR>
+
+</BODY>
+</HTML>

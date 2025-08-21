@@ -1,0 +1,74 @@
+<server>
+    <featureManager>
+        <feature>ejb-3.2</feature>
+        <feature>servlet-4.0</feature>
+        <feature>jsf-2.3</feature>
+        <feature>jpa-2.2</feature>
+        <feature>mdb-3.2</feature>
+        <feature>wasJmsServer-1.0</feature>
+        <feature>wasJmsClient-2.0</feature>
+        <feature>cdi-2.0</feature>
+        <feature>websocket-1.1</feature>
+        <feature>concurrent-1.0</feature>
+        <feature>jsonp-1.1</feature>
+        <feature>jsonb-1.0</feature>
+        <feature>beanValidation-2.0</feature>
+        <feature>jaxrs-2.1</feature>
+        <feature>ssl-1.0</feature>
+    </featureManager>
+        <!--<logging traceSpecification="daytrader=fine"/>-->
+
+	<!-- allow reuse of 'busy' ports for fast server recycling on linux (where ports remain blocked for up to 2 mins after server stops) ${tradelite.http.port} set in bootstrap.properties --> 
+	<httpEndpoint host="*" httpPort="9080" httpsPort="9443" id="defaultHttpEndpoint"> 
+		<tcpOptions soReuseAddr="true"/> 
+		<httpOptions maxKeepAliveRequests="-1"/>
+	</httpEndpoint>
+
+	<webApplication id="daytrader8" location="io.openliberty.sample.daytrader8.war" name="daytrader8" context-root="${env.contextRoot}"/>
+
+        <keyStore id="defaultKeyStore" password="yourPassword" />
+
+	<connectionManager agedTimeout="-1" connectionTimeout="0" id="conMgr1" maxIdleTime="-1" maxPoolSize="100" minPoolSize="100" purgePolicy="FailingConnectionOnly" reapTime="-1"/> 
+
+        <jdbcDriver id="DB2JCC" libraryRef="DB2JCCLib"/>
+        <library id="DB2JCCLib" filesetRef="DB2JCCFileset"/>
+        <fileset id="DB2JCCFileset" dir="${shared.resource.dir}/db2jars" includes="db2jcc4.jar"/>
+
+        <authData id="TradeDataSourceAuthData" user="${env.dbUser}" password="${env.dbPass}"/>
+        <authData id="TradeAdminAuthData" user="${env.dbUser}" password="${env.dbPass}"/>
+
+        <dataSource jndiName="jdbc/TradeDataSource" jdbcDriverRef="DB2JCC" id="DefaultDataSource" connectionManagerRef="conMgr1" statementCacheSize="60" isolationLevel="TRANSACTION_READ_COMMITTED" type="javax.sql.ConnectionPoolDataSource">
+          <properties serverName="${env.tradeDbHost}" portNumber="${env.tradeDbPort}" databaseName="${env.tradeDbName}" driverType="4" user="${env.dbUser}" password="${env.dbPass}"/>
+        </dataSource>
+
+	<messagingEngine id="defaultME">
+		<queue id="TradeBrokerQueue"/>
+		<topicSpace id="TradeTopicSpace"/>
+	</messagingEngine>
+
+	<jmsQueueConnectionFactory connectionManagerRef="ConMgr3" jndiName="jms/TradeBrokerQCF">  
+		<properties.wasJms/>
+	</jmsQueueConnectionFactory> 
+	<connectionManager id="ConMgr3" maxPoolSize="20"/>
+
+	<jmsTopicConnectionFactory connectionManagerRef="ConMgr4" jndiName="jms/TradeStreamerTCF">
+		<properties.wasJms/>
+	</jmsTopicConnectionFactory>
+	<connectionManager id="ConMgr4" maxPoolSize="20"/>
+
+	<jmsQueue id="TradeBrokerQueue" jndiName="jms/TradeBrokerQueue">
+		<properties.wasJms deliveryMode="NonPersistent" queueName="TradeBrokerQueue"/>
+	</jmsQueue>
+
+	<jmsTopic id="TradeStreamerTopic" jndiName="jms/TradeStreamerTopic">
+		<properties.wasJms deliveryMode="NonPersistent" topicSpace="TradeTopicSpace"/>
+	</jmsTopic>
+
+	<jmsActivationSpec id="io.openliberty.sample.daytrader8/DTBroker3MDB">
+		<properties.wasJms destinationRef="TradeBrokerQueue"/>
+	</jmsActivationSpec>
+
+	<jmsActivationSpec id="io.openliberty.sample.daytrader8/DTStreamer3MDB">
+		<properties.wasJms destinationRef="TradeStreamerTopic" destinationType="javax.jms.Topic"/>
+	</jmsActivationSpec>
+</server>

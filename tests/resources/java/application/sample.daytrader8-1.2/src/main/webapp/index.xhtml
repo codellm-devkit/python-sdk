@@ -1,0 +1,93 @@
+<!-- 
+ * (C) Copyright IBM Corporation 2015.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html  xmlns="http://www.w3.org/1999/xhtml" 
+       xmlns:h="http://xmlns.jcp.org/jsf/html" 
+       xmlns:f="http://xmlns.jcp.org/jsf/core"
+       xmlns:ui="http://xmlns.jcp.org/jsf/facelets" 
+       xmlns:fn="http://xmlns.jcp.org/jsp/jstl/functions">
+<h:head>
+	<title>DayTrader</title>
+	<link rel="stylesheet" href="style-jsf.css" type="text/css" />
+	<link rel="shortcut icon" href="./favicon.ico" />
+</h:head>
+<h:body>
+	<div id="page-wrap">
+		<div id="header">
+			<img src="images/DayTraderHead_blue.gif" style="display: block; margin-left: auto; margin-right: auto" />
+
+			<div id="nav">
+				<ul id="list-nav">
+					<li>
+						<a href="index.faces">Home</a>
+					</li>
+					<li>
+						<a href="welcome.faces">Login</a>
+					</li>
+					<li>
+						<a href="configure.faces">Configuration</a>
+					</li>
+					<li>
+						<a href="web_prmtv.faces">Primitives</a>
+					</li>
+					<li>
+						<a href="docs/tradeFAQ.faces">FAQ</a>
+					</li>
+				</ul>
+			</div>
+		</div>
+
+		<div id="content">
+			<div id="contentContainer">
+				<h2>Overview</h2>
+				<br />
+				<blockquote>The Daytrader performance benchmark sample provides a suite of workloads for characterizing performance of Java EE
+					Application Servers. The workloads consist of an end to end web application and a full set of primitives. The applications are a collection of
+					Java classes, Java Servlets, JavaServer Pages, and Enterprise Java Beans built to open Java EE APIs. Together these provide versatile and
+					portable test cases designed to measure aspects of scalability and performance.</blockquote>
+				<br />
+				<p align="center">
+					<img src="images/daytrader_simple_arch.gif" width="677" height="459" border="0" alt="" />
+					<br />
+					<b>Daytrader J2EE Components </b>
+					<br />
+					<b>Model-View-Controller architecture</b>
+				</p>
+				<blockquote>
+					<br />
+					<h3>Daytrader</h3>
+					DayTrader is an end-to-end benchmark and performance sample application. It provides a real world Java EE workload.
+					<br />
+					<br />
+					DayTrader's new design spans Java EE 7, including the new WebSockets specification. Other Java EE features include JSPs, Servlets, EJBs, JPA,
+					JDBC, JSF, JMS, MDBs, and transactions (synchronous and asynchronous/2-phase commit).
+					<br />
+					<br />
+
+					<h3>Primitives</h3>
+					The
+					<a href="web_prmtv.faces">primitives</a>
+					provide a set of workloads to individually test various components of a Java EE application Server. The primitives leverage the Daytrader
+					application infrastructure to test specific Java EE components such as the servlet engine, JSP support, EJB Entitiy, Session and Message Driven
+					beans, HTTp Session support and more.
+				</blockquote>
+			</div>
+		</div>
+	</div>
+	<div id="footer"></div>
+</h:body>
+</html>

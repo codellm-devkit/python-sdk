@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml"
+	xmlns:ui="http://java.sun.com/jsf/facelets"
+	xmlns:f="http://java.sun.com/jsf/core"
+	xmlns:h="http://java.sun.com/jsf/html"
+	xmlns:c="http://java.sun.com/jsp/jstl/core">
+
+
+<!--
+
+COPYRIGHT LICENSE: This information contains sample code provided in source code form. You may copy, 
+modify, and distribute these sample programs in any form without payment to IBM for the purposes of 
+developing, using, marketing or distributing application programs conforming to the application 
+programming interface for the operating platform for which the sample code is written. 
+Notwithstanding anything to the contrary, IBM PROVIDES THE SAMPLE SOURCE CODE ON AN "AS IS" BASIS 
+AND IBM DISCLAIMS ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, ANY IMPLIED 
+WARRANTIES OR CONDITIONS OF MERCHANTABILITY, SATISFACTORY QUALITY, FITNESS FOR A PARTICULAR PURPOSE, 
+TITLE, AND ANY WARRANTY OR CONDITION OF NON-INFRINGEMENT. IBM SHALL NOT BE LIABLE FOR ANY DIRECT, 
+INDIRECT, INCIDENTAL, SPECIAL OR CONSEQUENTIAL DAMAGES ARISING OUT OF THE USE OR OPERATION OF THE 
+SAMPLE SOURCE CODE. IBM HAS NO OBLIGATION TO PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS 
+OR MODIFICATIONS TO THE SAMPLE SOURCE CODE.  
+
+(C) COPYRIGHT International Business Machines Corp., 2001,2011
+All Rights Reserved * Licensed Materials - Property of IBM
+
+-->
+<ui:composition template="WEB-INF/PlantTemplate.xhtml">
+	<ui:param name="title" value="Plants By WebSphere Order Done" />
+	<ui:define name="content">
+		<h:form id="orderdone">
+			<table border="0" cellpadding="0" cellspacing="5" width="100%">
+				<tr>
+					<td>
+						<p class="trail">
+							<h:commandLink styleClass="trail footer" action="promo"
+								value="Home" />
+						</p>
+					</td>
+				</tr>
+				<tr>
+					<td style="width: 100%">
+						<table border="0" cellpadding="5" cellspacing="5" width="600">
+							<tr>
+								<td class="H1" style="width: 100%" valign="middle">Order
+									Completion</td>
+								<td style="text-align: right; white-space: nowrap"
+									valign="middle"></td>
+								<td valign="middle"></td>
+							</tr>
+							<tr>
+								<td>
+									<p>Thank you for making your Plants By WebSphere purchase!</p>
+									<br />
+									<p>
+										Order number
+										<h:outputText value="#{account.lastOrderNum}" />
+									</p>
+									<br />
+									<p>Expected arrival in 5-7 business days.</p>
+									<br />
+								</td>
+							</tr>
+						</table>
+					</td>
+				</tr>
+			</table>
+			<br />
+			<table style="background-color: #669966" border="0" cellpadding="0"
+				cellspacing="0" width="100%">
+				<tr>
+					<td style="width: 1px"><h:graphicImage library="images"
+							name="1x1_trans.gif" style="width: 1px; height: 1px;" alt="" />
+					</td>
+				</tr>
+			</table>
+		</h:form>
+	</ui:define>
+</ui:composition>
+</html>

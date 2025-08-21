@@ -1,0 +1,145 @@
+<!-- 
+ * (C) Copyright IBM Corporation 2015.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html  xmlns="http://www.w3.org/1999/xhtml" 
+       xmlns:h="http://xmlns.jcp.org/jsf/html" 
+       xmlns:f="http://xmlns.jcp.org/jsf/core"
+       xmlns:ui="http://xmlns.jcp.org/jsf/facelets" 
+       xmlns:fn="http://xmlns.jcp.org/jsp/jstl/functions">
+<head>
+<meta http-equiv="Content-Style-Type" content="text/css" />
+<title>DayTrader PingJSF</title>
+<link rel="stylesheet" href="style.css" type="text/css" />
+</head>
+
+<h:body>
+    <table width="650">
+         <tbody>
+                <tr>
+                    <td>
+                        <table width="100%">
+                            <tbody>
+                                <tr>
+                                    <td bgcolor="#cccccc"><b>Quotes</b></td>
+                                </tr>
+                                <tr>
+                                    <td align="center"><h:dataTable id="quotes"
+                                            value="#{quotedata.quotes}"
+                                            var="item"
+                                            binding="#{quotedata.dataTable}"
+                                            styleClass="table"
+                                            headerClass="tableHeader"
+                                            rowClasses="tableOddRow,tableEvenRow"
+                                            columnClasses="tableColumn,tableColumn,tableColumn,tableColumn,tableColumn,tableColumn,tableColumn,tableColumn">
+                                            <h:column>
+                                                <f:facet name="header">
+                                                    <h:outputLink
+                                                        value="docs/glossary.html">
+                                                        <h:outputText
+                                                            value="symbol" />
+                                                    </h:outputLink>
+                                                </f:facet>
+                                                <h:outputText
+                                                    value="#{item.symbol}"></h:outputText>
+                                            </h:column>
+
+                                             <h:column>
+                                                <f:facet name="header">
+                                                    <h:outputLink
+                                                        value="docs/glossary.html">
+                                                        <h:outputText
+                                                            value="company" />
+                                                    </h:outputLink>
+                                                </f:facet>
+                                                <h:outputText
+                                                    value="#{item.companyName}"></h:outputText>
+                                            </h:column>
+
+                                            <h:column>
+                                                <f:facet name="header">
+                                                    <h:outputLink
+                                                        value="docs/glossary.html">
+                                                        <h:outputText
+                                                            value="volume" />
+                                                    </h:outputLink>
+                                                </f:facet>
+                                                <h:outputText
+                                                    value="#{item.volume}"></h:outputText>
+                                            </h:column>
+
+                                            <h:column>
+                                                <f:facet name="header">
+                                                    <h:outputLink
+                                                        value="docs/glossary.html">
+                                                        <h:outputText
+                                                            value="range" />
+                                                    </h:outputLink>
+                                                </f:facet>
+                                                <h:outputText
+                                                    value="#{item.range}"></h:outputText>
+                                            </h:column>
+
+                                            <h:column>
+                                                <f:facet name="header">
+                                                    <h:outputLink
+                                                        value="docs/glossary.html">
+                                                        <h:outputText
+                                                            value="open price" />
+                                                    </h:outputLink>
+                                                </f:facet>
+                                                <h:outputText
+                                                    value="#{item.open}"></h:outputText>
+                                            </h:column>
+
+                                            <h:column>
+                                                <f:facet name="header">
+                                                    <h:outputLink
+                                                        value="docs/glossary.html">
+                                                        <h:outputText
+                                                            value="current price" />
+                                                    </h:outputLink>
+                                                </f:facet>
+                                                <h:outputText
+                                                    value="#{item.price}"></h:outputText>
+                                            </h:column>
+
+                                            <h:column>
+                                                <f:facet name="header">
+                                                    <h:outputLink
+                                                        value="docs/glossary.html">
+                                                        <h:outputText
+                                                            value="gain/(loss)" />
+                                                    </h:outputLink>
+                                                </f:facet>
+                                                <h:outputText
+                                                    escape="false"
+                                                    value="#{item.gainHTML}"></h:outputText>
+                                                <br />
+                                                <h:outputText
+                                                    escape="false"
+                                                    value="#{item.gainPercentHTML}" />
+                                            </h:column>
+                                        </h:dataTable></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+</h:body>
+</html>

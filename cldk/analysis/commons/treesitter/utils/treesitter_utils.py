@@ -14,8 +14,9 @@
 # limitations under the License.
 ################################################################################
 
-"""
-Three Sitter Utils module
+"""Tree-sitter utilities.
+
+Helpers for framing queries and safe AST traversal.
 """
 
 from tree_sitter import Query, Node
@@ -25,38 +26,33 @@ from cldk.models.treesitter import Captures
 
 class TreeSitterUtils:
     def frame_query_and_capture_output(self, parser, language, query: str, code_to_process: str) -> Captures:
-        """Frame a query for the tree-sitter parser.
+        """Frame a query for the tree-sitter parser and return captures.
 
-        Parameters
-        ----------
-        query : str
-            The query to frame.
-        code_to_process : str
-            The code to process.
+        Args:
+            parser: A configured tree-sitter Parser instance.
+            language: The tree-sitter Language for the parser.
+            query (str): The S-expression query string.
+            code_to_process (str): Source code to parse.
+
+        Returns:
+            Captures: Query captures from the root node.
         """
         framed_query: Query = language.query(query)
         tree = parser.parse(bytes(code_to_process, "utf-8"))
         return Captures(framed_query.captures(tree.root_node))
 
     def safe_ascend(self, node: Node, ascend_count: int) -> Node:
-        """Safely ascend the tree. If the node does not exist or if it has no parent, raise an error.
+        """Ascend parent pointers safely in the AST.
 
-        Parameters
-        ----------
-        node : Node
-            The node to ascend from.
-        ascend_count : int
-            The number of times to ascend the tree.
+        Args:
+            node (Node): Starting node.
+            ascend_count (int): Number of levels to ascend.
 
-        Returns
-        -------
-        Node
-            The node at the specified level of the tree.
+        Returns:
+            Node: The ancestor node after ascending.
 
-        Raises
-        ------
-        ValueError
-            If the node has no parent.
+        Raises:
+            ValueError: If the node is None or has no parent when ascending.
         """
         if node is None:
             raise ValueError("Node does not exist.")

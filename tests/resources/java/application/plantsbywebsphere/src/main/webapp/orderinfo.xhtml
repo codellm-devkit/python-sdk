@@ -1,0 +1,516 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml"
+	xmlns:ui="http://java.sun.com/jsf/facelets"
+	xmlns:f="http://java.sun.com/jsf/core"
+	xmlns:h="http://java.sun.com/jsf/html"
+	xmlns:c="http://java.sun.com/jsp/jstl/core">
+
+
+<!--
+
+COPYRIGHT LICENSE: This information contains sample code provided in source code form. You may copy, 
+modify, and distribute these sample programs in any form without payment to IBM for the purposes of 
+developing, using, marketing or distributing application programs conforming to the application 
+programming interface for the operating platform for which the sample code is written. 
+Notwithstanding anything to the contrary, IBM PROVIDES THE SAMPLE SOURCE CODE ON AN "AS IS" BASIS 
+AND IBM DISCLAIMS ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, ANY IMPLIED 
+WARRANTIES OR CONDITIONS OF MERCHANTABILITY, SATISFACTORY QUALITY, FITNESS FOR A PARTICULAR PURPOSE, 
+TITLE, AND ANY WARRANTY OR CONDITION OF NON-INFRINGEMENT. IBM SHALL NOT BE LIABLE FOR ANY DIRECT, 
+INDIRECT, INCIDENTAL, SPECIAL OR CONSEQUENTIAL DAMAGES ARISING OUT OF THE USE OR OPERATION OF THE 
+SAMPLE SOURCE CODE. IBM HAS NO OBLIGATION TO PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS 
+OR MODIFICATIONS TO THE SAMPLE SOURCE CODE.  
+
+(C) COPYRIGHT International Business Machines Corp., 2001,2011
+All Rights Reserved * Licensed Materials - Property of IBM
+
+-->
+<ui:composition template="WEB-INF/PlantTemplate.xhtml">
+	<ui:param name="title" value="Plants By WebSphere Order Info" />
+	<ui:define name="content">
+		<h:outputScript name="PlantsScripts.js" library="javascript" />
+		<h:form id="orderinfo">
+			<table border="0" cellpadding="0" cellspacing="5" width="100%">
+				<tr>
+					<td>
+						<p class="trail">
+							<h:commandLink styleClass="trail footer" action="promo"
+								value="Home" />
+							&gt;
+							<h:commandLink styleClass="trail footer"
+								action="#{shopping.performCart}" value="Shopping Cart" />
+						</p>
+					</td>
+				</tr>
+				<tr>
+					<td style="width: 100%">
+						<table cellpadding="5" cellspacing="5" border="0" width="600">
+							<tr>
+								<td class="H1" style="width: 100%" valign="middle">Checkout</td>
+								<td style="text-align: right; white-space: nowrap"
+									valign="middle"></td>
+								<td valign="middle"></td>
+							</tr>
+							<tr>
+								<td colspan="3"><p>Enter the billing and shipping
+										information for your order below. Select 'Continue' to review
+										and place your final order.</p>
+									<br /></td>
+							</tr>
+							<tr>
+								<td colspan="3">
+									<table border="0" cellpadding="0" cellspacing="0">
+										<caption style="text-align: left">Billing Address</caption>
+										<colgroup class="label" />
+										<colgroup />
+										<colgroup />
+										<tbody>
+											<tr>
+												<td style="width: 120px; white-space: nowrap"><p>
+														<label for="bname">Full Name&nbsp;</label>
+													</p></td>
+												<td><h:graphicImage name="required.gif"
+														library="images"
+														style="border: 0px; width: 10px; height: 15px;"
+														alt="Required indicator" /></td>
+												<td style="width: 100%">
+													<p>
+														<h:inputText id="bname" size="20" maxlength="80"
+															required="true" value="#{account.orderInfo.billName}" />
+														&nbsp;&nbsp;
+														<h:message id="bnameError" for="bname"
+															style="color: #FF0000; font-weight: bold" />
+													</p>
+												</td>
+											</tr>
+											<tr>
+												<td style="width: 120px; white-space: nowrap"><p>
+														<label for="baddr1">Address Line 1&nbsp;</label>
+													</p></td>
+												<td><h:graphicImage name="required.gif"
+														library="images"
+														style="border: 0px; width: 10px; height: 15px;"
+														alt="Required indicator" /></td>
+												<td style="width: 100%">
+													<p>
+														<h:inputText id="baddr1" size="20" maxlength="80"
+															required="true" value="#{account.orderInfo.billAddr1}" />
+														&nbsp;&nbsp;
+														<h:message id="baddr1Error" for="baddr1"
+															style="color: #FF0000; font-weight: bold" />
+													</p>
+												</td>
+											</tr>
+											<tr>
+												<td style="white-space: nowrap"><p>
+														<label for="baddr2">Address Line 2&nbsp;</label>
+													</p></td>
+												<td></td>
+												<td>
+													<p>
+														<h:inputText id="baddr2" size="20" maxlength="80"
+															value="#{account.orderInfo.billAddr2}" />
+													</p>
+												</td>
+											</tr>
+											<tr>
+												<td style="white-space: nowrap"><p>
+														<label for="bcity">City&nbsp;</label>
+													</p></td>
+												<td><h:graphicImage name="required.gif"
+														library="images"
+														style="border: 0px; width: 10px; height: 15px;"
+														alt="Required indicator" /></td>
+												<td>
+													<p>
+														<h:inputText id="bcity" size="20" maxlength="80"
+															required="true" value="#{account.orderInfo.billCity}" />
+														&nbsp;&nbsp;
+														<h:message id="bcityError" for="bcity"
+															style="color: #FF0000; font-weight: bold" />
+													</p>
+												</td>
+											</tr>
+											<tr>
+												<td style="white-space: nowrap"><p>
+														<label for="bstate">State&nbsp;</label>
+													</p></td>
+												<td><h:graphicImage name="required.gif"
+														library="images"
+														style="border: 0px; width: 10px; height: 15px;"
+														alt="Required indicator" /></td>
+												<td>
+													<p>
+														<h:inputText id="bstate" size="20" maxlength="30"
+															required="true" value="#{account.orderInfo.billState}" />
+														&nbsp;&nbsp;
+														<h:message id="bstateError" for="bstate"
+															style="color: #FF0000; font-weight: bold" />
+													</p>
+												</td>
+											</tr>
+											<tr>
+												<td style="white-space: nowrap"><p>
+														<label for="bzip">Zip Code&nbsp;</label>
+													</p></td>
+												<td><h:graphicImage name="required.gif"
+														library="images"
+														style="border: 0px; width: 10px; height: 15px;"
+														alt="Required indicator" /></td>
+												<td>
+													<p>
+														<h:inputText id="bzip" size="10" maxlength="10"
+															required="true" value="#{account.orderInfo.billZip}" />
+														&nbsp;&nbsp;
+														<h:message id="bzipError" for="bzip"
+															style="color: #FF0000; font-weight: bold" />
+													</p>
+												</td>
+											</tr>
+											<tr>
+												<td style="white-space: nowrap"><p>
+														<label for="bphone">Phone (daytime)&nbsp;</label>
+													</p></td>
+												<td><h:graphicImage name="required.gif"
+														library="images"
+														style="border: 0px; width: 10px; height: 15px;"
+														alt="Required indicator" /></td>
+												<td>
+													<p>
+														<h:inputText id="bphone" size="14" maxlength="14"
+															required="true" value="#{account.orderInfo.billPhone}" />
+														&nbsp;&nbsp;
+														<h:message id="bphoneError" for="bphone"
+															style="color: #FF0000; font-weight: bold" />
+													</p>
+												</td>
+											</tr>
+											<tr>
+												<td colspan="3">&nbsp;</td>
+											</tr>
+										</tbody>
+									</table>
+								</td>
+								<!-- end of Billing Address table -->
+							</tr>
+							<tr>
+								<td colspan="3">
+									<table border="0" cellpadding="0" cellspacing="5">
+										<caption style="text-align: left">Shipping
+											Information</caption>
+										<colgroup class="label" />
+										<colgroup />
+										<colgroup />
+										<tbody>
+											<tr>
+												<td colspan="3">
+													<table border="0" cellpadding="5" cellspacing="5">
+														<tr>
+															<td valign="middle">
+																<p>
+																	<h:selectBooleanCheckbox id="shipisbill"
+																		onclick="javascript:useBill()" />
+																	&nbsp;
+																</p>
+															</td>
+															<td valign="middle"><p>Check here if the
+																	shipping address is the same as the billing address.</p></td>
+														</tr>
+													</table>
+												</td>
+											</tr>
+											<tr>
+												<td style="width: 120px; white-space: nowrap"><p>
+														<label for="sname">Full Name&nbsp;</label>
+													</p></td>
+												<td><h:graphicImage name="required.gif"
+														library="images"
+														style="border: 0px; width: 10px; height: 15px;"
+														alt="Required indicator" /></td>
+												<td style="width: 100%">
+													<p>
+														<h:inputText id="sname" size="20" maxlength="80"
+															required="true" value="#{account.orderInfo.shipName}" />
+														&nbsp;&nbsp;
+														<h:message id="snameError" for="sname"
+															style="color: #FF0000; font-weight: bold" />
+													</p>
+												</td>
+											</tr>
+											<tr>
+												<td style="white-space: nowrap"><p>
+														<label for="saddr1">Address Line 1&nbsp;</label>
+													</p></td>
+												<td><h:graphicImage name="required.gif"
+														library="images"
+														style="border: 0px; width: 10px; height: 15px;"
+														alt="Required indicator" /></td>
+												<td style="width: 100%">
+													<p>
+														<h:inputText id="saddr1" size="20" maxlength="80"
+															required="true" value="#{account.orderInfo.shipAddr1}" />
+														&nbsp;&nbsp;
+														<h:message id="saddr1Error" for="saddr1"
+															style="color: #FF0000; font-weight: bold" />
+													</p>
+												</td>
+											</tr>
+											<tr>
+												<td style="width: 120px; white-space: nowrap"><p>
+														<label for="saddr2">Address Line 2&nbsp;</label>
+													</p></td>
+												<td></td>
+												<td>
+													<p>
+														<h:inputText id="saddr2" size="20" maxlength="80"
+															value="#{account.orderInfo.shipAddr2}" />
+													</p>
+												</td>
+											</tr>
+											<tr>
+												<td style="white-space: nowrap"><p>
+														<label for="scity">City&nbsp;</label>
+													</p></td>
+												<td><h:graphicImage name="required.gif"
+														library="images"
+														style="border: 0px; width: 10px; height: 15px;"
+														alt="Required indicator" /></td>
+												<td>
+													<p>
+														<h:inputText id="scity" size="20" maxlength="80"
+															required="true" value="#{account.orderInfo.shipCity}" />
+														&nbsp;&nbsp;
+														<h:message id="scityError" for="scity"
+															style="color: #FF0000; font-weight: bold" />
+													</p>
+												</td>
+											</tr>
+											<tr>
+												<td style="white-space: nowrap"><p>
+														<label for="sstate">State&nbsp;</label>
+													</p></td>
+												<td><h:graphicImage name="required.gif"
+														library="images"
+														style="border: 0px; width: 10px; height: 15px;"
+														alt="Required indicator" /></td>
+												<td>
+													<p>
+														<h:inputText id="sstate" size="20" maxlength="30"
+															required="true" value="#{account.orderInfo.shipState}" />
+														&nbsp;&nbsp;
+														<h:message id="sstateError" for="sstate"
+															style="color: #FF0000; font-weight: bold" />
+													</p>
+												</td>
+											</tr>
+											<tr>
+												<td style="white-space: nowrap"><p>
+														<label for="szip">Zip Code&nbsp;</label>
+													</p></td>
+												<td><h:graphicImage name="required.gif"
+														library="images"
+														style="border: 0px; width: 10px; height: 15px;"
+														alt="Required indicator" /></td>
+												<td>
+													<p>
+														<h:inputText id="szip" size="10" maxlength="10"
+															required="true" value="#{account.orderInfo.shipZip}" />
+														&nbsp;&nbsp;
+														<h:message id="szipError" for="szip"
+															style="color: #FF0000; font-weight: bold" />
+													</p>
+												</td>
+											</tr>
+											<tr>
+												<td style="white-space: nowrap"><p>
+														<label for="sphone">Phone (daytime)&nbsp;</label>
+													</p></td>
+												<td><h:graphicImage name="required.gif"
+														library="images"
+														style="border: 0px; width: 10px; height: 15px;"
+														alt="Required indicator" /></td>
+												<td>
+													<p>
+														<h:inputText id="sphone" size="14" maxlength="14"
+															required="true" value="#{account.orderInfo.shipPhone}" />
+														&nbsp;&nbsp;
+														<h:message id="sphoneError" for="sphone"
+															style="color: #FF0000; font-weight: bold" />
+													</p>
+												</td>
+											</tr>
+										</tbody>
+									</table> <!-- end of Shipping Address table -->
+								</td>
+							</tr>
+							<tr>
+								<td colspan="3">
+									<table border="0" cellspacing="5" cellpadding="0">
+										<caption style="text-align: left">Shipping Method</caption>
+										<tr>
+											<td colspan="3"><p>Select a shipping method below.
+													Your order total will be updated on the next page.</p>
+												<br /></td>
+										</tr>
+										<tr>
+											<td style="width: 120px; white-space: nowrap"><p>
+													<label for="shippingMethod">Shipping Method&nbsp;</label>
+												</p></td>
+											<td><h:graphicImage name="required.gif" library="images"
+													style="border: 0px; width: 10px; height: 15px;"
+													alt="Required indicator" /></td>
+											<td style="width: 100%"><h:selectOneMenu
+													value="#{account.orderInfo.shippingMethodName}">
+													<f:selectItem itemValue="Standard Ground" itemLabel="Standard Ground (3 to 6 business days)" />
+													<f:selectItem itemValue="Second Day Air" itemLabel="Second Day Air (2 to 3 business days)" />
+													<f:selectItem itemValue="Next Day Air" itemLabel="Next Day Air (1 to 2 business days)" />
+												</h:selectOneMenu></td>
+										</tr>
+										<tr>
+											<td colspan="3">&nbsp;</td>
+										</tr>
+										<tr>
+											<td style="width: 120px; white-space: nowrap">
+												<p>
+													<label for="ccardname">Credit Card&nbsp;</label>
+												</p>
+											</td>
+											<td><h:graphicImage name="required.gif" library="images"
+													style="border: 0px; width: 10px; height: 15px;"
+													alt="Required indicator" /></td>
+											<td>
+												<p>
+													<h:selectOneMenu id="ccardname"
+														value="#{account.orderInfo.cardName}">
+														<f:selectItem itemValue="American Express"
+															itemLabel="American Express" />
+														<f:selectItem itemValue="Discovery" itemLabel="Discovery" />
+														<f:selectItem itemValue="MasterCard"
+															itemLabel="MasterCard" />
+														<f:selectItem itemValue="VISA" itemLabel="VISA" />
+													</h:selectOneMenu>
+												</p>
+											</td>
+										</tr>
+										<tr>
+											<td style="white-space: nowrap">
+												<p>
+													<label for="ccardnum">Card Number&nbsp;</label>
+												</p>
+											</td>
+											<td><h:graphicImage name="required.gif" library="images"
+													style="border: 0px; width: 10px; height: 15px;"
+													alt="Required indicator" /></td>
+											<td><h:inputText id="ccardnum" size="19" maxlength="30"
+													required="true" value="#{account.orderInfo.cardNum}" />
+												&nbsp;&nbsp; <h:message id="ccardnumError" for="ccardnum"
+													style="color: #FF0000; font-weight: bold" /></td>
+										</tr>
+										<tr>
+											<td style="white-space: nowrap">
+												<p>
+													<label for="ccardexpmonth">Expiration Month&nbsp;</label>
+												</p>
+											</td>
+											<td><h:graphicImage name="required.gif" library="images"
+													style="border: 0px; width: 10px; height: 15px;"
+													alt="Required indicator" /></td>
+											<td>
+												<p>
+													<h:selectOneMenu id="ccardexpmonth"
+														value="#{account.orderInfo.cardExpMonth}">
+														<f:selectItem itemValue="01" itemLabel="01" />
+														<f:selectItem itemValue="02" itemLabel="02" />
+														<f:selectItem itemValue="03" itemLabel="03" />
+														<f:selectItem itemValue="04" itemLabel="04" />
+														<f:selectItem itemValue="05" itemLabel="05" />
+														<f:selectItem itemValue="06" itemLabel="06" />
+														<f:selectItem itemValue="07" itemLabel="07" />
+														<f:selectItem itemValue="08" itemLabel="08" />
+														<f:selectItem itemValue="09" itemLabel="09" />
+														<f:selectItem itemValue="10" itemLabel="10" />
+														<f:selectItem itemValue="11" itemLabel="11" />
+														<f:selectItem itemValue="12" itemLabel="12" />
+													</h:selectOneMenu>
+												</p>
+											</td>
+										</tr>
+										<tr>
+											<td style="white-space: nowrap">
+												<p>
+													<label for="ccardexpyear">Expiration Year&nbsp;</label>
+												</p>
+											</td>
+											<td><h:graphicImage name="required.gif" library="images"
+													style="border: 0px; width: 10px; height: 15px;"
+													alt="Required indicator" /></td>
+											<td>
+												<p>
+													<h:selectOneMenu id="ccardexpyear"
+														value="#{account.orderInfo.cardExpYear}">
+														<c:forEach items="#{account.orderInfo.cardExpYears}"
+															var="year">
+															<f:selectItem itemLabel="#{year}" itemValue="#{year}" />
+														</c:forEach>
+													</h:selectOneMenu>
+												</p>
+											</td>
+										</tr>
+										<tr>
+											<td style="white-space: nowrap">
+												<p>
+													<label for="cn">Cardholder Name&nbsp;</label>
+												</p>
+											</td>
+											<td><h:graphicImage name="required.gif" library="images"
+													style="border: 0px; width: 10px; height: 15px;"
+													alt="Required indicator" /></td>
+											<td>
+												<p>
+													<h:inputText id="ccholdername" size="20"
+														value="#{account.orderInfo.cardholderName}"
+														required="true" />
+													&nbsp;&nbsp;
+													<h:message id="ccholdernameError" for="ccholdername"
+														style="color: #FF0000; font-weight: bold" />
+												</p>
+											</td>
+										</tr>
+										<tr>
+											<td>
+												<p>&nbsp;</p>
+											</td>
+										</tr>
+										<tr>
+											<td>
+												<p>&nbsp;</p>
+											</td>
+											<td></td>
+											<td><h:commandLink
+													action="#{account.performCheckoutFinal}">
+													<h:graphicImage library="images" name="button_continue.gif"
+														alt="Continue" style="border: 0px;" />
+												</h:commandLink></td>
+										</tr>
+									</table>
+								</td>
+							</tr>
+						</table>
+					</td>
+					<!-- end of Checkout table -->
+				</tr>
+			</table>
+			<br />
+			<!-- end of Home table -->
+			<table style="background-color: #669966; width: 100%" border="0"
+				cellpadding="0" cellspacing="0">
+				<tr>
+					<td style="width: 1px"><h:graphicImage library="images"
+							name="1x1_trans.gif"
+							style="border: 0px; width: 1px; height: 1px;" alt="" /></td>
+				</tr>
+			</table>
+		</h:form>
+	</ui:define>
+</ui:composition>
+</html>

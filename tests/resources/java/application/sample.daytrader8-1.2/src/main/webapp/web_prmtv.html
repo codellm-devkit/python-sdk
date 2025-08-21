@@ -1,0 +1,449 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN">
+<!-- 
+ * (C) Copyright IBM Corporation 2015.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+-->
+
+<HTML>
+<HEAD>
+<META http-equiv="Content-Style-Type" content="text/css">
+<TITLE>Web Primitives</TITLE>
+<link rel="shortcut icon" href="./favicon.ico" />
+</HEAD>
+
+<BODY bgcolor="#FFFFFF" link="#000099" vlink="#000099">
+    <HR>
+    <TABLE width="740">
+        <TBODY>
+            <TR>
+                <TD>
+                    <H3>Web and EJB Primitive Tests</H3>
+                </TD>
+                <TD align="right"></TD>
+            </TR>
+        </TBODY>
+    </TABLE>
+    <HR>
+
+
+    <TABLE border="1" width="740">
+        <TBODY>
+            <TR>
+                <TD colspan="1" bgcolor="#c93333" align="center"><B><FONT
+                        color="#FFFFFF">Primitive Test Suite</FONT></B></td>
+            </TR>
+            <TR>
+                <TD>
+                    <P>The DayTrader performance benchmark sample
+                        provides a suite of web primitives. These
+                        primitives singularly test key operations in the
+                        enterprise Java programming model. Links to each
+                        of the web primitive tests are provided below
+                        along with a description of each operation.</P>
+                    <P>
+                        Note that some primitives below can have their
+                        main operations repeated. These operations are
+                        marked with a red <FONT COLOR="#FF0000">*</FONT>.
+                        In order to adjust the repetition, change the
+                        primitive iteration value in the Trade
+                        configuration page.<FONT></FONT>
+                    </P>
+                </TD>
+            </TR>
+        </TBODY>
+    </TABLE>
+
+    <TABLE border="1" width="740">
+        <TBODY>
+            <TR>
+                <TD colspan="2" bgcolor="#c93333" align="center"><B><FONT
+                        color="#FFFFFF">Web Container ping suite</FONT></B></TD>
+            </TR>
+            <TR>
+                <TD align="center"><FONT size="-1"><A
+                        href="PingHtml.html"><FONT
+                            face="Times New Roman">PingHtml</FONT></A></FONT></TD>
+                <TD><FONT size="-1">PingHtml is the most
+                        basic operation providing access to a simple
+                        &quot;Hello World&quot; page of static HTML.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><FONT size="-1"><A
+                        href="servlet/ExplicitGC" target="_self"><FONT
+                            face="Times New Roman">Explicit GC</FONT></A></FONT></TD>
+                <TD><FONT size="-1">Invoke Garbage
+                        Collection on AppServer. Reports heap statistics
+                        after the GC has completed.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><FONT size="-1"><A
+                        href="servlet/PingServlet" target="_self"><FONT
+                            face="Times New Roman">PingServlet</FONT></A></FONT></TD>
+                <TD><FONT size="-1">PingServlet tests
+                        fundamental dynamic HTML creation through server
+                        side servlet processing.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><FONT size="-1"><A
+                        href="servlet/PingServletCDI" target="_self"><FONT
+                            face="Times New Roman">PingServletCDI</FONT></A></FONT></TD>
+                <TD><FONT size="-1">PingServletCDI tests various simple CDI invocations.</FONT></TD>
+            </TR>
+			<TR>
+                <TD align="center"><FONT size="-1"><A
+                        href="servlet/PingServletCDIBeanManagerViaJNDI" target="_self"><FONT
+                            face="Times New Roman">PingServletCDIBeanManagerViaJNDI</FONT></A></FONT></TD>
+                <TD><FONT size="-1">PingServletCDIBeanManagerViaJNDI tests getting the BeanManager with JNDI.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><FONT size="-1"><A
+                        href="servlet/PingServletCDIBeanManagerViaCDICurrent" target="_self"><FONT
+                            face="Times New Roman">PingServletCDIBeanManagerViaCDICurrent</FONT></A></FONT></TD>
+                <TD><FONT size="-1">PingServletCDIBeanManagerViaCDICurrent tests getting the BeanManager with the CDI spi.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><FONT size="-1"><A
+                        href="servlet/PingServletWriter" target="_self"><FONT
+                            face="Times New Roman">PingServletWriter</FONT></A>
+                </FONT></TD>
+                <TD><FONT size="-1">PingServletWriter
+                        extends PingServlet by using a PrintWriter for
+                        formatted output vs. the output stream used by
+                        PingServlet.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><FONT size="-1"><A
+                        href="servlet/PingServlet2Include"
+                        target="_self"><FONT face="Times New Roman">PingServlet2Include</FONT></A></FONT><FONT
+                    COLOR="#FF0000">*</FONT></TD>
+                <TD><FONT size="-1">PingServlet2Include
+                        tests response inclusion. Servlet 1 includes the
+                        response of Servlet 2.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><FONT size="-1"><A
+                        href="servlet/PingServlet2Servlet"
+                        target="_self"><FONT face="Times New Roman">PingServlet2Servlet</FONT></A></FONT></TD>
+                <TD><FONT size="-1">PingServlet2Servlet
+                        tests request dispatching. Servlet 1, the
+                        controller, creates a new JavaBean object
+                        forwards the request with the JavaBean added to
+                        Servlet 2. Servlet 2 obtains access to the
+                        JavaBean through the Servlet request object and
+                        provides dynamic HTML output based on the
+                        JavaBean data.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><FONT size="-1"><A
+                        href="PingJsp.jsp">PingJSP</A></FONT></TD>
+                <TD><FONT size="-1">PingJSP tests a direct
+                        call to JavaServer Page providing server-side
+                        dynamic HTML through JSP scripting.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><FONT size="-1"><A
+                        href="PingJspEL.jsp">PingJSPEL</A></FONT></TD>
+                <TD><FONT size="-1">PingJSPEL tests a direct
+                        call to JavaServer Page providing server-side
+                        dynamic HTML through JSP scripting and the usage
+                        of the new JSP 2.0 Expression Language.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><FONT size="-1"><A
+                        href="servlet/PingServlet2Jsp">PingServlet2JSP</A></FONT></TD>
+                <TD><FONT size="-1">PingServlet2JSP tests a
+                        commonly used design pattern, where a request is
+                        issued to servlet providing server side control
+                        processing. The servlet creates a JavaBean
+                        object with dynamically set attributes and
+                        forwards the bean to the JSP through a
+                        RequestDispatcher The JSP obtains access to the
+                        JavaBean and provides formatted display with
+                        dynamic HTML output based on the JavaBean data.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><FONT size="-1"><A
+                        href="servlet/PingServlet2PDF">PingServlet2PDF</A></FONT></TD>
+                <TD><FONT size="-1">PingServlet2PDF tests a
+                        call to a servlet which displays the contents of
+                        a PDF Document (~1 MB in file size).</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><FONT size="-1"><A
+                        href="servlet/PingServlet2DB">PingServlet2DB</A></FONT></TD>
+                <TD><FONT size="-1">PingServlet2DB tests a
+                        call to a servlet which makes a JDBC connection
+                        to the database.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><FONT size="-1"><A
+                        href="PingJsf.faces">PingJSF</A></FONT></TD>
+                <TD><FONT size="-1">PingJSF tests a
+                        call to a JSF Facelet which performs a lookup
+                        of quotes.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><FONT size="-1"><A
+                        href="PingCDIJSF.faces" target="_self"><FONT
+                            face="Times New Roman">PingCDIJSF</FONT></A></FONT></TD>
+                <TD><FONT size="-1">PingCDIJSF tests a MangedBean called from a jsf page.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><FONT size="-1"><A
+                        href="servlet/PingSession1">PingHTTPSession1</A></FONT>
+                </TD>
+                <TD><FONT size="-1">PingHTTPSession1 - <B>SessionID</B>
+                        tests fundamental HTTP session function by
+                        creating a unique session ID for each individual
+                        user. The ID is stored in the users session and
+                        is accessed and displayed on each user request.
+                </FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><FONT size="-1"><A
+                        href="servlet/PingSession2">PingHTTPSession2</A></FONT></TD>
+                <TD><FONT size="-1">PingHTTPSession2 <B>session
+                            create/destroy </B>further extends the previous
+                        test by invalidating the HTTP Session on every
+                        5th user access. This results in testing
+                        HTTPSession create and destroy
+                </FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><A href="servlet/PingSession3"><FONT
+                        size="-1">PingHTTPSession3</FONT></A></TD>
+                <TD><FONT size="-1">PingHTTPSession3 <B>large
+                            session object </B>tests the servers ability to
+                        manage and persist large HTTPSession data
+                        objects. The servlet creates a large custom java
+                        object. The class contains multiple data fields
+                        and results in 2048 bytes of data. This large
+                        session object is retrieved and stored to the
+                        session on each user request.
+                </FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><A href="servlet/PingJDBCRead"><FONT
+                        size="-1">PingJDBCRead</FONT></A><FONT
+                    COLOR="#FF0000">*</FONT></TD>
+                <TD><FONT size="-1">PingJDBCRead tests
+                        fundamental servlet to JDBC access to a database
+                        performing a single-row read using a prepared
+                        SQL statment.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><A
+                    href="servlet/PingJDBCRead2JSP"><FONT size="-1">PingJDBCRead2JSP</FONT></A><FONT
+                    COLOR="#FF0000">*</FONT></TD>
+                <TD><FONT size="-1">PingJDBCRead2JSP tests
+                        fundamental servlet to JDBC access to a database
+                        performing a single-row read using a prepared
+                        SQL statment, then displays the output in a JSP.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><A href="servlet/PingJDBCWrite"><FONT
+                        size="-1">PingJDBCWrite</FONT></A><FONT
+                    COLOR="#FF0000">*</FONT></TD>
+                <TD><FONT size="-1">PingJDBCRead tests
+                        fundamental servlet to JDBC access to a database
+                        performing a single-row write using a prepared
+                        SQL statment.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><A
+                    href="servlet/PingServlet2JNDI"><FONT size="-1">PingServlet2JNDI</FONT></A><FONT
+                    COLOR="#FF0000">*</FONT></TD>
+                <TD><FONT size="-1">PingServlet2JNDI tests
+                        the fundamental J2EE operation of a servlet
+                        allocating a JNDI context and performing a JNDI
+                        lookup of a JDBC DataSource.</FONT></TD>
+            </TR>
+            <tr>
+                <td align="center"><a href="servlet/PingUpgradeServlet"><font size="-1">PingUpgradeServlet</font></a></td>
+                <td><font size="-1">PingUpgradeServlet tests a simple UpgradeHandler request. JMeter is needed for testing.</font></td>
+            </tr>
+            <TR>
+                <TD align="center"><A
+                    href="PingWebSocketTextSync.html"><FONT size="-1">PingWebSocketTextSync</FONT></A><FONT
+                    COLOR="#FF0000"></FONT></TD>
+                <TD><FONT size="-1">PingWebSocketTextSync tests a simple synchronous WebSocket with text.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><A
+                    href="PingWebSocketTextAsync.html"><FONT size="-1">PingWebSocketTextAsync</FONT></A><FONT
+                    COLOR="#FF0000"></FONT></TD>
+                <TD><FONT size="-1">PingWebSocketTextAsync tests a simple asynchronous WebSocket with text.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><A
+                    href="PingWebSocketBinary.html"><FONT size="-1">PingWebSocketBinary</FONT></A><FONT
+                    COLOR="#FF0000"></FONT></TD>
+                <TD><FONT size="-1">PingWebSocketBinary tests a simple WebSocket with binary data.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><A
+                    href="PingWebSocketJson.html"><FONT size="-1">PingWebSocketJson</FONT></A><FONT
+                    COLOR="#FF0000"></FONT></TD>
+                <TD><FONT size="-1">PingWebSocketJson tests a WebSocket with a JSON Decoder and Encoder.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><A
+                    href="servlet/PingManagedThread"><FONT size="-1">PingManagedThread</FONT></A><FONT
+                    COLOR="#FF0000"></FONT></TD>
+                <TD><FONT size="-1">PingManagedThread tests a ManagedThreadFactory inside an asynchronous servlet.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><A
+                    href="servlet/PingManagedExecutor"><FONT size="-1">PingManagedExecutor</FONT></A><FONT
+                    COLOR="#FF0000"></FONT></TD>
+                <TD><FONT size="-1">PingManagedExecutor tests the ManagedExecutorService inside an asynchronous servlet.</FONT></TD>
+            </TR>
+            <tr>
+                <td align="center">
+                    <a href="servlet/PingJSONP">
+                        <font size="-1">PingJSONP</font>
+                    </a>
+                </td>
+                <td>
+                    <font size="-1">PingJSONP tests generating and parsing JSON.</font>
+                </td>
+            </tr>
+            <TR>
+                <TD colspan="2" bgcolor="#c93333" align="center"><B><FONT
+                        color="#FFFFFF">EJB 3 Container ping
+                            suite</FONT></B></TD>
+            </TR>
+            
+            <TR>
+                <TD align="center"><A
+                    href="ejb3/PingServlet2Session"><FONT size="-1">PingServlet2Session</FONT></A><FONT
+                    COLOR="#FF0000">*</FONT></TD>
+                <TD><FONT size="-1">PingServlet2Session
+                        tests key function of a servlet call to a remote
+                        stateless Session EJB. The Session EJB performs
+                        a simple calculation and returns the result</FONT></TD>
+            </TR>
+            <!-- <TR>
+                <TD align="center"><A
+                    href="ejb3/PingServlet2SessionLocal"><FONT
+                        size="-1">PingServlet2SessionLocal</FONT></A><FONT
+                    COLOR="#FF0000">*</FONT></TD>
+                <TD><FONT size="-1">PingServlet2SessionLocal
+                        tests key function of a servlet call to a local
+                        stateless Session EJB. The Session EJB performs
+                        a simple calculation and returns the result</FONT></TD>
+            </TR>-->
+            <TR>
+			<TD align="center"><A href="ejb3/PingServlet2Entity"><FONT
+				size="-1">PingServlet2Entity</FONT></A><FONT COLOR="#FF0000">*</FONT><BR></TD>
+			<TD><FONT size="-1">PingServlet2Entity tests key function of a
+			servlet call to an EJB 3.0 Container Managed Entity. In this test the
+			EJB entity represents a single row in the database table.</FONT></TD>
+		</TR>
+            <TR>
+                <TD align="center"><A
+                    href="ejb3/PingServlet2Session2Entity"><FONT
+                        size="-1">PingServlet2Session2Entity</FONT></A><FONT
+                    COLOR="#FF0000">*</FONT></TD>
+                <TD><FONT size="-1">This tests the full
+                        servlet to Session EJB to Entity EJB path to
+                        retrieve a single row from the database.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><A
+                    href="ejb3/PingServlet2Session2Entity2JSP"><FONT
+                        size="-1">PingServlet2Session2Entity2JSP</FONT></A><FONT
+                    COLOR="#FF0000">*</FONT></TD>
+                <TD><FONT size="-1">This tests the full
+                        servlet to Session EJB to Entity EJB path to
+                        retrieve a single row from the database and
+                        displays the output in a JSP.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><A
+                    href="ejb3/PingServlet2Session2EntityCollection"><FONT
+                        size="-1">PingServlet2Session2<BR>
+                            EntityCollection
+                    </FONT></A><FONT COLOR="#FF0000">*</FONT></TD>
+                <TD><FONT size="-1">This test extends the
+                        previous EJB Entity test by calling a Session
+                        EJB which uses a finder method on the Entity
+                        that returns a collection of Entity objects.
+                        Each object is displayed by the servlet.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><A
+                    href="ejb3/PingServlet2Session2CMROne2One"><FONT
+                        size="-1">PingServlet2Session2CMROne2One</FONT></A><FONT
+                    COLOR="#FF0000">*</FONT></TD>
+                <TD><FONT size="-1">This test drives an
+                        Entity EJB to get another Entity EJB's data
+                        through an EJB 3.0 CMR One to One relationship.</FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><A
+                    href="ejb3/PingServlet2Session2CMROne2Many"><FONT
+                        size="-1">PingServlet2Session2CMROne2Many</FONT></A><FONT
+                    COLOR="#FF0000">*</FONT></TD>
+                <TD><FONT size="-1">This test drives an
+                        Entity EJB to get another Entity EJB's data
+                        through an EJB 3.0 CMR One to Many relationship.</FONT></TD>
+            </TR>
+           
+            <TR>
+                <TD align="center"><A
+                    href="ejb3/PingServlet2MDBQueue"><FONT size="-1">PingServlet2MDBQueue</FONT></A><FONT
+                    COLOR="#FF0000">*</FONT></TD>
+                <TD><FONT size="-1">PingServlet2MDBQueue
+                        drives messages to a Queue based Message Driven
+                        EJB (MDB). Each request to the servlet posts a
+                        message to the Queue. The MDB receives the
+                        message asynchronously and prints message
+                        delivery statistics on each 100th message. <FONT
+                        color="red"> <B>Note:</B> Not intended
+                            for performance testing.
+                    </FONT>
+                </FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><A
+                    href="ejb3/PingServlet2MDBTopic"><FONT size="-1">PingServlet2MDBTopic</FONT></A><FONT
+                    COLOR="#FF0000">*</FONT></TD>
+                <TD><FONT size="-1">PingServlet2MDBTopic
+                        drives messages to a Topic based
+                        Publish/Subscribe Message Driven EJB (MDB). Each
+                        request to the servlet posts a message to the
+                        Topic. The TradeStreamMDB receives the message
+                        asynchronously and prints message delivery
+                        statistics on each 100th message. Other
+                        subscribers to the Topic will also receive the
+                        messages. <FONT color="red"><B>Note:</B>
+                            Not intended for performance testing.</FONT>
+                </FONT></TD>
+            </TR>
+            <TR>
+                <TD align="center"><A
+                    href="ejb3/PingServlet2TwoPhase"><FONT size="-1">PingServlet2TwoPhase</FONT></A><FONT
+                    COLOR="#FF0000">*</FONT></TD>
+                <TD><FONT size="-1">PingServlet2TwoPhase
+                        drives a Session EJB which invokes an Entity EJB
+                        with findByPrimaryKey (DB Access) followed by
+                        posting a message to an MDB through a JMS Queue
+                        (Message access). These operations are wrapped
+                        in a global 2-phase transaction and commit.</FONT></TD>
+            </TR>
+        </TBODY>
+    </TABLE>
+</BODY>
+</HTML>

@@ -14,8 +14,10 @@
 # limitations under the License.
 ################################################################################
 
-"""
-Core module
+"""Core CLDK module.
+
+Provides the top-level CLDK entry point used to initialize language-specific
+analysis, Treesitter parsers, and related utilities.
 """
 
 from pathlib import Path
@@ -28,7 +30,6 @@ from cldk.analysis.c import CAnalysis
 from cldk.analysis.java import JavaAnalysis
 from cldk.analysis.commons.treesitter import TreesitterJava
 from cldk.analysis.python.python_analysis import PythonAnalysis
-from cldk.analysis.python.python_analysis import PythonAnalysis
 from cldk.utils.exceptions import CldkInitializationException
 from cldk.utils.sanitization.java import TreesitterSanitizer
 
@@ -36,18 +37,16 @@ logger = logging.getLogger(__name__)
 
 
 class CLDK:
-    """
-    The CLDK base class.
+    """Core class for the Code Language Development Kit (CLDK).
 
-    Parameters
-    ----------
-    language : str
-        The programming language of the project.
+    Initialize with the desired programming language and use the exposed
+    helpers to perform language-specific analysis.
 
-    Attributes
-    ----------
-    language : str
-        The programming language of the project.
+    Args:
+        language (str): Programming language (e.g., "java", "python", "c").
+
+    Attributes:
+        language (str): Programming language of the project.
     """
 
     def __init__(self, language: str):
@@ -62,46 +61,34 @@ class CLDK:
         target_files: List[str] | None = None,
         analysis_backend_path: str | None = None,
         analysis_json_path: str | Path = None,
-    ) -> JavaAnalysis:
-        """
-        Initialize the preprocessor based on the specified language.
-
-        Parameters
-        ----------
-        project_path : str or Path
-            The directory path of the project.
-        source_code : str, optional
-            The source code of the project, defaults to None. If None, it is assumed that the whole project is being
-            analyzed.
-        analysis_backend_path : str, optional
-            The path to the analysis backend, defaults to None where it assumes the default backend path.
-        analysis_json_path : str or Path, optional
-            The path save the to the analysis database (analysis.json), defaults to None. If None, the analysis database
-            is not persisted.
-        eager : bool, optional
-            A flag indicating whether to perform eager analysis, defaults to False. If True, the analysis is performed
-            eagerly. That is, the analysis.json file is created during analysis every time even if it already exists.
-        analysis_level: str, optional
-            Analysis levels. Refer to AnalysisLevel.
-        target_files: List[str] | None, optional
-            The target files (paths) for which the analysis will run or get modified. Currently, this feature only supported
-            with symbol table analysis. In the future, we will add this feature to other analysis levels.
-        Returns
-        -------
-        JavaAnalysis
-            The initialized JavaAnalysis object.
-
-        Raises
-        ------
-        CldkInitializationException
-            If neither project_path nor source_code is provided.
-        NotImplementedError
-            If the specified language is not implemented yet.
+    ) -> JavaAnalysis | PythonAnalysis | CAnalysis:
+        """Initialize a language-specific analysis façade.
 
         Args:
-            analysis_level:
-            target_files:
-            analysis_level:
+            project_path (str | Path | None): Directory path of the project.
+            source_code (str | None): Source code for single-file analysis.
+            eager (bool): If True, forces regeneration of analysis databases.
+            analysis_level (str): Analysis level. See AnalysisLevel.
+            target_files (list[str] | None): Files to constrain analysis (optional).
+            analysis_backend_path (str | None): Path to the analysis backend.
+            analysis_json_path (str | Path | None): Path to persist analysis database.
+
+        Returns:
+            JavaAnalysis | PythonAnalysis | CAnalysis: Initialized analysis façade for the chosen language.
+
+        Raises:
+            CldkInitializationException: If both or neither of project_path and source_code are provided.
+            NotImplementedError: If the specified language is unsupported.
+
+        Examples:
+            Initialize Python analysis with inline source code and verify type:
+
+            >>> from cldk import CLDK
+            >>> cldk = CLDK(language="python")
+            >>> analysis = cldk.analysis(source_code='def f(): return 1')
+            >>> from cldk.analysis.python import PythonAnalysis
+            >>> isinstance(analysis, PythonAnalysis)
+            True
         """
 
         if project_path is None and source_code is None:
@@ -131,14 +118,21 @@ class CLDK:
             raise NotImplementedError(f"Analysis support for {self.language} is not implemented yet.")
 
     def treesitter_parser(self):
-        """
-        Parse the project using treesitter.
+        """Return a Treesitter parser for the selected language.
 
-        Returns
-        -------
-        List
-            A list of treesitter nodes.
+        Returns:
+            TreesitterJava: Parser for Java language.
 
+        Raises:
+            NotImplementedError: If the language is unsupported.
+
+        Examples:
+            Get a Java Treesitter parser:
+
+            >>> from cldk import CLDK
+            >>> parser = CLDK(language="java").treesitter_parser()
+            >>> parser.__class__.__name__
+            'TreesitterJava'
         """
         if self.language == "java":
             return TreesitterJava()
@@ -146,20 +140,25 @@ class CLDK:
             raise NotImplementedError(f"Treesitter parser for {self.language} is not implemented yet.")
 
     def tree_sitter_utils(self, source_code: str) -> [TreesitterSanitizer | NotImplementedError]:  # type: ignore
-        """
-        Parse the project using treesitter.
+        """Return Treesitter utilities for the selected language.
 
-        Parameters
-        ----------
-        source_code : str, optional
-            The source code of the project, defaults to None. If None, it is assumed that the whole project is being
-            analyzed.
+        Args:
+            source_code (str): Source code to initialize the utilities with.
 
-        Returns
-        -------
-        List
-            A list of treesitter nodes.
+        Returns:
+            TreesitterSanitizer: Utility wrapper for Java Treesitter operations.
 
+        Raises:
+            NotImplementedError: If the language is unsupported.
+
+        Examples:
+            Create Java Treesitter sanitizer utilities:
+
+            >>> from cldk import CLDK
+            >>> utils = CLDK(language="java").tree_sitter_utils('class A {}')
+            >>> from cldk.utils.sanitization.java import TreesitterSanitizer
+            >>> isinstance(utils, TreesitterSanitizer)
+            True
         """
         if self.language == "java":
             return TreesitterSanitizer(source_code=source_code)

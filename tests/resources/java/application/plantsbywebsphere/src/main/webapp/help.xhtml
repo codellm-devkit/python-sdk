@@ -1,0 +1,100 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!-- jsf:pagecode language="java" location="/src/pagecode/Help.java" --><!-- /jsf:pagecode -->
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml"
+	xmlns:ui="http://java.sun.com/jsf/facelets"
+	xmlns:f="http://java.sun.com/jsf/core"
+	xmlns:h="http://java.sun.com/jsf/html"
+	xmlns:c="http://java.sun.com/jsp/jstl/core">
+<body>
+	<!--
+
+COPYRIGHT LICENSE: This information contains sample code provided in source code form. You may copy, 
+modify, and distribute these sample programs in any form without payment to IBM for the purposes of 
+developing, using, marketing or distributing application programs conforming to the application 
+programming interface for the operating platform for which the sample code is written. 
+Notwithstanding anything to the contrary, IBM PROVIDES THE SAMPLE SOURCE CODE ON AN "AS IS" BASIS 
+AND IBM DISCLAIMS ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, ANY IMPLIED 
+WARRANTIES OR CONDITIONS OF MERCHANTABILITY, SATISFACTORY QUALITY, FITNESS FOR A PARTICULAR PURPOSE, 
+TITLE, AND ANY WARRANTY OR CONDITION OF NON-INFRINGEMENT. IBM SHALL NOT BE LIABLE FOR ANY DIRECT, 
+INDIRECT, INCIDENTAL, SPECIAL OR CONSEQUENTIAL DAMAGES ARISING OUT OF THE USE OR OPERATION OF THE 
+SAMPLE SOURCE CODE. IBM HAS NO OBLIGATION TO PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS 
+OR MODIFICATIONS TO THE SAMPLE SOURCE CODE.  
+
+(C) COPYRIGHT International Business Machines Corp., 2001,2011
+All Rights Reserved * Licensed Materials - Property of IBM
+
+-->
+	<ui:composition template="WEB-INF/PlantTemplate.xhtml">
+		<ui:param name="title" value="Plants By WebSphere Help" />
+		<ui:define name="content">
+			<h:form id="help">
+				<table border="0" cellpadding="0" cellspacing="0" width="100%">
+					<tr>
+						<td>
+							<p class="trail">
+								<h:commandLink styleClass="trail footer" action="promo"
+									value="Home" />
+								&gt;
+							</p>
+						</td>
+					</tr>
+					<tr>
+						<td style="width: 100%">
+							<table border="0" cellpadding="0" cellspacing="10" width="600">
+								<tr>
+									<td style="width: 100%" valign="middle"><h1>Help</h1></td>
+								</tr>
+								<tr>
+									<td colspan="3"><p>Plants By WebSphere provides
+											limited help support. See the sample docs directory for
+											documentation on the design, building, and installation of
+											the sample.</p>
+										<p>Debug mode has been tied to the JSF project stage
+											declaration. Debug messages will be displayed when the web
+											app's javax.faces.PROJECT_STAGE context param is set to
+											either Development or UnitTest. A value of SystemTest or
+											Production will turn off debug output. The current state of
+											debugging is indicated in the check box below.</p> <h:selectBooleanCheckbox
+											id="logging1" value="#{help.debug}" /> Debug messages
+										enabled<br /></td>
+								</tr>
+								<tr>
+									<td colspan="3">
+										<p>If the database becomes corrupted for some reason, the
+											button below can be used to delete all data currently in the
+											database and populate it with a fresh set of data. If this
+											does not work, stop the server and repeat the prerequisite
+											steps found in the docs directory to unzip the Derby
+											database.</p>
+										<p>
+											<h:commandButton value="Reset database"
+												action="#{help.performDBReset}" id="resetdb" />
+										</p>
+									</td>
+								</tr>
+								<tr>
+
+
+
+
+
+
+
+								</tr>
+							</table>
+						</td>
+					</tr>
+				</table>
+				<table
+					style="background-color: #669966; border: 0px; padding: 0px; width: 100%">
+					<tr>
+						<td style="width: 100%"><h:graphicImage name="1x1_trans.gif"
+								library="images" width="1" height="1" alt="" /></td>
+					</tr>
+				</table>
+			</h:form>
+		</ui:define>
+	</ui:composition>
+</body>
+</html>

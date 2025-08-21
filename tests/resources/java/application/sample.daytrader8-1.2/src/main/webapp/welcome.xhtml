@@ -1,0 +1,93 @@
+<!-- 
+ * (C) Copyright IBM Corporation 2015.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html  xmlns="http://www.w3.org/1999/xhtml" 
+       xmlns:h="http://xmlns.jcp.org/jsf/html" 
+       xmlns:f="http://xmlns.jcp.org/jsf/core"
+       xmlns:ui="http://xmlns.jcp.org/jsf/facelets" 
+       xmlns:fn="http://xmlns.jcp.org/jsp/jstl/functions">
+<h:head>
+	<title>DayTrader Login</title>
+	<link rel="stylesheet" href="style-jsf.css" type="text/css" />
+	<link rel="shortcut icon" href="./favicon.ico" />
+</h:head>
+<h:body>
+	<div id="page-wrap">
+		<div id="header">
+			<img src="images/DayTraderHead_blue.gif" style="display: block; margin-left: auto; margin-right: auto" />
+
+			<div id="nav">
+				<ul id="list-nav">
+					<li>
+						<a href="index.faces">Home</a>
+					</li>
+					<li>
+						<a href="welcome.faces">Login</a>
+					</li>
+					<li>
+						<a href="configure.faces">Configuration</a>
+					</li>
+					<li>
+						<a href="web_prmtv.faces">Primitives</a>
+					</li>
+					<li>
+						<a href="docs/tradeFAQ.faces">FAQ</a>
+					</li>
+				</ul>
+			</div>
+		</div>
+		<div id="content">
+
+			<div id="loginContainer">
+				<h:form id="login">
+					<font color="#ff0033">
+						<h:outputText value="#{tradeapp.results}"></h:outputText>
+					</font>
+					<ui:param name="errorMessages" value="#{facesContext.getMessageList()}" />
+      				<h:panelGroup rendered="#{not empty errorMessages}" styleClass="errorMsg">
+       				<h:outputText value="Form Submission was not successful; Please review and correct listed errors and then resubmit " 
+                      escape="false"/>
+        			<br />
+        			<h:messages style="color: red" globalOnly="false"/>
+      				</h:panelGroup>
+					<h2>Log in to DayTrader</h2>
+					<br />Username
+            <br />
+					<h:inputText class="rounded" size="20" id="uid" value="#{tradeapp.userID}" required="true">
+						<f:validateLength minimum="1" maximum="10" />
+						<f:validator validatorId="loginValidator" />
+					</h:inputText>
+					<br />
+					<br />Password
+            <br />
+					<h:inputSecret class="rounded" size="20" id="password" value="#{tradeapp.password}" redisplay="true" required="true">
+						<f:validateLength minimum="1" maximum="10" />
+					</h:inputSecret>
+					<br />
+					<br />
+					<h:commandButton class="submit" id="submit" type="submit" value="Log in" action="#{tradeapp.login}" />
+
+					<br />
+					<br />Don't have an account?<br />
+					<h:outputLink value="register.faces">Register With DayTrader</h:outputLink>
+				</h:form>
+			</div>
+		</div>
+	</div>
+	<div id="footer"></div>
+</h:body>
+</html>

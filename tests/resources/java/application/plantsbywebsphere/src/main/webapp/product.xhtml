@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="ISO-8859-1" ?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.1//EN" "http://www.w3.org/TR/xhtml11/DTD/xhtml11.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml"
+	xmlns:ui="http://java.sun.com/jsf/facelets"
+	xmlns:f="http://java.sun.com/jsf/core"
+	xmlns:h="http://java.sun.com/jsf/html"
+	xmlns:c="http://java.sun.com/jsp/jstl/core">
+
+
+<!--
+
+COPYRIGHT LICENSE: This information contains sample code provided in source code form. You may copy, 
+modify, and distribute these sample programs in any form without payment to IBM for the purposes of 
+developing, using, marketing or distributing application programs conforming to the application 
+programming interface for the operating platform for which the sample code is written. 
+Notwithstanding anything to the contrary, IBM PROVIDES THE SAMPLE SOURCE CODE ON AN "AS IS" BASIS 
+AND IBM DISCLAIMS ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING, BUT NOT LIMITED TO, ANY IMPLIED 
+WARRANTIES OR CONDITIONS OF MERCHANTABILITY, SATISFACTORY QUALITY, FITNESS FOR A PARTICULAR PURPOSE, 
+TITLE, AND ANY WARRANTY OR CONDITION OF NON-INFRINGEMENT. IBM SHALL NOT BE LIABLE FOR ANY DIRECT, 
+INDIRECT, INCIDENTAL, SPECIAL OR CONSEQUENTIAL DAMAGES ARISING OUT OF THE USE OR OPERATION OF THE 
+SAMPLE SOURCE CODE. IBM HAS NO OBLIGATION TO PROVIDE MAINTENANCE, SUPPORT, UPDATES, ENHANCEMENTS 
+OR MODIFICATIONS TO THE SAMPLE SOURCE CODE.  
+
+(C) COPYRIGHT International Business Machines Corp., 2001,2011
+All Rights Reserved * Licensed Materials - Property of IBM
+
+-->
+<ui:composition template="WEB-INF/PlantTemplate.xhtml">
+	<ui:param name="title" value="Plants By WebSphere Product Detail" />
+	<ui:define name="content">
+		<h:form id="product">
+			<table border="0" cellpadding="4" cellspacing="0" width="100%">
+				<tr>
+					<td class="trail">
+						<p class="trail">
+							<h:commandLink action="promo" value="Home" />
+							&gt;
+							<h:commandLink action="#{shopping.performShopping}"
+								styleClass="trail" value="#{shopping.product.categoryName}">
+								<f:param name="category"
+									value="#{shopping.product.inventory.category}" />
+							</h:commandLink>
+						</p>
+					</td>
+				</tr>
+				<tr>
+					<td colspan="5" style="width: 100%">
+						<table width="600" cellpadding="4" cellspacing="5" border="0">
+							<tr>
+								<td colspan="2" valign="bottom">
+									<h1>
+										<h:outputText value="#{shopping.product.inventory.name}" />
+									</h1>
+								</td>
+							</tr>
+							<tr>
+								<td rowspan="9" valign="top"><h:graphicImage
+										url="/servlet/ImageServlet?action=getimage&amp;inventoryID=#{shopping.product.inventory.inventoryId}"
+										border="0" width="220" height="250"
+										alt="#{shopping.product.inventory.name}" /> <br /> <h:graphicImage
+										library="images" name="1x1_trans.gif" width="220" height="10"
+										border="0" alt="" /> <br /> <br /></td>
+								<td valign="top"><h:outputText
+										value="#{shopping.product.inventory.heading}"
+										style="font-size: small ; font-family: verdana, arial, sans serif ; font-weight: bold ; font-style : italic ; color: 666666" />
+									<br /> <h:outputText
+										value="#{shopping.product.inventory.description}"
+										style="font-size: x-small ; font-family: verdana, arial, sans serif ; color: 666666" />
+								</td>
+							</tr>
+							<tr>
+								<td valign="top">
+									<hr />
+								</td>
+							</tr>
+							<tr>
+								<td valign="top">
+									<table width="100%" cellpadding="0" cellspacing="0" border="0">
+										<tr>
+											<td><h:graphicImage library="images"
+													name="item_selection.jpg"
+													style="width: 73px; height: 20px; border: 0px;"
+													alt="Item selection" /> <br /></td>
+										</tr>
+										<tr style="background-color: #eeeecc">
+											<th class="item">ITEM#</th>
+											<th class="item">DESCRIPTION</th>
+											<th class="item">PRICE</th>
+											<th class="item">QUANTITY</th>
+										</tr>
+										<tr style="background-color: #ffffdd">
+											<td class="item"><h:outputText
+													value="#{shopping.product.inventory.inventoryId}" /></td>
+											<td class="item"><h:outputText
+													value="#{shopping.product.inventory.pkginfo}" /></td>
+											<td class="item"><h:outputText
+													value="#{shopping.product.price}" /></td>
+											<td class="item"><h:inputText id="quantity"
+													value="#{shopping.product.quantity}" size="3" maxlength="3" />
+											</td>
+										</tr>
+										<tr>
+											<td valign="top">&nbsp; <h:message
+													styleClass="color: #FF0000; font-weight: bold"
+													id="quantityError" for="quantity" />
+											</td>
+										</tr>
+										<tr>
+											<td valign="top"><h:commandLink
+													action="#{shopping.performAddToCart}">
+													<f:param name="itemID"
+														value="#{shopping.product.inventory.inventoryId}" />
+													<h:graphicImage library="images"
+														name="button_add_to_cart.gif" alt="Add to Cart"
+														style="border: 0px" />
+												</h:commandLink></td>
+										</tr>
+									</table>
+								</td>
+							</tr>
+						</table>
+					</td>
+				</tr>
+			</table>
+			<br />
+			<br />
+			<table
+				style="background-color: #669966; border: 0px; padding: 0px; width: 100%">
+				<tr>
+					<td style="width: 100%"><h:graphicImage name="1x1_trans.gif"
+							library="images" width="1" height="1" alt="" /></td>
+				</tr>
+			</table>
+			<br />
+		</h:form>
+	</ui:define>
+</ui:composition>
+</html>

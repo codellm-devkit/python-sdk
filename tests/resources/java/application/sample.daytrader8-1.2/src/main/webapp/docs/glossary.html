@@ -1,0 +1,98 @@
+<!-- 
+ * (C) Copyright IBM Corporation 2015.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+-->
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.0 Transitional//EN"><!-- Sample HTML file -->
+
+<HTML>
+<HEAD>
+
+<META name="GENERATOR" content="IBM WebSphere Page Designer V3.5.1 for Windows">
+<META http-equiv="Content-Style-Type" content="text/css"><TITLE>Technical Documentation</TITLE>
+</HEAD>
+
+<BODY BGCOLOR="#FFFFFF">
+<HR>
+<TABLE width="100%">
+  <TBODY>
+    <TR>
+      <TD>
+      <H3><FONT face="Times New Roman">Trade Glossary and Terms</FONT></H3>
+      </TD>
+      <TD align="right"></TD>
+    </TR>
+  </TBODY>
+</TABLE>
+<HR>
+<HR>
+<UL>
+	<LI><B><FONT color="#0000a0">account ID</FONT></B> - A unique Integer based key. Each user is assigned an account ID at account creation time.<BR></LI>
+	<LI><B><FONT color="#0000a0">account Created</FONT></B> - The time and date the users account was first created.<BR></LI>
+	<LI><B><FONT color="#0000a0">cash balance</FONT></B> - The current cash balance in the users account. This does not include current stock holdings.<BR></LI>
+	<LI><B><FONT color="#0000a0">company</FONT></B> - The full company name for an individual stock.<BR>
+	</LI>
+	<LI><B><FONT color="#0000a0">current gain/loss</FONT></B> - The total gain or loss of this account, computed by substracting the current sum of cash/holdings minus the opening account balance.<BR></LI>
+	<LI><B><FONT color="#0000a0">current price</FONT></B> - The current trading price for a given stock symbol.<BR>
+	</LI>
+	
+	<LI><B><FONT color="#0000a0">gain/loss</FONT></B> - The current gain or loss of an individual stock holding, computed as (current market value - holding basis).<BR>
+	</LI>
+	<LI><B><FONT color="#0000a0">last login</FONT></B> - The date and time this user last logged in to Trade.<BR></LI>
+	<LI><B><FONT color="#0000a0">market value</FONT></B> - The current total value of a stock holding, computed as (quantity * current price).<BR>
+	</LI>
+	
+	
+	<LI><B><FONT color="#0000a0">number of holdings</FONT></B> - The total number of stocks currently owned by this account.<BR></LI>
+	<LI><B><FONT color="#0000a0">open price</FONT></B> - The price of a given stock at the open of the trading session.<BR>
+	</LI>
+	<LI><B><FONT color="#0000a0">opening balance</FONT></B> - The initial cash balance in this account when it was opened.<BR></LI>
+	<LI><B><FONT color="#0000a0">order id</FONT></B> - A unique Integer based key. Each order is assigned an order ID at order creation time.<BR></LI>
+	<LI><B><FONT color="#0000a0">order status</FONT></B> - orders are opened, processed, closed and completed. Order status shows the current stat for this order.<BR></LI>
+	<LI><B><FONT color="#0000a0">price range</FONT></B> - The low and high prices for this stock during the current trading session<BR>
+	</LI>
+	<LI><B><FONT color="#0000a0">purchase date</FONT></B> - The date and time the a stock was purchased.<BR></LI>
+	<LI><B><FONT color="#0000a0">purchase price</FONT></B> - The price used when purchasing the stock.<BR></LI>
+	<LI><B><FONT color="#0000a0">purchase basis</FONT></B> - The total cost to purchase this holding. This is computed as (quantity * purchase price).<BR>
+	</LI>
+	
+	<LI><B><FONT color="#0000a0">quantity</FONT></B> - The number of stock shares in the order or user holding.<BR>
+	</LI>
+	
+	<LI><B><FONT color="#0000a0">session created</FONT></B> - An HTTP session is created for each user at during login. Session created shows the time and day when the session was created.<BR></LI>
+	<LI><B><FONT color="#0000a0">sum of cash/holdings</FONT></B> - The total current value of this account. This is the sum of the cash balance along with the value of current stock holdings.<BR></LI>
+	<LI><B><FONT color="#0000a0">symbol</FONT></B> - The symbol for a Trade stock.<BR>
+	</LI>
+	<LI><B><FONT color="#0000a0">total logins</FONT></B> - The total number of logins performed by this user since the last Trade Reset.<BR></LI>
+	<LI><B><FONT color="#0000a0">total logouts</FONT></B> - The total number of logouts performed by this user since the last Trade Reset.<BR>
+	</LI>
+	
+	<LI><B><FONT color="#0000a0">total of holdings</FONT></B> - The current total value of all stock holdings in this account given the current valuation of each stock held.<BR></LI>
+	<LI><B><FONT color="#0000a0">Top gainers</FONT></B> - The list of stock gaining the most in price during the current trading session.<BR></LI>
+	<LI><B><FONT color="#0000a0">Top losers</FONT></B> - The list of stock falling the most in price during the current trading session.<BR>
+	</LI>
+	<LI><B><FONT color="#0000a0">Trade Stock Index (TSIA)</FONT></B> - A computed index of the top 20 stocks in Trade. <BR></LI>
+	<LI><B><FONT color="#0000a0">Trading Volume</FONT></B> - The total number of shares traded for all stocks during this trading session.<BR>
+	</LI>
+	<LI><B><FONT color="#0000a0">txn fee</FONT></B> - The fee charged by the brokerage to process this order.<BR></LI>
+	<LI><B><FONT color="#0000a0">type</FONT></B> - The order type (buy or sell).<BR>
+	</LI>
+	
+	<LI><B><FONT color="#0000a0">user ID</FONT></B> - The unique user ID for the account chosen by the user at account registration.<BR></LI>
+	<LI><B><FONT color="#0000a0">volume</FONT></B> - The total number of shares traded for this stock.</LI>
+	
+</UL>
+
+<HR>
+</BODY>
+</HTML>

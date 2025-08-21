@@ -1,0 +1,605 @@
+<!-- 
+ * (C) Copyright IBM Corporation 2015.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html  xmlns="http://www.w3.org/1999/xhtml" 
+       xmlns:h="http://xmlns.jcp.org/jsf/html" 
+       xmlns:f="http://xmlns.jcp.org/jsf/core"
+       xmlns:ui="http://xmlns.jcp.org/jsf/facelets" 
+       xmlns:fn="http://xmlns.jcp.org/jsp/jstl/functions">
+<h:head>
+	<title>DayTrader Market</title>
+	<link rel="stylesheet" href="style-jsf.css" type="text/css" />
+	<link rel="shortcut icon" href="./favicon.ico" />
+	<script src="https://ajax.googleapis.com/ajax/libs/dojo/1.7.12/dojo/dojo.js"></script>
+
+	<script> 
+    require(["dojo/dom", "dojo/on", "dojo/domReady!"], function(dom, on){
+        var websocket;
+        var url;
+        var int;
+       
+        url = ((window.location.protocol === "https:") ? "wss://" : "ws://") +window.location.host + window.location.pathname + "/marketsummary"; 
+        url = url.replace("/marketSummary.faces","");
+                      
+        //Connect and setup handlers
+        websocket = new WebSocket(url);
+        websocket.onopen = function(evt) { onOpen(evt) };
+        websocket.onmessage = function(evt) { onMessage(evt) };
+        websocket.onerror = function(evt) { onError(evt) };
+        websocket.onclose = function(evt) { onClose(evt) };
+            
+        on(dom.byId("connect"), "click", function(){          
+            websocket = new WebSocket(url); 
+            websocket.onopen = function(evt) { onOpen(evt) };
+            websocket.onmessage = function(evt) { onMessage(evt) };
+            websocket.onerror = function(evt) { onError(evt) };
+            websocket.onclose = function(evt) { onClose(evt) };
+        });
+             
+        on(dom.byId("disconnect"), "click", function() {
+            websocket.close();
+        });
+
+        function onOpen(msg) {
+            require(["dojo/dom"], function(dom){
+                int=self.setInterval(function(){update()},5000);
+                update();
+            });
+        }
+        
+        function onClose(msg) {
+            require(["dojo/dom"], function(dom){
+                int=window.clearInterval(int);
+            });
+        }
+        
+        function onError(msg) {
+            require(["dojo/dom"], function(dom){
+                websocket.close();
+            });
+        }
+
+        function onMessage(msg) {
+            data = JSON.parse(msg.data);
+             
+            for(var k in data) {
+                dom.byId(k).innerHTML = data[k];  
+            }
+            
+            if (data.hasOwnProperty('tsia')) {
+            	// handle tsia (+/-), assume others
+            	if (dom.byId("tsia").innerHTML >= 0 ) {
+                	dom.byId("tsia").style.color="#009900";
+                	dom.byId("tsia").innerHTML = dom.byId("tsia").innerHTML + '<img src="images/arrowup.gif" width="10" height="10" border="0"/>';
+            	} else {
+                	dom.byId("tsia").style.color="#CC0000";
+                	dom.byId("tsia").innerHTML = dom.byId("tsia").innerHTML + '<img src="images/arrowdown.gif" width="10" height="10" border="0"/>';
+            	}     
+            } 
+            if (data.hasOwnProperty('change1_change')) {
+            	// handle tsia (+/-), assume others
+            	if (dom.byId("change1_change").innerHTML >= 0 ) {
+                	dom.byId("change1_change").style.color="#009900";
+                	dom.byId("change1_change").innerHTML = dom.byId("change1_change").innerHTML + '<img src="images/arrowup.gif" width="10" height="10" border="0"/>';
+            	} else {
+                	dom.byId("change1_change").style.color="#CC0000";
+                	dom.byId("change1_change").innerHTML = dom.byId("change1_change").innerHTML + '<img src="images/arrowdown.gif" width="10" height="10" border="0"/>';
+            	}     
+            } 
+            if (data.hasOwnProperty('change2_change')) {
+            	// handle tsia (+/-), assume others
+            	if (dom.byId("change2_change").innerHTML >= 0 ) {
+                	dom.byId("change2_change").style.color="#009900";
+                	dom.byId("change2_change").innerHTML = dom.byId("change2_change").innerHTML + '<img src="images/arrowup.gif" width="10" height="10" border="0"/>';
+            	} else {
+                	dom.byId("change2_change").style.color="#CC0000";
+                	dom.byId("change2_change").innerHTML = dom.byId("change2_change").innerHTML + '<img src="images/arrowdown.gif" width="10" height="10" border="0"/>';
+            	}     
+            } 
+            if (data.hasOwnProperty('change3_change')) {
+            	// handle tsia (+/-), assume others
+            	if (dom.byId("change3_change").innerHTML >= 0 ) {
+                	dom.byId("change3_change").style.color="#009900";
+                	dom.byId("change3_change").innerHTML = dom.byId("change3_change").innerHTML + '<img src="images/arrowup.gif" width="10" height="10" border="0"/>';
+            	} else {
+                	dom.byId("change3_change").style.color="#CC0000";
+                	dom.byId("change3_change").innerHTML = dom.byId("change3_change").innerHTML + '<img src="images/arrowdown.gif" width="10" height="10" border="0"/>';
+            	}     
+            } 
+            if (data.hasOwnProperty('change4_change')) {
+            	// handle tsia (+/-), assume others
+            	if (dom.byId("change4_change").innerHTML >= 0 ) {
+                	dom.byId("change4_change").style.color="#009900";
+                	dom.byId("change4_change").innerHTML = dom.byId("change4_change").innerHTML + '<img src="images/arrowup.gif" width="10" height="10" border="0"/>';
+            	} else {
+                	dom.byId("change4_change").style.color="#CC0000";
+                	dom.byId("change4_change").innerHTML = dom.byId("change4_change").innerHTML + '<img src="images/arrowdown.gif" width="10" height="10" border="0"/>';
+            	}     
+            } 
+            if (data.hasOwnProperty('change5_change')) {
+            	// handle tsia (+/-), assume others
+            	if (dom.byId("change5_change").innerHTML >= 0 ) {
+                	dom.byId("change5_change").style.color="#009900";
+                	dom.byId("change5_change").innerHTML = dom.byId("change5_change").innerHTML + '<img src="images/arrowup.gif" width="10" height="10" border="0"/>';
+            	} else {
+                	dom.byId("change5_change").style.color="#CC0000";
+                	dom.byId("change5_change").innerHTML = dom.byId("change5_change").innerHTML + '<img src="images/arrowdown.gif" width="10" height="10" border="0"/>';
+            	}     
+            } 
+        }
+                    
+        function update() {
+            websocket.send(JSON.stringify({
+                action : "updateMarketSummary"})); 
+            websocket.send(JSON.stringify({
+                action : "updateRecentQuotePriceChange"}));  
+        }   
+    });         
+</script>
+</h:head>
+<h:body>
+
+	<div id="page-wrap">
+		<h:form id="portfolio">
+			<div id="header">
+				<img src="images/DayTraderHead_blue.gif" style="display: block; margin-left: auto; margin-right: auto" />
+
+				<div id="nav2">
+					<ul id="list-nav2">
+						<li>
+							<h:outputLink value="tradehome.faces">Home</h:outputLink>
+						</li>
+						<li>
+							<h:outputLink value="account.faces">Account</h:outputLink>
+						</li>
+						<li>
+							<h:outputLink value="marketSummary.faces">Market</h:outputLink>
+						</li>
+						<li>
+							<h:outputLink value="portfolio.faces">Portfolio</h:outputLink>
+						</li>
+						<li>
+							<h:outputLink value="quote.faces">Quotes/Trade</h:outputLink>
+						</li>
+						<li>
+							<h:commandLink action="#{tradeapp.logout}" id="logoff">Logoff</h:commandLink>
+						</li>
+					</ul>
+				</div>
+			</div>
+
+			<div id="content">
+
+				<div id="contentContainer">
+					<h:outputText value="#{accountdata.currentTime}" style="float:right;color:#cc0000;font-size:10px" />
+
+					<h:panelGroup rendered="#{fn:length(accountdata.closedOrders) > 0}">
+						<table style="width: 100%">
+							<tr>
+								<td colspan="8" bgcolor="#cc0000">
+									<b>
+										<font color="#ffffff">Alert: The following Order(s) have completed.</font>
+									</b>
+								</td>
+							</tr>
+							<tr style="width: 100%;">
+								<td>
+									<h:dataTable id="orders" width="100%" value="#{accountdata.closedOrders}" var="item" styleClass="table" headerClass="tableHeader"
+										rowClasses="tableOddRow,tableEvenRow"
+										columnClasses="tableColumn,tableColumn,tableColumn,tableColumn,tableColumn,tableColumn,tableColumn,tableColumn">
+
+										<h:column>
+											<f:facet name="header">
+												<h:outputLink value="docs/glossary.html">
+													<h:outputText value="order id" />
+												</h:outputLink>
+											</f:facet>
+											<h:outputText value="#{item.orderID}"></h:outputText>
+										</h:column>
+
+										<h:column>
+											<f:facet name="header">
+												<h:outputLink value="docs/glossary.html">
+													<h:outputText value="order status" />
+												</h:outputLink>
+											</f:facet>
+											<h:outputText value="#{item.orderStatus}"></h:outputText>
+										</h:column>
+
+										<h:column>
+											<f:facet name="header">
+												<h:outputLink value="docs/glossary.html">
+													<h:outputText value="creation date" />
+												</h:outputLink>
+											</f:facet>
+											<h:outputText value="#{item.openDate}"></h:outputText>
+										</h:column>
+
+										<h:column>
+											<f:facet name="header">
+												<h:outputLink value="docs/glossary.html">
+													<h:outputText value="completion date" />
+												</h:outputLink>
+											</f:facet>
+											<h:outputText value="#{item.completionDate}"></h:outputText>
+										</h:column>
+
+										<h:column>
+											<f:facet name="header">
+												<h:outputLink value="docs/glossary.html">
+													<h:outputText value="txn fee" />
+												</h:outputLink>
+											</f:facet>
+											<h:outputText value="#{item.orderFee}"></h:outputText>
+										</h:column>
+
+										<h:column>
+											<f:facet name="header">
+												<h:outputLink value="docs/glossary.html">
+													<h:outputText value="type" />
+												</h:outputLink>
+											</f:facet>
+											<h:outputText value="#{item.orderType}"></h:outputText>
+										</h:column>
+
+										<h:column>
+											<f:facet name="header">
+												<h:outputLink value="docs/glossary.html">
+													<h:outputText value="symbol" />
+												</h:outputLink>
+											</f:facet>
+											<h:outputText value="#{item.symbol}"></h:outputText>
+										</h:column>
+
+										<h:column>
+											<f:facet name="header">
+												<h:outputLink value="docs/glossary.html">
+													<h:outputText value="quantity" />
+												</h:outputLink>
+											</f:facet>
+											<h:outputText value="#{item.quantity}"></h:outputText>
+										</h:column>
+									</h:dataTable>
+								</td>
+							</tr>
+						</table>
+					</h:panelGroup>
+
+
+					<table style="width: 100%; margin: auto;">
+						<tbody>
+							<tr>
+								<td align="left" bgcolor="#cccccc">
+									<h3>Market Summary</h3>
+								</td>
+								<td align="right" bgcolor="#cccccc">
+									<div id="date"></div>
+								</td>
+							</tr>
+						</tbody>
+					</table>
+
+					<table style="width: 100%; margin: auto">
+						<tr>
+							<td style="vertical-align: top">
+								<table class="table" style="width: 200px; float: right;">
+									<tbody>
+										<tr class="tableOddRow">
+											<td class="tableColumn" align="right" bgcolor="#fafcb6" width="33%">
+												<a href="docs/glossary.html">DayTrader Stock Index(TSIA)</a>
+											</td>
+											<td class="tableColumn" align="center" valign="middle" bgcolor="#ffffff">
+												<div id="tsia"></div>
+											</td>
+										</tr>
+										<tr class="tableOddRow">
+											<td class="tableColumn" align="right" bgcolor="#fafcb6">
+												<a href="docs/glossary.html">Trading Volume</a>
+											</td>
+											<td class="tableColumn" align="center" valign="middle">
+												<div id="volume"></div>
+											</td>
+										</tr>
+									</tbody>
+								</table>
+							</td>
+							<td>
+								<table width="200px" class="table">
+									<tbody>
+										<tr class="tableOddRow">
+											<td class="tableColumn" colspan="3" align="center" bgcolor="#fafcb6" width="74">
+												<a href="docs/glossary.html">Recent Changes</a>
+											</td>
+										</tr>
+
+										<tr class="tableOddRow" align="center">
+											<td width="33%" class="tableColumn" style="text-align: center;">
+												<a href="docs/glossary.html">Symbol</a>
+											</td>
+											<td width="33%" class="tableColumn" style="text-align: center;">
+												<a href="docs/glossary.html">Price</a>
+											</td>
+											<td class="tableColumn" style="text-align: center;">
+												<a href="docs/glossary.html">Change</a>
+											</td>
+										</tr>
+										<tr class="tableOddRow" align="center">
+											<td class="tableColumn" style="text-align: center;">
+												<div id="change1_stock"></div>
+											</td>
+											<td class="tableColumn" style="text-align: center;">
+												<div id="change1_price"></div>
+											</td>
+											<td class="tableColumn" style="text-align: center;">
+												<div id="change1_change" style="color: CC0000; display: inline"></div>
+											</td>
+										</tr>
+										<tr class="tableOddRow" align="center">
+											<td class="tableColumn" style="text-align: center;">
+												<div id="change2_stock"></div>
+											</td>
+											<td class="tableColumn" style="text-align: center;">
+												<div id="change2_price"></div>
+											</td>
+											<td class="tableColumn" style="text-align: center;">
+												<div id="change2_change" style="color: CC0000; display: inline"></div>
+											</td>
+										</tr>
+										<tr class="tableOddRow" align="center">
+											<td class="tableColumn" style="text-align: center;">
+												<div id="change3_stock"></div>
+											</td>
+											<td class="tableColumn" style="text-align: center;">
+												<div id="change3_price"></div>
+											</td>
+											<td class="tableColumn" style="text-align: center;">
+												<div id="change3_change" style="color: CC0000; display: inline"></div>
+											</td>
+										</tr>
+										<tr class="tableOddRow" align="center">
+											<td class="tableColumn" style="text-align: center;">
+												<div id="change4_stock"></div>
+											</td>
+											<td class="tableColumn" style="text-align: center;">
+												<div id="change4_price"></div>
+											</td>
+											<td class="tableColumn" style="text-align: center;">
+												<div id="change4_change" style="color: CC0000; display: inline"></div>
+											</td>
+										</tr>
+										<tr class="tableOddRow" align="center">
+											<td class="tableColumn" style="text-align: center;">
+												<div id="change5_stock"></div>
+											</td>
+											<td class="tableColumn" style="text-align: center;">
+												<div id="change5_price"></div>
+											</td>
+											<td class="tableColumn" style="text-align: center;">
+												<div id="change5_change" style="color: CC0000; display: inline"></div>
+											</td>
+										</tr>
+									</tbody>
+								</table>
+							</td>
+						</tr>
+					</table>
+					<table style="margin: auto;">
+						<tr>
+							<td>
+
+								<table width="200px" class="table">
+									<tbody>
+										<tr class="tableOddRow">
+											<td class="tableColumn" colspan="3" align="center" bgcolor="#fafcb6" width="74">
+												<a href="docs/glossary.html">Top Gainers</a>
+											</td>
+										</tr>
+										<tr class="tableOddRow" align="center">
+											<td width="33%" class="tableColumn">
+												<a href="docs/glossary.html">Symbol</a>
+											</td>
+											<td width="33%" class="tableColumn">
+												<a href="docs/glossary.html">Price</a>
+											</td>
+											<td class="tableColumn">
+												<a href="docs/glossary.html">Change</a>
+											</td>
+										</tr>
+										<tr class="tableOddRow">
+											<td class="tableColumn">
+												<div id="gainer1_stock"></div>
+											</td>
+											<td class="tableColumn">
+												<div id="gainer1_price"></div>
+											</td>
+											<td class="tableColumn">
+												<div id="gainer1_change" style="color: #009900; display: inline;"></div>
+												<img src="images/arrowup.gif" width="10" height="10" border="0" />
+											</td>
+										</tr>
+										<tr class="tableOddRow">
+											<td class="tableColumn">
+												<div id="gainer2_stock"></div>
+											</td>
+											<td class="tableColumn">
+												<div id="gainer2_price"></div>
+											</td>
+											<td class="tableColumn">
+												<div id="gainer2_change" style="color: #009900; display: inline;"></div>
+												<img src="images/arrowup.gif" width="10" height="10" border="0" />
+											</td>
+										</tr>
+										<tr class="tableOddRow">
+											<td class="tableColumn">
+												<div id="gainer3_stock"></div>
+											</td>
+											<td class="tableColumn">
+												<div id="gainer3_price"></div>
+											</td>
+											<td class="tableColumn">
+												<div id="gainer3_change" style="color: #009900; display: inline;"></div>
+												<img src="images/arrowup.gif" width="10" height="10" border="0" />
+											</td>
+										</tr>
+										<tr class="tableOddRow">
+											<td class="tableColumn">
+												<div id="gainer4_stock"></div>
+											</td>
+											<td class="tableColumn">
+												<div id="gainer4_price"></div>
+											</td>
+											<td class="tableColumn">
+												<div id="gainer4_change" style="color: #009900; display: inline;"></div>
+												<img src="images/arrowup.gif" width="10" height="10" border="0" />
+											</td>
+										</tr>
+										<tr class="tableOddRow">
+											<td class="tableColumn">
+												<div id="gainer5_stock"></div>
+											</td>
+											<td class="tableColumn">
+												<div id="gainer5_price"></div>
+											</td>
+											<td class="tableColumn">
+												<div id="gainer5_change" style="color: #009900; display: inline;"></div>
+												<img src="images/arrowup.gif" width="10" height="10" border="0" />
+											</td>
+										</tr>
+
+
+									</tbody>
+								</table>
+							</td>
+							<td>
+								<table width="200px" class="table">
+									<tbody>
+										<tr class="tableOddRow">
+											<td class="tableColumn" colspan="3" align="center" bgcolor="#fafcb6" width="74">
+												<a href="docs/glossary.html">Top Losers</a>
+											</td>
+										</tr>
+										<tr class="tableOddRow" align="center">
+											<td width="33%" class="tableColumn">
+												<a href="docs/glossary.html">Symbol</a>
+											</td>
+											<td width="33%" class="tableColumn">
+												<a href="docs/glossary.html">Price</a>
+											</td>
+											<td class="tableColumn">
+												<a href="docs/glossary.html">Change</a>
+											</td>
+										</tr>
+										<tr class="tableOddRow">
+											<td class="tableColumn">
+												<div id="loser1_stock"></div>
+											</td>
+											<td class="tableColumn">
+												<div id="loser1_price"></div>
+											</td>
+											<td class="tableColumn">
+												<div id="loser1_change" style="color: #CC0000; display: inline;"></div>
+												<img src="images/arrowdown.gif" width="10" height="10" border="0" />
+											</td>
+										</tr>
+										<tr class="tableOddRow">
+											<td class="tableColumn">
+												<div id="loser2_stock"></div>
+											</td>
+											<td class="tableColumn">
+												<div id="loser2_price"></div>
+											</td>
+											<td class="tableColumn">
+												<div id="loser2_change" style="color: #CC0000; display: inline;"></div>
+												<img src="images/arrowdown.gif" width="10" height="10" border="0" />
+											</td>
+										</tr>
+										<tr class="tableOddRow">
+											<td class="tableColumn">
+												<div id="loser3_stock"></div>
+											</td>
+											<td class="tableColumn">
+												<div id="loser3_price"></div>
+											</td>
+											<td class="tableColumn">
+												<div id="loser3_change" style="color: #CC0000; display: inline;"></div>
+												<img src="images/arrowdown.gif" width="10" height="10" border="0" />
+											</td>
+										</tr>
+										<tr class="tableOddRow">
+											<td class="tableColumn">
+												<div id="loser4_stock"></div>
+											</td>
+											<td class="tableColumn">
+												<div id="loser4_price"></div>
+											</td>
+											<td class="tableColumn">
+												<div id="loser4_change" style="color: #CC0000; display: inline;"></div>
+												<img src="images/arrowdown.gif" width="10" height="10" border="0" />
+											</td>
+										</tr>
+										<tr class="tableOddRow">
+											<td class="tableColumn">
+												<div id="loser5_stock"></div>
+											</td>
+											<td class="tableColumn">
+												<div id="loser5_price"></div>
+											</td>
+											<td class="tableColumn">
+												<div id="loser5_change" style="color: #CC0000; display: inline;"></div>
+												<img src="images/arrowdown.gif" width="10" height="10" border="0" />
+											</td>
+										</tr>
+									</tbody>
+								</table>
+							</td>
+						</tr>
+					</table>
+
+					<table style="width: 100%;">
+						<tbody>
+							<tr>
+								<td colspan="2">
+									<hr />
+								</td>
+							</tr>
+							<tr>
+								<td colspan="2">
+									<table width="100%" style="font-size: 11px">
+										<tbody>
+											<tr>
+												<td></td>
+												<td style="vertical-align: bottom; text-align: center">
+													<h:commandButton class="submit" id="submit2" type="submit" value="quotes" action="#{quotedata.getQuotesBySymbols}" />
+													<h:inputText id="symbols" class="rounded" value="#{quotedata.symbols}" required="true">
+														<f:validateLength minimum="1" maximum="40" />
+													</h:inputText>
+												</td>
+											</tr>
+										</tbody>
+									</table>
+								</td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+			</div>
+		</h:form>
+	</div>
+	<div id="footer"></div>
+
+</h:body>
+</html>

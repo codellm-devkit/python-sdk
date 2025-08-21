@@ -1,0 +1,308 @@
+<!-- 
+ * (C) Copyright IBM Corporation 2015.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html  xmlns="http://www.w3.org/1999/xhtml" 
+       xmlns:h="http://xmlns.jcp.org/jsf/html" 
+       xmlns:f="http://xmlns.jcp.org/jsf/core"
+       xmlns:ui="http://xmlns.jcp.org/jsf/facelets" 
+       xmlns:fn="http://xmlns.jcp.org/jsp/jstl/functions">
+<h:head>
+	<title>DayTrader Order</title>
+	<link rel="stylesheet" href="style-jsf.css" type="text/css" />
+	<link rel="shortcut icon" href="./favicon.ico" />
+</h:head>
+<h:body>
+
+	<div id="page-wrap">
+		<h:form id="order">
+			<div id="header">
+				<img src="images/DayTraderHead_blue.gif" style="display: block; margin-left: auto; margin-right: auto" />
+
+				<div id="nav2">
+					<ul id="list-nav2">
+						<li>
+							<h:outputLink value="tradehome.faces">Home</h:outputLink>
+						</li>
+						<li>
+							<h:outputLink value="account.faces">Account</h:outputLink>
+						</li>
+						<li>
+							<h:outputLink value="marketSummary.faces">Market</h:outputLink>
+						</li>
+						<li>
+							<h:outputLink value="portfolio.faces">Portfolio</h:outputLink>
+						</li>
+						<li>
+							<h:outputLink value="quote.faces">Quotes/Trade</h:outputLink>
+						</li>
+						<li>
+							<h:commandLink action="#{tradeapp.logout}" id="logoff">Logoff</h:commandLink>
+						</li>
+					</ul>
+				</div>
+			</div>
+
+			<div id="content">
+
+				<div id="contentContainer">
+					<h:outputText value="#{accountdata.currentTime}" style="float:right;color:#cc0000;font-size:10px" />
+
+					<h:panelGroup rendered="#{fn:length(accountdata.closedOrders) > 0}">
+						<table style="width: 100%">
+							<tr>
+								<td colspan="8" bgcolor="#cc0000">
+									<b>
+										<font color="#ffffff">Alert: The following Order(s) have completed.</font>
+									</b>
+								</td>
+							</tr>
+							<tr style="width: 100%;">
+								<td>
+									<h:dataTable id="orders" width="100%" value="#{accountdata.closedOrders}" var="item" styleClass="table" headerClass="tableHeader"
+										rowClasses="tableOddRow,tableEvenRow"
+										columnClasses="tableColumn,tableColumn,tableColumn,tableColumn,tableColumn,tableColumn,tableColumn,tableColumn">
+
+										<h:column>
+											<f:facet name="header">
+												<h:outputLink value="docs/glossary.html">
+													<h:outputText value="order id" />
+												</h:outputLink>
+											</f:facet>
+											<h:outputText value="#{item.orderID}"></h:outputText>
+										</h:column>
+
+										<h:column>
+											<f:facet name="header">
+												<h:outputLink value="docs/glossary.html">
+													<h:outputText value="order status" />
+												</h:outputLink>
+											</f:facet>
+											<h:outputText value="#{item.orderStatus}"></h:outputText>
+										</h:column>
+
+										<h:column>
+											<f:facet name="header">
+												<h:outputLink value="docs/glossary.html">
+													<h:outputText value="creation date" />
+												</h:outputLink>
+											</f:facet>
+											<h:outputText value="#{item.openDate}"></h:outputText>
+										</h:column>
+
+										<h:column>
+											<f:facet name="header">
+												<h:outputLink value="docs/glossary.html">
+													<h:outputText value="completion date" />
+												</h:outputLink>
+											</f:facet>
+											<h:outputText value="#{item.completionDate}"></h:outputText>
+										</h:column>
+
+										<h:column>
+											<f:facet name="header">
+												<h:outputLink value="docs/glossary.html">
+													<h:outputText value="txn fee" />
+												</h:outputLink>
+											</f:facet>
+											<h:outputText value="#{item.orderFee}"></h:outputText>
+										</h:column>
+
+										<h:column>
+											<f:facet name="header">
+												<h:outputLink value="docs/glossary.html">
+													<h:outputText value="type" />
+												</h:outputLink>
+											</f:facet>
+											<h:outputText value="#{item.orderType}"></h:outputText>
+										</h:column>
+
+										<h:column>
+											<f:facet name="header">
+												<h:outputLink value="docs/glossary.html">
+													<h:outputText value="symbol" />
+												</h:outputLink>
+											</f:facet>
+											<h:outputText value="#{item.symbol}"></h:outputText>
+										</h:column>
+
+										<h:column>
+											<f:facet name="header">
+												<h:outputLink value="docs/glossary.html">
+													<h:outputText value="quantity" />
+												</h:outputLink>
+											</f:facet>
+											<h:outputText value="#{item.quantity}"></h:outputText>
+										</h:column>
+									</h:dataTable>
+								</td>
+							</tr>
+						</table>
+					</h:panelGroup>
+
+
+					<table width="100%">
+						<tbody>
+							<tr>
+								<td>
+									<table width="100%">
+										<tbody>
+											<tr>
+												<td></td>
+											</tr>
+
+											<tr>
+												<td align="left" bgcolor="#cccccc">
+													<b>New Order</b>
+												</td>
+											</tr>
+											<tr>
+												<td align="left">
+													<font color="#cc0000">
+														<b>
+															<br />
+															Order&#160;
+															<h:outputText value="#{orderdata.orderData.orderID}" />
+														</b>
+														&#160;to&#160;
+														<b>
+															<h:outputText value="#{orderdata.orderData.orderType}" />
+															&#160;
+															<h:outputText value="#{orderdata.orderData.quantity}" />
+														</b>
+														&#160;shares&#160;of&#160;
+														<b>
+															<h:outputLink value="docs/glossary.html">symbol:</h:outputLink>
+															<h:outputText value="#{orderdata.orderData.symbol}" />
+														</b>
+														&#160;has been submitted for processing.
+													</font>
+													<br />
+													<br />
+													<font color="#000000">
+														Order&#160;
+														<font color="#000000">
+															<b>
+																<h:outputText value="#{orderdata.orderData.orderID}" />
+															</b>
+														</font>
+														details:
+													</font>
+												</td>
+											</tr>
+											<tr>
+												<td align="center">
+													<table class="table" width="100%">
+														<thead>
+
+															<tr>
+																<th class="tableHeader">
+																	<a href="docs/glossary.html">order ID</a>
+																</th>
+																<th class="tableHeader">
+																	<a href="docs/glossary.html">order status</a>
+																</th>
+																<th class="tableHeader">
+																	<a href="docs/glossary.html">creation date</a>
+																</th>
+																<th class="tableHeader">
+																	<a href="docs/glossary.html">completion date</a>
+																</th>
+																<th class="tableHeader">
+																	<a href="docs/glossary.html">txn fee</a>
+																</th>
+																<th class="tableHeader">
+																	<a href="docs/glossary.html">type</a>
+																</th>
+																<th class="tableHeader">
+																	<a href="docs/glossary.html">symbol</a>
+																</th>
+																<th class="tableHeader">
+																	<a href="docs/glossary.html">quantity</a>
+																</th>
+															</tr>
+														</thead>
+														<tbody>
+															<tr class="tableOddRow">
+																<td class="tableColumn">
+																	<h:outputText value="#{orderdata.orderData.orderID}" />
+																</td>
+																<td class="tableColumn">
+																	<h:outputText value="#{orderdata.orderData.orderStatus}" />
+																</td>
+																<td class="tableColumn">
+																	<h:outputText value="#{orderdata.orderData.openDate}" />
+																</td>
+																<td class="tableColumn">
+																	<h:outputText value="#{orderdata.orderData.completionDate}" />
+																</td>
+																<td class="tableColumn">
+																	<h:outputText value="#{orderdata.orderData.orderFee}" />
+																</td>
+																<td class="tableColumn">
+																	<h:outputText value="#{orderdata.orderData.orderType}" />
+																</td>
+																<td class="tableColumn">
+																	<h:outputText value="#{orderdata.orderData.symbol}" />
+																</td>
+																<td class="tableColumn">
+																	<h:outputText value="#{orderdata.orderData.quantity}" />
+																</td>
+															</tr>
+														</tbody>
+													</table>
+												</td>
+											</tr>
+										</tbody>
+									</table>
+								</td>
+							</tr>
+						</tbody>
+					</table>
+					<table style="width: 100%;">
+						<tbody>
+							<tr>
+								<td colspan="2">
+									<hr />
+								</td>
+							</tr>
+							<tr>
+								<td colspan="2">
+									<table width="100%" style="font-size: 11px">
+										<tbody>
+											<tr>
+												<td></td>
+												<td style="vertical-align: bottom; text-align: center">
+													<h:commandButton class="submit" id="submit2" type="submit" value="quotes" action="#{quotedata.getQuotesBySymbols}" />
+													<h:inputText id="symbols" class="rounded" value="#{quotedata.symbols}" required="true">
+														<f:validateLength minimum="1" maximum="40" />
+													</h:inputText>
+												</td>
+											</tr>
+										</tbody>
+									</table>
+								</td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+			</div>
+		</h:form>
+	</div>
+	<div id="footer"></div>
+
+</h:body>
+</html>

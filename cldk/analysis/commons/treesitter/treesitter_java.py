@@ -14,8 +14,10 @@
 # limitations under the License.
 ################################################################################
 
-"""
-TreesitterJava module
+"""Java tree-sitter queries and helpers.
+
+Provides utilities to parse Java source text with tree-sitter and extract
+classes, methods, interfaces, invocations, comments, and related metadata.
 """
 import logging
 from itertools import groupby
@@ -32,40 +34,33 @@ PARSER: Parser = Parser(LANGUAGE)
 
 # pylint: disable=too-many-public-methods
 class TreesitterJava:
-    """
-    Treesitter for Java usecases.
-    """
+    """Tree-sitter helpers for Java use cases."""
 
     def __init__(self) -> None:
         pass
 
     def method_is_not_in_class(self, method_name: str, class_body: str) -> bool:
-        """Check if a method is in a class.
+        """Return True if the method is not declared in the class body.
 
-        Parameters
-        ----------
-        method_name : str
-            The name of the method to check.
-        class_body : str
-            The body of the class to check.
+        Args:
+            method_name (str): Method name to check.
+            class_body (str): Class source body.
 
-        Returns
-        -------
-        bool
-            True if the method is in the class, False otherwise.
+        Returns:
+            bool: True if absent, False otherwise.
         """
         methods_in_class = self.frame_query_and_capture_output("(method_declaration name: (identifier) @name)", class_body)
 
         return method_name not in {method.node.text.decode() for method in methods_in_class}
 
     def is_parsable(self, code: str) -> bool:
-        """
-        Check if the code is parsable
+        """Check whether the Java code parses without syntax errors.
+
         Args:
-            code: source code
+            code (str): Source code.
 
         Returns:
-            True if the code is parsable, False otherwise
+            bool: True if parsable, False otherwise.
         """
 
         def syntax_error(node):
@@ -86,37 +81,37 @@ class TreesitterJava:
         return False
 
     def get_raw_ast(self, code: str) -> Tree:
-        """
-        Get the raw AST
+        """Parse and return the raw AST.
+
         Args:
-            code: source code
+            code (str): Source code.
 
         Returns:
-            Tree: the raw AST
+            Tree: Parsed AST.
         """
         return PARSER.parse(bytes(code, "utf-8"))
 
     def get_all_imports(self, source_code: str) -> Set[str]:
-        """Get a list of all the imports in a class.
+        """Return all import statements in the source.
 
         Args:
-            source_code (str): The source code to process.
+            source_code (str): Java source.
 
         Returns:
-            Set[str]: A set of all the imports in the class.
+            set[str]: Import identifiers.
         """
         import_declarations: Captures = self.frame_query_and_capture_output(query="(import_declaration (scoped_identifier) @name)", code_to_process=source_code)
         return {capture.node.text.decode() for capture in import_declarations}
 
     # TODO: This typo needs to be fixed (i.e., package not pacakge)
     def get_pacakge_name(self, source_code: str) -> str:
-        """Get the package name from the source code.
+        """Return the package name from the source code.
 
         Args:
-            source_code (str): The source code to process.
+            source_code (str): Java source.
 
         Returns:
-            str: The package name.
+            str: Package declaration value, or None if absent.
         """
         package_name: Captures = self.frame_query_and_capture_output(query="((package_declaration) @name)", code_to_process=source_code)
         if package_name:
@@ -124,25 +119,25 @@ class TreesitterJava:
         return None
 
     def get_class_name(self, source_code: str) -> str:
-        """Get the class name from the source code.
+        """Return the class name from the source code.
 
         Args:
-            source_code (str): The source code to process.
+            source_code (str): Java source.
 
         Returns:
-            str: The class name.
+            str: Class identifier.
         """
         class_name = self.frame_query_and_capture_output("(class_declaration name: (identifier) @name)", source_code)
         return class_name[0].node.text.decode()
 
     def get_superclass(self, source_code: str) -> str:
-        """Get a list of all the superclasses in a class.
+        """Return the superclass name if present.
 
         Args:
-            source_code (str): The source code to process.
+            source_code (str): Java source.
 
         Returns:
-            Set[str]: A set of all the superclasses in the class.
+            str: Superclass identifier or empty string.
         """
         superclass: Captures = self.frame_query_and_capture_output(query="(class_declaration (superclass (type_identifier) @superclass))", code_to_process=source_code)
 
@@ -156,27 +151,27 @@ class TreesitterJava:
         return superclass[0].node.text.decode()
 
     def get_all_interfaces(self, source_code: str) -> Set[str]:
-        """Get a set of interfaces implemented by a class.
+        """Return interfaces implemented by a class.
 
         Args:
-            source_code (str): The source code to process.
+            source_code (str): Java source.
 
         Returns:
-            Set[str]: A set of all the interfaces implemented by the class.
+            set[str]: Interface identifiers.
         """
 
         interfaces = self.frame_query_and_capture_output("(class_declaration (super_interfaces (type_list (type_identifier) @interface)))", code_to_process=source_code)
         return {interface.node.text.decode() for interface in interfaces}
 
     def frame_query_and_capture_output(self, query: str, code_to_process: str) -> Captures:
-        """Frame a query for the tree-sitter parser.
+        """Run a query and return captures from the AST.
 
-        Parameters
-        ----------
-        query : str
-            The query to frame.
-        code_to_process : str
-            The code to process.
+        Args:
+            query (str): S-expression query string.
+            code_to_process (str): Java source.
+
+        Returns:
+            Captures: Query captures for the AST root.
         """
         framed_query: Query = LANGUAGE.query(query)
         tree = PARSER.parse(bytes(code_to_process, "utf-8"))
@@ -189,9 +184,7 @@ class TreesitterJava:
         return captures[0].node.text.decode()
 
     def get_method_name_from_invocation(self, method_invocation: str) -> str:
-        """
-        Using the tree-sitter query, extract the method name from the method invocation.
-        """
+        """Extract the method name from a method invocation string."""
 
         captures: Captures = self.frame_query_and_capture_output("(method_invocation name: (identifier) @method_name)", method_invocation)
         return captures[0].node.text.decode()
@@ -202,24 +195,17 @@ class TreesitterJava:
         return captures[0].node.text.decode()
 
     def safe_ascend(self, node: Node, ascend_count: int) -> Node:
-        """Safely ascend the tree. If the node does not exist or if it has no parent, raise an error.
+        """Ascend parent pointers safely in the AST.
 
-        Parameters
-        ----------
-        node : Node
-            The node to ascend from.
-        ascend_count : int
-            The number of times to ascend the tree.
+        Args:
+            node (Node): Starting node.
+            ascend_count (int): Levels to ascend.
 
-        Returns
-        -------
-        Node
-            The node at the specified level of the tree.
+        Returns:
+            Node: Ancestor node after ascending.
 
-        Raises
-        ------
-        ValueError
-            If the node has no parent.
+        Raises:
+            ValueError: If node is None or has no parent.
         """
         if node is None:
             raise ValueError("Node does not exist.")
@@ -231,22 +217,16 @@ class TreesitterJava:
             return self.safe_ascend(node.parent, ascend_count - 1)
 
     def get_call_targets(self, method_body: str, declared_methods: dict) -> Set[str]:
-        """Should generate a list of call targets from the method body.
+        """Return call targets referenced in a method body.
 
-        Uses simple name resolution for finding the call targets. Nothing sophisticated here. Just a simple search
-        over the AST.
+        Uses simple name resolution over the AST.
 
-        Parameters
-        ----------
-        method_body : Node
-            The method body.
-        declared_methods : dict
-            A dictionary of all declared methods in the class.
+        Args:
+            method_body (str): Method source.
+            declared_methods (dict): Declared methods in the class.
 
-        Returns
-        -------
-        List[str]
-            A list of call targets (methods).
+        Returns:
+            set[str]: Call target method names.
         """
 
         select_test_method_query = "(method_invocation name: (identifier) @method)"
@@ -266,20 +246,14 @@ class TreesitterJava:
         return call_targets
 
     def get_calling_lines(self, source_method_code: str, target_method_name: str) -> List[int]:
-        """
-        Returns a list of line numbers in source method where target method is called.
+        """Return line numbers where the target method is called in the source method.
 
-        Parameters:
-        -----------
-        source_method_code : str
-            source method code
-
-        target_method_code : str
+        Args:
+            source_method_code (str): Source method code.
+            target_method_name (str): Target method signature or name.
 
         Returns:
-        --------
-        List[int]
-            List of line numbers within in source method code block.
+            list[int]: Line numbers within the source method.
         """
         if not source_method_code:
             return []
@@ -297,25 +271,20 @@ class TreesitterJava:
                 method_name = c.node.text.decode()
                 if method_name == target_method_name:
                     target_call_lines.append(c.node.start_point[0])
-        except:
+        except Exception:
             logger.warning(f"Unable to get calling lines for {target_method_name} in {source_method_code}.")
             return []
 
         return target_call_lines
 
     def get_test_methods(self, source_class_code: str) -> Dict[str, str]:
-        """
-        Returns a dictionary of method names and method bodies.
+        """Return methods annotated with @Test in a class.
 
-        Parameters:
-        -----------
-        source_class_code : str
-            String containing code for a java class.
+        Args:
+            source_class_code (str): Java class source.
 
         Returns:
-        --------
-        Dict[str,str]
-            Dictionary of method names and method bodies.
+            dict[str, str]: Map of method name to body.
         """
         query = """
                     (method_declaration
@@ -337,20 +306,14 @@ class TreesitterJava:
         return test_method_dict
 
     def get_methods_with_annotations(self, source_class_code: str, annotations: List[str]) -> Dict[str, List[Dict]]:
-        """
-        Returns a dictionary of method names and method bodies.
+        """Return methods grouped by annotation.
 
-        Parameters:
-        -----------
-        source_class_code : str
-            String containing code for a java class.
-        annotations : List[str]
-            List of annotation strings.
+        Args:
+            source_class_code (str): Java class source.
+            annotations (list[str]): Annotation names to include.
+
         Returns:
-        --------
-        Dict[str,List[Dict]]
-            Dictionary with annotations as keys and
-            a list of dictionaries containing method names and bodies, as values.
+            dict[str, list[dict]]: Mapping of annotation to list of method info dicts.
         """
         query = """
                     (method_declaration
@@ -377,34 +340,25 @@ class TreesitterJava:
         return annotation_method_dict
 
     def get_all_type_invocations(self, source_code: str) -> Set[str]:
-        """
-        Given the source code, get all the type invocations in the source code.
+        """Return all type identifiers referenced in the source.
 
-        Parameters
-        ----------
-        source_code : str
-            The source code to process.
+        Args:
+            source_code (str): Java source.
 
-        Returns
-        -------
-        Set[str]
-            A set of all the type invocations in the source code.
+        Returns:
+            set[str]: Type identifiers.
         """
         type_references: Captures = self.frame_query_and_capture_output("(type_identifier) @type_id", source_code)
         return {type_id.node.text.decode() for type_id in type_references}
 
     def get_method_return_type(self, source_code: str) -> str:
-        """Get the return type of a method.
+        """Return the return type of a method.
 
-        Parameters
-        ----------
-        source_code : str
-            The source code to process.
+        Args:
+            source_code (str): Java method source.
 
-        Returns
-        -------
-        str
-            The return type of the method.
+        Returns:
+            str: Return type identifier.
         """
 
         type_references: Captures = self.frame_query_and_capture_output("(method_declaration type: ((type_identifier) @type_id))", source_code)
@@ -412,19 +366,14 @@ class TreesitterJava:
         return type_references[0].node.text.decode()
 
     def get_lexical_tokens(self, code: str, filter_by_node_type: List[str] | None = None) -> List[str]:
-        """
-        Get the lexical tokens given the code
+        """Return lexical tokens from the code.
 
-        Parameters
-        ----------
-        filter_by_node_type: If needed, filter the type of the node
-        code: Java code
+        Args:
+            code (str): Java source code.
+            filter_by_node_type (list[str] | None): Optional node type filter.
 
-        Returns
-        -------
-        List[str]
-        List of lexical tokens
-
+        Returns:
+            list[str]: Collected token strings.
         """
         tree = PARSER.parse(bytes(code, "utf-8"))
         root_node = tree.root_node
@@ -445,18 +394,13 @@ class TreesitterJava:
         return lexical_tokens
 
     def remove_all_comments(self, source_code: str) -> str:
-        """
-        Remove all comments from the source code.
+        """Return source code with all comments removed.
 
-        Parameters
-        ----------
-        source_code : str
-            The source code to process.
+        Args:
+            source_code (str): Java source.
 
-        Returns
-        -------
-        str
-            The source code with all comments removed.
+        Returns:
+            str: Source with comments removed.
         """
 
         # Remove any prefix comments/content before the package declaration
@@ -483,17 +427,13 @@ class TreesitterJava:
         return self.make_pruned_code_prettier(pruned_source_code)
 
     def make_pruned_code_prettier(self, pruned_code: str) -> str:
-        """Make the pruned code prettier.
+        """Prettify the pruned code after comment removal.
 
-        Parameters
-        ----------
-        pruned_code : str
-            The pruned code.
+        Args:
+            pruned_code (str): Source after pruning.
 
-        Returns
-        -------
-        str
-            The prettified pruned code.
+        Returns:
+            str: Prettified source code.
         """
         # First remove remaining block comments
         block_comments: Captures = self.frame_query_and_capture_output(query="((block_comment) @comment_block)", code_to_process=pruned_code)

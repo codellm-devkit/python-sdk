@@ -1,0 +1,283 @@
+<!-- 
+ * (C) Copyright IBM Corporation 2015.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+-->
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html  xmlns="http://www.w3.org/1999/xhtml" 
+       xmlns:h="http://xmlns.jcp.org/jsf/html" 
+       xmlns:f="http://xmlns.jcp.org/jsf/core"
+       xmlns:ui="http://xmlns.jcp.org/jsf/facelets" 
+       xmlns:fn="http://xmlns.jcp.org/jsp/jstl/functions">
+<h:head>
+	<title>DayTrader Home</title>
+	<link rel="stylesheet" href="style-jsf.css" type="text/css" />
+	<link rel="shortcut icon" href="./favicon.ico" />
+</h:head>
+<h:body>
+
+	<div id="page-wrap">
+		<h:form id="tradeHome">
+			<div id="header">
+				<img src="images/DayTraderHead_blue.gif" style="display: block; margin-left: auto; margin-right: auto" />
+
+				<div id="nav2">
+					<ul id="list-nav2">
+						<li>
+							<h:outputLink value="tradehome.faces">Home</h:outputLink>
+						</li>
+						<li>
+							<h:outputLink value="account.faces">Account</h:outputLink>
+						</li>
+						<li>
+							<h:outputLink value="marketSummary.faces">Market</h:outputLink>
+						</li>
+						<li>
+							<h:outputLink value="portfolio.faces">Portfolio</h:outputLink>
+						</li>
+						<li>
+							<h:outputLink value="quote.faces">Quotes/Trade</h:outputLink>
+						</li>
+						<li>
+							<h:commandLink action="#{tradeapp.logout}" id="logoff">Logoff</h:commandLink>
+						</li>
+					</ul>
+				</div>
+			</div>
+
+			<div id="content">
+
+				<div id="contentContainer">
+					<font color="#cc0000"> <h:outputText value="#{tradeapp.results}"></h:outputText></font>
+					<h:outputText value="#{accountdata.currentTime}" style="float:right;color:#cc0000;font-size:10px" />
+					<h2>
+						Welcome&#160;
+						<h:outputText value="#{accountdata.profileID}" />
+					</h2>
+
+					<h:panelGroup rendered="#{fn:length(accountdata.closedOrders) > 0}">
+						<table style="width: 100%">
+							<tr>
+								<td colspan="8" bgcolor="#cc0000">
+									<b>
+										<font color="#ffffff">Alert: The following Order(s) have completed.</font>
+									</b>
+								</td>
+							</tr>
+							<tr>
+								<td>
+									<h:dataTable id="orders" width="100%" value="#{accountdata.closedOrders}" var="item" styleClass="table" headerClass="tableHeader"
+										rowClasses="tableOddRow,tableEvenRow"
+										columnClasses="tableColumn,tableColumn,tableColumn,tableColumn,tableColumn,tableColumn,tableColumn,tableColumn">
+
+										<h:column>
+											<f:facet name="header">
+												<h:outputLink value="docs/glossary.html">
+													<h:outputText value="order id" />
+												</h:outputLink>
+											</f:facet>
+											<h:outputText value="#{item.orderID}"></h:outputText>
+										</h:column>
+
+										<h:column>
+											<f:facet name="header">
+												<h:outputLink value="docs/glossary.html">
+													<h:outputText value="order status" />
+												</h:outputLink>
+											</f:facet>
+											<h:outputText value="#{item.orderStatus}"></h:outputText>
+										</h:column>
+
+										<h:column>
+											<f:facet name="header">
+												<h:outputLink value="docs/glossary.html">
+													<h:outputText value="creation date" />
+												</h:outputLink>
+											</f:facet>
+											<h:outputText value="#{item.openDate}"></h:outputText>
+										</h:column>
+
+										<h:column>
+											<f:facet name="header">
+												<h:outputLink value="docs/glossary.html">
+													<h:outputText value="completion date" />
+												</h:outputLink>
+											</f:facet>
+											<h:outputText value="#{item.completionDate}"></h:outputText>
+										</h:column>
+
+										<h:column>
+											<f:facet name="header">
+												<h:outputLink value="docs/glossary.html">
+													<h:outputText value="txn fee" />
+												</h:outputLink>
+											</f:facet>
+											<h:outputText value="#{item.orderFee}"></h:outputText>
+										</h:column>
+
+										<h:column>
+											<f:facet name="header">
+												<h:outputLink value="docs/glossary.html">
+													<h:outputText value="type" />
+												</h:outputLink>
+											</f:facet>
+											<h:outputText value="#{item.orderType}"></h:outputText>
+										</h:column>
+
+										<h:column>
+											<f:facet name="header">
+												<h:outputLink value="docs/glossary.html">
+													<h:outputText value="symbol" />
+												</h:outputLink>
+											</f:facet>
+											<h:outputText value="#{item.symbol}"></h:outputText>
+										</h:column>
+
+										<h:column>
+											<f:facet name="header">
+												<h:outputLink value="docs/glossary.html">
+													<h:outputText value="quantity" />
+												</h:outputLink>
+											</f:facet>
+											<h:outputText value="#{item.quantity}"></h:outputText>
+										</h:column>
+									</h:dataTable>
+								</td>
+							</tr>
+						</table>
+					</h:panelGroup>
+
+
+					<table style="width: 100%; margin: 0 auto;">
+						<tr>
+							<td colspan="3" align="left" bgcolor="#cccccc">
+								<h3>User Statistics</h3>
+							</td>
+						</tr>
+						<tr>
+							<td align="right" valign="top">
+								<a href="docs/glossary.html">account ID:</a>
+								<br />
+								<a href="docs/glossary.html">account created:</a>
+								<br />
+								<a href="docs/glossary.html">total logins:</a>
+								<br />
+								<a href="docs/glossary.html">session created:</a>
+								<br />
+							</td>
+							<td width="10"></td>
+							<td align="left">
+								<h:outputText value="#{accountdata.accountID}" />
+								<br />
+								<h:outputText value="#{accountdata.creationDate}" />
+								<br />
+								<h:outputText value="#{accountdata.loginCount}" />
+								<br />
+								<h:outputText value="#{accountdata.sessionCreationDate}" />
+								<br />
+							</td>
+						</tr>
+						<tr>
+							<td></td>
+							<td width="10"></td>
+							<td></td>
+						</tr>
+						<tr>
+							<td colspan="3" bgcolor="#cccccc">
+								<h3>Account Summary</h3>
+							</td>
+						</tr>
+						<tr>
+							<td align="right" valign="top">
+								<a href="docs/glossary.html">cash balance:</a>
+								<br />
+								<a href="docs/glossary.html">number of holdings:</a>
+								<br />
+								<a href="docs/glossary.html">total of holdings:</a>
+								<br />
+								sum of cash/holdings
+								<br />
+								opening balance:
+								<br />
+								<hr />
+							</td>
+							<td width="10"></td>
+							<td align="left" valign="top">
+								$&#160;
+								<h:outputText value="#{accountdata.balance}" />
+								<br />
+								<h:outputText value="#{accountdata.numberHoldings}" />
+								<br />
+								$&#160;
+								<h:outputText value="#{accountdata.holdingsTotal}" />
+								<br />
+								$&#160;
+								<h:outputText value="#{accountdata.sumOfCashHoldings}" />
+								<br />
+								$&#160;
+								<h:outputText value="#{accountdata.openBalance}" />
+								<br />
+								<hr />
+							</td>
+						</tr>
+						<tr>
+							<td valign="top" align="right">
+								<a href="docs/glossary.html">current gain/(loss):</a>
+							</td>
+							<td></td>
+							<td valign="top">
+								$
+								<b>
+									<h:outputText escape="false" value="#{accountdata.gainHTML}" />
+									&#160;
+									<h:outputText escape="false" value="#{accountdata.gainPercentHTML}" />
+								</b>
+							</td>
+						</tr>
+					</table>
+
+					<table style="width: 100%;">
+						<tbody>
+							<tr>
+								<td colspan="2">
+									<hr />
+								</td>
+							</tr>
+							<tr>
+								<td colspan="2">
+									<table width="100%" style="font-size: 11px">
+										<tbody>
+											<tr>
+												<td></td>
+												<td style="vertical-align: bottom; text-align: center">
+													<h:commandButton class="submit" id="submit" type="submit" value="quotes" action="#{quotedata.getQuotesBySymbols}" />
+													<h:inputText id="symbols" class="rounded" value="#{quotedata.symbols}" required="true">
+														<f:validateLength minimum="1" maximum="40" />
+													</h:inputText>
+												</td>
+											</tr>
+										</tbody>
+									</table>
+								</td>
+							</tr>
+						</tbody>
+					</table>
+				</div>
+			</div>
+		</h:form>
+	</div>
+	<div id="footer"></div>
+
+</h:body>
+</html>

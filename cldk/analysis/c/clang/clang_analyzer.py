@@ -1,25 +1,39 @@
+"""Analyze C/C++ code using Clang's Python bindings.
+
+This module provides a thin wrapper around libclang to parse translation
+units, extract functions, variables, includes, and call sites, and produce
+CLDK C models. It attempts to locate libclang on macOS and Linux.
+"""
+
 import os
-from pdb import set_trace
 import platform
-from clang.cindex import Config
 from pathlib import Path
 from typing import List, Optional
-from cldk.models.c import CFunction, CCallSite, CTranslationUnit, CApplication
+from cldk.models.c import CFunction, CCallSite, CTranslationUnit
 import logging
 
 from cldk.models.c.models import CInclude, CParameter, CVariable, StorageClass
 
-logger = logging.getLogger(__name__)
-
-# First, we only import Config from clang.cindex
 from clang.cindex import Config
 from clang.cindex import Index, TranslationUnit, CursorKind, TypeKind, CompilationDatabase
 
+logger = logging.getLogger(__name__)
+
 
 class ClangAnalyzer:
-    """Analyzes C code using Clang's Python bindings."""
+    """Analyze C/C++ code using Clang's Python bindings.
+
+    This analyzer creates a Clang index, optionally uses a compilation
+    database for compile flags, and walks the AST to build CLDK models.
+    """
 
     def __init__(self, compilation_database_path: Optional[Path] = None):
+        """Initialize the analyzer and libclang configuration.
+
+        Args:
+            compilation_database_path (Path | None): Optional path to a
+                compilation database (compile_commands.json directory).
+        """
         # # Let's turn off Address sanitization for parsing code
         # # Initialize libclang at module level
         # try:
@@ -49,10 +63,14 @@ class ClangAnalyzer:
             self.compilation_database = CompilationDatabase.fromDirectory(str(compilation_database_path))
 
     def __find_libclang(self) -> str:
-        """
-        Locates the libclang library on the system based on the operating system.
-        This function runs before any other Clang functionality is used, ensuring
-        proper initialization of the Clang environment.
+        """Locate the libclang library on the system.
+
+        Returns:
+            str: Absolute path to the libclang shared library.
+
+        Raises:
+            RuntimeError: If the operating system is unsupported or libclang
+                cannot be found. Error message includes installation hints.
         """
 
         system = platform.system()
@@ -68,11 +86,9 @@ class ClangAnalyzer:
 
         # On Linux, we check various common installation paths
         elif system == "Linux":
-            from pathlib import Path
-
             lib_paths = [Path("/usr/lib"), Path("/usr/lib64")]
             possible_paths = [str(p) for base in lib_paths if base.exists() for p in base.rglob("libclang*.so.17*")]
-            print(possible_paths)
+            logger.debug(f"Candidate libclang paths: {possible_paths}")
             install_instructions = "Install libclang development package using your system's package manager"
         else:
             raise RuntimeError(f"Unsupported operating system: {system}")
@@ -87,7 +103,14 @@ class ClangAnalyzer:
         raise RuntimeError(f"Could not find libclang library. \n" f"Please ensure LLVM is installed:\n{install_instructions}")
 
     def analyze_file(self, file_path: Path) -> CTranslationUnit:
-        """Analyzes a single C source file using Clang."""
+        """Analyze a single C/C++ source file using Clang.
+
+        Args:
+            file_path (Path): Path to the source file to analyze.
+
+        Returns:
+            CTranslationUnit: Parsed translation unit model with functions and includes.
+        """
 
         # Get compilation arguments if available
         compile_args = self._get_compile_args(file_path)
@@ -110,7 +133,12 @@ class ClangAnalyzer:
         return translation_unit
 
     def _process_translation_unit(self, cursor, translation_unit: CTranslationUnit):
-        """Should process all declarations in a translation unit."""
+        """Process all declarations in a translation unit.
+
+        Args:
+            cursor: Root cursor of the translation unit.
+            translation_unit (CTranslationUnit): Model to populate.
+        """
 
         for child in cursor.get_children():
             if child.location.file and str(child.location.file) != translation_unit.file_path:
@@ -126,22 +154,18 @@ class ClangAnalyzer:
                 translation_unit.includes.append(include)
 
     def _process_inclusion(self, cursor):
-        """
-        Processes an include directive, capturing both the include type and the included file.
+        """Process an include directive and capture metadata.
 
         Args:
-            cursor: Cursor to the include directive
-            translation_unit: Translation unit being processed
+            cursor: Cursor pointing to an inclusion directive.
 
         Returns:
+            CInclude: Include info with name, system/local flag, line number, and full text.
 
-
-        In C/C++, we have two main types of includes:
-        1. System includes: #include <header.h>   - Usually for standard libraries
-        2. Local includes: #include "header.h"    - Usually for your own headers
-
-        The function captures this distinction and stores additional metadata about
-        the inclusion.
+        Notes:
+            C/C++ include forms:
+            - System includes: #include <header.h>
+            - Local includes: #include "header.h"
         """
         include_name = cursor.displayname
         include_location = cursor.location
@@ -164,12 +188,16 @@ class ClangAnalyzer:
         return CInclude(name=include_name, is_system=is_system_include, line_number=include_location.line, full_text=full_text)
 
     def _extract_parameter(self, param) -> CParameter:
-        """
-        Extracts parameter information, handling default values carefully.
+        """Extract parameter info, including a best-effort default value.
 
-        In C++, parameters can have default values, but accessing these requires
-        careful token handling since the tokens form a generator that can only
-        be consumed once.
+        In C++, parameters can have default values, but token streams are
+        generators and must be consumed carefully.
+
+        Args:
+            param: Cursor for the parameter.
+
+        Returns:
+            CParameter: Parameter model with name, type, and optional default.
         """
         default_value = None
         try:
@@ -182,7 +210,14 @@ class ClangAnalyzer:
         return CParameter(name=param.spelling or f"placeholder_arg_{param.type.spelling.replace(' ', '_')}", type=param.type.spelling, default_value=default_value)
 
     def _extract_variable(self, cursor) -> CVariable:
-        """Extracts detailed variable information from a cursor."""
+        """Extract detailed variable information from a cursor.
+
+        Args:
+            cursor: Cursor for the variable declaration.
+
+        Returns:
+            CVariable: Variable model with qualifiers and source span.
+        """
         return CVariable(
             name=cursor.spelling,
             type=cursor.type.spelling,
@@ -195,22 +230,22 @@ class ClangAnalyzer:
         )
 
     def _extract_function_body(self, cursor) -> str:
-        """Extracts the body of a function.
+        """Extract a function's body as a string.
 
         Args:
-            cursor: Cursor to the function
+            cursor: Cursor to the function.
 
         Returns:
-            str: The function body
+            str: Function body text, or an empty string if unavailable.
         """
-        if cursor.is_definition() == False:
+        if not cursor.is_definition():
             return ""
 
         try:
             tokens = list(cursor.get_tokens())
             try:
                 body_start = next(i for i, t in enumerate(tokens) if t.spelling == "{")
-            except:
+            except Exception:
                 return ""
 
             brace = 0
@@ -236,7 +271,14 @@ class ClangAnalyzer:
             return ""
 
     def _extract_function(self, cursor) -> CFunction:
-        """Extracts detailed function information from a cursor."""
+        """Extract detailed function information from a cursor.
+
+        Args:
+            cursor: Cursor for a function declaration/definition.
+
+        Returns:
+            CFunction: Function model including signature, body, calls, and locals.
+        """
 
         # Get storage class
         storage_class = None
@@ -278,7 +320,14 @@ class ClangAnalyzer:
         )
 
     def _extract_call_site(self, cursor) -> CCallSite:
-        """Extracts information about a function call."""
+        """Extract information about a function call.
+
+        Args:
+            cursor: Cursor pointing to a call expression.
+
+        Returns:
+            CCallSite: Call site model with callee name, arg types, and span.
+        """
 
         # Determine if this is an indirect call (through function pointer)
         is_indirect = cursor.referenced is None and cursor.type.kind == TypeKind.FUNCTIONPROTO
@@ -300,7 +349,14 @@ class ClangAnalyzer:
         )
 
     def _get_compile_args(self, file_path: Path) -> List[str]:
-        """Gets compilation arguments for a file."""
+        """Get compilation arguments for a file.
+
+        Args:
+            file_path (Path): Source file path.
+
+        Returns:
+            list[str]: Compiler arguments for parsing.
+        """
         if not self.compilation_database:
             return ["-x", "c++", "-std=c++17"]
 
