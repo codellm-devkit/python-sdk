@@ -27,7 +27,6 @@ include = [
     "cldk/analysis/java/codeanalyzer/jar/*.jar"
 ]
 
-
 [tool.backend-versions]
 codeanalyzer-java = "2.3.3"
 
