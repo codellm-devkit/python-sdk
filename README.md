@@ -1,8 +1,4 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://github.com/codellm-devkit/.github/blob/main/profile/assets/cldk-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="https://github.com/codellm-devkit/.github/blob/main/profile/assets/cldk-light.png">
-  <img alt="Logo">
-</picture>
+<img src="https://github.com/codellm-devkit/.github/blob/main/profile/assets/cldk-light.png" alt="Logo">
 <p align='center'></p>
 <p align='center'></p>
 <p align='center'></p>
