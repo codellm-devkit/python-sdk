@@ -1,4 +1,4 @@
-<img src="https://github.com/codellm-devkit/.github/blob/main/profile/assets/cldk-light.png" alt="Logo">
+<img src="https://github.com/codellm-devkit/.github/blob/main/profile/assets/cldk-dark.png" alt="Logo">
 <p align='center'></p>
 <p align='center'></p>
 <p align='center'></p>
