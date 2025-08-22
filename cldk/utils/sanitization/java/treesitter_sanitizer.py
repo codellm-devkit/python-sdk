@@ -14,8 +14,11 @@
 # limitations under the License.
 ################################################################################
 
-"""
-Treesitter Sanitizer module
+"""Sanitize Java classes around a focal method using tree-sitter.
+
+This module provides utilities to prune Java source code by keeping only a
+focal test/method and its transitive callees, and by removing unused fields,
+imports, and inner classes.
 """
 
 import logging
@@ -29,8 +32,19 @@ log = logging.getLogger(__name__)
 
 
 class TreesitterSanitizer:
+    """Sanitize Java source code using tree-sitter queries.
+
+    The sanitizer focuses a class to a given focal method by keeping that
+    method and its callees, then removes unused fields, imports, and inner
+    classes. It also strips block comments before processing.
+    """
 
     def __init__(self, source_code):
+        """Initialize the sanitizer.
+
+        Args:
+            source_code (str): The full Java source code to sanitize.
+        """
         self.source_code = source_code
         self.sanitized_code = deepcopy(self.source_code)
         self.__javasitter = TreesitterJava()
@@ -38,17 +52,18 @@ class TreesitterSanitizer:
     def keep_only_focal_method_and_its_callees(self, focal_method: str) -> str:
         """Remove all methods except the focal method and its callees.
 
-        Parameters
-        ----------
-        focal_method : str
-            The of the focal method.
-        source_code : str
-            The source code to process.
+        Args:
+            focal_method (str): The name of the focal method.
 
-        Returns
-        -------
-        str
-            The pruned source code.
+        Returns:
+            str: The pruned source code.
+
+        Examples:
+            >>> src = 'class A { void keep(){} void drop(){} }'
+            >>> tz = TreesitterSanitizer(src)
+            >>> out = tz.keep_only_focal_method_and_its_callees('keep')
+            >>> 'drop' in out
+            False
         """
         method_declaration: Captures = self.__javasitter.frame_query_and_capture_output(query="((method_declaration) " "@method_declaration)", code_to_process=self.sanitized_code)
         declared_methods = {self.__javasitter.get_method_name_from_declaration(capture.node.text.decode()): capture.node.text.decode() for capture in method_declaration}
@@ -58,32 +73,26 @@ class TreesitterSanitizer:
         return self.__javasitter.make_pruned_code_prettier(self.sanitized_code)
 
     def remove_unused_imports(self, sanitized_code: str) -> str:
-        """
-        Remove all unused imports from the source code. Assuming you have removed all unused fields in a class and
-        you are given a pruned source code, visit every child and look for all type identifiers and other identifiers
-        and compare them with every element in the used imports list.
+        """Remove imports not referenced in the class body.
 
-        Parameters
-        ----------
-        source_code : str
-            The source code to process.
+        Assumes fields have already been pruned. Scans type identifiers and
+        other identifiers to decide which imports are used. Wildcard imports
+        are preserved.
 
-        sanitized_code : str
-            The source code after having performed certain operations like removing unused methods, etc.
+        Args:
+            sanitized_code (str): Source code after earlier pruning steps.
 
-        Returns
-        -------
-        str
-            The pruned source code with all the unused imports removed.
+        Returns:
+            str: The pruned source code with unused imports removed.
 
-        Steps
-        -----
-        + To compare, split string by '.' and compare if the last element is in the set of identifiers or type identifiers.
-        + Create a set called ids_and_typeids to capture all the indentified identifiers and type identifiers in the source code.
-        + Next, create a set called unused_imports.
-        + If import ends_with("*"), ignore it since we'll keep all wildcard imports.
-        + For every other import statements, compare if the last element in the import string is in the set of ids_and_typeids. If not, add it to the unused_imports set.
-        + Finally, remove all the unused imports from the source code and prettify it.
+        Notes:
+            - Compare the last segment of each import against collected
+              identifiers and type identifiers.
+            - Keep wildcard imports (ending with '*').
+        Examples:
+            >>> src = 'import java.util.List; class A { }'
+            >>> TreesitterSanitizer(src).remove_unused_imports(src)
+            ''
         """
         pruned_source_code: str = deepcopy(sanitized_code)
         import_declarations: Captures = self.__javasitter.frame_query_and_capture_output(query="((import_declaration) @imports)", code_to_process=self.source_code)
@@ -112,7 +121,7 @@ class TreesitterSanitizer:
                 query="((scoped_identifier) @scoped_identifier)", code_to_process=import_declaration.node.text.decode()
             )
             import_str = import_statement.captures[0].node.text.decode()
-            if not import_str.split(".")[-1] in ids_and_typeids:
+            if import_str.split(".")[-1] not in ids_and_typeids:
                 unused_imports.add(import_declaration.node.text.decode())
 
         for unused_import in unused_imports:
@@ -121,20 +130,22 @@ class TreesitterSanitizer:
         return self.__javasitter.make_pruned_code_prettier(pruned_source_code)
 
     def remove_unused_fields(self, sanitized_code: str) -> str:
-        """
-        Take the pruned source code and remove all the unused fields.
+        """Remove fields not referenced in any method or constructor.
 
-        Parameters
-        ----------
-        source_code : str
-            Source code after having removed all unused methods.
+        Args:
+            sanitized_code (str): Source after removing unused methods.
 
-        Implementation details
-        ----------------------
-        +   Get all the field declarations in the file -> used_fields
-        +   Get all the identifiers inside every declared method and constructor in the file.
-        +   Then, loop over every used_fields, get the field name, and add it to unused if the identifier doesn't match any known identifier
-            in the previous step.
+        Returns:
+            str: Source with unused fields removed.
+
+        Notes:
+            - Collect identifiers used in all methods and constructors, then
+              drop field declarations whose identifiers don't appear.
+        Examples:
+            >>> src = 'class A { int x; void f(){ int y = 1; } }'
+            >>> out = TreesitterSanitizer(src).remove_unused_fields(src)
+            >>> 'int x;' in out
+            False
         """
         pruned_source_code: str = deepcopy(sanitized_code)
         unused_fields: List[Captures.Capture] = list()
@@ -176,28 +187,22 @@ class TreesitterSanitizer:
         return self.__javasitter.make_pruned_code_prettier(pruned_source_code)
 
     def remove_unused_classes(self, sanitized_code: str) -> str:
-        """
-        Remove inner classes that are no longer used.
+        """Remove unused inner classes.
 
-        Parameters
-        ----------
-        sanitized_code : str
-            The sanitized code to process.
+        Args:
+            sanitized_code (str): The sanitized code to process.
 
-        Implementation steps
-        ---------------------
-        +   Make a deep copy of the source code.
-        +   Get the focal class name by getting the name of the outermost class.
-        +   Get a dictionary of the class name and class declarations in the source code.
-        +   Create unused_classes, a dictionary to hold all the classes that are not used. We seed it with all the classes.
-        +   Create a to_process stack to hold the classes to process. Seed it with the focal class.
-        +   Create a processed_so_far set to hold all the processed classes to avoid reprocessing classes repeatedly.
-        +   While to_process is not empty, pop the first class from the to_process stack, add it to processed_so_far set,
-            remove the inner classes from the current class, and get all the type invocations in the current class.
-        +   Add all the type invocations to the to_process stack iff:
-            1. they are not in the processed_so_far set, and 2. They are in the all_classes dictionary (i.e., they are defined in the class).
-        +   Loop until to_process is empty.
-        +   Finally, remove all the unused classes from the source code and prettify it.
+        Returns:
+            str: The pruned source code with unused inner classes removed.
+
+        Notes:
+            - Start from the outermost class, traverse type invocations, and
+              keep only reachable inner classes.
+        Examples:
+            >>> src = 'class A { class B{} }'
+            >>> out = TreesitterSanitizer(src).remove_unused_classes(src)
+            >>> 'class B' in out
+            False
         """
         focal_class = self.__javasitter.frame_query_and_capture_output(query="(class_declaration name: (identifier) @name)", code_to_process=self.source_code)
 
@@ -205,7 +210,7 @@ class TreesitterSanitizer:
             # We use [0] because there may be several nested classes,
             # we'll consider the outermost class as the focal class.
             focal_class_name = focal_class[0].node.text.decode()
-        except:
+        except Exception:
             return ""
 
         pruned_source_code = deepcopy(sanitized_code)
@@ -238,7 +243,7 @@ class TreesitterSanitizer:
 
             # Find all the type_references in the current class.
             type_references: Set[str] = self.__javasitter.get_all_type_invocations(current_class_without_inner_class)
-            to_process.update({type_reference for type_reference in type_references if type_reference in all_classes and not type_reference in processed_so_far})
+            to_process.update({type_reference for type_reference in type_references if type_reference in all_classes and type_reference not in processed_so_far})
 
         for _, unused_class_body in unused_classes.items():
             pruned_source_code = pruned_source_code.replace(unused_class_body, "")
@@ -246,35 +251,18 @@ class TreesitterSanitizer:
         return self.__javasitter.make_pruned_code_prettier(pruned_source_code)
 
     def _unused_methods(self, focal_method: str, declared_methods: Dict) -> Dict:
-        """
-        Parameters
-        ----------
-        focal_method : str
-            The focal method that acts the starting point. If nothing, every other method execpt this one will be unused
-        declared_methods : dict
-            A dictionary of all the declared methods in the focal class
+        """Compute methods unused given a focal method.
 
-        Returns
-        -------
-        Dict[str, str]
-            A dictionary of unused methods, where the key is the method name and value is the method body.
+        Args:
+            focal_method (str): Starting method name; all others are candidates for removal.
+            declared_methods (dict): Map of method name to its body text.
 
-        Implementation details
-        ----------------------
-        1.  Create a dictionary to hold all the methods to be processed (call this to_process).
-        2.  Make a deep copy of the declared methods dict to initialize the unused_methods. The intuition here is that
-            every method is unused initially, and we'll pop them out as we encounter them in the class.
-        3.  Start by initializing the to_process queue with the focal method.
-        4.  There may be recursive or cyclic calls, let's create a set called processed_so_far to hold all the processed
-            methods so we don't keep cycling between the methods or getting stuck at an infinite loop.
-        5.  In while loop, dequeue the first element from the to_process dictionary, put it processed_so_far set, and
-            obtain all the invoked methods in that (dequeued) method. We will assume that returned invoked methods are
-            only those that are declared in the class.
-        6.  For each of the invoked methods, and enqueue them in the to_process queue iff it hasn't been seen in
-            processed_so_far
-        7.  Loop until to_process is empty.
-        6.  It is now safe to assume that all the remaining methods in unused_methods dictionary really are unused and
-            may be removed from the file.
+        Returns:
+            dict[str, str]: Unused methods with their bodies.
+
+        Notes:
+            - Traverse the call graph from the focal method using in-class call
+              targets; anything unreached is unused.
         """
 
         unused_methods = deepcopy(declared_methods)  # A deep copy of unused methods.
@@ -306,21 +294,18 @@ class TreesitterSanitizer:
         return unused_methods
 
     def sanitize_focal_class(self, focal_method: str) -> str:
-        """Remove all methods except the focal method and its callees.
+        """Produce sanitized source focused on a focal method.
 
-        Given the focal method name and the entire source code, the output will be the pruned source code.
+        Args:
+            focal_method (str): The focal method declaration text or name.
 
-        Parameters
-        ----------
-        focal_method : str
-            The name of the focal method.
-        source_code_file : Path
-            The path to the source code file.
+        Returns:
+            str: Pruned source code with only relevant members retained.
 
-        Returns
-        -------
-        str
-            The pruned source code.
+        Examples:
+            >>> src = 'class A { void keep(){} void drop(){} }'
+            >>> TreesitterSanitizer(src).sanitize_focal_class('keep')
+            'class A { void keep(){}  }'
         """
 
         focal_method_name = self.__javasitter.get_method_name_from_declaration(focal_method)

@@ -14,8 +14,10 @@
 # limitations under the License.
 ################################################################################
 
-"""
-TreesitterPython module
+"""Python tree-sitter queries and helpers.
+
+Utilities to parse Python source code with tree-sitter and extract modules,
+classes, functions, methods, imports, and call sites.
 """
 
 import os
@@ -33,21 +35,19 @@ PARSER: Parser = Parser(LANGUAGE)
 
 
 class TreesitterPython:
-    """
-    Tree sitter for Python use cases.
-    """
+    """Tree-sitter helpers for Python use cases."""
 
     def __init__(self) -> None:
         self.utils: TreeSitterUtils = TreeSitterUtils()
 
     def is_parsable(self, code: str) -> bool:
-        """
-        Check if the code is parsable
+        """Check whether the Python code parses without syntax errors.
+
         Args:
-            code: source code
+            code (str): Source code.
 
         Returns:
-            True if the code is parsable, False otherwise
+            bool: True if parsable, False otherwise.
         """
 
         def syntax_error(node):
@@ -69,27 +69,24 @@ class TreesitterPython:
         return False
 
     def get_raw_ast(self, code: str) -> Tree:
-        """
-        Get the raw AST
+        """Parse and return the raw AST.
+
         Args:
-            code: source code
+            code (str): Source code.
 
         Returns:
-            Tree: the raw AST
+            Tree: Parsed AST.
         """
         return PARSER.parse(bytes(code, "utf-8"))
 
     def get_all_methods(self, module: str) -> List[PyMethod]:
-        """
-        Get all the methods in the specific module.
-        Parameters
-        ----------
-        module: code body of the module
+        """Return all methods declared in the module code body.
 
-        Returns
-        -------
-            List[PyMethod]: returns all the method details within the module
+        Args:
+            module (str): Module source code.
 
+        Returns:
+            list[PyMethod]: Method details within the module.
         """
         methods: List[PyMethod] = []
         method_signatures: dict[str, List[int]] = {}
@@ -102,28 +99,25 @@ class TreesitterPython:
         return methods
 
     def get_all_functions(self, module: str) -> List[PyMethod]:
-        """
-        Get all the methods in the specific module.
-        Parameters
-        ----------
-        module: code body of the module
+        """Return all top-level functions in the module code body.
 
-        Returns
-        -------
-            List[PyMethod]: returns all the method details within the module
+        Args:
+            module (str): Module source code.
 
+        Returns:
+            list[PyMethod]: Function details within the module.
         """
         methods: List[PyMethod] = []
         functions: List[PyMethod] = []
         method_signatures: dict[str, List[int]] = {}
         # Get the methods declared under class
         all_class_details: List[PyClass] = self.get_all_classes(module=module)
-        # Filter all method nodes
-        all_method_nodes: Captures = self.__get_method_nodes(module=module)
+        # Filter all method nodes: Captures = self.__get_method_nodes(module=module)
         for class_details in all_class_details:
             for method in class_details.methods:
                 method_signatures[method.full_signature] = [method.start_line, method.end_line]
             methods.extend(class_details.methods)
+        all_method_nodes: Captures = self.__get_method_nodes(module=module)
         for method_node in all_method_nodes:
             method_details = self.__get_function_details(node=method_node.node)
             if method_details.full_signature not in method_signatures:
@@ -135,16 +129,14 @@ class TreesitterPython:
         return functions
 
     def get_method_details(self, module: str, method_signature: str) -> PyMethod:
-        """
-        Given the code body and the method signature, returns the method details related to that method
-        Parameters
-        ----------
-        module: code body
-        method_signature: method signature
+        """Return details for a method signature in the module code body.
 
-        Returns
-        -------
-            PyMethod: Returns the method details related to that method
+        Args:
+            module (str): Module source.
+            method_signature (str): Method signature.
+
+        Returns:
+            PyMethod: Method details if found, else None.
         """
         all_method_details = self.get_all_methods(module=module)
         for method in all_method_details:
@@ -153,15 +145,13 @@ class TreesitterPython:
         return None
 
     def get_all_imports(self, module: str) -> List[str]:
-        """
-        Given the code body, returns the imports in that module
-        Parameters
-        ----------
-        module: code body
+        """Return all import statements present in the module code body.
 
-        Returns
-        -------
-            List[str]: List of imports
+        Args:
+            module (str): Module source.
+
+        Returns:
+            list[str]: List of import statements.
         """
         import_list = []
         captures_from_import: Captures = self.utils.frame_query_and_capture_output(PARSER, LANGUAGE, "(((import_from_statement) @imports))", module)
@@ -178,15 +168,13 @@ class TreesitterPython:
         )
 
     def get_all_imports_details(self, module: str) -> List[PyImport]:
-        """
-        Given the code body, returns the imports in that module
-        Parameters
-        ----------
-        module: code body
+        """Return import details for the module code body.
 
-        Returns
-        -------
-            List[PyImport]: List of imports
+        Args:
+            module (str): Module source.
+
+        Returns:
+            list[PyImport]: Import metadata.
         """
         import_list = []
         captures_from_import: Captures = self.utils.frame_query_and_capture_output(PARSER, LANGUAGE, "(((import_from_statement) @imports))", module)
@@ -213,15 +201,13 @@ class TreesitterPython:
         pass
 
     def get_all_classes(self, module: str) -> List[PyClass]:
-        """
-        Given the code body of the module, returns details of all classes in it
-        Parameters
-        ----------
-        module: code body
+        """Return details of all classes declared in the module.
 
-        Returns
-        -------
-            List[PyClass]: returns details of all classes in it
+        Args:
+            module (str): Module source code.
+
+        Returns:
+            list[PyClass]: Class metadata.
         """
         classes: List[PyClass] = []
         all_class_details: Captures = self.utils.frame_query_and_capture_output(PARSER, LANGUAGE, "(((class_definition) @class_name))", module)
@@ -254,15 +240,13 @@ class TreesitterPython:
         return classes
 
     def get_all_modules(self, application_dir: Path) -> List[PyModule]:
-        """
-        Given an application directory, returns a list of modules
-        Parameters
-        ----------
-        application_dir (Path): Location of the application directory
+        """Return a list of modules under an application directory.
 
-        Returns
-        -------
-            List[PyModule]: returns a list of modules
+        Args:
+            application_dir (Path): Application root directory.
+
+        Returns:
+            list[PyModule]: Modules discovered.
         """
         modules: List[PyModule] = []
         path_list = [os.path.join(dirpath, filename) for dirpath, _, filenames in os.walk(application_dir) for filename in filenames if filename.endswith(".py")]
@@ -275,25 +259,18 @@ class TreesitterPython:
         module_qualified_name = str(module_qualified_path).replace(os.sep, ".")
         with open(module_qualified_path, "r") as file:
             py_module = self.get_module_details(module=file.read())
-            qualified_name: str
-            methods: List[PyMethod]
-            functions: List[PyMethod]
-            classes: List[PyClass]
-            imports: List[PyImport]
             return PyModule(qualified_name=module_qualified_name, imports=py_module.imports, functions=py_module.functions, classes=py_module.classes)
         return None
 
     @staticmethod
     def __get_call_site_details(call_node: Node) -> PyCallSite:
-        """
-        Get details about the call site information given a call node
-        Parameters
-        ----------
-        call_node
+        """Return call site information from a call node.
 
-        Returns
-        -------
-            PyCallSite: Call site information
+        Args:
+            call_node (Node): Call node.
+
+        Returns:
+            PyCallSite: Call site information.
         """
         start_line = call_node.start_point[0]
         start_column = call_node.start_point[1]

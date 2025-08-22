@@ -14,11 +14,12 @@
 # limitations under the License.
 ################################################################################
 
-"""
-Analysis model for C projects
+"""C analysis utilities.
+
+Provides a high-level API to analyze C projects using a Clang-based analyzer
+and to query functions, macros, typedefs, structs/unions, enums, and globals.
 """
 
-import os
 from pathlib import Path
 from typing import Dict, List, Optional
 import networkx as nx
@@ -30,19 +31,31 @@ from cldk.models.c import CApplication, CFunction, CTranslationUnit, CMacro, CTy
 class CAnalysis:
 
     def __init__(self, project_dir: Path) -> None:
-        """Initialization method for C Analysis backend."""
+        """Initialize the C analysis backend.
+
+        Args:
+            project_dir (Path): Path to the C project directory.
+        """
         if not isinstance(project_dir, Path):
             project_dir = Path(project_dir)
         self.c_application = self._init_application(project_dir)
 
     def _init_application(self, project_dir: Path) -> CApplication:
-        """Should initialize the C application object.
+        """Construct the C application model from project sources.
 
         Args:
             project_dir (Path): Path to the project directory.
 
         Returns:
-            CApplication: C application object.
+            CApplication: Application model.
+
+        Examples:
+            Build an application model from a project directory:
+
+            >>> from pathlib import Path
+            >>> ca = CAnalysis(project_dir=Path('.'))  # doctest: +SKIP
+            >>> isinstance(ca.get_c_application(), CApplication)  # doctest: +SKIP
+            True
         """
         analyzer = ClangAnalyzer()
 
@@ -56,185 +69,297 @@ class CAnalysis:
         return CApplication(translation_units=translation_units)
 
     def get_c_application(self) -> CApplication:
-        """Obtain the C application object.
+        """Return the C application object.
 
         Returns:
-            CApplication: C application object.
+            CApplication: Application model.
+
+        Examples:
+            >>> # Assuming CAnalysis was constructed
+            >>> isinstance(CAnalysis(project_dir=Path('.')).get_c_application(), CApplication)  # doctest: +SKIP
+            True
         """
         return self.c_application
 
     def get_imports(self) -> List[str]:
+        """Return all include/import statements in the project.
+
+        Raises:
+            NotImplementedError: This functionality is not implemented yet.
+
+        Examples:
+            >>> from pathlib import Path
+            >>> CAnalysis(project_dir=Path('.')).get_imports()  # doctest: +IGNORE_EXCEPTION_DETAIL
+            Traceback (most recent call last):
+            NotImplementedError: Support for this functionality has not been implemented yet.
+        """
         raise NotImplementedError("Support for this functionality has not been implemented yet.")
 
     def get_variables(self, **kwargs):
+        """Return all variables discovered across the project.
+
+        Raises:
+            NotImplementedError: This functionality is not implemented yet.
+
+        Examples:
+            >>> from pathlib import Path
+            >>> CAnalysis(project_dir=Path('.')).get_variables()  # doctest: +IGNORE_EXCEPTION_DETAIL
+            Traceback (most recent call last):
+            NotImplementedError: Support for this functionality has not been implemented yet.
+        """
         raise NotImplementedError("Support for this functionality has not been implemented yet.")
 
     def get_application_view(self) -> CApplication:
+        """Return the application view of the C project.
+
+        Returns:
+            CApplication: Application model summarizing translation units.
+
+        Examples:
+            >>> from pathlib import Path
+            >>> ca = CAnalysis(project_dir=Path('.'))  # doctest: +SKIP
+            >>> isinstance(ca.get_application_view(), CApplication)  # doctest: +SKIP
+            True
+        """
         return self.c_application
 
     def get_symbol_table(self) -> Dict[str, CTranslationUnit]:
+        """Return a symbol table view keyed by file path.
+
+        Raises:
+            NotImplementedError: This functionality is not implemented yet.
+
+        Examples:
+            >>> from pathlib import Path
+            >>> CAnalysis(project_dir=Path('.')).get_symbol_table()  # doctest: +IGNORE_EXCEPTION_DETAIL
+            Traceback (most recent call last):
+            NotImplementedError: Support for this functionality has not been implemented yet.
+        """
         raise NotImplementedError("Support for this functionality has not been implemented yet.")
 
     def get_compilation_units(self) -> List[CTranslationUnit]:
+        """Return all compilation units parsed from C sources.
+
+        Raises:
+            NotImplementedError: This functionality is not implemented yet.
+
+        Examples:
+            >>> from pathlib import Path
+            >>> CAnalysis(project_dir=Path('.')).get_compilation_units()  # doctest: +IGNORE_EXCEPTION_DETAIL
+            Traceback (most recent call last):
+            NotImplementedError: Support for this functionality has not been implemented yet.
+        """
         raise NotImplementedError("Support for this functionality has not been implemented yet.")
 
     def is_parsable(self, source_code: str) -> bool:
-        """
-        Check if the code is parsable using clang parser.
+        """Check if the source code is parsable using Clang.
+
         Args:
-            source_code: source code
+            source_code (str): Source code to parse.
 
         Returns:
-            True if the code is parsable, False otherwise
+            bool: True if parsable, False otherwise.
+
+        Examples:
+            >>> CAnalysis(project_dir=Path('.')).is_parsable('int f(){return 1;}')  # doctest: +SKIP
+            True
         """
         raise NotImplementedError("Support for this functionality has not been implemented yet.")
 
     def get_call_graph(self) -> nx.DiGraph:
-        """Should return  the call graph of the C code.
+        """Return the call graph of the C code.
 
         Returns:
-            nx.DiGraph: The call graph of the C code.
+            networkx.DiGraph: Call graph.
+
+        Examples:
+            >>> isinstance(CAnalysis(project_dir=Path('.')).get_call_graph(), nx.DiGraph)  # doctest: +SKIP
+            True
         """
         raise NotImplementedError("Support for this functionality has not been implemented yet.")
 
     def get_call_graph_json(self) -> str:
-        """Should return  a serialized call graph in json.
-
-        Raises:
-            NotImplementedError: Raised when this functionality is not suported.
+        """Return the call graph serialized as JSON.
 
         Returns:
-            str: Call graph in json.
+            str: Call graph encoded as JSON.
+
+        Raises:
+            NotImplementedError: Single-file mode unsupported.
+
+        Examples:
+            >>> isinstance(CAnalysis(project_dir=Path('.')).get_call_graph_json(), str)  # doctest: +SKIP
+            True
         """
 
         raise NotImplementedError("Producing a call graph over a single file is not implemented yet.")
 
     def get_callers(self, function: CFunction) -> Dict:
-        """Should return  a dictionary of callers of the target method.
+        """Return callers of a function.
 
         Args:
-            function (CFunction): A CFunction object.
-
-        Raises:
-            NotImplementedError: Raised when this functionality is not suported.
+            function (CFunction): Target function.
 
         Returns:
-            Dict: A dictionary of callers of target function.
+            dict: Mapping of callers to call sites/details.
+
+        Raises:
+            NotImplementedError: Not implemented yet.
+
+        Examples:
+            >>> CAnalysis(project_dir=Path('.')).get_callers(CFunction(name='f', return_type='int', parameters=[], storage_class=None, is_inline=False, is_variadic=False, body='', comment='', call_sites=[], local_variables=[], start_line=1, end_line=1))  # doctest: +IGNORE_EXCEPTION_DETAIL
+            Traceback (most recent call last):
+            NotImplementedError: Generating all callers over a single file is not implemented yet.
         """
 
         raise NotImplementedError("Generating all callers over a single file is not implemented yet.")
 
     def get_callees(self, function: CFunction) -> Dict:
-        """Should return  a dictionary of callees in a fuction.
+        """Return callees of a function.
 
         Args:
-            function (CFunction): A CFunction object.
-
-        Raises:
-            NotImplementedError: Raised when this functionality is not suported.
+            function (CFunction): Source function.
 
         Returns:
-            Dict: Dictionary with callee details.
+            dict: Callee details.
+
+        Raises:
+            NotImplementedError: Not implemented yet.
+
+        Examples:
+            >>> CAnalysis(project_dir=Path('.')).get_callees(CFunction(name='f', return_type='int', parameters=[], storage_class=None, is_inline=False, is_variadic=False, body='', comment='', call_sites=[], local_variables=[], start_line=1, end_line=1))  # doctest: +IGNORE_EXCEPTION_DETAIL
+            Traceback (most recent call last):
+            NotImplementedError: Generating all callees over a single file is not implemented yet.
         """
         raise NotImplementedError("Generating all callees over a single file is not implemented yet.")
 
     def get_functions(self) -> Dict[str, CFunction]:
-        """Should return  all functions in the project.
-
-        Raises:
-            NotImplementedError: Raised when we do not support this function.
+        """Return all functions in the project.
 
         Returns:
-            Dict[str, Dict[str, JCallable]]: Dictionary of dictionaries of all methods in the C code with qualified class name as key and dictionary of methods in that class.
+            dict[str, CFunction]: Functions keyed by signature/name for a translation unit.
+
+        Examples:
+            >>> funcs = CAnalysis(project_dir=Path('.')).get_functions()  # doctest: +SKIP
+            >>> isinstance(funcs, dict)  # doctest: +SKIP
+            True
         """
         for _, translation_unit in self.c_application.translation_units.items():
             return translation_unit.functions
 
     def get_function(self, function_name: str, file_name: Optional[str]) -> CFunction | List[CFunction]:
-        """Should return  a function object given the function name.
+        """Return a function object.
 
         Args:
-            function_name (str): The name of the function.
-            file_name (str): The name of the file containing the function.
+            function_name (str): Function name.
+            file_name (str | None): Optional file name.
 
         Returns:
-            CFunction: A method for the given qualified method name. If multiple functions with the same name exist, a list of functions is returned.
+            CFunction | list[CFunction]: Function object(s) matching the query.
+
+        Examples:
+            >>> CAnalysis(project_dir=Path('.')).get_function('main', None)  # doctest: +IGNORE_EXCEPTION_DETAIL
+            Traceback (most recent call last):
+            NotImplementedError: Support for this functionality has not been implemented yet.
         """
         raise NotImplementedError("Support for this functionality has not been implemented yet.")
 
     def get_C_file(self, file_name: str) -> str:
-        """Should return  a class given qualified class name.
+        """Return a C file path by name.
 
         Args:
-            file_name (str): The name of the file.
-
-        Raises:
-            NotImplementedError: Raised when we do not support this function.
+            file_name (str): File name.
 
         Returns:
-            str: C file name containing the given qualified class.
+            str: C source file path.
+
+        Raises:
+            NotImplementedError: Not implemented yet.
+
+        Examples:
+            >>> CAnalysis(project_dir=Path('.')).get_C_file('hello.c')  # doctest: +IGNORE_EXCEPTION_DETAIL
+            Traceback (most recent call last):
+            NotImplementedError: Support for this functionality has not been implemented yet.
         """
         raise NotImplementedError("Support for this functionality has not been implemented yet.")
 
     def get_C_compilation_unit(self, file_path: str) -> CTranslationUnit:
-        """Given the path of a C source file, returns the compilation unit object from the symbol table.
+        """Return the compilation unit for a C source file.
 
         Args:
-            file_path (str): Absolute path to C source file
-
-        Raises:
-            NotImplementedError: Raised when we do not support this function.
+            file_path (str): Absolute path to a C source file.
 
         Returns:
-            CTranslationUnit: Compilation unit object for C source file
+            CTranslationUnit: Compilation unit object.
+
+        Examples:
+            >>> # Retrieve a compilation unit by path
+            >>> cu = CAnalysis(project_dir=Path('.')).get_C_compilation_unit('file.c')  # doctest: +SKIP
+            >>> (cu is None) or hasattr(cu, 'functions')  # doctest: +SKIP
+            True
         """
         return self.c_application.translation_units.get(file_path)
 
     def get_functions_in_file(self, file_name: str) -> List[CFunction]:
-        """Should return  a dictionary of all methods of the given class.
+        """Return all functions in a given file.
 
         Args:
-            file_name (str): The name of the file.
-
-        Raises:
-            NotImplementedError: Raised when we do not support this function.
+            file_name (str): File name.
 
         Returns:
-            Dict[str, JCallable]: A dictionary of all constructors of the given class.
+            list[CFunction]: Functions in the file.
+
+        Raises:
+            NotImplementedError: Not implemented yet.
+
+        Examples:
+            >>> CAnalysis(project_dir=Path('.')).get_functions_in_file('file.c')  # doctest: +IGNORE_EXCEPTION_DETAIL
+            Traceback (most recent call last):
+            NotImplementedError: Support for this functionality has not been implemented yet.
         """
         raise NotImplementedError("Support for this functionality has not been implemented yet.")
 
     def get_macros(self) -> List[CMacro]:
-        """Should return  a list of all macros in the C code.
-
-        Raises:
-            NotImplementedError: Raised when we do not support this function.
+        """Return all macros in the project.
 
         Returns:
-            List[CMacro]: A list of all macros in the C code.
+            list[CMacro]: All macros.
+
+        Raises:
+            NotImplementedError: Not implemented yet.
+
+        Examples:
+            >>> CAnalysis(project_dir=Path('.')).get_macros()  # doctest: +IGNORE_EXCEPTION_DETAIL
+            Traceback (most recent call last):
+            NotImplementedError: Support for this functionality has not been implemented yet.
         """
         raise NotImplementedError("Support for this functionality has not been implemented yet.")
 
     def get_macros_in_file(self, file_name: str) -> List[CMacro] | None:
-        """Should return  a list of all macros in the given file.
+        """Return all macros in the given file.
 
         Args:
-            file_name (str): The name of the file.
-
-        Raises:
-            NotImplementedError: Raised when we do not support this function.
+            file_name (str): File name.
 
         Returns:
-            List[CMacro]: A list of all macros in the given file. Returns None if no macros are found.
+            list[CMacro] | None: Macros in the file, or None if not found.
+
+        Raises:
+            NotImplementedError: Not implemented yet.
+
+        Examples:
+            >>> CAnalysis(project_dir=Path('.')).get_macros_in_file('file.c')  # doctest: +IGNORE_EXCEPTION_DETAIL
+            Traceback (most recent call last):
+            NotImplementedError: Support for this functionality has not been implemented yet.
         """
         raise NotImplementedError("Support for this functionality has not been implemented yet.")
 
 
 def get_includes(self) -> List[str]:
-    """Should return  a list of all include statements across all files in the C code.
+    """Return all include statements across the project.
 
     Returns:
-        List[str]: A list of all include statements. Returns empty list if none found.
+        list[str]: All include statements.
     """
     all_includes = []
     for translation_unit in self.translation_units.values():
@@ -243,13 +368,13 @@ def get_includes(self) -> List[str]:
 
 
 def get_includes_in_file(self, file_name: str) -> List[str] | None:
-    """Should return  a list of all include statements in the given file.
+    """Return include statements in a file.
 
     Args:
-        file_name (str): The name of the file to search in.
+        file_name (str): File name.
 
     Returns:
-        List[str] | None: List of includes in the file, or None if file not found.
+        list[str] | None: Includes in the file, or None if not found.
     """
     if file_name in self.translation_units:
         return self.translation_units[file_name].includes
@@ -257,10 +382,10 @@ def get_includes_in_file(self, file_name: str) -> List[str] | None:
 
 
 def get_macros(self) -> List[CMacro]:
-    """Should return  a list of all macro definitions across all files in the C code.
+    """Return all macro definitions across the project.
 
     Returns:
-        List[CMacro]: A list of all macro definitions. Returns empty list if none found.
+        list[CMacro]: Macro definitions.
     """
     all_macros = []
     for translation_unit in self.translation_units.values():
@@ -269,13 +394,13 @@ def get_macros(self) -> List[CMacro]:
 
 
 def get_macros_in_file(self, file_name: str) -> List[CMacro] | None:
-    """Should return  a list of all macro definitions in the given file.
+    """Return macro definitions in a file.
 
     Args:
-        file_name (str): The name of the file to search in.
+        file_name (str): File name.
 
     Returns:
-        List[CMacro] | None: List of macros in the file, or None if file not found.
+        list[CMacro] | None: Macros in the file, or None if not found.
     """
     if file_name in self.translation_units:
         return self.translation_units[file_name].macros
@@ -283,10 +408,10 @@ def get_macros_in_file(self, file_name: str) -> List[CMacro] | None:
 
 
 def get_typedefs(self) -> List[CTypedef]:
-    """Should return  a list of all typedef declarations across all files in the C code.
+    """Return typedef declarations across the project.
 
     Returns:
-        List[CTypedef]: A list of all typedef declarations. Returns empty list if none found.
+        list[CTypedef]: Typedef declarations.
     """
     all_typedefs = []
     for translation_unit in self.translation_units.values():
@@ -295,13 +420,13 @@ def get_typedefs(self) -> List[CTypedef]:
 
 
 def get_typedefs_in_file(self, file_name: str) -> List[CTypedef] | None:
-    """Should return  a list of all typedef declarations in the given file.
+    """Return typedef declarations in a file.
 
     Args:
-        file_name (str): The name of the file to search in.
+        file_name (str): File name.
 
     Returns:
-        List[CTypedef] | None: List of typedefs in the file, or None if file not found.
+        list[CTypedef] | None: Typedefs in the file, or None if not found.
     """
     if file_name in self.translation_units:
         return self.translation_units[file_name].typedefs
@@ -309,10 +434,10 @@ def get_typedefs_in_file(self, file_name: str) -> List[CTypedef] | None:
 
 
 def get_structs(self) -> List[CStruct]:
-    """Should return  a list of all struct/union declarations across all files in the C code.
+    """Return struct/union declarations across the project.
 
     Returns:
-        List[CStruct]: A list of all struct/union declarations. Returns empty list if none found.
+        list[CStruct]: Struct/union declarations.
     """
     all_structs = []
     for translation_unit in self.translation_units.values():
@@ -321,13 +446,13 @@ def get_structs(self) -> List[CStruct]:
 
 
 def get_structs_in_file(self, file_name: str) -> List[CStruct] | None:
-    """Should return  a list of all struct/union declarations in the given file.
+    """Return struct/union declarations in a file.
 
     Args:
-        file_name (str): The name of the file to search in.
+        file_name (str): File name.
 
     Returns:
-        List[CStruct] | None: List of structs in the file, or None if file not found.
+        list[CStruct] | None: Structs in the file, or None if not found.
     """
     if file_name in self.translation_units:
         return self.translation_units[file_name].structs
@@ -335,10 +460,10 @@ def get_structs_in_file(self, file_name: str) -> List[CStruct] | None:
 
 
 def get_enums(self) -> List[CEnum]:
-    """Should return  a list of all enum declarations across all files in the C code.
+    """Return enum declarations across the project.
 
     Returns:
-        List[CEnum]: A list of all enum declarations. Returns empty list if none found.
+        list[CEnum]: Enum declarations.
     """
     all_enums = []
     for translation_unit in self.translation_units.values():
@@ -347,13 +472,13 @@ def get_enums(self) -> List[CEnum]:
 
 
 def get_enums_in_file(self, file_name: str) -> List[CEnum] | None:
-    """Should return  a list of all enum declarations in the given file.
+    """Return enum declarations in a file.
 
     Args:
-        file_name (str): The name of the file to search in.
+        file_name (str): File name.
 
     Returns:
-        List[CEnum] | None: List of enums in the file, or None if file not found.
+        list[CEnum] | None: Enums in the file, or None if not found.
     """
     if file_name in self.translation_units:
         return self.translation_units[file_name].enums
@@ -361,13 +486,13 @@ def get_enums_in_file(self, file_name: str) -> List[CEnum] | None:
 
 
 def get_globals(self, file_name: str) -> List[CVariable] | None:
-    """Should return  a list of all global variable declarations in the given file.
+    """Return global variable declarations in a file.
 
     Args:
-        file_name (str): The name of the file to search in.
+        file_name (str): File name.
 
     Returns:
-        List[CVariable] | None: List of globals in the file, or None if file not found.
+        list[CVariable] | None: Globals in the file, or None if not found.
     """
     if file_name in self.translation_units:
         return self.translation_units[file_name].globals

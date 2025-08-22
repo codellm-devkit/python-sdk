@@ -66,6 +66,14 @@ jobs:
       - name: Build Package
         run: poetry build
 
+      - name: Read Changelog Entry
+        id: changelog_reader
+        uses: mindsers/changelog-reader-action@v2
+        with:
+          validation_level: warn
+          version: ${{ steps.tag_name.outputs.current_version }}
+          path: ./CHANGELOG.md
+
       - name: Build Changelog
         id: gen_changelog
         uses: mikepenz/release-changelog-builder-action@v5

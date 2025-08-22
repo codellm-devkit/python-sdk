@@ -14,8 +14,10 @@
 # limitations under the License.
 ################################################################################
 
-"""
-Python module
+"""Python analysis utilities.
+
+Provides a high-level API to query modules, classes, functions, and methods
+from Python projects or single-source inputs using Treesitter.
 """
 
 from pathlib import Path
@@ -26,7 +28,12 @@ from cldk.models.python.models import PyMethod, PyImport, PyModule, PyClass
 
 
 class PythonAnalysis:
-    """Python Analysis Class"""
+    """Analysis façade for Python code.
+
+    Args:
+        project_dir (str | Path | None): Directory path of the project.
+        source_code (str | None): Source text for single-file analysis.
+    """
 
     def __init__(
         self,
@@ -38,108 +45,224 @@ class PythonAnalysis:
         self.analysis_backend: TreesitterPython = TreesitterPython()
 
     def get_methods(self) -> List[PyMethod]:
-        """
-        Given an application or a source code, get all the methods
+        """Return all methods.
+
+        Returns:
+            list[PyMethod]: Methods discovered in the source code.
+
+        Examples:
+            >>> src = 'class C: def f(self): pass def g(self): pass'
+            >>> pa = PythonAnalysis(project_dir=None, source_code=src)  # doctest: +SKIP
+            >>> len(pa.get_methods())  # doctest: +SKIP
+            2
         """
         return self.analysis_backend.get_all_methods(self.source_code)
 
     def get_functions(self) -> List[PyMethod]:
-        """
-        Given an application or a source code, get all the methods
+        """Return all functions.
+
+        Returns:
+            list[PyMethod]: Functions discovered in the source code.
+
+        Examples:
+            >>> src = 'def f(): return 1'
+            >>> pa = PythonAnalysis(project_dir=None, source_code=src)
+            >>> [m.full_signature for m in pa.get_functions()]
+            ['f()']
         """
         return self.analysis_backend.get_all_functions(self.source_code)
 
     def get_modules(self) -> List[PyModule]:
-        """
-        Given the project directory, get all the modules
+        """Return all modules in the project directory.
+
+        Returns:
+            list[PyModule]: Modules discovered under project_dir.
+
+        Examples:
+            Create a temporary project and discover modules:
+
+            >>> import os, tempfile
+            >>> d = tempfile.mkdtemp()
+            >>> _ = open(os.path.join(d, 'a.py'), 'w').write('print(1)')
+            >>> _ = open(os.path.join(d, 'b.py'), 'w').write('print(2)')
+            >>> pa = PythonAnalysis(project_dir=d, source_code=None)
+            >>> len(pa.get_modules()) >= 2
+            True
         """
         return self.analysis_backend.get_all_modules(self.project_dir)
 
     def get_method_details(self, method_signature: str) -> PyMethod:
-        """
-        Given the code body and the method signature, returns the method details related to that method
-        Parameters
-        ----------
-        method_signature: method signature
+        """Return details for a given method signature.
 
-        Returns
-        -------
-            PyMethod: Returns the method details related to that method
+        Args:
+            method_signature (str): Method signature to look up.
+
+        Returns:
+            PyMethod: Method details.
+
+        Examples:
+            >>> src = 'class C: def add(self, a, b): return a+b'
+            >>> pa = PythonAnalysis(project_dir=None, source_code=src)  # doctest: +SKIP
+            >>> pa.get_method_details('add(self, a, b)').full_signature  # doctest: +SKIP
+            'add(self, a, b)'
         """
         return self.analysis_backend.get_method_details(self.source_code, method_signature)
 
     def is_parsable(self, source_code: str) -> bool:
-        """
-        Check if the code is parsable
+        """Check if the source code is parsable.
+
         Args:
-            source_code: source code
+            source_code (str): Source code to parse.
 
         Returns:
-            True if the code is parsable, False otherwise
+            bool: True if parsable, False otherwise.
+
+        Examples:
+            >>> PythonAnalysis(None, None).is_parsable('def f(): pass')
+            True
+            >>> PythonAnalysis(None, None).is_parsable('def f(): pass if')
+            False
         """
         return TreesitterPython().is_parsable(source_code)
 
     def get_raw_ast(self, source_code: str) -> str:
-        """
-        Get the raw AST
+        """Parse and return the raw AST.
+
         Args:
-            code: source code
+            source_code (str): Source code to parse.
 
         Returns:
-            Tree: the raw AST
+            str: Raw AST representation.
+
+        Examples:
+            >>> ast = PythonAnalysis(None, None).get_raw_ast('def f(): pass')
+            >>> isinstance(ast, str)
+            True
         """
         return TreesitterPython().get_raw_ast(source_code)
 
     def get_imports(self) -> List[PyImport]:
-        """
-        Given an application or a source code, get all the imports
+        """Return all import statements.
+
+        Returns:
+            list[PyImport]: Imports discovered in the source code.
+
+        Examples:
+            >>> src = 'import os; from math import sqrt; from x import *'
+            >>> pa = PythonAnalysis(project_dir=None, source_code=src)
+            >>> len(pa.get_imports())
+            3
         """
         return self.analysis_backend.get_all_imports_details(self.source_code)
 
     def get_variables(self, **kwargs):
-        """
-        Given an application or a source code, get all the variables
+        """Return all variables discovered in the source code.
+
+        Raises:
+            NotImplementedError: This functionality is not implemented yet.
+
+        Examples:
+            >>> pa = PythonAnalysis(project_dir=None, source_code='x=1')
+            >>> pa.get_variables()  # doctest: +IGNORE_EXCEPTION_DETAIL
+            Traceback (most recent call last):
+            NotImplementedError: Support for this functionality has not been implemented yet.
         """
         raise NotImplementedError("Support for this functionality has not been implemented yet.")
 
     def get_classes(self) -> List[PyClass]:
-        """
-        Given an application or a source code, get all the classes
+        """Return all classes.
+
+        Returns:
+            list[PyClass]: Classes discovered in the source code.
+
+        Examples:
+            >>> src = 'class A: pass'
+            >>> pa = PythonAnalysis(project_dir=None, source_code=src)
+            >>> [c.class_name for c in pa.get_classes()]
+            ['A']
         """
         return self.analysis_backend.get_all_classes(self.source_code)
 
     def get_classes_by_criteria(self, **kwargs):
-        """
-        Given an application or a source code, get all the classes given the inclusion and exclution criteria
+        """Return classes filtered by inclusion/exclusion criteria.
+
+        Raises:
+            NotImplementedError: This functionality is not implemented yet.
+
+        Examples:
+            >>> pa = PythonAnalysis(project_dir=None, source_code='class A: pass')
+            >>> pa.get_classes_by_criteria()  # doctest: +IGNORE_EXCEPTION_DETAIL
+            Traceback (most recent call last):
+            NotImplementedError: Support for this functionality has not been implemented yet.
         """
         raise NotImplementedError("Support for this functionality has not been implemented yet.")
 
     def get_sub_classes(self, **kwargs):
-        """
-        Given an application or a source code, get all the sub-classes
+        """Return all subclasses.
+
+        Raises:
+            NotImplementedError: This functionality is not implemented yet.
+
+        Examples:
+            >>> pa = PythonAnalysis(project_dir=None, source_code='class A: pass')
+            >>> pa.get_sub_classes()  # doctest: +IGNORE_EXCEPTION_DETAIL
+            Traceback (most recent call last):
+            NotImplementedError: Support for this functionality has not been implemented yet.
         """
         raise NotImplementedError("Support for this functionality has not been implemented yet.")
 
     def get_nested_classes(self, **kwargs):
-        """
-        Given an application or a source code, get all the nested classes
+        """Return all nested classes.
+
+        Raises:
+            NotImplementedError: This functionality is not implemented yet.
+
+        Examples:
+            >>> pa = PythonAnalysis(project_dir=None, source_code='class A: class B: pass')
+            >>> pa.get_nested_classes()  # doctest: +IGNORE_EXCEPTION_DETAIL
+            Traceback (most recent call last):
+            NotImplementedError: Support for this functionality has not been implemented yet.
         """
         raise NotImplementedError("Support for this functionality has not been implemented yet.")
 
     def get_constructors(self, **kwargs):
-        """
-        Given an application or a source code, get all the constructors
+        """Return all constructors.
+
+        Raises:
+            NotImplementedError: This functionality is not implemented yet.
+
+        Examples:
+            >>> pa = PythonAnalysis(project_dir=None, source_code='class A: def __init__(self): pass')
+            >>> pa.get_constructors()  # doctest: +IGNORE_EXCEPTION_DETAIL
+            Traceback (most recent call last):
+            NotImplementedError: Support for this functionality has not been implemented yet.
         """
         raise NotImplementedError("Support for this functionality has not been implemented yet.")
 
     def get_methods_in_class(self, **kwargs):
-        """
-        Given an application or a source code, get all the methods within the given class
+        """Return all methods within a given class.
+
+        Raises:
+            NotImplementedError: This functionality is not implemented yet.
+
+        Examples:
+            >>> pa = PythonAnalysis(project_dir=None, source_code='class A: def f(self): pass')
+            >>> pa.get_methods_in_class()  # doctest: +IGNORE_EXCEPTION_DETAIL
+            Traceback (most recent call last):
+            NotImplementedError: Support for this functionality has not been implemented yet.
         """
         raise NotImplementedError("Support for this functionality has not been implemented yet.")
 
     def get_fields(self, **kwargs):
-        """
-        Given an application or a source code, get all the fields
+        """Return all fields.
+
+        Raises:
+            NotImplementedError: This functionality is not implemented yet.
+
+        Examples:
+            >>> pa = PythonAnalysis(project_dir=None, source_code='class A: x=1')
+            >>> pa.get_fields()  # doctest: +IGNORE_EXCEPTION_DETAIL
+            Traceback (most recent call last):
+            NotImplementedError: Support for this functionality has not been implemented yet.
         """
         raise NotImplementedError("Support for this functionality has not been implemented yet.")

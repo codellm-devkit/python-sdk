@@ -14,8 +14,10 @@
 # limitations under the License.
 ################################################################################
 
-"""
-Treesitter Utils module
+"""Java test sanitization helpers using tree-sitter.
+
+Utilities to analyze Java test classes and methods for deduplication,
+merging, and extraction of assertions, fields, and annotations.
 """
 
 import re
@@ -33,29 +35,23 @@ def _replace_in_source(
     original_test_method_dict: dict,
     modified_test_method_dict: dict,
 ):
-    """
-    Returns a modified source using original test methods and modified ones.
+    """Return source with original methods replaced by modified ones.
 
-    Parameters:
-    -----------
-    source_class_code : str
-        String containing code for a java class.
-
-    original_test_method_dict: dict
-        Dictionary of original test methods in the java class.
-
-    modified_test_method_dict: dict
-        Dictionary of modified test methods
+    Args:
+        source_class_code (str): Java class source code.
+        original_test_method_dict (dict): Original test methods by name.
+        modified_test_method_dict (dict): Modified test methods by name.
 
     Returns:
-    --------
-    str
-        modified source after removing duplicate test methods and merging decomposed ones.
+        str: Source after removing duplicates and merging decomposed tests.
 
-
-    Comments
-    --------
-    # It's modifying the source code produced by an LLM.
+    Examples:
+        >>> src = 'class T { void a(){} void b(){} }'
+        >>> original = {'a': 'void a(){}'}
+        >>> modified = {'a': 'void a(){int x=1;}'}
+        >>> out = _replace_in_source(src, original, modified)
+        >>> 'int x=1' in out
+        True
     """
     modified_source = deepcopy(source_class_code)
     for _, body in original_test_method_dict.items():
@@ -68,15 +64,19 @@ def _replace_in_source(
 
 
 def separate_assertions(source_method_code: str) -> tuple[str, str]:
-    """
-    Separate assertions and non assertions parts
+    """Split a test method body into assertions and non-assertions.
 
     Args:
-        source_method_code: test method body
+        source_method_code (str): Test method body.
 
     Returns:
-        tuple[str, str]:
-        assertions and non assertions parts
+        tuple[str, str]: A pair of strings: (assertions_block, non_assertions_block).
+
+    Examples:
+        >>> body = 'int x=1; assertTrue(x>0); return;'
+        >>> asserts, rest = separate_assertions(body)
+        >>> 'assertTrue' in asserts and 'assertTrue' not in rest
+        True
     """
     code_split = source_method_code.splitlines()
     assert_block = ""
@@ -107,18 +107,19 @@ def separate_assertions(source_method_code: str) -> tuple[str, str]:
 
 
 def is_empty_test_class(source_class_code: str) -> bool:
-    """
-    Checks if a test class has no test methods by looking for methods with @Test annotations
+    """Return True if no @Test methods exist in the class.
 
-    Parameters:
-    -----------
-    source_class_code : str
-        String containing code for a java class.
+    Args:
+        source_class_code (str): Java class source code.
 
     Returns:
-    --------
-    bool
-        True if no test methods False if there are test methods
+        bool: True if class has no tests, False otherwise.
+
+    Examples:
+        >>> is_empty_test_class('class A { @Test void t(){} }')
+        False
+        >>> is_empty_test_class('class A { void t(){} }')
+        True
     """
     test_methods_dict = java_sitter.get_test_methods(source_class_code)
     print(test_methods_dict)
@@ -126,17 +127,18 @@ def is_empty_test_class(source_class_code: str) -> bool:
 
 
 def get_all_field_access(source_class_code: str) -> Dict[str, list[list[int]]]:
-    """_summary_
+    """Return field access positions in a class.
 
-    Parameters:
-    -----------
-    source_class_code : str
-        String containing code for a java class.
+    Args:
+        source_class_code (str): Java class source.
 
     Returns:
-    --------
-    Dict[str, [[int, int], [int, int]]]
-        Dictionary with field names as keys and a list of starting and ending line, and starting and ending column.
+        dict[str, list[list[int]]]: Field name to [[start_line, start_col], [end_line, end_col]].
+
+    Examples:
+        >>> src = 'class A { int x; void f(){ this.x = 1; } }'
+        >>> isinstance(get_all_field_access(src), dict)
+        True
     """
     query = """
                 (field_access 
@@ -161,18 +163,18 @@ def get_all_field_access(source_class_code: str) -> Dict[str, list[list[int]]]:
 
 
 def get_all_fields_with_annotations(source_class_code: str) -> Dict[str, Dict]:
-    """
-    Returns a dictionary of field names and field bodies.
+    """Return fields with annotations and bodies.
 
-    Parameters:
-    -----------
-    source_class_code : str
-        String containing code for a java class.
+    Args:
+        source_class_code (str): Java class source.
 
     Returns:
-    --------
-    Dict[str,Dict]
-        Dictionary with field names as keys and a dictionary of annotation and body as values.
+        dict[str, dict]: Field name to {'annotation': str | None, 'body': str}.
+
+    Examples:
+        >>> src = '@Deprecated class A { @Inject int x; }'
+        >>> isinstance(get_all_fields_with_annotations(src), dict)
+        True
     """
     query = """
                 (field_declaration 
@@ -202,18 +204,18 @@ def get_all_fields_with_annotations(source_class_code: str) -> Dict[str, Dict]:
 
 
 def get_all_methods_with_test_with_lines(source_class_code: str) -> Dict[str, List[int]]:
-    """
-    Returns a dictionary of method names and method bodies.
+    """Return @Test methods with their start and end lines.
 
-    Parameters:
-    -----------
-    source_class_code : str
-        String containing code for a java class.
+    Args:
+        source_class_code (str): Java class source.
+
     Returns:
-    --------
-    Dict[str,List[int]]
-        Dictionary with test name as keys and
-        starting and ending lines as values.
+        dict[str, list[int]]: Map of test method name to [start_line, end_line].
+
+    Examples:
+        >>> src = 'class A { @Test void t(){} }'
+        >>> get_all_methods_with_test_with_lines(src)
+        {'t': [0, 0]}  # doctest: +ELLIPSIS
     """
     query = """
                 (method_declaration
@@ -238,18 +240,13 @@ def get_all_methods_with_test_with_lines(source_class_code: str) -> Dict[str, Li
 
 
 def _remove_duplicates_empties(test_method_dict: dict) -> tuple[dict[Any, Any], int | Any, int | Any]:
-    """
-    removes all the duplicates in the test methods.
+    """Remove duplicate and empty test methods.
 
-    Parameters:
-    -----------
-    code_block : str
-        Code block of a test method.
+    Args:
+        test_method_dict (dict): Map of test name to body.
 
     Returns:
-    --------
-    tuple[dict, int]
-        Dictionary of remaining methods after dedup and number of methods removed because of dedup.
+        tuple[dict, int, int]: (deduped_methods, num_duplicates_removed, num_empty_removed).
     """
     methods_kept = []
     num_dup_methods_removed = 0
@@ -277,18 +274,13 @@ def _remove_duplicates_empties(test_method_dict: dict) -> tuple[dict[Any, Any], 
 
 
 def _compose_decomposed(self, test_method_dict: dict) -> tuple[dict, int]:
-    """
-    merges all the test methods that only have assertions as different and rest of the code same.
+    """Merge methods that differ only by assertions.
 
-    Parameters:
-    -----------
-    code_block : str
-        Code block of a test method.
+    Args:
+        test_method_dict (dict): Map of test name to body.
 
     Returns:
-    --------
-    tuple[dict, int]
-        Dictionary of merged methods and number of methods removed because of merging.
+        tuple[dict, int]: (merged_methods, num_merged).
     """
     composed_test_method_dict = {}
     num_merged_methods = 0
@@ -312,18 +304,13 @@ def _compose_decomposed(self, test_method_dict: dict) -> tuple[dict, int]:
 
 
 def _separate_assertions(code_block: str) -> tuple[str, str]:
-    """
-    separate assertions from the code block of a test method.
+    """Separate assertions from the rest of the code block.
 
-    Parameters:
-    -----------
-    code_block : str
-        Code block of a test method.
+    Args:
+        code_block (str): Test method body (without surrounding braces).
 
     Returns:
-    --------
-    tuple[str,str]
-        assertions and code block without assertions.
+        tuple[str, str]: (assert_block, code_block_without_assertions).
     """
     code_block_lines = code_block.split(";")
     # remove new lines and tabs, but not spaces within lines (need to keep them for assertions)
@@ -350,18 +337,13 @@ def _separate_assertions(code_block: str) -> tuple[str, str]:
 
 
 def dedup_and_merge(self, source_class_code: str) -> tuple[LiteralString | Any, Any, Any, int]:
-    """
-    Returns a modified source after removing duplicate test methods and merging decomposed ones.
+    """Return source after deduping and merging test methods.
 
-    Parameters:
-    -----------
-    source_class_code : str
-        String containing code for a java class.
+    Args:
+        source_class_code (str): Java class source.
 
     Returns:
-    --------
-    str
-        modified source after removing duplicate test methods and merging decomposed ones.
+        tuple[str, int, int, int]: (modified_source, num_dups_removed, num_empty_removed, num_merged).
     """
 
     test_method_dict = java_sitter.get_test_methods(source_class_code)

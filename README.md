@@ -1,8 +1,4 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://github.com/codellm-devkit/.github/blob/main/profile/assets/cldk-dark.png">
-  <source media="(prefers-color-scheme: light)" srcset="https://github.com/codellm-devkit/.github/blob/main/profile/assets/cldk-light.png">
-  <img alt="Logo">
-</picture>
+<img src="https://github.com/codellm-devkit/.github/blob/main/profile/assets/cldk-dark.png" alt="Logo">
 <p align='center'></p>
 <p align='center'></p>
 <p align='center'></p>
@@ -251,13 +247,3 @@ We invite contributors of all levels of experience! We would love to see you get
 1. Krishna, Rahul, Rangeet Pan, Raju Pavuluri, Srikanth Tamilselvam, Maja Vukovic, and Saurabh Sinha. "[Codellm-Devkit: A Framework for Contextualizing Code LLMs with Program Analysis Insights.](https://arxiv.org/pdf/2410.13007)" arXiv preprint arXiv:2410.13007 (2024).
 2. Pan, Rangeet, Myeongsoo Kim, Rahul Krishna, Raju Pavuluri, and Saurabh Sinha. "[Multi-language Unit Test Generation using LLMs.](https://arxiv.org/abs/2409.03093)" arXiv preprint arXiv:2409.03093 (2024).
 3. Pan, Rangeet, Rahul Krishna, Raju Pavuluri, Saurabh Sinha, and Maja Vukovic., "[Simplify your Code LLM solutions using CodeLLM Dev Kit (CLDK).](https://www.linkedin.com/pulse/simplify-your-code-llm-solutions-using-codellm-dev-kit-rangeet-pan-vnnpe/?trackingId=kZ3U6d8GSDCs8S1oApXZgg%3D%3D)", Blog.
-
-## Star History
-
-<a href="https://www.star-history.com/#codellm-devkit/python-sdk&Timeline">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=codellm-devkit/python-sdk&type=Timeline&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=codellm-devkit/python-sdk&type=Timeline" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=codellm-devkit/python-sdk&type=Timeline" />
- </picture>
-</a>
