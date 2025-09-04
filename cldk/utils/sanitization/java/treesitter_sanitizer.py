@@ -120,7 +120,10 @@ class TreesitterSanitizer:
             import_statement: Captures = self.__javasitter.frame_query_and_capture_output(
                 query="((scoped_identifier) @scoped_identifier)", code_to_process=import_declaration.node.text.decode()
             )
-            import_str = import_statement.captures[0].node.text.decode()
+            try:
+                import_str = import_statement.captures[0].node.text.decode()
+            except IndexError:
+                continue
             if import_str.split(".")[-1] not in ids_and_typeids:
                 unused_imports.add(import_declaration.node.text.decode())
 
