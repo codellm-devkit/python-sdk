@@ -279,7 +279,7 @@ class CAnalysis:
         return functions
 
 
-    def get_C_file(self, file_name: str) -> List[str]:
+    def get_c_file(self, file_name: str) -> List[str]:
         """Return a C file path by name.
 
         Args:
@@ -303,7 +303,7 @@ class CAnalysis:
                 selected_files.append(translation_unit)
         return selected_files
 
-    def get_C_compilation_unit(self, file_path: str) -> CTranslationUnit:
+    def get_c_compilation_unit(self, file_path: str) -> CTranslationUnit:
         """Return the compilation unit for a C source file.
 
         Args:
