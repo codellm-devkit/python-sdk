@@ -19,7 +19,7 @@
 Provides a high-level API to analyze C projects using a Clang-based analyzer
 and to query functions, macros, typedefs, structs/unions, enums, and globals.
 """
-
+import os
 from pathlib import Path
 from typing import Dict, List, Optional
 import networkx as nx
@@ -93,7 +93,10 @@ class CAnalysis:
             Traceback (most recent call last):
             NotImplementedError: Support for this functionality has not been implemented yet.
         """
-        raise NotImplementedError("Support for this functionality has not been implemented yet.")
+        imports = []
+        for translation_unit in self.c_application.translation_units.values():
+            imports.extend([include.name for include in translation_unit.includes])
+        return imports
 
     def get_variables(self, **kwargs):
         """Return all variables discovered across the project.
@@ -135,7 +138,8 @@ class CAnalysis:
             Traceback (most recent call last):
             NotImplementedError: Support for this functionality has not been implemented yet.
         """
-        raise NotImplementedError("Support for this functionality has not been implemented yet.")
+
+        return self.c_application.translation_units
 
     def get_compilation_units(self) -> List[CTranslationUnit]:
         """Return all compilation units parsed from C sources.
@@ -149,7 +153,7 @@ class CAnalysis:
             Traceback (most recent call last):
             NotImplementedError: Support for this functionality has not been implemented yet.
         """
-        raise NotImplementedError("Support for this functionality has not been implemented yet.")
+        return list(self.c_application.translation_units.values())
 
     def is_parsable(self, source_code: str) -> bool:
         """Check if the source code is parsable using Clang.
@@ -233,7 +237,7 @@ class CAnalysis:
         """
         raise NotImplementedError("Generating all callees over a single file is not implemented yet.")
 
-    def get_functions(self) -> Dict[str, CFunction]:
+    def get_functions(self) -> Dict[str, List[CFunction]]:
         """Return all functions in the project.
 
         Returns:
@@ -244,8 +248,10 @@ class CAnalysis:
             >>> isinstance(funcs, dict)  # doctest: +SKIP
             True
         """
+        functions = {}
         for _, translation_unit in self.c_application.translation_units.items():
-            return translation_unit.functions
+            functions[translation_unit.file_path] = translation_unit.functions
+        return functions
 
     def get_function(self, function_name: str, file_name: Optional[str]) -> CFunction | List[CFunction]:
         """Return a function object.
@@ -262,9 +268,18 @@ class CAnalysis:
             Traceback (most recent call last):
             NotImplementedError: Support for this functionality has not been implemented yet.
         """
-        raise NotImplementedError("Support for this functionality has not been implemented yet.")
+        functions = []
+        if file_name is not None:
+            all_functions = self.get_functions_in_file(file_name=file_name)
+        else:
+            all_functions = self.get_functions()
+        for function in all_functions:
+            if function.name == function_name:
+                functions.append(function)
+        return functions
 
-    def get_C_file(self, file_name: str) -> str:
+
+    def get_C_file(self, file_name: str) -> List[str]:
         """Return a C file path by name.
 
         Args:
@@ -281,7 +296,12 @@ class CAnalysis:
             Traceback (most recent call last):
             NotImplementedError: Support for this functionality has not been implemented yet.
         """
-        raise NotImplementedError("Support for this functionality has not been implemented yet.")
+        selected_files = []
+        all_translation_units = self.c_application.translation_units
+        for translation_unit in all_translation_units:
+            if translation_unit.split(os.path.sep)[-1] == file_name:
+                selected_files.append(translation_unit)
+        return selected_files
 
     def get_C_compilation_unit(self, file_path: str) -> CTranslationUnit:
         """Return the compilation unit for a C source file.
@@ -317,7 +337,7 @@ class CAnalysis:
             Traceback (most recent call last):
             NotImplementedError: Support for this functionality has not been implemented yet.
         """
-        raise NotImplementedError("Support for this functionality has not been implemented yet.")
+        return self.get_functions().get(file_name)
 
     def get_macros(self) -> List[CMacro]:
         """Return all macros in the project.
@@ -333,7 +353,10 @@ class CAnalysis:
             Traceback (most recent call last):
             NotImplementedError: Support for this functionality has not been implemented yet.
         """
-        raise NotImplementedError("Support for this functionality has not been implemented yet.")
+        macros = []
+        for translation_unit in self.c_application.translation_units.values():
+            macros.extend(translation_unit.macros)
+        return macros
 
     def get_macros_in_file(self, file_name: str) -> List[CMacro] | None:
         """Return all macros in the given file.
@@ -352,7 +375,10 @@ class CAnalysis:
             Traceback (most recent call last):
             NotImplementedError: Support for this functionality has not been implemented yet.
         """
-        raise NotImplementedError("Support for this functionality has not been implemented yet.")
+
+        return (self.c_application.translation_units.get(file_name, None).
+                macros) if file_name in self.c_application.translation_units else None
+
 
 
 def get_includes(self) -> List[str]:
