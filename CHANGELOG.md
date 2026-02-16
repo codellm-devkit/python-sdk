@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [v1.0.7] - 2025-08-21
+## [v1.0.7] - 2026-02-14
 
 ### Added
 - Doctest-style Examples across the public API surface of JavaAnalysis, PythonAnalysis, CAnalysis, and core CLDK helpers. Coverage includes Java CRUD operations and comment/docstring query APIs, plus concise inline examples for Python and C where applicable.
@@ -16,15 +16,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Standardized Examples to use the CLDK facade (e.g., `CLDK(language="java").analysis(...)`) instead of raw constructor calls.
 - Normalized all doctest Example inputs to single-line strings to ensure reliable mkdocstrings rendering.
 - Clarified `CLDK.analysis` return type with a precise union: `JavaAnalysis | PythonAnalysis | CAnalysis`.
+- Updated codeanalyzer version to v2.3.6.
 
 ### Fixed
 - Fixed README.md logo display on PyPI by updating image URLs to use raw GitHub URLs and maintaining theme-based auto-switching with proper fallback
 - mkdocstrings rendering issues caused by multi-line doctest strings and formatting inconsistencies.
 - Replaced confusing examples like `JavaAnalysis(None, None, ...)` with clear CLDK-based initialization patterns.
 - Packaging: ensured the built wheel includes the `cldk` package by adding `packages = [{ include = "cldk" }]` to Poetry configuration.
+- Fixed #141
 
 ### Removed
 - Multi-line doctest strings in Examples that broke mkdocstrings rendering; all examples are now single-line.
+- Removed pandas dependency (#145)
 
 ## [v1.0.6] - 2025-07-23
 
