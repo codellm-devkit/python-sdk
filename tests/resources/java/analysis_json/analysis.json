@@ -254,21 +254,81 @@
         }
       ],
       "imports": [
-        "java.io.DataInputStream",
-        "java.io.File",
-        "java.io.FileInputStream",
-        "java.io.FileNotFoundException",
-        "java.io.IOException",
-        "java.net.URL",
-        "java.util.Vector",
-        "com.ibm.websphere.samples.pbw.bean.BackOrderMgr",
-        "com.ibm.websphere.samples.pbw.bean.CatalogMgr",
-        "com.ibm.websphere.samples.pbw.bean.CustomerMgr",
-        "com.ibm.websphere.samples.pbw.bean.ResetDBBean",
-        "com.ibm.websphere.samples.pbw.bean.ShoppingCartBean",
-        "com.ibm.websphere.samples.pbw.bean.SuppliersBean",
-        "com.ibm.websphere.samples.pbw.jpa.Inventory",
-        "com.ibm.websphere.samples.pbw.utils.Util"
+        {
+          "path": "java.io.DataInputStream",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.io.File",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.io.FileInputStream",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.io.FileNotFoundException",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.io.IOException",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.net.URL",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.Vector",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.bean.BackOrderMgr",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.bean.CatalogMgr",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.bean.CustomerMgr",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.bean.ResetDBBean",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.bean.ShoppingCartBean",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.bean.SuppliersBean",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.Inventory",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.utils.Util",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.war.Populate": {
@@ -5742,12 +5802,36 @@
         }
       ],
       "imports": [
-        "javax.inject.Inject",
-        "javax.inject.Named",
-        "com.ibm.websphere.samples.pbw.bean.MailerAppException",
-        "com.ibm.websphere.samples.pbw.bean.MailerBean",
-        "com.ibm.websphere.samples.pbw.jpa.Customer",
-        "com.ibm.websphere.samples.pbw.utils.Util"
+        {
+          "path": "javax.inject.Inject",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.inject.Named",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.bean.MailerAppException",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.bean.MailerBean",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.Customer",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.utils.Util",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.war.MailAction": {
@@ -6257,15 +6341,51 @@
         }
       ],
       "imports": [
-        "java.io.Serializable",
-        "java.util.Collection",
-        "java.util.Iterator",
-        "javax.enterprise.context.Dependent",
-        "javax.persistence.EntityManager",
-        "javax.persistence.PersistenceContext",
-        "javax.persistence.Query",
-        "com.ibm.websphere.samples.pbw.jpa.Supplier",
-        "com.ibm.websphere.samples.pbw.utils.Util"
+        {
+          "path": "java.io.Serializable",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.Collection",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.Iterator",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.enterprise.context.Dependent",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.EntityManager",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.PersistenceContext",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.Query",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.Supplier",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.utils.Util",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.bean.SuppliersBean": {
@@ -7754,12 +7874,36 @@
         }
       ],
       "imports": [
-        "javax.faces.component.UIComponent",
-        "javax.faces.component.UIInput",
-        "javax.faces.context.FacesContext",
-        "javax.faces.validator.FacesValidator",
-        "javax.faces.validator.Validator",
-        "javax.faces.validator.ValidatorException"
+        {
+          "path": "javax.faces.component.UIComponent",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.faces.component.UIInput",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.faces.context.FacesContext",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.faces.validator.FacesValidator",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.faces.validator.Validator",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.faces.validator.ValidatorException",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.war.ValidatePasswords": {
@@ -8253,8 +8397,16 @@
         }
       ],
       "imports": [
-        "javax.validation.constraints.Pattern",
-        "javax.validation.constraints.Size"
+        {
+          "path": "javax.validation.constraints.Pattern",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.validation.constraints.Size",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.war.LoginInfo": {
@@ -8845,12 +8997,36 @@
         }
       ],
       "imports": [
-        "java.io.Serializable",
-        "java.text.NumberFormat",
-        "java.util.Locale",
-        "java.util.Objects",
-        "com.ibm.websphere.samples.pbw.jpa.Inventory",
-        "com.ibm.websphere.samples.pbw.utils.Util"
+        {
+          "path": "java.io.Serializable",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.text.NumberFormat",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.Locale",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.Objects",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.Inventory",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.utils.Util",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.war.ProductBean": {
@@ -9915,21 +10091,81 @@
         }
       ],
       "imports": [
-        "java.io.IOException",
-        "javax.inject.Inject",
-        "javax.inject.Named",
-        "javax.servlet.ServletConfig",
-        "javax.servlet.ServletContext",
-        "javax.servlet.ServletException",
-        "javax.servlet.annotation.WebServlet",
-        "javax.servlet.http.HttpServlet",
-        "javax.servlet.http.HttpServletRequest",
-        "javax.servlet.http.HttpServletResponse",
-        "javax.servlet.http.HttpSession",
-        "com.ibm.websphere.samples.pbw.bean.CatalogMgr",
-        "com.ibm.websphere.samples.pbw.bean.CustomerMgr",
-        "com.ibm.websphere.samples.pbw.jpa.Customer",
-        "com.ibm.websphere.samples.pbw.utils.Util"
+        {
+          "path": "java.io.IOException",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.inject.Inject",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.inject.Named",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.servlet.ServletConfig",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.servlet.ServletContext",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.servlet.ServletException",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.servlet.annotation.WebServlet",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.servlet.http.HttpServlet",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.servlet.http.HttpServletRequest",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.servlet.http.HttpServletResponse",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.servlet.http.HttpSession",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.bean.CatalogMgr",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.bean.CustomerMgr",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.Customer",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.utils.Util",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.war.AccountServlet": {
@@ -15636,17 +15872,61 @@
         }
       ],
       "imports": [
-        "javax.persistence.Entity",
-        "javax.persistence.GeneratedValue",
-        "javax.persistence.GenerationType",
-        "javax.persistence.Id",
-        "javax.persistence.JoinColumn",
-        "javax.persistence.NamedQueries",
-        "javax.persistence.NamedQuery",
-        "javax.persistence.OneToOne",
-        "javax.persistence.Table",
-        "javax.persistence.TableGenerator",
-        "com.ibm.websphere.samples.pbw.utils.Util"
+        {
+          "path": "javax.persistence.Entity",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.GeneratedValue",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.GenerationType",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.Id",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.JoinColumn",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.NamedQueries",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.NamedQuery",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.OneToOne",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.Table",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.TableGenerator",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.utils.Util",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.jpa.BackOrder": {
@@ -17212,12 +17492,36 @@
         }
       ],
       "imports": [
-        "java.io.Serializable",
-        "javax.enterprise.context.Dependent",
-        "javax.inject.Inject",
-        "javax.inject.Named",
-        "com.ibm.websphere.samples.pbw.bean.ResetDBBean",
-        "com.ibm.websphere.samples.pbw.utils.Util"
+        {
+          "path": "java.io.Serializable",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.enterprise.context.Dependent",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.inject.Inject",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.inject.Named",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.bean.ResetDBBean",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.utils.Util",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.war.HelpBean": {
@@ -17943,33 +18247,141 @@
         }
       ],
       "imports": [
-        "java.io.DataInputStream",
-        "java.io.File",
-        "java.io.FileInputStream",
-        "java.io.FileNotFoundException",
-        "java.io.IOException",
-        "java.io.Serializable",
-        "java.net.URL",
-        "java.util.Vector",
-        "javax.annotation.Resource",
-        "javax.annotation.security.RolesAllowed",
-        "javax.enterprise.context.Dependent",
-        "javax.inject.Inject",
-        "javax.inject.Named",
-        "javax.persistence.EntityManager",
-        "javax.persistence.PersistenceContext",
-        "javax.persistence.PersistenceContextType",
-        "javax.persistence.Query",
-        "javax.persistence.SynchronizationType",
-        "javax.transaction.HeuristicMixedException",
-        "javax.transaction.HeuristicRollbackException",
-        "javax.transaction.NotSupportedException",
-        "javax.transaction.RollbackException",
-        "javax.transaction.SystemException",
-        "javax.transaction.Transactional",
-        "javax.transaction.UserTransaction",
-        "com.ibm.websphere.samples.pbw.jpa.Inventory",
-        "com.ibm.websphere.samples.pbw.utils.Util"
+        {
+          "path": "java.io.DataInputStream",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.io.File",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.io.FileInputStream",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.io.FileNotFoundException",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.io.IOException",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.io.Serializable",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.net.URL",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.Vector",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.annotation.Resource",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.annotation.security.RolesAllowed",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.enterprise.context.Dependent",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.inject.Inject",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.inject.Named",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.EntityManager",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.PersistenceContext",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.PersistenceContextType",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.Query",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.SynchronizationType",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.transaction.HeuristicMixedException",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.transaction.HeuristicRollbackException",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.transaction.NotSupportedException",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.transaction.RollbackException",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.transaction.SystemException",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.transaction.Transactional",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.transaction.UserTransaction",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.Inventory",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.utils.Util",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.bean.ResetDBBean": {
@@ -24587,11 +24999,31 @@
         }
       ],
       "imports": [
-        "javax.persistence.Entity",
-        "javax.persistence.Id",
-        "javax.persistence.NamedQueries",
-        "javax.persistence.NamedQuery",
-        "javax.persistence.Table"
+        {
+          "path": "javax.persistence.Entity",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.Id",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.NamedQueries",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.NamedQuery",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.Table",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.jpa.Supplier": {
@@ -25993,17 +26425,61 @@
         }
       ],
       "imports": [
-        "javax.persistence.Column",
-        "javax.persistence.Embeddable",
-        "javax.persistence.EmbeddedId",
-        "javax.persistence.Entity",
-        "javax.persistence.JoinColumn",
-        "javax.persistence.ManyToOne",
-        "javax.persistence.NamedQueries",
-        "javax.persistence.NamedQuery",
-        "javax.persistence.Table",
-        "javax.persistence.Transient",
-        "com.ibm.websphere.samples.pbw.utils.Util"
+        {
+          "path": "javax.persistence.Column",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.Embeddable",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.EmbeddedId",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.Entity",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.JoinColumn",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.ManyToOne",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.NamedQueries",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.NamedQuery",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.Table",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.Transient",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.utils.Util",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.jpa.OrderItem": {
@@ -28635,19 +29111,71 @@
         }
       ],
       "imports": [
-        "java.util.Collection",
-        "javax.persistence.Entity",
-        "javax.persistence.GeneratedValue",
-        "javax.persistence.GenerationType",
-        "javax.persistence.Id",
-        "javax.persistence.JoinColumn",
-        "javax.persistence.ManyToOne",
-        "javax.persistence.NamedQueries",
-        "javax.persistence.NamedQuery",
-        "javax.persistence.Table",
-        "javax.persistence.TableGenerator",
-        "javax.persistence.Transient",
-        "com.ibm.websphere.samples.pbw.utils.Util"
+        {
+          "path": "java.util.Collection",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.Entity",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.GeneratedValue",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.GenerationType",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.Id",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.JoinColumn",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.ManyToOne",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.NamedQueries",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.NamedQuery",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.Table",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.TableGenerator",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.Transient",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.utils.Util",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.jpa.Order": {
@@ -32756,24 +33284,96 @@
         }
       ],
       "imports": [
-        "java.io.Serializable",
-        "java.util.Date",
-        "javax.annotation.Resource",
-        "javax.enterprise.context.Dependent",
-        "javax.inject.Named",
-        "javax.mail.Message",
-        "javax.mail.Multipart",
-        "javax.mail.Session",
-        "javax.mail.Transport",
-        "javax.mail.internet.InternetAddress",
-        "javax.mail.internet.MimeBodyPart",
-        "javax.mail.internet.MimeMessage",
-        "javax.mail.internet.MimeMultipart",
-        "javax.persistence.EntityManager",
-        "javax.persistence.PersistenceContext",
-        "com.ibm.websphere.samples.pbw.jpa.Customer",
-        "com.ibm.websphere.samples.pbw.jpa.Order",
-        "com.ibm.websphere.samples.pbw.utils.Util"
+        {
+          "path": "java.io.Serializable",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.Date",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.annotation.Resource",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.enterprise.context.Dependent",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.inject.Named",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.mail.Message",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.mail.Multipart",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.mail.Session",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.mail.Transport",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.mail.internet.InternetAddress",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.mail.internet.MimeBodyPart",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.mail.internet.MimeMessage",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.mail.internet.MimeMultipart",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.EntityManager",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.PersistenceContext",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.Customer",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.Order",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.utils.Util",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.bean.MailerBean": {
@@ -34701,18 +35301,66 @@
         }
       ],
       "imports": [
-        "java.io.Serializable",
-        "javax.enterprise.context.SessionScoped",
-        "javax.faces.application.Application",
-        "javax.faces.context.FacesContext",
-        "javax.inject.Inject",
-        "javax.inject.Named",
-        "com.ibm.websphere.samples.pbw.bean.CustomerMgr",
-        "com.ibm.websphere.samples.pbw.bean.MailerAppException",
-        "com.ibm.websphere.samples.pbw.bean.MailerBean",
-        "com.ibm.websphere.samples.pbw.bean.ShoppingCartBean",
-        "com.ibm.websphere.samples.pbw.jpa.Customer",
-        "com.ibm.websphere.samples.pbw.utils.Util"
+        {
+          "path": "java.io.Serializable",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.enterprise.context.SessionScoped",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.faces.application.Application",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.faces.context.FacesContext",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.inject.Inject",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.inject.Named",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.bean.CustomerMgr",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.bean.MailerAppException",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.bean.MailerBean",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.bean.ShoppingCartBean",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.Customer",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.utils.Util",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.war.AccountBean": {
@@ -38562,29 +39210,121 @@
         }
       ],
       "imports": [
-        "java.io.IOException",
-        "java.util.ArrayList",
-        "java.util.Collection",
-        "java.util.Iterator",
-        "javax.inject.Inject",
-        "javax.inject.Named",
-        "javax.servlet.ServletConfig",
-        "javax.servlet.ServletContext",
-        "javax.servlet.ServletException",
-        "javax.servlet.annotation.WebServlet",
-        "javax.servlet.http.HttpServlet",
-        "javax.servlet.http.HttpServletRequest",
-        "javax.servlet.http.HttpServletResponse",
-        "javax.servlet.http.HttpSession",
-        "com.ibm.websphere.samples.pbw.bean.BackOrderMgr",
-        "com.ibm.websphere.samples.pbw.bean.CatalogMgr",
-        "com.ibm.websphere.samples.pbw.bean.CustomerMgr",
-        "com.ibm.websphere.samples.pbw.bean.ResetDBBean",
-        "com.ibm.websphere.samples.pbw.bean.SuppliersBean",
-        "com.ibm.websphere.samples.pbw.jpa.BackOrder",
-        "com.ibm.websphere.samples.pbw.jpa.Inventory",
-        "com.ibm.websphere.samples.pbw.jpa.Supplier",
-        "com.ibm.websphere.samples.pbw.utils.Util"
+        {
+          "path": "java.io.IOException",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.ArrayList",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.Collection",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.Iterator",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.inject.Inject",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.inject.Named",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.servlet.ServletConfig",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.servlet.ServletContext",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.servlet.ServletException",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.servlet.annotation.WebServlet",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.servlet.http.HttpServlet",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.servlet.http.HttpServletRequest",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.servlet.http.HttpServletResponse",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.servlet.http.HttpSession",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.bean.BackOrderMgr",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.bean.CatalogMgr",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.bean.CustomerMgr",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.bean.ResetDBBean",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.bean.SuppliersBean",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.BackOrder",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.Inventory",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.Supplier",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.utils.Util",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.war.AdminServlet": {
@@ -44825,12 +45565,36 @@
         }
       ],
       "imports": [
-        "java.util.Calendar",
-        "javax.validation.constraints.NotNull",
-        "javax.validation.constraints.Pattern",
-        "javax.validation.constraints.Size",
-        "com.ibm.websphere.samples.pbw.jpa.Order",
-        "com.ibm.websphere.samples.pbw.utils.Util"
+        {
+          "path": "java.util.Calendar",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.validation.constraints.NotNull",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.validation.constraints.Pattern",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.validation.constraints.Size",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.Order",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.utils.Util",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.war.OrderInfo": {
@@ -49285,14 +50049,46 @@
         }
       ],
       "imports": [
-        "java.io.BufferedReader",
-        "java.io.IOException",
-        "java.io.InputStream",
-        "java.io.InputStreamReader",
-        "java.util.Hashtable",
-        "java.util.Properties",
-        "java.util.StringTokenizer",
-        "java.util.Vector"
+        {
+          "path": "java.io.BufferedReader",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.io.IOException",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.io.InputStream",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.io.InputStreamReader",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.Hashtable",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.Properties",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.StringTokenizer",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.Vector",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.utils.ListProperties": {
@@ -51508,14 +52304,46 @@
         }
       ],
       "imports": [
-        "java.io.FileNotFoundException",
-        "java.text.NumberFormat",
-        "java.util.StringTokenizer",
-        "javax.faces.application.Application",
-        "javax.faces.application.ProjectStage",
-        "javax.faces.context.FacesContext",
-        "javax.naming.InitialContext",
-        "javax.naming.NamingException"
+        {
+          "path": "java.io.FileNotFoundException",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.text.NumberFormat",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.StringTokenizer",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.faces.application.Application",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.faces.application.ProjectStage",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.faces.context.FacesContext",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.naming.InitialContext",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.naming.NamingException",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.utils.Util": {
@@ -55150,17 +55978,61 @@
         }
       ],
       "imports": [
-        "java.io.IOException",
-        "javax.inject.Inject",
-        "javax.inject.Named",
-        "javax.servlet.ServletConfig",
-        "javax.servlet.ServletException",
-        "javax.servlet.annotation.WebServlet",
-        "javax.servlet.http.HttpServlet",
-        "javax.servlet.http.HttpServletRequest",
-        "javax.servlet.http.HttpServletResponse",
-        "com.ibm.websphere.samples.pbw.bean.CatalogMgr",
-        "com.ibm.websphere.samples.pbw.utils.Util"
+        {
+          "path": "java.io.IOException",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.inject.Inject",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.inject.Named",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.servlet.ServletConfig",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.servlet.ServletException",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.servlet.annotation.WebServlet",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.servlet.http.HttpServlet",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.servlet.http.HttpServletRequest",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.servlet.http.HttpServletResponse",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.bean.CatalogMgr",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.utils.Util",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.war.ImageServlet": {
@@ -56218,9 +57090,21 @@
         }
       ],
       "imports": [
-        "com.ibm.websphere.samples.pbw.jpa.BackOrder",
-        "com.ibm.websphere.samples.pbw.jpa.Inventory",
-        "com.ibm.websphere.samples.pbw.utils.Util"
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.BackOrder",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.Inventory",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.utils.Util",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.war.BackOrderItem": {
@@ -58111,10 +58995,26 @@
         }
       ],
       "imports": [
-        "java.io.Serializable",
-        "javax.validation.constraints.Min",
-        "com.ibm.websphere.samples.pbw.jpa.BackOrder",
-        "com.ibm.websphere.samples.pbw.jpa.Inventory"
+        {
+          "path": "java.io.Serializable",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.validation.constraints.Min",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.BackOrder",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.Inventory",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.war.ShoppingItem": {
@@ -61749,9 +62649,21 @@
         }
       ],
       "imports": [
-        "java.util.Enumeration",
-        "java.util.Hashtable",
-        "com.ibm.websphere.samples.pbw.jpa.Inventory"
+        {
+          "path": "java.util.Enumeration",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.Hashtable",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.Inventory",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.bean.ShoppingCartContent": {
@@ -62850,10 +63762,26 @@
         }
       ],
       "imports": [
-        "javax.faces.application.FacesMessage",
-        "javax.faces.component.UIComponent",
-        "javax.faces.context.FacesContext",
-        "javax.faces.validator.ValidatorException"
+        {
+          "path": "javax.faces.application.FacesMessage",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.faces.component.UIComponent",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.faces.context.FacesContext",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.faces.validator.ValidatorException",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.war.ValidatorUtils": {
@@ -63405,14 +64333,46 @@
         }
       ],
       "imports": [
-        "javax.persistence.Entity",
-        "javax.persistence.Id",
-        "javax.persistence.NamedQueries",
-        "javax.persistence.NamedQuery",
-        "javax.persistence.Table",
-        "javax.validation.constraints.NotNull",
-        "javax.validation.constraints.Pattern",
-        "javax.validation.constraints.Size"
+        {
+          "path": "javax.persistence.Entity",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.Id",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.NamedQueries",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.NamedQuery",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.Table",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.validation.constraints.NotNull",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.validation.constraints.Pattern",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.validation.constraints.Size",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.jpa.Customer": {
@@ -65244,14 +66204,46 @@
         }
       ],
       "imports": [
-        "java.io.Serializable",
-        "javax.enterprise.context.Dependent",
-        "javax.persistence.EntityManager",
-        "javax.persistence.LockModeType",
-        "javax.persistence.PersistenceContext",
-        "javax.transaction.Transactional",
-        "com.ibm.websphere.samples.pbw.jpa.Customer",
-        "com.ibm.websphere.samples.pbw.utils.Util"
+        {
+          "path": "java.io.Serializable",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.enterprise.context.Dependent",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.EntityManager",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.LockModeType",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.PersistenceContext",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.transaction.Transactional",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.Customer",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.utils.Util",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.bean.CustomerMgr": {
@@ -66775,11 +67767,31 @@
       "package_name": "com.ibm.websphere.samples.pbw.bean",
       "comments": [],
       "imports": [
-        "javax.annotation.PostConstruct",
-        "javax.ejb.Singleton",
-        "javax.ejb.Startup",
-        "javax.inject.Inject",
-        "com.ibm.websphere.samples.pbw.utils.Util"
+        {
+          "path": "javax.annotation.PostConstruct",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.ejb.Singleton",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.ejb.Startup",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.inject.Inject",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.utils.Util",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.bean.PopulateDBBean": {
@@ -67170,15 +68182,51 @@
         }
       ],
       "imports": [
-        "java.io.Serializable",
-        "java.util.Vector",
-        "javax.enterprise.context.Dependent",
-        "javax.persistence.EntityManager",
-        "javax.persistence.LockModeType",
-        "javax.persistence.PersistenceContext",
-        "javax.persistence.Query",
-        "com.ibm.websphere.samples.pbw.jpa.Inventory",
-        "com.ibm.websphere.samples.pbw.utils.Util"
+        {
+          "path": "java.io.Serializable",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.Vector",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.enterprise.context.Dependent",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.EntityManager",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.LockModeType",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.PersistenceContext",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.Query",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.Inventory",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.utils.Util",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.bean.CatalogMgr": {
@@ -68974,17 +70022,61 @@
         }
       ],
       "imports": [
-        "java.io.Serializable",
-        "java.util.Collection",
-        "javax.annotation.security.RolesAllowed",
-        "javax.enterprise.context.Dependent",
-        "javax.persistence.EntityManager",
-        "javax.persistence.NoResultException",
-        "javax.persistence.PersistenceContext",
-        "javax.persistence.Query",
-        "com.ibm.websphere.samples.pbw.jpa.BackOrder",
-        "com.ibm.websphere.samples.pbw.jpa.Inventory",
-        "com.ibm.websphere.samples.pbw.utils.Util"
+        {
+          "path": "java.io.Serializable",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.Collection",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.annotation.security.RolesAllowed",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.enterprise.context.Dependent",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.EntityManager",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.NoResultException",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.PersistenceContext",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.Query",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.BackOrder",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.Inventory",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.utils.Util",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.bean.BackOrderMgr": {
@@ -71779,20 +72871,76 @@
         }
       ],
       "imports": [
-        "java.io.Serializable",
-        "java.util.ArrayList",
-        "java.util.Collection",
-        "javax.enterprise.context.SessionScoped",
-        "javax.persistence.EntityManager",
-        "javax.persistence.LockModeType",
-        "javax.persistence.PersistenceContext",
-        "javax.transaction.Transactional",
-        "com.ibm.websphere.samples.pbw.jpa.BackOrder",
-        "com.ibm.websphere.samples.pbw.jpa.Customer",
-        "com.ibm.websphere.samples.pbw.jpa.Inventory",
-        "com.ibm.websphere.samples.pbw.jpa.Order",
-        "com.ibm.websphere.samples.pbw.jpa.OrderItem",
-        "com.ibm.websphere.samples.pbw.utils.Util"
+        {
+          "path": "java.io.Serializable",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.ArrayList",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.Collection",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.enterprise.context.SessionScoped",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.EntityManager",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.LockModeType",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.PersistenceContext",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.transaction.Transactional",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.BackOrder",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.Customer",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.Inventory",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.Order",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.OrderItem",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.utils.Util",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.bean.ShoppingCartBean": {
@@ -75177,7 +76325,11 @@
         }
       ],
       "imports": [
-        "java.io.Serializable"
+        {
+          "path": "java.io.Serializable",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.jpa.OrderKey": {
@@ -75843,14 +76995,46 @@
         }
       ],
       "imports": [
-        "javax.persistence.Entity",
-        "javax.persistence.Id",
-        "javax.persistence.NamedQueries",
-        "javax.persistence.NamedQuery",
-        "javax.persistence.Table",
-        "javax.persistence.Transient",
-        "javax.persistence.Version",
-        "com.ibm.websphere.samples.pbw.utils.Util"
+        {
+          "path": "javax.persistence.Entity",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.Id",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.NamedQueries",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.NamedQuery",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.Table",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.Transient",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.persistence.Version",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.utils.Util",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.jpa.Inventory": {
@@ -79313,22 +80497,86 @@
         }
       ],
       "imports": [
-        "java.io.Serializable",
-        "java.text.NumberFormat",
-        "java.util.ArrayList",
-        "java.util.Collection",
-        "java.util.LinkedList",
-        "java.util.Locale",
-        "java.util.Map",
-        "java.util.Vector",
-        "javax.enterprise.context.SessionScoped",
-        "javax.faces.context.ExternalContext",
-        "javax.faces.context.FacesContext",
-        "javax.inject.Inject",
-        "javax.inject.Named",
-        "com.ibm.websphere.samples.pbw.bean.CatalogMgr",
-        "com.ibm.websphere.samples.pbw.bean.ShoppingCartBean",
-        "com.ibm.websphere.samples.pbw.jpa.Inventory"
+        {
+          "path": "java.io.Serializable",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.text.NumberFormat",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.ArrayList",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.Collection",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.LinkedList",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.Locale",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.Map",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "java.util.Vector",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.enterprise.context.SessionScoped",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.faces.context.ExternalContext",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.faces.context.FacesContext",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.inject.Inject",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "javax.inject.Named",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.bean.CatalogMgr",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.bean.ShoppingCartBean",
+          "is_static": false,
+          "is_wildcard": false
+        },
+        {
+          "path": "com.ibm.websphere.samples.pbw.jpa.Inventory",
+          "is_static": false,
+          "is_wildcard": false
+        }
       ],
       "type_declarations": {
         "com.ibm.websphere.samples.pbw.war.ShoppingBean": {
@@ -81282,5 +82530,5 @@
       "is_modified": false
     }
   },
-  "version": "2.3.6"
+  "version": "2.3.7"
 }

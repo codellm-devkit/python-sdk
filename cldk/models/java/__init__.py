@@ -21,6 +21,7 @@ Java package
 from .models import (
     JApplication,
     JCallable,
+    JImport,
     JType,
     JCompilationUnit,
     JGraphEdges,
@@ -28,4 +29,4 @@ from .models import (
 
 from .enums import CRUDOperationType, CRUDQueryType
 
-__all__ = ["JApplication", "JCallable", "JType", "JCompilationUnit", "JGraphEdges", "CRUDOperationType", "CRUDQueryType"]
+__all__ = ["JApplication", "JCallable", "JImport", "JType", "JCompilationUnit", "JGraphEdges", "CRUDOperationType", "CRUDQueryType"]
