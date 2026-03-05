@@ -22,7 +22,7 @@ from importlib import resources
 from itertools import chain, groupby
 from pathlib import Path
 from subprocess import CompletedProcess
-from typing import Any, Dict, List, Tuple
+from typing import Dict, List, Tuple
 from typing import Union
 
 import networkx as nx
@@ -124,22 +124,32 @@ class JCodeanalyzer:
 
         # set_trace()
         return JApplication(**json.loads(data))
-    
+
     @staticmethod
     def check_exisiting_analysis_file_level(analysis_json_path_file: Path, analysis_level: int) -> bool:
+        """Validate whether a cached analysis file is compatible with the current model.
+
+        Args:
+            analysis_json_path_file (Path): Path to the cached ``analysis.json`` file.
+            analysis_level (int): Requested analysis level (1=symbol table, 2=call graph).
+
+        Returns:
+            bool: True if the cached file is compatible; otherwise False.
+        """
         analysis_file_compatible = True
         if not analysis_json_path_file.exists():
             analysis_file_compatible = False
         else:
-            with open(analysis_json_path_file) as f:
-                data = json.load(f)
-                if analysis_level == 2 and "call_graph" not in data:
-                    analysis_file_compatible = False
-                elif analysis_level == 1 and "symbol_table" not in data:
-                    analysis_file_compatible = False
+            try:
+                with open(analysis_json_path_file) as f:
+                    data = json.load(f)
+                    if analysis_level == 2 and "call_graph" not in data:
+                        analysis_file_compatible = False
+                    elif analysis_level == 1 and "symbol_table" not in data:
+                        analysis_file_compatible = False
+            except (json.JSONDecodeError, OSError):
+                analysis_file_compatible = False
         return analysis_file_compatible
-
-
 
     def _init_codeanalyzer(self, analysis_level=1) -> JApplication:
         """Should initialize the Codeanalyzer.

@@ -21,9 +21,11 @@ classes, methods, interfaces, invocations, comments, and related metadata.
 """
 import logging
 from itertools import groupby
-from typing import List, Set, Dict
-from tree_sitter import Language, Node, Parser, Query, Tree
+from typing import Dict, List, Set
+
 import tree_sitter_java as tsjava
+from tree_sitter import Language, Node, Parser, Query, Tree
+
 from cldk.analysis.commons.treesitter.models import Captures
 
 logger = logging.getLogger(__name__)
@@ -91,6 +93,8 @@ class TreesitterJava:
         """
         return PARSER.parse(bytes(code, "utf-8"))
 
+    # NOTE: Not used anywhere in the codebase. Does not return the new JImport model.
+    # Update if wired into a real code path.
     def get_all_imports(self, source_code: str) -> Set[str]:
         """Return all import statements in the source.
 

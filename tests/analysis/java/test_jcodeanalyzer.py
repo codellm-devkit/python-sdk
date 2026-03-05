@@ -26,8 +26,27 @@ import networkx as nx
 
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.java.codeanalyzer import JCodeanalyzer
-from cldk.models.java.models import JApplication, JCRUDOperation, JType, JCallable, JCompilationUnit, JMethodDetail
+from cldk.models.java.models import JApplication, JCRUDOperation, JType, JCallable, JCompilationUnit, JImport, JMethodDetail
 from cldk.models.java import JGraphEdges
+
+
+def _build_analysis_json_payload(version: str, imports: list[dict[str, object] | str], include_call_graph: bool = False) -> dict:
+    payload = {
+        "symbol_table": {
+            "/tmp/T.java": {
+                "file_path": "/tmp/T.java",
+                "package_name": "",
+                "comments": [],
+                "imports": imports,
+                "type_declarations": {},
+                "is_modified": False,
+            }
+        },
+        "version": version,
+    }
+    if include_call_graph:
+        payload["call_graph"] = []
+    return payload
 
 
 def test_init_japplication(test_fixture, codeanalyzer_jar_path, analysis_json):
@@ -102,6 +121,85 @@ def test_init_codeanalyzer_with_json_path(test_fixture, analysis_json, analysis_
         assert isinstance(app, JApplication)
 
 
+def test_init_japplication_supports_legacy_import_schema() -> None:
+    """Should parse legacy string-based imports and expose both import fields."""
+    payload = _build_analysis_json_payload(version="2.3.6", imports=["java.util.List"])
+    application = JCodeanalyzer._init_japplication(json.dumps(payload))
+    compilation_unit = next(iter(application.symbol_table.values()))
+    assert compilation_unit.imports == ["java.util.List"]
+    assert len(compilation_unit.import_declarations) == 1
+    assert isinstance(compilation_unit.import_declarations[0], JImport)
+    assert compilation_unit.import_declarations[0].path == "java.util.List"
+    assert compilation_unit.import_declarations[0].is_static is False
+    assert compilation_unit.import_declarations[0].is_wildcard is False
+
+
+def test_init_japplication_supports_structured_import_schema() -> None:
+    """Should parse structured imports and keep legacy imports list populated."""
+    payload = _build_analysis_json_payload(
+        version="2.3.7",
+        imports=[{"path": "java.util.List", "is_static": True, "is_wildcard": False}],
+    )
+    application = JCodeanalyzer._init_japplication(json.dumps(payload))
+    compilation_unit = next(iter(application.symbol_table.values()))
+    assert compilation_unit.imports == ["java.util.List"]
+    assert len(compilation_unit.import_declarations) == 1
+    assert isinstance(compilation_unit.import_declarations[0], JImport)
+    assert compilation_unit.import_declarations[0].path == "java.util.List"
+    assert compilation_unit.import_declarations[0].is_static is True
+    assert compilation_unit.import_declarations[0].is_wildcard is False
+
+
+def test_check_existing_analysis_file_level_accepts_legacy_import_schema(tmp_path) -> None:
+    """Should accept cached analysis files that use the legacy imports schema."""
+    analysis_file = tmp_path / "analysis.json"
+    payload = _build_analysis_json_payload(version="2.3.6", imports=["java.util.List"])
+    analysis_file.write_text(json.dumps(payload), encoding="utf-8")
+    assert JCodeanalyzer.check_exisiting_analysis_file_level(analysis_file, analysis_level=1)
+
+
+def test_check_existing_analysis_file_level_accepts_structured_import_schema(tmp_path) -> None:
+    """Should accept cached analysis files that use the structured imports schema."""
+    analysis_file = tmp_path / "analysis.json"
+    payload = _build_analysis_json_payload(version="2.3.7", imports=[{"path": "java.util.List", "is_static": False, "is_wildcard": False}])
+    analysis_file.write_text(json.dumps(payload), encoding="utf-8")
+    assert JCodeanalyzer.check_exisiting_analysis_file_level(analysis_file, analysis_level=1)
+
+
+def test_check_existing_analysis_file_level_rejects_invalid_json(tmp_path) -> None:
+    """Should reject invalid analysis.json payloads and force regeneration."""
+    analysis_file = tmp_path / "analysis.json"
+    analysis_file.write_text("{not-valid-json", encoding="utf-8")
+    assert not JCodeanalyzer.check_exisiting_analysis_file_level(analysis_file, analysis_level=1)
+
+
+def test_init_codeanalyzer_reuses_legacy_cache_when_compatible(test_fixture, codeanalyzer_jar_path, tmp_path) -> None:
+    """Should reuse cached analysis.json when legacy imports are still compatible."""
+    analysis_json_dir = tmp_path / "analysis-cache"
+    analysis_json_dir.mkdir()
+    analysis_json_file = analysis_json_dir / "analysis.json"
+    legacy_payload = _build_analysis_json_payload(version="2.3.6", imports=["java.util.List"])
+    analysis_json_file.write_text(json.dumps(legacy_payload), encoding="utf-8")
+
+    with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
+        code_analyzer = JCodeanalyzer(
+            project_dir=test_fixture,
+            source_code=None,
+            analysis_backend_path=codeanalyzer_jar_path,
+            analysis_json_path=analysis_json_dir,
+            analysis_level=AnalysisLevel.symbol_table,
+            eager_analysis=False,
+            target_files=None,
+        )
+    assert not run_mock.called
+    compilation_unit = next(iter(code_analyzer.application.symbol_table.values()))
+    assert compilation_unit.imports == ["java.util.List"]
+    assert isinstance(compilation_unit.import_declarations[0], JImport)
+    assert compilation_unit.import_declarations[0].path == "java.util.List"
+    assert compilation_unit.import_declarations[0].is_static is False
+    assert compilation_unit.import_declarations[0].is_wildcard is False
+
+
 def test_get_codeanalyzer_exec(test_fixture, codeanalyzer_jar_path, analysis_json):
     """Should return the correct codeanalyzer location"""
 
@@ -128,7 +226,7 @@ def test_get_codeanalyzer_exec(test_fixture, codeanalyzer_jar_path, analysis_jso
         code_analyzer.analysis_backend_path = None
         jar_file = code_analyzer._get_codeanalyzer_exec()[-1]
         exec_path = os.path.dirname(jar_file)
-        relative_path = exec_path.split("/cldk")[1]
+        relative_path = exec_path.rsplit("/cldk", 1)[1]
         assert relative_path == "/analysis/java/codeanalyzer/jar"
 
 
@@ -798,6 +896,39 @@ def test_get_all_entrypoint_methods_in_application(test_fixture, codeanalyzer_ja
             assert callable is not None
             assert isinstance(callable, JCallable)
             assert callable.is_entrypoint
+
+
+def test_source_analysis_imports_disambiguate_static_and_wildcard(codeanalyzer_jar_path) -> None:
+    """Should preserve static and wildcard import metadata for colliding import paths."""
+    source_code = "import static Foo.bar;\nimport Foo.bar.*;\nclass T {}"
+    code_analyzer = JCodeanalyzer(
+        project_dir=".",
+        source_code=source_code,
+        analysis_backend_path=codeanalyzer_jar_path,
+        analysis_json_path=None,
+        analysis_level=AnalysisLevel.symbol_table,
+        eager_analysis=False,
+        target_files=None,
+    )
+    symbol_table = code_analyzer.get_symbol_table()
+    assert len(symbol_table) == 1
+
+    compilation_unit = next(iter(symbol_table.values()))
+    assert compilation_unit.imports == ["Foo.bar", "Foo.bar"]
+
+    import_declarations = compilation_unit.import_declarations
+    assert len(import_declarations) == 2
+    assert all(isinstance(import_decl, JImport) for import_decl in import_declarations)
+    assert [import_decl.path for import_decl in import_declarations].count("Foo.bar") == 2
+
+    static_import = next((import_decl for import_decl in import_declarations if import_decl.is_static), None)
+    wildcard_import = next((import_decl for import_decl in import_declarations if import_decl.is_wildcard), None)
+    assert static_import is not None
+    assert wildcard_import is not None
+    assert static_import.path == "Foo.bar"
+    assert static_import.is_wildcard is False
+    assert wildcard_import.path == "Foo.bar"
+    assert wildcard_import.is_static is False
 
 
 def test_get_all_entrypoint_classes_in_the_application(test_fixture, codeanalyzer_jar_path):

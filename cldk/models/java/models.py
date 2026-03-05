@@ -18,7 +18,7 @@
 Models module
 """
 from typing import Any, Dict, List, Optional, Union
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from cldk.models.java.enums import CRUDOperationType, CRUDQueryType
 
 _CALLABLES_LOOKUP_TABLE = dict()
@@ -42,6 +42,20 @@ class JComment(BaseModel):
     start_column: int = -1
     end_column: int = -1
     is_javadoc: bool = False
+
+
+class JImport(BaseModel):
+    """Represents a Java import declaration.
+
+    Attributes:
+        path (str): Fully qualified import target path.
+        is_static (bool): True when import uses the static modifier.
+        is_wildcard (bool): True when import uses wildcard syntax.
+    """
+
+    path: str
+    is_static: bool = False
+    is_wildcard: bool = False
 
 
 class JRecordComponent(BaseModel):
@@ -370,16 +384,67 @@ class JCompilationUnit(BaseModel):
         file_path (str): The path to the source file.
         package_name (str): The name of the package for the comppilation unit.
         comments (List[JComment]): A list of comments in the compilation unit.
-        imports (List[str]): A list of import statements in the compilation unit.
+        imports (List[str]): A list of import paths in the compilation unit.
+            Deprecated: use ``import_declarations`` to access structured import metadata.
+        import_declarations (List[JImport]): A list of structured import declarations.
         type_declarations (Dict[str, JType]): A dictionary mapping type names to their corresponding JType representations.
     """
 
     file_path: str
     package_name: str
     comments: List[JComment]
-    imports: List[str]
+    # Deprecated: retained for backward compatibility with existing consumers.
+    imports: List[str] = Field(default_factory=list)
+    import_declarations: List[JImport] = Field(default_factory=list)
     type_declarations: Dict[str, JType]
     is_modified: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_import_fields(cls, data: Any) -> Any:
+        """Normalize legacy and structured import payloads into both model fields.
+
+        Args:
+            data (Any): Raw input payload for ``JCompilationUnit``.
+
+        Returns:
+            Any: Input payload with ``imports`` and ``import_declarations`` synchronized.
+        """
+        if not isinstance(data, dict):
+            return data
+
+        imports_payload = data.get("imports")
+        import_declarations_payload = data.get("import_declarations")
+
+        normalized_imports: List[str] = []
+        normalized_declarations: List[JImport] = []
+
+        # Prefer structured declarations only when they are provided and non-empty.
+        source_payload: List[Any] | None = None
+        source_name = "import entry"
+        if isinstance(import_declarations_payload, list) and len(import_declarations_payload) > 0:
+            source_payload = import_declarations_payload
+            source_name = "import declaration entry"
+        elif isinstance(imports_payload, list):
+            source_payload = imports_payload
+
+        if source_payload is not None:
+            for import_entry in source_payload:
+                if isinstance(import_entry, str):
+                    import_declaration = JImport(path=import_entry)
+                elif isinstance(import_entry, dict):
+                    import_declaration = JImport(**import_entry)
+                elif isinstance(import_entry, JImport):
+                    import_declaration = import_entry
+                else:
+                    raise TypeError(f"Unsupported {source_name} type: {type(import_entry)!r}")
+                normalized_declarations.append(import_declaration)
+                normalized_imports.append(import_declaration.path)
+
+        data["imports"] = normalized_imports
+        data["import_declarations"] = normalized_declarations
+
+        return data
 
 
 class JMethodDetail(BaseModel):
