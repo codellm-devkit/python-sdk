@@ -756,14 +756,17 @@ class JCodeanalyzer:
                         callee_signature = call_site.callee_signature
 
                     if call_site.receiver_type != "":
-                        # call to any class
+                        # call to any class - check if the target method exists in receiver type hierarchy
                         if self.get_class(qualified_class_name=call_site.receiver_type):
-                            if callee_signature == target_method_signature and call_site.receiver_type == target_class_name:
+                            # Use hierarchy search to find the method (including inherited methods)
+                            found_method, found_class = self.__find_method_in_hierarchy(call_site.receiver_type, callee_signature)
+                            if found_method is not None and callee_signature == target_method_signature and found_class == target_class_name:
                                 source_method_details = self.get_method(method_signature=method, qualified_class_name=class_name)
                                 source_class = class_name
                     else:
-                        # check if any method exists with the signature in the class even if the receiver type is blank
-                        if callee_signature == target_method_signature and class_name == target_class_name:
+                        # check if any method exists with the signature in the class (including inherited) even if the receiver type is blank
+                        found_method, found_class = self.__find_method_in_hierarchy(class_name, callee_signature)
+                        if found_method is not None and callee_signature == target_method_signature and found_class == target_class_name:
                             source_method_details = self.get_method(method_signature=method, qualified_class_name=class_name)
                             source_class = class_name
 
@@ -781,6 +784,46 @@ class JCodeanalyzer:
                         if call_edge not in cg:
                             cg.append(call_edge)
         return cg
+
+    def __find_method_in_hierarchy(self, qualified_class_name: str, method_signature: str) -> Tuple[JCallable | None, str]:
+        """Finds a method in the class hierarchy (including inherited methods).
+        
+        Ignores interface methods and only returns concrete implementations.
+
+        Args:
+            qualified_class_name (str): The qualified class name to start searching from.
+            method_signature (str): The method signature to find.
+
+        Returns:
+            Tuple[JCallable | None, str]: A tuple of (method_details, declaring_class).
+                Returns (None, "") if the method is not found.
+        """
+        # First, check if the method exists in the current class
+        klass = self.get_class(qualified_class_name=qualified_class_name)
+        method_details = self.get_method(method_signature=method_signature, qualified_class_name=qualified_class_name)
+        
+        # If found and it's not an interface, return it (concrete implementation)
+        if method_details is not None and klass is not None and not klass.is_interface:
+            return method_details, qualified_class_name
+
+        # If not found or is an interface, check parent classes (extends) first
+        # This ensures we find concrete implementations before interface methods
+        if klass is not None:
+            # Check extended classes (these are more likely to have concrete implementations)
+            for parent_class in klass.extends_list:
+                parent_method, found_class = self.__find_method_in_hierarchy(parent_class, method_signature)
+                if parent_method is not None:
+                    return parent_method, found_class
+
+            # Only check implemented interfaces if no concrete implementation was found
+            # This is a fallback for cases where only the interface method exists
+            # for interface in klass.implements_list:
+            #     interface_method, found_class = self.__find_method_in_hierarchy(interface, method_signature)
+            #     if interface_method is not None:
+            #         return interface_method, found_class
+
+        # Do not return interface methods - only concrete implementations are included in call graph
+        return None, ""
 
     def __raw_call_graph_using_symbol_table(self, qualified_class_name: str, method_signature: str, cg=None) -> list[JGraphEdgesST]:
         """Generates a call graph using symbol table information.
@@ -826,16 +869,17 @@ class JCodeanalyzer:
             if call_site.receiver_type != "":
                 # call to any class
                 if self.get_class(qualified_class_name=call_site.receiver_type):
-                    tmd = self.get_method(method_signature=callee_signature, qualified_class_name=call_site.receiver_type)
+                    # Check for method in the receiver type and its hierarchy
+                    tmd, found_class = self.__find_method_in_hierarchy(call_site.receiver_type, callee_signature)
                     if tmd is not None:
                         target_method_details = tmd
-                        target_class = call_site.receiver_type
+                        target_class = found_class
             else:
-                # check if any method exists with the signature in the class even if the receiver type is blank
-                tmd = self.get_method(method_signature=callee_signature, qualified_class_name=qualified_class_name)
+                # check if any method exists with the signature in the class (including inherited) even if the receiver type is blank
+                tmd, found_class = self.__find_method_in_hierarchy(qualified_class_name, callee_signature)
                 if tmd is not None:
                     target_method_details = tmd
-                    target_class = qualified_class_name
+                    target_class = found_class
 
             if target_class != "" and target_method_details is not None:
                 source: JMethodDetail
