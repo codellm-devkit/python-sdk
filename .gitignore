@@ -17,6 +17,10 @@
 # Cache files
 .cache/
 
+# CLDK / codeanalyzer-python analysis artifacts
+.codeanalyzer/
+.cldk-cache/
+
 # Mobile Tools for Java (J2ME)
 .mtj.tmp/
 

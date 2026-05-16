@@ -204,8 +204,15 @@ Each language has a dedicated analysis backend implemented under `cldk.analysis.
 
 #### Python
 - **Backend:** `cldk.analysis.python`  
-- **Tools:** Tree-sitter  
-- **Capabilities:** Lightweight structural parsing, method/function boundaries, control/data flow approximation
+- **Tools:** `codeanalyzer-python` (Jedi + optional CodeQL), Tree-sitter for source-level parsing  
+- **Capabilities:** Symbol table, call graph, class/method resolution, comments/docstrings
+
+> **Note — analysis cache:** The first Python analysis run creates a
+> `.codeanalyzer/` directory in the project under analysis. It holds the
+> backend's virtualenv, the CodeQL database (when enabled), and the cached
+> `analysis.json`. It can be large and is environment-specific, so **add
+> `.codeanalyzer/` (and `.cldk-cache/` if you persist analysis JSON there)
+> to your `.gitignore`.** Both are already ignored in this repo.
 
 #### C
 - **Backend:** `cldk.analysis.c`  

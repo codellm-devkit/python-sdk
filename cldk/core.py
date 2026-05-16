@@ -108,9 +108,15 @@ class CLDK:
                 eager_analysis=eager,
             )
         elif self.language == "python":
+            if source_code is not None:
+                raise CldkInitializationException("source_code mode is not supported for Python; please pass project_path.")
             return PythonAnalysis(
                 project_dir=project_path,
-                source_code=source_code,
+                analysis_level=analysis_level,
+                analysis_backend_path=analysis_backend_path,
+                analysis_json_path=analysis_json_path,
+                target_files=target_files,
+                eager_analysis=eager,
             )
         elif self.language == "c":
             return CAnalysis(project_dir=project_path)
