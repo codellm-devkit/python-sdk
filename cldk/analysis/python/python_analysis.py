@@ -67,7 +67,9 @@ class PythonAnalysis:
         use_codeql: bool = False,
     ) -> None:
         if project_dir is None:
-            raise ValueError("project_dir is required; source_code mode is not supported for Python.")
+            raise ValueError(
+                "project_dir is required; source_code mode is not supported for Python."
+            )
         self.project_dir = project_dir
         self.analysis_level = analysis_level
         self.analysis_json_path = analysis_json_path
@@ -85,7 +87,7 @@ class PythonAnalysis:
             use_codeql=use_codeql,
         )
 
-    # ---------------------------------------------------- treesitter passthrough
+    # -----[ treesitter passthrough ]-----
     def is_parsable(self, source_code: str) -> bool:
         """Return True when ``source_code`` parses as Python."""
         return self.treesitter_python.is_parsable(source_code)
@@ -94,7 +96,7 @@ class PythonAnalysis:
         """Return the raw tree-sitter AST for ``source_code``."""
         return self.treesitter_python.get_raw_ast(source_code)
 
-    # --------------------------------------------------------- application view
+    # -----[ application view ]-----
     def get_application_view(self) -> PyApplication:
         """Return the analyzed :class:`PyApplication`."""
         return self.backend.get_application_view()
@@ -102,10 +104,6 @@ class PythonAnalysis:
     def get_symbol_table(self) -> Dict[str, PyModule]:
         """Return the symbol table keyed by file path."""
         return self.backend.get_symbol_table()
-
-    def get_compilation_units(self) -> List[PyModule]:
-        """Return all modules. Java-parlance alias for :meth:`get_modules`."""
-        return self.backend.get_modules()
 
     def get_modules(self) -> List[PyModule]:
         """Return all modules."""
@@ -119,12 +117,14 @@ class PythonAnalysis:
         """Return the :class:`PyModule` for the given file path."""
         return self.backend.get_python_module(file_path)
 
-    # ---------------------------------------------------------------- imports
+    # -----[ imports ]-----
     def get_imports(self) -> Dict[str, List]:
         """Return imports for each module in the application."""
-        return {fp: list(m.imports) for fp, m in self.backend.get_symbol_table().items()}
+        return {
+            fp: list(m.imports) for fp, m in self.backend.get_symbol_table().items()
+        }
 
-    # ---------------------------------------------------------------- call graph
+    # -----[ call graph ]-----
     def get_call_graph(self) -> nx.DiGraph:
         """Return the call graph as a directed NetworkX graph."""
         return self.backend.get_call_graph()
@@ -133,13 +133,21 @@ class PythonAnalysis:
         """Return the analysis serialized to JSON."""
         return self.backend.get_call_graph_json()
 
-    def get_callers(self, target_class_name: str, target_method_declaration: str) -> Dict:
+    def get_callers(
+        self, target_class_name: str, target_method_declaration: str
+    ) -> Dict:
         """Return callers of the target method."""
-        return self.backend.get_all_callers(target_class_name, target_method_declaration)
+        return self.backend.get_all_callers(
+            target_class_name, target_method_declaration
+        )
 
-    def get_callees(self, source_class_name: str, source_method_declaration: str) -> Dict:
+    def get_callees(
+        self, source_class_name: str, source_method_declaration: str
+    ) -> Dict:
         """Return callees of the source method."""
-        return self.backend.get_all_callees(source_class_name, source_method_declaration)
+        return self.backend.get_all_callees(
+            source_class_name, source_method_declaration
+        )
 
     def get_class_call_graph(
         self, qualified_class_name: str, method_signature: str | None = None
@@ -147,7 +155,7 @@ class PythonAnalysis:
         """Return an edge list reachable from a class (and optionally a method)."""
         return self.backend.get_class_call_graph(qualified_class_name, method_signature)
 
-    # ---------------------------------------------------------------- methods
+    # -----[ methods ]-----
     def get_methods(self) -> Dict[str, Dict[str, PyCallable]]:
         """Return all methods grouped by class signature."""
         return self.backend.get_all_methods_in_application()
@@ -156,19 +164,25 @@ class PythonAnalysis:
         """Return methods of the given class."""
         return self.backend.get_all_methods_in_class(qualified_class_name)
 
-    def get_method(self, qualified_class_name: str, qualified_method_name: str) -> PyCallable | None:
+    def get_method(
+        self, qualified_class_name: str, qualified_method_name: str
+    ) -> PyCallable | None:
         """Return the :class:`PyCallable` for the given class+method signatures."""
         return self.backend.get_method(qualified_class_name, qualified_method_name)
 
-    def get_method_parameters(self, qualified_class_name: str, qualified_method_name: str) -> List[str]:
+    def get_method_parameters(
+        self, qualified_class_name: str, qualified_method_name: str
+    ) -> List[str]:
         """Return parameter names for the given method."""
-        return self.backend.get_method_parameters(qualified_class_name, qualified_method_name)
+        return self.backend.get_method_parameters(
+            qualified_class_name, qualified_method_name
+        )
 
     def get_constructors(self, qualified_class_name: str) -> Dict[str, PyCallable]:
         """Return ``__init__`` methods of the given class."""
         return self.backend.get_all_constructors(qualified_class_name)
 
-    # ---------------------------------------------------------------- classes
+    # -----[ classes ]-----
     def get_classes(self) -> Dict[str, PyClass]:
         """Return all classes keyed by qualified signature."""
         return self.backend.get_all_classes()
@@ -177,7 +191,9 @@ class PythonAnalysis:
         """Return the :class:`PyClass` for the given qualified signature."""
         return self.backend.get_class(qualified_class_name)
 
-    def get_classes_by_criteria(self, inclusions=None, exclusions=None) -> Dict[str, PyClass]:
+    def get_classes_by_criteria(
+        self, inclusions=None, exclusions=None
+    ) -> Dict[str, PyClass]:
         """Return classes whose qualified name matches inclusion/exclusion filters."""
         inclusions = inclusions or []
         exclusions = exclusions or []
@@ -206,75 +222,66 @@ class PythonAnalysis:
         """Return base class names of the given class."""
         return self.backend.get_extended_classes(qualified_class_name)
 
-    # ---------------------------------------------------------------- comments
-    def get_comments_in_a_method(self, qualified_class_name: str, method_signature: str) -> List[PyComment]:
-        """Return comments inside a method."""
-        return self.backend.get_comments_in_a_method(qualified_class_name, method_signature)
-
-    def get_comments_in_a_class(self, qualified_class_name: str) -> List[PyComment]:
-        """Return comments inside a class."""
-        return self.backend.get_comments_in_a_class(qualified_class_name)
-
-    def get_comment_in_file(self, file_path: str) -> List[PyComment]:
-        """Return comments in a file."""
-        return self.backend.get_comment_in_file(file_path)
-
-    def get_all_comments(self) -> Dict[str, List[PyComment]]:
-        """Return every comment in the application, grouped by file path."""
-        return self.backend.get_all_comments()
-
-    def get_all_docstrings(self) -> Dict[str, List[PyComment]]:
-        """Return every docstring in the application, grouped by file path."""
-        return self.backend.get_all_docstrings()
-
-    # ---------------------------------------------------------- not yet supported
-    def get_variables(self, **kwargs):
-        """Return all variables. Not implemented."""
-        raise NotImplementedError("Support for this functionality has not been implemented yet.")
-
+    # -----[ unsupported ]-----
     def get_class_hierarchy(self) -> nx.DiGraph:
         """Return the class hierarchy. Not implemented."""
         raise NotImplementedError("Class hierarchy is not implemented yet.")
 
     def get_service_entry_point_classes(self, **kwargs):
         """Return service entry-point classes. Not implemented."""
-        raise NotImplementedError("Support for this functionality has not been implemented yet.")
+        raise NotImplementedError(
+            "Support for this functionality has not been implemented yet."
+        )
 
     def get_service_entry_point_methods(self, **kwargs):
         """Return service entry-point methods. Not implemented."""
-        raise NotImplementedError("Support for this functionality has not been implemented yet.")
+        raise NotImplementedError(
+            "Support for this functionality has not been implemented yet."
+        )
 
     def get_entry_point_classes(self) -> Dict[str, PyClass]:
         """Return entry-point classes. Not implemented."""
-        raise NotImplementedError("Support for this functionality has not been implemented yet.")
+        raise NotImplementedError(
+            "Support for this functionality has not been implemented yet."
+        )
 
     def get_entry_point_methods(self) -> Dict[str, Dict[str, PyCallable]]:
         """Return entry-point methods. Not implemented."""
-        raise NotImplementedError("Support for this functionality has not been implemented yet.")
+        raise NotImplementedError(
+            "Support for this functionality has not been implemented yet."
+        )
 
     def get_implemented_interfaces(self, qualified_class_name: str) -> List[str]:
         """Java parity stub — Python has no separate interface concept."""
-        raise NotImplementedError("Python does not distinguish interfaces from base classes; use get_extended_classes.")
+        raise NotImplementedError(
+            "Python does not distinguish interfaces from base classes; use get_extended_classes."
+        )
 
-    def get_methods_with_annotations(self, annotations: List[str]) -> Dict[str, List[Dict]]:
+    def get_methods_with_decorators(
+        self, decorators: List[str]
+    ) -> Dict[str, List[Dict]]:
         """Return methods carrying the given decorators. Not implemented."""
-        raise NotImplementedError("Support for this functionality has not been implemented yet.")
+        raise NotImplementedError(
+            "Support for this functionality has not been implemented yet."
+        )
 
     def get_test_methods(self) -> Dict[str, str]:
         """Return test methods. Not implemented."""
-        raise NotImplementedError("Support for this functionality has not been implemented yet.")
+        raise NotImplementedError(
+            "Support for this functionality has not been implemented yet."
+        )
 
     def get_calling_lines(self, target_method_name: str) -> List[int]:
         """Return line numbers calling a method. Not implemented."""
-        raise NotImplementedError("Support for this functionality has not been implemented yet.")
+        raise NotImplementedError(
+            "Support for this functionality has not been implemented yet."
+        )
 
     def get_call_targets(self, declared_methods: dict) -> Set[str]:
         """Return call targets via simple name resolution. Not implemented."""
-        raise NotImplementedError("Support for this functionality has not been implemented yet.")
-
-    def remove_all_comments(self) -> str:
-        """Strip comments from source. Not implemented."""
-        raise NotImplementedError("Support for this functionality has not been implemented yet.")
+        raise NotImplementedError(
+            "Support for this functionality has not been implemented yet."
+        )
 
     def get_all_crud_operations(self):
         """Return CRUD operations. Not implemented."""
