@@ -16,8 +16,27 @@
 
 """Core CLDK module.
 
-Provides the top-level CLDK entry point used to initialize language-specific
-analysis, Treesitter parsers, and related utilities.
+This module provides the top-level entry point for the Code Language Development
+Kit (CLDK), a unified framework for performing static analysis across multiple
+programming languages. The primary interface is the :class:`CLDK` class, which
+serves as a factory for creating language-specific analysis objects, tree-sitter
+parsers, and sanitization utilities.
+
+The CLDK supports the following languages:
+    - **Java**: Full static analysis via CodeAnalyzer backend, including symbol
+      tables, call graphs, and code metrics.
+    - **Python**: Static analysis via codeanalyzer-python backend with optional
+      CodeQL-augmented call graph resolution.
+    - **C**: Basic analysis via libclang for parsing and extracting code structure.
+
+Typical usage involves instantiating :class:`CLDK` with a target language, then
+calling :meth:`CLDK.analysis` to obtain a language-specific analysis facade.
+
+Note:
+    This module requires language-specific backends to be available:
+    - Java: ``codeanalyzer-*.jar`` (auto-downloaded or specified via path)
+    - Python: ``codeanalyzer-python`` (auto-installed in virtualenv)
+    - C: ``libclang`` (must be installed on the system)
 """
 
 from pathlib import Path
@@ -39,17 +58,42 @@ logger = logging.getLogger(__name__)
 class CLDK:
     """Core class for the Code Language Development Kit (CLDK).
 
-    Initialize with the desired programming language and use the exposed
-    helpers to perform language-specific analysis.
+    The CLDK class serves as the primary entry point and factory for all code
+    analysis operations. It provides a unified interface for initializing
+    language-specific analysis facades, tree-sitter parsers, and code
+    sanitization utilities.
+
+    This class follows the factory pattern, where the ``language`` parameter
+    determines which concrete analysis implementation is returned by the
+    :meth:`analysis`, :meth:`treesitter_parser`, and :meth:`tree_sitter_utils`
+    methods.
 
     Args:
-        language (str): Programming language (e.g., "java", "python", "c").
+        language: The target programming language for analysis. Supported values
+            are ``"java"``, ``"python"``, and ``"c"`` (case-sensitive).
 
     Attributes:
-        language (str): Programming language of the project.
+        language (str): The programming language specified during initialization.
+            This determines which analysis backend and utilities are used.
+
+    Raises:
+        NotImplementedError: Raised by factory methods when the specified
+            language is not yet supported.
+
+    See Also:
+        - :class:`~cldk.analysis.java.JavaAnalysis`: Java-specific analysis facade.
+        - :class:`~cldk.analysis.python.PythonAnalysis`: Python-specific analysis facade.
+        - :class:`~cldk.analysis.c.CAnalysis`: C-specific analysis facade.
     """
 
-    def __init__(self, language: str):
+    def __init__(self, language: str) -> None:
+        """Initialize the CLDK instance with a target programming language.
+
+        Args:
+            language: The programming language to use for analysis. Must be one
+                of the supported languages: ``"java"``, ``"python"``, or ``"c"``.
+                The language string is case-sensitive.
+        """
         self.language: str = language
 
     def analysis(
@@ -64,47 +108,82 @@ class CLDK:
         cache_dir: str | Path | None = None,
         use_codeql: bool = True,
     ) -> JavaAnalysis | PythonAnalysis | CAnalysis:
-        """Initialize a language-specific analysis façade.
+        """Initialize and return a language-specific analysis facade.
+
+        This factory method creates an appropriate analysis object based on the
+        language specified during CLDK initialization. The analysis facade provides
+        methods for extracting code structure, call graphs, symbol tables, and
+        other static analysis artifacts.
+
+        The method supports two modes of operation:
+
+        1. **Project mode**: Analyze an entire project directory by providing
+           ``project_path``. This is the recommended mode for comprehensive
+           analysis.
+        2. **Source code mode** (Java only): Analyze a single source code string
+           by providing ``source_code``. Useful for quick analysis of code
+           snippets.
 
         Args:
-            project_path (str | Path | None): Directory path of the project.
-            source_code (str | None): Source code for single-file analysis.
-            eager (bool): If True, forces regeneration of analysis databases.
-            analysis_level (str): Analysis level. See AnalysisLevel.
-            target_files (list[str] | None): Files to constrain analysis (optional).
-            analysis_backend_path (str | None): Java only. Directory containing
-                the ``codeanalyzer-*.jar`` to run. Not valid for Python — pass
-                ``cache_dir`` instead.
-            analysis_json_path (str | Path | None): Path to persist the analysis
-                database / ``analysis.json``.
-            cache_dir (str | Path | None): Python only. Cache home for the
-                ``codeanalyzer-python`` backend — its virtualenv, CodeQL
-                database, and ``analysis_cache.json`` (forwarded as the
-                backend's ``cache_dir``). The backend owns all caching; when
-                omitted it defaults to ``<project_path>/.codeanalyzer``.
-                Ignored for other languages.
-            use_codeql (bool): Python only, default True. Augments Jedi-resolved
-                call edges with CodeQL-resolved edges; set False for a faster,
-                Jedi-only analysis. Ignored for other languages.
+            project_path: Absolute or relative path to the project directory
+                to analyze. The directory should contain source files in the
+                target language. Mutually exclusive with ``source_code``.
+            source_code: Raw source code string to analyze (Java only). Useful
+                for analyzing code snippets without a project structure.
+                Mutually exclusive with ``project_path``. Not supported for
+                Python or C languages.
+            eager: If ``True``, forces regeneration of all analysis caches and
+                databases, ignoring any previously cached results. Defaults to
+                ``False`` for incremental analysis performance.
+            analysis_level: The depth of analysis to perform. Controls which
+                analysis artifacts are generated. See :class:`~cldk.analysis.AnalysisLevel`
+                for available options. Defaults to ``AnalysisLevel.symbol_table``.
+            target_files: Optional list of specific file paths (relative to
+                ``project_path``) to analyze. When provided, only these files
+                are included in the analysis, improving performance for large
+                projects. Defaults to ``None`` (analyze all files).
+            analysis_backend_path: **Java only.** Path to the directory containing
+                the ``codeanalyzer-*.jar`` backend executable. If not provided,
+                the JAR is automatically downloaded. Not valid for Python
+                analysis; use ``cache_dir`` instead.
+            analysis_json_path: Path where the analysis database (typically
+                ``analysis.json``) should be persisted. Useful for caching
+                analysis results between sessions. If not provided, a default
+                location within the project is used.
+            cache_dir: **Python only.** Directory path for the codeanalyzer-python
+                backend's cache, including its virtualenv, CodeQL database, and
+                ``analysis_cache.json``. When omitted, defaults to
+                ``<project_path>/.codeanalyzer``. Ignored for Java and C.
+            use_codeql: **Python only.** If ``True`` (default), augments
+                Jedi-based call graph resolution with CodeQL analysis for more
+                complete call edges. Set to ``False`` for faster analysis using
+                only Jedi. Ignored for Java and C.
 
         Returns:
-            JavaAnalysis | PythonAnalysis | CAnalysis: Initialized analysis façade for the chosen language.
+            A language-specific analysis facade instance:
+                - :class:`~cldk.analysis.java.JavaAnalysis` for Java projects
+                - :class:`~cldk.analysis.python.PythonAnalysis` for Python projects
+                - :class:`~cldk.analysis.c.CAnalysis` for C projects
 
         Raises:
-            CldkInitializationException: If both or neither of project_path and
-                source_code are provided, or if the Java-only
-                ``analysis_backend_path`` is passed in Python mode.
-            NotImplementedError: If the specified language is unsupported.
+            CldkInitializationException: Raised in the following cases:
+                - Neither ``project_path`` nor ``source_code`` is provided.
+                - Both ``project_path`` and ``source_code`` are provided.
+                - ``source_code`` is provided for Python analysis (not supported).
+                - ``analysis_backend_path`` is provided for Python analysis
+                  (use ``cache_dir`` instead).
+            NotImplementedError: If the language specified during CLDK
+                initialization is not supported.
 
-        Examples:
-            Initialize Python analysis with inline source code and verify type:
+        Note:
+            The analysis process may download or build backend tools on first
+            run, which can take additional time. Subsequent runs use cached
+            backends for faster startup.
 
-            >>> from cldk import CLDK
-            >>> cldk = CLDK(language="python")
-            >>> analysis = cldk.analysis(source_code='def f(): return 1')
-            >>> from cldk.analysis.python import PythonAnalysis
-            >>> isinstance(analysis, PythonAnalysis)
-            True
+        See Also:
+            - :class:`~cldk.analysis.AnalysisLevel`: Available analysis depth options.
+            - :class:`~cldk.analysis.java.JavaAnalysis`: Java analysis methods.
+            - :class:`~cldk.analysis.python.PythonAnalysis`: Python analysis methods.
         """
 
         if project_path is None and source_code is None:
@@ -145,48 +224,86 @@ class CLDK:
         else:
             raise NotImplementedError(f"Analysis support for {self.language} is not implemented yet.")
 
-    def treesitter_parser(self):
-        """Return a Treesitter parser for the selected language.
+    def treesitter_parser(self) -> TreesitterJava:
+        """Return a Tree-sitter parser for the selected language.
+
+        Creates and returns a language-specific Tree-sitter parser instance
+        that can be used for syntactic analysis, AST traversal, and code
+        querying operations. Tree-sitter provides incremental parsing with
+        excellent performance characteristics for real-time code analysis.
+
+        The returned parser provides methods for:
+            - Parsing source code into an AST
+            - Running Tree-sitter queries to extract code patterns
+            - Extracting syntactic elements (methods, classes, imports, etc.)
+            - Performing lexical analysis
 
         Returns:
-            TreesitterJava: Parser for Java language.
+            TreesitterJava: A Tree-sitter parser wrapper for Java source code.
+                The parser provides methods such as :meth:`is_parsable`,
+                :meth:`get_raw_ast`, :meth:`get_all_imports`, and various
+                code extraction utilities.
 
         Raises:
-            NotImplementedError: If the language is unsupported.
+            NotImplementedError: If the language specified during CLDK
+                initialization does not have a Tree-sitter parser implementation.
+                Currently, only Java is supported.
 
-        Examples:
-            Get a Java Treesitter parser:
+        Note:
+            The Tree-sitter parser operates at the syntactic level only and
+            does not perform semantic analysis. For semantic information like
+            resolved types or call graphs, use :meth:`analysis` instead.
 
-            >>> from cldk import CLDK
-            >>> parser = CLDK(language="java").treesitter_parser()
-            >>> parser.__class__.__name__
-            'TreesitterJava'
+        See Also:
+            - :class:`~cldk.analysis.commons.treesitter.TreesitterJava`:
+              Java Tree-sitter parser implementation.
         """
         if self.language == "java":
             return TreesitterJava()
         else:
             raise NotImplementedError(f"Treesitter parser for {self.language} is not implemented yet.")
 
-    def tree_sitter_utils(self, source_code: str) -> [TreesitterSanitizer | NotImplementedError]:  # type: ignore
-        """Return Treesitter utilities for the selected language.
+    def tree_sitter_utils(self, source_code: str) -> TreesitterSanitizer:
+        """Return Tree-sitter-based code sanitization utilities for the selected language.
+
+        Creates and returns a utility class that provides code transformation
+        and sanitization operations using Tree-sitter for parsing. These utilities
+        are particularly useful for preparing code for LLM consumption, test
+        generation, and code analysis tasks.
+
+        The sanitization utilities provide operations such as:
+            - Removing unused imports from source code
+            - Keeping only focal methods and their callees for context reduction
+            - Extracting and manipulating test assertions
+            - Identifying and removing dead code
 
         Args:
-            source_code (str): Source code to initialize the utilities with.
+            source_code: The source code string to initialize the utilities with.
+                This code will be parsed and made available for transformation
+                operations. Must be valid syntax for the target language.
 
         Returns:
-            TreesitterSanitizer: Utility wrapper for Java Treesitter operations.
+            TreesitterSanitizer: A utility wrapper that provides sanitization
+                and transformation methods for Java source code, including:
+                - :meth:`~TreesitterSanitizer.keep_only_focal_method_and_its_callees`
+                - :meth:`~TreesitterSanitizer.remove_unused_imports`
 
         Raises:
-            NotImplementedError: If the language is unsupported.
+            NotImplementedError: If the language specified during CLDK
+                initialization does not have sanitization utilities implemented.
+                Currently, only Java is supported.
 
-        Examples:
-            Create Java Treesitter sanitizer utilities:
+        Note:
+            The sanitization utilities modify code at the syntactic level using
+            Tree-sitter patterns. For complex refactoring that requires semantic
+            understanding, consider using the full analysis capabilities via
+            :meth:`analysis`.
 
-            >>> from cldk import CLDK
-            >>> utils = CLDK(language="java").tree_sitter_utils('class A {}')
-            >>> from cldk.utils.sanitization.java import TreesitterSanitizer
-            >>> isinstance(utils, TreesitterSanitizer)
-            True
+        See Also:
+            - :class:`~cldk.utils.sanitization.java.TreesitterSanitizer`:
+              Java sanitization utility implementation.
+            - :meth:`treesitter_parser`: For raw Tree-sitter parsing without
+              sanitization utilities.
         """
         if self.language == "java":
             return TreesitterSanitizer(source_code=source_code)

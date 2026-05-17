@@ -14,8 +14,29 @@
 # limitations under the License.
 ################################################################################
 
-"""
-Models module
+"""Java data models module.
+
+This module defines Pydantic model classes for representing Java code elements
+extracted during static analysis. These models form the core data structures
+returned by :class:`~cldk.analysis.java.JavaAnalysis` and related classes.
+
+The models represent:
+    - **Types**: Classes, interfaces, enums, records (:class:`JType`)
+    - **Callables**: Methods, constructors (:class:`JCallable`)
+    - **Fields**: Class and instance variables (:class:`JField`)
+    - **Comments**: Javadoc and inline comments (:class:`JComment`)
+    - **Imports**: Import declarations (:class:`JImport`)
+    - **CRUD Operations**: Database operations (:class:`JCRUDOperation`)
+    - **Call Information**: Method call details (:class:`JMethodDetail`, :class:`JCallSite`)
+
+All models inherit from Pydantic's :class:`~pydantic.BaseModel`, providing:
+    - Automatic validation of field types
+    - JSON serialization/deserialization
+    - Schema generation for documentation
+
+See Also:
+    - :class:`~cldk.analysis.java.JavaAnalysis`: Analysis facade using these models.
+    - :mod:`~cldk.models.java.enums`: Related enumeration types.
 """
 from typing import Any, Dict, List, Optional, Union
 from pydantic import BaseModel, Field, field_validator, model_validator

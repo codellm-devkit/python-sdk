@@ -14,10 +14,28 @@
 # limitations under the License.
 ################################################################################
 
-"""Java tree-sitter queries and helpers.
+"""Java Tree-sitter queries and helpers module.
 
-Provides utilities to parse Java source text with tree-sitter and extract
-classes, methods, interfaces, invocations, comments, and related metadata.
+This module provides comprehensive utilities for parsing Java source code using
+Tree-sitter and extracting various code elements. It serves as the foundation
+for syntactic analysis in CLDK's Java support.
+
+The module provides extraction for:
+    - **Classes and interfaces**: Names, inheritance, implementations
+    - **Methods**: Names, signatures, annotations, bodies
+    - **Imports**: Package and type imports
+    - **Invocations**: Method calls and type references
+    - **Comments**: Block comments, line comments, and Javadoc
+
+Key features:
+    - S-expression query support for pattern matching
+    - AST traversal utilities
+    - Code transformation (comment removal, prettification)
+    - Test method detection (JUnit annotations)
+
+See Also:
+    - :class:`~cldk.analysis.java.JavaAnalysis`: High-level Java analysis.
+    - :class:`TreesitterPython`: Equivalent for Python parsing.
 """
 import logging
 from itertools import groupby
@@ -31,38 +49,86 @@ from cldk.analysis.commons.treesitter.models import Captures
 logger = logging.getLogger(__name__)
 
 LANGUAGE: Language = Language(tsjava.language())
+"""The Tree-sitter Language object for Java grammar."""
+
 PARSER: Parser = Parser(LANGUAGE)
+"""Global Tree-sitter parser instance configured for Java."""
 
 
 # pylint: disable=too-many-public-methods
 class TreesitterJava:
-    """Tree-sitter helpers for Java use cases."""
+    """Tree-sitter helper class for Java source code parsing and analysis.
+
+    This class provides comprehensive utilities for parsing Java source code
+    using Tree-sitter. It offers methods for:
+        - Syntax validation
+        - AST generation and traversal
+        - Code element extraction (classes, methods, imports)
+        - Pattern matching via S-expression queries
+        - Code transformation (comment removal)
+
+    The class is stateless and uses module-level parser and language objects,
+    making it thread-safe for concurrent use.
+
+    Attributes:
+        None. This class is stateless and provides only utility methods.
+
+    See Also:
+        - :class:`~cldk.analysis.java.JavaAnalysis`: High-level analysis facade.
+        - :class:`TreesitterPython`: Equivalent for Python.
+    """
 
     def __init__(self) -> None:
+        """Initialize the TreesitterJava helper.
+
+        Creates a new instance of the Java Tree-sitter helper. This class
+        is stateless; initialization performs no setup as all parsing uses
+        module-level parser and language objects.
+        """
         pass
 
     def method_is_not_in_class(self, method_name: str, class_body: str) -> bool:
-        """Return True if the method is not declared in the class body.
+        """Check if a method is NOT declared in a class body.
+
+        Searches for method declarations in the given class body and checks
+        if the specified method name is absent.
 
         Args:
-            method_name (str): Method name to check.
-            class_body (str): Class source body.
+            method_name: The method name to check for (without parentheses
+                or parameters).
+            class_body: The Java class source code to search within.
 
         Returns:
-            bool: True if absent, False otherwise.
+            ``True`` if the method is NOT found in the class body,
+            ``False`` if the method IS found.
         """
         methods_in_class = self.frame_query_and_capture_output("(method_declaration name: (identifier) @name)", class_body)
 
         return method_name not in {method.node.text.decode() for method in methods_in_class}
 
     def is_parsable(self, code: str) -> bool:
-        """Check whether the Java code parses without syntax errors.
+        """Check if the given code is syntactically valid Java.
+
+        Parses the code using Tree-sitter and recursively checks for ERROR
+        nodes in the resulting AST. Returns ``True`` only if the entire
+        code parses without syntax errors.
 
         Args:
-            code (str): Source code.
+            code: A string containing Java source code to validate. Can be
+                a complete compilation unit, a class, a method, or any
+                syntactically valid Java fragment.
 
         Returns:
-            bool: True if parsable, False otherwise.
+            ``True`` if the code parses without syntax errors, ``False``
+            otherwise. Also returns ``False`` if parsing triggers a
+            RecursionError (for extremely nested code).
+
+        Note:
+            This checks syntactic validity only, not semantic correctness.
+            Code with undefined types or methods will still be "parsable".
+
+        See Also:
+            :meth:`get_raw_ast`: To obtain the AST for further analysis.
         """
 
         def syntax_error(node):
@@ -83,13 +149,29 @@ class TreesitterJava:
         return False
 
     def get_raw_ast(self, code: str) -> Tree:
-        """Parse and return the raw AST.
+        """Parse code and return the Tree-sitter AST.
+
+        Parses the provided Java source code using Tree-sitter and returns
+        the resulting abstract syntax tree. The AST can be traversed to
+        extract syntactic information about the code structure.
 
         Args:
-            code (str): Source code.
+            code: A string containing Java source code to parse.
 
         Returns:
-            Tree: Parsed AST.
+            A Tree-sitter ``Tree`` object representing the parsed AST. The
+            tree's ``root_node`` provides access to the entire syntax tree:
+                - ``root_node.type``: Typically ``"program"`` for Java
+                - ``root_node.children``: Top-level declarations
+                - ``root_node.text``: Original source bytes
+
+        Note:
+            If the source contains syntax errors, Tree-sitter returns a tree
+            with ERROR nodes at parse error locations. Use :meth:`is_parsable`
+            to check for valid syntax first.
+
+        See Also:
+            :meth:`is_parsable`: To validate syntax before parsing.
         """
         return PARSER.parse(bytes(code, "utf-8"))
 
@@ -168,14 +250,29 @@ class TreesitterJava:
         return {interface.node.text.decode() for interface in interfaces}
 
     def frame_query_and_capture_output(self, query: str, code_to_process: str) -> Captures:
-        """Run a query and return captures from the AST.
+        """Execute a Tree-sitter query and return captured nodes.
+
+        Parses the provided source code and runs the given S-expression
+        query against the AST, returning all captured nodes.
 
         Args:
-            query (str): S-expression query string.
-            code_to_process (str): Java source.
+            query: A Tree-sitter S-expression query string defining the
+                pattern to match and captures to extract. Captures are
+                denoted with ``@name`` syntax.
+            code_to_process: Java source code to parse and query.
 
         Returns:
-            Captures: Query captures for the AST root.
+            A :class:`~cldk.analysis.commons.treesitter.models.Captures`
+            object containing all nodes matched by the query, with their
+            capture names and node references.
+
+        Note:
+            The query syntax follows Tree-sitter's S-expression format.
+            See Tree-sitter documentation for query syntax details.
+
+        See Also:
+            :class:`~cldk.analysis.commons.treesitter.models.Captures`:
+                The return type for captured nodes.
         """
         framed_query: Query = LANGUAGE.query(query)
         tree = PARSER.parse(bytes(code_to_process, "utf-8"))

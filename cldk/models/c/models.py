@@ -1,10 +1,45 @@
+"""C data models module.
+
+This module defines Pydantic model classes for representing C code elements
+extracted during static analysis. These models form the core data structures
+returned by :class:`~cldk.analysis.c.CAnalysis` and related classes.
+
+The models represent:
+    - **Functions**: Function definitions (:class:`CFunction`)
+    - **Variables**: Local and global variables (:class:`CVariable`)
+    - **Parameters**: Function parameters (:class:`CParameter`)
+    - **Macros**: Preprocessor macros (:class:`CMacro`)
+    - **Types**: Structs, unions, enums, typedefs
+      (:class:`CStruct`, :class:`CEnum`, :class:`CTypedef`)
+    - **Translation Units**: Parsed source files (:class:`CTranslationUnit`)
+    - **Application**: Complete project model (:class:`CApplication`)
+
+All models inherit from Pydantic's :class:`~pydantic.BaseModel`, providing:
+    - Automatic validation of field types
+    - JSON serialization/deserialization
+    - Schema generation for documentation
+
+See Also:
+    - :class:`~cldk.analysis.c.CAnalysis`: Analysis facade using these models.
+"""
 from typing import Dict, List, Optional, Union
 from pydantic import BaseModel, field_validator
 from enum import Enum
 
 
 class StorageClass(Enum):
-    """Represents C storage class specifiers."""
+    """C storage class specifiers enumeration.
+
+    Represents the five storage class specifiers in the C language that
+    determine the lifetime and visibility of variables and functions.
+
+    Attributes:
+        AUTO: Automatic storage duration (default for local variables).
+        REGISTER: Suggests storing in a CPU register (rarely used).
+        STATIC: Static storage duration with internal linkage.
+        EXTERN: External linkage, defined elsewhere.
+        TYPEDEF: Type definition (not actually a storage class).
+    """
 
     AUTO = "auto"
     REGISTER = "register"

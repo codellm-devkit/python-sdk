@@ -12,9 +12,8 @@ import pytest
 
 @pytest.fixture(scope="session")
 def build_project():
-    # Run the Poetry build command
-    result = run(["poetry", "build"], capture_output=True, text=True)
-    assert result.returncode == 0, f"Poetry build failed: {result.stderr}"
+    result = run(["uv", "build"], capture_output=True, text=True)
+    assert result.returncode == 0, f"uv build failed: {result.stderr}"
 
     # Find the .whl file in the dist directory
     wheel_files = glob.glob("dist/*.whl")
