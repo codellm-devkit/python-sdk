@@ -49,7 +49,6 @@
 				"ms-python.pylint",
 				"ms-python.flake8",
 				"ms-python.black-formatter",
-				"zeshuaro.vscode-python-poetry",
 				"njpwerner.autodocstring",
 				"wholroyd.jinja",
 				"yzhang.markdown-all-in-one",
@@ -67,5 +66,5 @@
 			]
 		}
 	},
-	"postCreateCommand": "sudo poetry config virtualenvs.create false && sudo poetry install; echo '---'; python3 --version; echo '---'; java -version; echo '---'; mvn --version; echo '--'; clang --version; echo '---';"
+	"postCreateCommand": "uv sync --all-groups; echo '---'; python3 --version; echo '---'; java -version; echo '---'; mvn --version; echo '--'; clang --version; echo '---';"
 }

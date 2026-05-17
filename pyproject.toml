@@ -1,13 +1,16 @@
-[tool.poetry]
+[project]
 name = "cldk"
 version = "1.0.7"
 description = "The official Python SDK for Codellm-Devkit."
-authors = ["Rahul Krishna <i.m.ralk@gmail.com>", "Rangeet Pan <rangeet.pan@ibm.com>", "Saurabh Sinhas <sinhas@us.ibm.com>",
-            "Raju Pavuluri <pavuluri@us.ibm.com>"]
-license = "Apache 2.0"
 readme = "README.md"
-homepage = "https://codellm-devkit.info"
-repository = "https://github.com/codellm-devkit/python-sdk"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+authors = [
+    { name = "Rahul Krishna", email = "i.m.ralk@gmail.com" },
+    { name = "Rangeet Pan", email = "rangeet.pan@ibm.com" },
+    { name = "Saurabh Sinhas", email = "sinhas@us.ibm.com" },
+    { name = "Raju Pavuluri", email = "pavuluri@us.ibm.com" },
+]
 keywords = ["ibm", "llm", "large language models", "code analyzer", "syntax tree"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -20,55 +23,68 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Topic :: Software Development :: Libraries :: Python Modules",
-    "Topic :: Software Development :: Libraries :: Application Frameworks"
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
 ]
+dependencies = [
+    "pydantic>=2.10.6,<3",
+    "networkx>=3.4.2,<4",
+    "pyarrow==20.0.0",
+    "tree-sitter==0.24.0",
+    "rich==14.0.0",
+    "wget==3.2",
+    "requests>=2.32.3,<3",
+    "tree-sitter-java==0.23.5",
+    "tree-sitter-c==0.23.5",
+    "tree-sitter-go==0.23.4",
+    "tree-sitter-python==0.23.6",
+    "tree-sitter-javascript==0.23.1",
+    "clang==17.0.6",
+    "libclang==17.0.6",
+    "codeanalyzer-python==0.1.14",
+]
+
+[project.urls]
+Homepage = "https://codellm-devkit.info"
+Repository = "https://github.com/codellm-devkit/python-sdk"
+
+[dependency-groups]
+dev = [
+    "ipdb>=0.13.13,<0.14",
+    "ipython>=8.32.0,<9",
+]
+test = [
+    "toml>=0.10.2,<0.11",
+    "pytest==8.3.5",
+    "pytest-pspec>=0.0.4,<0.0.5",
+    "pytest-cov>=6.0.0,<7",
+    "pylint>=3.3.4,<4",
+    "flake8>=7.1.1,<8",
+    "black>=25.1.0,<26",
+    "coverage>=7.6.10,<8",
+    "jupyter>=1.1.1,<2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build]
+artifacts = ["cldk/analysis/java/codeanalyzer/jar/*.jar"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["cldk"]
+
+[tool.hatch.build.targets.sdist]
 include = [
+    "cldk",
     "LICENSE",
-    "cldk/analysis/java/codeanalyzer/jar/*.jar"
+    "README.md",
+    "CHANGELOG.md",
 ]
 
 [tool.backend-versions]
 codeanalyzer-java = "2.3.7"
 codeanalyzer-python = "0.1.14"
-
-[tool.poetry.dependencies]
-python = ">=3.11"
-pydantic = "^2.10.6"
-#pandas = "^2.2.3"
-networkx = "^3.4.2"
-pyarrow = "20.0.0"
-tree-sitter = "0.24.0"
-rich = "14.0.0"
-wget = "3.2"
-requests = "^2.32.3"
-tree-sitter-java = "0.23.5"
-tree-sitter-c = "0.23.5"
-tree-sitter-go = "0.23.4"
-tree-sitter-python = "0.23.6"
-tree-sitter-javascript = "0.23.1"
-clang = "17.0.6"
-libclang = "17.0.6"
-codeanalyzer-python = "0.1.14"
-
-[tool.poetry.group.dev.dependencies]
-ipdb = "^0.13.13"
-ipython = "^8.32.0"
-
-[tool.poetry.group.test.dependencies]
-# Test dependencies
-toml = "^0.10.2"
-pytest = "8.3.5"
-pytest-pspec = "^0.0.4"
-pytest-cov = "^6.0.0"
-pylint = "^3.3.4"
-flake8 = "^7.1.1"
-black = "^25.1.0"
-coverage = "^7.6.10"
-jupyter = "^1.1.1"
-
-[build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
 
 ########################################
 # Tool configurations

@@ -1,5 +1,5 @@
 version = 1
-revision = 2
+revision = 3
 requires-python = ">=3.11"
 resolution-markers = [
     "python_full_version >= '3.12'",
@@ -300,14 +300,13 @@ wheels = [
 
 [[package]]
 name = "cldk"
-version = "1.1.0"
+version = "1.0.7"
 source = { editable = "." }
 dependencies = [
     { name = "clang" },
     { name = "codeanalyzer-python" },
     { name = "libclang" },
     { name = "networkx" },
-    { name = "pandas" },
     { name = "pyarrow" },
     { name = "pydantic" },
     { name = "requests" },
@@ -321,7 +320,7 @@ dependencies = [
     { name = "wget" },
 ]
 
-[package.optional-dependencies]
+[package.dev-dependencies]
 dev = [
     { name = "ipdb" },
     { name = "ipython" },
@@ -340,26 +339,14 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "black", marker = "extra == 'test'", specifier = ">=25.1.0,<26.0.0" },
     { name = "clang", specifier = "==17.0.6" },
-    { name = "codeanalyzer-python", specifier = ">=0.1.12" },
-    { name = "coverage", marker = "extra == 'test'", specifier = ">=7.6.10,<8.0.0" },
-    { name = "flake8", marker = "extra == 'test'", specifier = ">=7.1.1,<8.0.0" },
-    { name = "ipdb", marker = "extra == 'dev'", specifier = ">=0.13.13,<1.0.0" },
-    { name = "ipython", marker = "extra == 'dev'", specifier = ">=8.32.0,<9.0.0" },
-    { name = "jupyter", marker = "extra == 'test'", specifier = ">=1.1.1,<2.0.0" },
+    { name = "codeanalyzer-python", specifier = "==0.1.14" },
     { name = "libclang", specifier = "==17.0.6" },
-    { name = "networkx", specifier = ">=3.4.2,<4.0.0" },
-    { name = "pandas", specifier = ">=2.2.3,<3.0.0" },
+    { name = "networkx", specifier = ">=3.4.2,<4" },
     { name = "pyarrow", specifier = "==20.0.0" },
-    { name = "pydantic", specifier = ">=2.10.6,<3.0.0" },
-    { name = "pylint", marker = "extra == 'test'", specifier = ">=3.3.4,<4.0.0" },
-    { name = "pytest", marker = "extra == 'test'", specifier = "==8.3.5" },
-    { name = "pytest-cov", marker = "extra == 'test'", specifier = ">=6.0.0,<7.0.0" },
-    { name = "pytest-pspec", marker = "extra == 'test'", specifier = ">=0.0.4,<1.0.0" },
-    { name = "requests", specifier = ">=2.32.3,<3.0.0" },
+    { name = "pydantic", specifier = ">=2.10.6,<3" },
+    { name = "requests", specifier = ">=2.32.3,<3" },
     { name = "rich", specifier = "==14.0.0" },
-    { name = "toml", marker = "extra == 'test'", specifier = ">=0.10.2,<1.0.0" },
     { name = "tree-sitter", specifier = "==0.24.0" },
     { name = "tree-sitter-c", specifier = "==0.23.5" },
     { name = "tree-sitter-go", specifier = "==0.23.4" },
@@ -368,7 +355,23 @@ requires-dist = [
     { name = "tree-sitter-python", specifier = "==0.23.6" },
     { name = "wget", specifier = "==3.2" },
 ]
-provides-extras = ["dev", "test"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "ipdb", specifier = ">=0.13.13,<0.14" },
+    { name = "ipython", specifier = ">=8.32.0,<9" },
+]
+test = [
+    { name = "black", specifier = ">=25.1.0,<26" },
+    { name = "coverage", specifier = ">=7.6.10,<8" },
+    { name = "flake8", specifier = ">=7.1.1,<8" },
+    { name = "jupyter", specifier = ">=1.1.1,<2" },
+    { name = "pylint", specifier = ">=3.3.4,<4" },
+    { name = "pytest", specifier = "==8.3.5" },
+    { name = "pytest-cov", specifier = ">=6.0.0,<7" },
+    { name = "pytest-pspec", specifier = ">=0.0.4,<0.0.5" },
+    { name = "toml", specifier = ">=0.10.2,<0.11" },
+]
 
 [[package]]
 name = "click"
@@ -384,7 +387,7 @@ wheels = [
 
 [[package]]
 name = "codeanalyzer-python"
-version = "0.1.12"
+version = "0.1.14"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jedi" },
@@ -400,9 +403,9 @@ dependencies = [
     { name = "typer" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/06/06/88535d14bb701a4e6f462e0e93c3baa34360b3559f8d49540fd7945e4ef0/codeanalyzer_python-0.1.12.tar.gz", hash = "sha256:65ca6b63c36ce281498038e27c73d5c968b3436870b40abf277ddb0956a96083", size = 40360, upload-time = "2025-07-21T19:40:24.562Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/68/39/d396c51264c6e73e8cdbf62594f748a198c2a1b4ef2f54fa2d8b67b55eb1/codeanalyzer_python-0.1.14.tar.gz", hash = "sha256:70d58ebcf758d373e441dfbb4f5c43dbb40dbdf51b9ab94b082d0660742de7a8", size = 49274, upload-time = "2026-05-13T23:58:45.302Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4d/c1/ad338831161f29e3aa463a3fde7e77bf1f5c22760f7b471151f7ab7d730b/codeanalyzer_python-0.1.12-py3-none-any.whl", hash = "sha256:991189e575a0182106d6d22ec86d6245391313dda0ea15ff9248a39735630d96", size = 39062, upload-time = "2025-07-21T19:40:23.31Z" },
+    { url = "https://files.pythonhosted.org/packages/ae/49/dae2be8f365780adba909b6481c772981a133e03a7919ae7d3735f2f6854/codeanalyzer_python-0.1.14-py3-none-any.whl", hash = "sha256:0b8800e6895264b4fd1f249a2f35c0db9b64b9f4a119f42738922c4e333dfdb6", size = 48949, upload-time = "2026-05-13T23:58:46.395Z" },
 ]
 
 [[package]]
