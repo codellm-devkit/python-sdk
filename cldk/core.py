@@ -77,11 +77,12 @@ class CLDK:
                 ``cache_dir`` instead.
             analysis_json_path (str | Path | None): Path to persist the analysis
                 database / ``analysis.json``.
-            cache_dir (str | Path | None): Python only. Writable directory where
-                the ``codeanalyzer-python`` backend provisions its virtualenv and
-                CodeQL database (forwarded as the backend's ``cache_dir``). When
-                omitted, a dependency-hash-keyed location under the CLDK cache
-                root is used. Ignored for other languages.
+            cache_dir (str | Path | None): Python only. Cache home for the
+                ``codeanalyzer-python`` backend — its virtualenv, CodeQL
+                database, and ``analysis_cache.json`` (forwarded as the
+                backend's ``cache_dir``). The backend owns all caching; when
+                omitted it defaults to ``<project_path>/.codeanalyzer``.
+                Ignored for other languages.
             use_codeql (bool): Python only, default True. Augments Jedi-resolved
                 call edges with CodeQL-resolved edges; set False for a faster,
                 Jedi-only analysis. Ignored for other languages.

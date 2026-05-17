@@ -33,13 +33,9 @@ import networkx as nx
 from codeanalyzer.config import OutputFormat
 from codeanalyzer.core import Codeanalyzer
 from codeanalyzer.options import AnalysisOptions
-from codeanalyzer.schema import model_dump_json, model_validate_json
+from codeanalyzer.schema import model_dump_json
 
 from cldk.analysis import AnalysisLevel
-from cldk.analysis.python.codeanalyzer.cache import (
-    default_analysis_dir,
-    default_backend_cache_dir,
-)
 from cldk.models.python import (
     PyApplication,
     PyCallEdge,
@@ -59,17 +55,15 @@ class PyCodeanalyzer:
     Args:
         project_dir: Path to the Python project root.
         analysis_level: Analysis level (symbol_table or call_graph).
-        analysis_json_path: Directory to persist analysis.json. If the file
-            exists and ``eager_analysis`` is False, it is loaded instead of
-            re-running the analyzer. When omitted, a content-addressed
-            location under the CLDK cache root is used (see
-            :mod:`cldk.analysis.python.codeanalyzer.cache`).
-        eager_analysis: If True, always re-runs the analyzer even when a
-            cached analysis.json is available.
-        cache_dir: Cache directory for the analyzer's virtualenv and CodeQL
-            artifacts. Forwarded verbatim to ``AnalysisOptions.cache_dir``.
-            When omitted, a dependency-hash-keyed location under the CLDK
-            cache root is used so the virtualenv survives source edits.
+        analysis_json_path: Forwarded verbatim to ``AnalysisOptions.output``.
+            ``codeanalyzer-python`` owns all caching; CLDK neither reads nor
+            writes its own analysis.json.
+        eager_analysis: If True, forces the backend to rebuild its analysis
+            (``AnalysisOptions.rebuild_analysis``) rather than reuse its cache.
+        cache_dir: Cache home for ``codeanalyzer-python`` (its virtualenv,
+            CodeQL database, and ``analysis_cache.json``). Forwarded verbatim
+            to ``AnalysisOptions.cache_dir``. When None, the backend defaults
+            it to ``<project_dir>/.codeanalyzer``.
         target_files: Optional single target file (relative to project_dir).
             When provided, only that file is analyzed.
     """
@@ -92,25 +86,13 @@ class PyCodeanalyzer:
         self.target_files = target_files
         self.use_codeql = use_codeql
 
-        # Cache locations. Explicit args win; otherwise fall back to the
-        # content-addressed CLDK cache (two independently-keyed tiers).
-        if cache_dir:
-            self.cache_dir = Path(cache_dir)
-        else:
-            self.cache_dir = default_backend_cache_dir(self.project_dir)
-        if analysis_json_path:
-            self.analysis_json_path = Path(analysis_json_path)
-        else:
-            self.analysis_json_path = default_analysis_dir(
-                self.project_dir, analysis_level, use_codeql, target_files
-            )
-        logger.info(
-            "CLDK cache — backend: %s | analysis: %s",
-            self.cache_dir,
-            self.analysis_json_path,
-        )
+        # codeanalyzer-python owns all caching. CLDK forwards these paths
+        # verbatim; when cache_dir is None the backend defaults it to
+        # <project_dir>/.codeanalyzer.
+        self.cache_dir = Path(cache_dir) if cache_dir else None
+        self.analysis_json_path = Path(analysis_json_path) if analysis_json_path else None
 
-        self.application: PyApplication = self._load_or_run_analyzer()
+        self.application: PyApplication = self._run_analyzer()
         # Class-signature → file path lookup, built once.
         self._class_to_file: Dict[str, str] = {}
         for file_path, module in self.application.symbol_table.items():
@@ -123,13 +105,8 @@ class PyCodeanalyzer:
             self.call_graph = None
 
     # ----------------------------------------------------------------- core
-    def _load_or_run_analyzer(self) -> PyApplication:
-        """Load a cached analysis.json when available, else run the analyzer."""
-        cached_file = self.analysis_json_path / "analysis.json" if self.analysis_json_path else None
-        if cached_file and cached_file.exists() and not self.eager_analysis:
-            logger.info(f"Loading cached PyApplication from {cached_file}")
-            return model_validate_json(PyApplication, cached_file.read_text())
-
+    def _run_analyzer(self) -> PyApplication:
+        """Run codeanalyzer-python; the backend handles its own caching."""
         target_file = None
         if self.target_files:
             if len(self.target_files) > 1:
@@ -151,12 +128,7 @@ class PyCodeanalyzer:
         )
 
         with Codeanalyzer(options) as analyzer:
-            app = analyzer.analyze()
-
-        if self.analysis_json_path is not None:
-            self.analysis_json_path.mkdir(parents=True, exist_ok=True)
-            (self.analysis_json_path / "analysis.json").write_text(model_dump_json(app, indent=None))
-        return app
+            return analyzer.analyze()
 
     @staticmethod
     def _build_call_graph(edges: List[PyCallEdge]) -> nx.DiGraph:

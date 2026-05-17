@@ -47,12 +47,12 @@ class PythonAnalysis:
 
     Args:
         project_dir: Directory path of the project (required).
-        cache_dir: Writable directory where the ``codeanalyzer-python``
-            backend provisions its virtualenv and CodeQL database (forwarded
-            as the backend's ``cache_dir``). If None, a dependency-hash-keyed
-            location under the CLDK cache root is used.
-        analysis_json_path: Directory to persist analysis.json. If None, the
-            analysis is not persisted across runs.
+        cache_dir: Cache home for ``codeanalyzer-python`` — its virtualenv,
+            CodeQL database, and ``analysis_cache.json`` (forwarded as the
+            backend's ``cache_dir``). The backend owns all caching. If None,
+            it defaults to ``<project_dir>/.codeanalyzer``.
+        analysis_json_path: Forwarded to the backend's ``output``. CLDK keeps
+            no cache of its own.
         analysis_level: Analysis level (symbol-table or call-graph).
         target_files: Optional list of target files to constrain analysis.
         eager_analysis: If True, regenerate analysis.json on each run.
