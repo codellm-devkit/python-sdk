@@ -192,6 +192,12 @@ class CLDK:
         if project_path is not None and source_code is not None:
             raise CldkInitializationException("Both project_path and source_code are provided. Please provide " "only one.")
 
+        # Normalize project_path: expand ~ and resolve to absolute path
+        if project_path is not None:
+            project_path = Path(project_path).expanduser().resolve()
+            if not project_path.is_dir():
+                raise CldkInitializationException(f"project_path does not exist or is not a directory: {project_path}")
+
         if self.language == "java":
             return JavaAnalysis(
                 project_dir=project_path,
