@@ -13,25 +13,24 @@ all: help
 .PHONY: venv
 venv: ## Create a Python virtual environment
 	$(info Creating Python 3 virtual environment...)
-	poetry shell
+	uv venv
 
 .PHONY: install
 install: ## Install Python dependencies in virtual environment
 	$(info Installing dependencies...)
-	poetry config virtualenvs.in-project true
-	poetry install --all-extras
+	uv sync --all-groups
 
 .PHONY: lint
 lint: ## Run the linter
 	$(info Running linting...)
-	flake8 cldk --count --select=E9,F63,F7,F82 --show-source --statistics
-	flake8 cldk --count --max-complexity=10 --max-line-length=180 --statistics
-	pylint cldk --max-line-length=180
+	uv run flake8 cldk --count --select=E9,F63,F7,F82 --show-source --statistics
+	uv run flake8 cldk --count --max-complexity=10 --max-line-length=180 --statistics
+	uv run pylint cldk --max-line-length=180
 
 .PHONY: test
 test: ## Run the unit tests
 	$(info Running tests...)
-	pytest --pspec --cov=cldk --cov-fail-under=75 --disable-warnings
+	uv run pytest --pspec --cov=cldk --cov-fail-under=75 --disable-warnings
 
 ##@ Build
 
@@ -56,4 +55,4 @@ build: ## Builds a new Python wheel
 	mv codeanalyzer-*.jar cldk/analysis/java/codeanalyzer/jar/
 
 	# Build the package
-	poetry build
+	uv build

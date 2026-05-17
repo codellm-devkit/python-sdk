@@ -14,39 +14,6 @@
 # limitations under the License.
 ################################################################################
 
-"""Python schema models.
+from cldk.analysis.python.codeanalyzer.codeanalyzer import PyCodeanalyzer
 
-Re-exports the canonical Python analysis schema from ``codeanalyzer-python``
-so CLDK and the analyzer backend share a single source of truth for the
-data model.
-"""
-
-from codeanalyzer.schema.py_schema import (
-    PyApplication,
-    PyCallEdge,
-    PyCallable,
-    PyCallableParameter,
-    PyCallsite,
-    PyClass,
-    PyClassAttribute,
-    PyComment,
-    PyImport,
-    PyModule,
-    PySymbol,
-    PyVariableDeclaration,
-)
-
-__all__ = [
-    "PyApplication",
-    "PyCallEdge",
-    "PyCallable",
-    "PyCallableParameter",
-    "PyCallsite",
-    "PyClass",
-    "PyClassAttribute",
-    "PyComment",
-    "PyImport",
-    "PyModule",
-    "PySymbol",
-    "PyVariableDeclaration",
-]
+__all__ = ["PyCodeanalyzer"]

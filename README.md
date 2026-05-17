@@ -204,8 +204,20 @@ Each language has a dedicated analysis backend implemented under `cldk.analysis.
 
 #### Python
 - **Backend:** `cldk.analysis.python`  
-- **Tools:** Tree-sitter  
-- **Capabilities:** Lightweight structural parsing, method/function boundaries, control/data flow approximation
+- **Tools:** `codeanalyzer-python` (Jedi + CodeQL, default on), Tree-sitter for source-level parsing  
+- **Capabilities:** Symbol table, call graph, class/method resolution, comments/docstrings
+
+> **Note — analysis cache:** Caching is owned entirely by
+> `codeanalyzer-python`; CLDK keeps no cache of its own. Artifacts (the
+> backend virtualenv, CodeQL database, and `analysis_cache.json`) live under
+> the backend's `cache_dir`, which defaults to `<project>/.codeanalyzer` and
+> can be redirected with the `cache_dir` argument. **CodeQL is enabled by
+> default** (`use_codeql=True`), so the first analysis of a project builds a
+> CodeQL database and provisions the CodeQL CLI — expect a slow cold run;
+> subsequent runs reuse the backend's checksum-validated cache. Pass
+> `use_codeql=False` for Jedi-only analysis. Add the `cache_dir` location
+> (e.g. `.codeanalyzer/`) to your `.gitignore` — it is large and
+> environment-specific.
 
 #### C
 - **Backend:** `cldk.analysis.c`  
