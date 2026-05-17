@@ -35,7 +35,7 @@ RUN groupadd --gid $USER_GID $USERNAME \
 # Set up the Python development environment
 WORKDIR /python-sdk
 RUN python3 -m pip install --upgrade pip wheel && \
-    pip3 install poetry==1.8.5
+    pip3 install uv
 
 # Enable color terminal for docker exec bash
 ENV TERM=xterm-256color

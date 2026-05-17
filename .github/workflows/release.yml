@@ -1,4 +1,4 @@
-name: Python Poetry Release
+name: Python uv Release
 
 on:
   push:
@@ -16,11 +16,6 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
       - name: Set up GraalVM CE Java 11
         uses: graalvm/setup-graalvm@v1
         with:
@@ -32,21 +27,21 @@ jobs:
       - name: Install jq
         run: sudo apt-get update && sudo apt-get install -y jq
 
-      - name: Install Poetry
-        run: |
-          curl -sSL https://install.python-poetry.org | python3 -
-          echo "${HOME}/.local/bin" >> $GITHUB_PATH
-          export PATH="${HOME}/.local/bin:$PATH"
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
 
       - name: Install Python package dependencies
-        run: |
-          poetry config virtualenvs.create false
-          poetry install --sync --no-interaction
+        run: uv sync --all-groups --frozen
 
       - name: Run Tests
         id: test
         continue-on-error: true
-        run: poetry run make test
+        run: uv run make test
 
       - name: Delete tag on failure
         if: steps.test.conclusion == 'failure'
@@ -64,7 +59,7 @@ jobs:
           mv codeanalyzer-*.jar ${{ github.workspace }}/cldk/analysis/java/codeanalyzer/jar/
 
       - name: Build Package
-        run: poetry build
+        run: uv build
 
       - name: Read Changelog Entry
         id: changelog_reader
@@ -92,4 +87,4 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish package distributions to PyPI
-        run: poetry publish --username __token__ --password ${{ secrets.PYPI_API_TOKEN }}
+        run: uv publish --token ${{ secrets.PYPI_API_TOKEN }}
