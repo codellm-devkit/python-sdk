@@ -47,8 +47,10 @@ class PythonAnalysis:
 
     Args:
         project_dir: Directory path of the project (required).
-        analysis_backend_path: Cache directory for the backend's virtualenv
-            and intermediate artifacts.
+        cache_dir: Writable directory where the ``codeanalyzer-python``
+            backend provisions its virtualenv and CodeQL database (forwarded
+            as the backend's ``cache_dir``). If None, a dependency-hash-keyed
+            location under the CLDK cache root is used.
         analysis_json_path: Directory to persist analysis.json. If None, the
             analysis is not persisted across runs.
         analysis_level: Analysis level (symbol-table or call-graph).
@@ -59,7 +61,7 @@ class PythonAnalysis:
     def __init__(
         self,
         project_dir: str | Path,
-        analysis_backend_path: str | None,
+        cache_dir: str | Path | None,
         analysis_json_path: str | Path | None,
         analysis_level: str,
         target_files: List[str] | None,
@@ -73,7 +75,7 @@ class PythonAnalysis:
         self.project_dir = project_dir
         self.analysis_level = analysis_level
         self.analysis_json_path = analysis_json_path
-        self.analysis_backend_path = analysis_backend_path
+        self.cache_dir = cache_dir
         self.eager_analysis = eager_analysis
         self.target_files = target_files
         self.treesitter_python: TreesitterPython = TreesitterPython()
@@ -82,7 +84,7 @@ class PythonAnalysis:
             analysis_level=analysis_level,
             analysis_json_path=analysis_json_path,
             eager_analysis=eager_analysis,
-            analysis_backend_path=analysis_backend_path,
+            cache_dir=cache_dir,
             target_files=target_files,
             use_codeql=use_codeql,
         )

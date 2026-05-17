@@ -66,8 +66,8 @@ class PyCodeanalyzer:
             :mod:`cldk.analysis.python.codeanalyzer.cache`).
         eager_analysis: If True, always re-runs the analyzer even when a
             cached analysis.json is available.
-        analysis_backend_path: Cache directory for the analyzer's virtualenv
-            and CodeQL artifacts. Forwarded to ``AnalysisOptions.cache_dir``.
+        cache_dir: Cache directory for the analyzer's virtualenv and CodeQL
+            artifacts. Forwarded verbatim to ``AnalysisOptions.cache_dir``.
             When omitted, a dependency-hash-keyed location under the CLDK
             cache root is used so the virtualenv survives source edits.
         target_files: Optional single target file (relative to project_dir).
@@ -80,7 +80,7 @@ class PyCodeanalyzer:
         analysis_level: str,
         analysis_json_path: Union[str, Path, None],
         eager_analysis: bool,
-        analysis_backend_path: Union[str, Path, None] = None,
+        cache_dir: Union[str, Path, None] = None,
         target_files: List[str] | None = None,
         use_codeql: bool = True,
     ) -> None:
@@ -94,10 +94,10 @@ class PyCodeanalyzer:
 
         # Cache locations. Explicit args win; otherwise fall back to the
         # content-addressed CLDK cache (two independently-keyed tiers).
-        if analysis_backend_path:
-            self.analysis_backend_path = Path(analysis_backend_path)
+        if cache_dir:
+            self.cache_dir = Path(cache_dir)
         else:
-            self.analysis_backend_path = default_backend_cache_dir(self.project_dir)
+            self.cache_dir = default_backend_cache_dir(self.project_dir)
         if analysis_json_path:
             self.analysis_json_path = Path(analysis_json_path)
         else:
@@ -106,7 +106,7 @@ class PyCodeanalyzer:
             )
         logger.info(
             "CLDK cache — backend: %s | analysis: %s",
-            self.analysis_backend_path,
+            self.cache_dir,
             self.analysis_json_path,
         )
 
@@ -145,7 +145,7 @@ class PyCodeanalyzer:
             rebuild_analysis=self.eager_analysis,
             skip_tests=True,
             file_name=target_file,
-            cache_dir=self.analysis_backend_path,
+            cache_dir=self.cache_dir,
             clear_cache=False,
             verbosity=0,
         )

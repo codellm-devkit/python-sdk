@@ -61,6 +61,7 @@ class CLDK:
         target_files: List[str] | None = None,
         analysis_backend_path: str | None = None,
         analysis_json_path: str | Path = None,
+        cache_dir: str | Path | None = None,
         use_codeql: bool = True,
     ) -> JavaAnalysis | PythonAnalysis | CAnalysis:
         """Initialize a language-specific analysis façade.
@@ -71,8 +72,16 @@ class CLDK:
             eager (bool): If True, forces regeneration of analysis databases.
             analysis_level (str): Analysis level. See AnalysisLevel.
             target_files (list[str] | None): Files to constrain analysis (optional).
-            analysis_backend_path (str | None): Path to the analysis backend.
-            analysis_json_path (str | Path | None): Path to persist analysis database.
+            analysis_backend_path (str | None): Java only. Directory containing
+                the ``codeanalyzer-*.jar`` to run. Not valid for Python — pass
+                ``cache_dir`` instead.
+            analysis_json_path (str | Path | None): Path to persist the analysis
+                database / ``analysis.json``.
+            cache_dir (str | Path | None): Python only. Writable directory where
+                the ``codeanalyzer-python`` backend provisions its virtualenv and
+                CodeQL database (forwarded as the backend's ``cache_dir``). When
+                omitted, a dependency-hash-keyed location under the CLDK cache
+                root is used. Ignored for other languages.
             use_codeql (bool): Python only, default True. Augments Jedi-resolved
                 call edges with CodeQL-resolved edges; set False for a faster,
                 Jedi-only analysis. Ignored for other languages.
@@ -81,7 +90,9 @@ class CLDK:
             JavaAnalysis | PythonAnalysis | CAnalysis: Initialized analysis façade for the chosen language.
 
         Raises:
-            CldkInitializationException: If both or neither of project_path and source_code are provided.
+            CldkInitializationException: If both or neither of project_path and
+                source_code are provided, or if the Java-only
+                ``analysis_backend_path`` is passed in Python mode.
             NotImplementedError: If the specified language is unsupported.
 
         Examples:
@@ -114,10 +125,15 @@ class CLDK:
         elif self.language == "python":
             if source_code is not None:
                 raise CldkInitializationException("source_code mode is not supported for Python; please pass project_path.")
+            if analysis_backend_path is not None:
+                raise CldkInitializationException(
+                    "analysis_backend_path is Java-only (it locates codeanalyzer-*.jar). "
+                    "For Python, use cache_dir for the backend's virtualenv/CodeQL cache."
+                )
             return PythonAnalysis(
                 project_dir=project_path,
                 analysis_level=analysis_level,
-                analysis_backend_path=analysis_backend_path,
+                cache_dir=cache_dir,
                 analysis_json_path=analysis_json_path,
                 target_files=target_files,
                 eager_analysis=eager,

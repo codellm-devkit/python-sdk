@@ -217,9 +217,9 @@ Each language has a dedicated analysis backend implemented under `cldk.analysis.
 > Jedi-only analysis. The CodeQL flag is part of the analysis cache key, so
 > toggling it — or upgrading from a version that defaulted it off — triggers
 > a **one-time** rebuild under a new key (no stale data is served). If you
-> instead point `analysis_backend_path` / `analysis_json_path` inside a
-> project, add those directories to your `.gitignore` — they are large and
-> environment-specific.
+> instead point `cache_dir` (the backend virtualenv / CodeQL database) or
+> `analysis_json_path` inside a project, add those directories to your
+> `.gitignore` — they are large and environment-specific.
 
 #### C
 - **Backend:** `cldk.analysis.c`  
