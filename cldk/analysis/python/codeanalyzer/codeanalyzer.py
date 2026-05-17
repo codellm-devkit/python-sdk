@@ -80,7 +80,10 @@ class PyCodeanalyzer:
     ) -> None:
         if project_dir is None:
             raise ValueError("project_dir is required for Python analysis.")
-        self.project_dir = Path(project_dir)
+        # Expand ~ and resolve to absolute path for robustness
+        self.project_dir = Path(project_dir).expanduser().resolve()
+        if not self.project_dir.is_dir():
+            raise ValueError(f"project_dir does not exist or is not a directory: {self.project_dir}")
         self.analysis_level = analysis_level
         self.eager_analysis = eager_analysis
         self.target_files = target_files
@@ -89,8 +92,8 @@ class PyCodeanalyzer:
         # codeanalyzer-python owns all caching. CLDK forwards these paths
         # verbatim; when cache_dir is None the backend defaults it to
         # <project_dir>/.codeanalyzer.
-        self.cache_dir = Path(cache_dir) if cache_dir else None
-        self.analysis_json_path = Path(analysis_json_path) if analysis_json_path else None
+        self.cache_dir = Path(cache_dir).expanduser().resolve() if cache_dir else None
+        self.analysis_json_path = Path(analysis_json_path).expanduser().resolve() if analysis_json_path else None
 
         self.application: PyApplication = self._run_analyzer()
         # Class-signature → file path lookup, built once.
