@@ -82,7 +82,7 @@ class PyCodeanalyzer:
         eager_analysis: bool,
         analysis_backend_path: Union[str, Path, None] = None,
         target_files: List[str] | None = None,
-        use_codeql: bool = False,
+        use_codeql: bool = True,
     ) -> None:
         if project_dir is None:
             raise ValueError("project_dir is required for Python analysis.")

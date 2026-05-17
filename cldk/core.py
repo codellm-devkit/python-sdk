@@ -61,6 +61,7 @@ class CLDK:
         target_files: List[str] | None = None,
         analysis_backend_path: str | None = None,
         analysis_json_path: str | Path = None,
+        use_codeql: bool = True,
     ) -> JavaAnalysis | PythonAnalysis | CAnalysis:
         """Initialize a language-specific analysis façade.
 
@@ -72,6 +73,9 @@ class CLDK:
             target_files (list[str] | None): Files to constrain analysis (optional).
             analysis_backend_path (str | None): Path to the analysis backend.
             analysis_json_path (str | Path | None): Path to persist analysis database.
+            use_codeql (bool): Python only, default True. Augments Jedi-resolved
+                call edges with CodeQL-resolved edges; set False for a faster,
+                Jedi-only analysis. Ignored for other languages.
 
         Returns:
             JavaAnalysis | PythonAnalysis | CAnalysis: Initialized analysis façade for the chosen language.
@@ -117,6 +121,7 @@ class CLDK:
                 analysis_json_path=analysis_json_path,
                 target_files=target_files,
                 eager_analysis=eager,
+                use_codeql=use_codeql,
             )
         elif self.language == "c":
             return CAnalysis(project_dir=project_path)

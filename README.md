@@ -204,15 +204,22 @@ Each language has a dedicated analysis backend implemented under `cldk.analysis.
 
 #### Python
 - **Backend:** `cldk.analysis.python`  
-- **Tools:** `codeanalyzer-python` (Jedi + optional CodeQL), Tree-sitter for source-level parsing  
+- **Tools:** `codeanalyzer-python` (Jedi + CodeQL, default on), Tree-sitter for source-level parsing  
 - **Capabilities:** Symbol table, call graph, class/method resolution, comments/docstrings
 
-> **Note — analysis cache:** The first Python analysis run creates a
-> `.codeanalyzer/` directory in the project under analysis. It holds the
-> backend's virtualenv, the CodeQL database (when enabled), and the cached
-> `analysis.json`. It can be large and is environment-specific, so **add
-> `.codeanalyzer/` (and `.cldk-cache/` if you persist analysis JSON there)
-> to your `.gitignore`.** Both are already ignored in this repo.
+> **Note — analysis cache:** Analysis artifacts are cached under `~/.cldk`
+> (override with `$CLDK_CACHE_DIR`): the backend virtualenv and CodeQL
+> database under `~/.cldk/venvs/<dep_hash>/`, and `analysis.json` under
+> `~/.cldk/cache/<key>/`. **CodeQL is enabled by default**
+> (`use_codeql=True`), so the first analysis of a project builds a CodeQL
+> database and provisions the CodeQL CLI — expect a slow cold run; subsequent
+> runs on the same source tree are cache hits. Pass `use_codeql=False` for
+> Jedi-only analysis. The CodeQL flag is part of the analysis cache key, so
+> toggling it — or upgrading from a version that defaulted it off — triggers
+> a **one-time** rebuild under a new key (no stale data is served). If you
+> instead point `analysis_backend_path` / `analysis_json_path` inside a
+> project, add those directories to your `.gitignore` — they are large and
+> environment-specific.
 
 #### C
 - **Backend:** `cldk.analysis.c`  

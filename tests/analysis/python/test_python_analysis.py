@@ -35,3 +35,28 @@ def test_python_analysis_rejects_source_code_mode():
 def test_python_analysis_requires_inputs():
     with pytest.raises(CldkInitializationException):
         CLDK(language="python").analysis()
+
+
+def test_use_codeql_forwarded_through_facade(monkeypatch, tmp_path):
+    """Regression: CLDK.analysis() must forward use_codeql to the backend.
+
+    Previously the façade dropped the flag, making CodeQL-augmented edges
+    unreachable through the public API (only Jedi-resolved edges returned).
+    """
+    captured = {}
+
+    class FakeBackend:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr(
+        "cldk.analysis.python.python_analysis.PyCodeanalyzer", FakeBackend
+    )
+
+    CLDK(language="python").analysis(project_path=tmp_path, use_codeql=False)
+    assert captured["use_codeql"] is False
+
+    # CodeQL is the default; the façade must not silently drop it.
+    captured.clear()
+    CLDK(language="python").analysis(project_path=tmp_path)
+    assert captured["use_codeql"] is True

@@ -64,7 +64,7 @@ class PythonAnalysis:
         analysis_level: str,
         target_files: List[str] | None,
         eager_analysis: bool,
-        use_codeql: bool = False,
+        use_codeql: bool = True,
     ) -> None:
         if project_dir is None:
             raise ValueError(
