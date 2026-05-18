@@ -113,6 +113,7 @@ class PyCodeanalyzer:
         cache_dir: Union[str, Path, None] = None,
         target_files: List[str] | None = None,
         use_codeql: bool = True,
+        use_ray: bool = False,
     ) -> None:
         """Initialize the Python code analyzer and run analysis.
 
@@ -145,6 +146,10 @@ class PyCodeanalyzer:
             use_codeql: If ``True`` (default), uses CodeQL to enhance call
                 graph resolution beyond what Jedi provides. Set to ``False``
                 for faster analysis without CodeQL.
+            use_ray: If ``True``, enables Ray-based parallel processing for
+                analysis. Recommended for very large projects where Jedi/CodeQL
+                analysis would otherwise be slow. Requires Ray to be installed.
+                Defaults to ``False``.
 
         Raises:
             ValueError: If ``project_dir`` is ``None``.
@@ -164,6 +169,7 @@ class PyCodeanalyzer:
         self.eager_analysis = eager_analysis
         self.target_files = target_files
         self.use_codeql = use_codeql
+        self.use_ray = use_ray
 
         # codeanalyzer-python owns all caching. CLDK forwards these paths
         # verbatim; when cache_dir is None the backend defaults it to
@@ -212,7 +218,7 @@ class PyCodeanalyzer:
             output=self.analysis_json_path,
             format=OutputFormat.JSON,
             using_codeql=self.use_codeql,
-            using_ray=False,
+            using_ray=self.use_ray,
             rebuild_analysis=self.eager_analysis,
             skip_tests=True,
             file_name=target_file,

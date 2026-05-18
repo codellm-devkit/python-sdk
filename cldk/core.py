@@ -107,6 +107,7 @@ class CLDK:
         analysis_json_path: str | Path = None,
         cache_dir: str | Path | None = None,
         use_codeql: bool = True,
+        use_ray: bool = False,
     ) -> JavaAnalysis | PythonAnalysis | CAnalysis:
         """Initialize and return a language-specific analysis facade.
 
@@ -158,6 +159,11 @@ class CLDK:
                 Jedi-based call graph resolution with CodeQL analysis for more
                 complete call edges. Set to ``False`` for faster analysis using
                 only Jedi. Ignored for Java and C.
+            use_ray: **Python only.** If ``True``, enables Ray-based parallel
+                processing for analysis. Recommended for very large projects
+                where sequential Jedi/CodeQL analysis would be slow. Requires
+                Ray to be installed. Defaults to ``False``. Ignored for Java
+                and C.
 
         Returns:
             A language-specific analysis facade instance:
@@ -224,6 +230,7 @@ class CLDK:
                 target_files=target_files,
                 eager_analysis=eager,
                 use_codeql=use_codeql,
+                use_ray=use_ray,
             )
         elif self.language == "c":
             return CAnalysis(project_dir=project_path)

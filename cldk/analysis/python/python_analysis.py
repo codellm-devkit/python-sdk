@@ -106,6 +106,7 @@ class PythonAnalysis:
         target_files: List[str] | None,
         eager_analysis: bool,
         use_codeql: bool = True,
+        use_ray: bool = False,
     ) -> None:
         """Initialize the Python analysis facade.
 
@@ -140,6 +141,10 @@ class PythonAnalysis:
                 resolution with CodeQL analysis for more complete and accurate
                 call edges. Set to ``False`` for faster analysis using only
                 Jedi, at the cost of potentially missing some call relationships.
+            use_ray: If ``True``, enables Ray-based parallel processing for
+                analysis. Recommended for very large projects where sequential
+                Jedi/CodeQL analysis would be slow. Requires Ray to be installed.
+                Defaults to ``False``.
 
         Raises:
             ValueError: If ``project_dir`` is ``None``. Python analysis requires
@@ -165,6 +170,7 @@ class PythonAnalysis:
             cache_dir=cache_dir,
             target_files=target_files,
             use_codeql=use_codeql,
+            use_ray=use_ray,
         )
 
     # -----[ treesitter passthrough ]-----
