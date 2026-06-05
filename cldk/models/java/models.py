@@ -39,7 +39,9 @@ See Also:
     - :mod:`~cldk.models.java.enums`: Related enumeration types.
 """
 from typing import Any, Dict, List, Optional, Union
+
 from pydantic import BaseModel, Field, field_validator, model_validator
+
 from cldk.models.java.enums import CRUDOperationType, CRUDQueryType
 
 _CALLABLES_LOOKUP_TABLE = dict()
@@ -111,6 +113,8 @@ class JField(BaseModel):
         variables (List[str]): The variables declared in the field.
         modifiers (List[str]): The modifiers applied to the field (e.g., public, static).
         annotations (List[str]): The annotations applied to the field.
+        variable_initializers (Dict[str, str] | None): Initializer expression text keyed by
+            variable name. None is used as the default for backwards compatibility.
     """
 
     comment: JComment | None
@@ -120,6 +124,7 @@ class JField(BaseModel):
     variables: List[str]
     modifiers: List[str]
     annotations: List[str]
+    variable_initializers: Dict[str, str] | None = None
 
 
 class JCallableParameter(BaseModel):
