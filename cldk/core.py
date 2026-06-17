@@ -46,6 +46,7 @@ from typing import List
 
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.c import CAnalysis
+from cldk.analysis.go import GoAnalysis
 from cldk.analysis.java import JavaAnalysis
 from cldk.analysis.commons.treesitter import TreesitterJava
 from cldk.analysis.python.python_analysis import PythonAnalysis
@@ -108,7 +109,7 @@ class CLDK:
         cache_dir: str | Path | None = None,
         use_codeql: bool = True,
         use_ray: bool = False,
-    ) -> JavaAnalysis | PythonAnalysis | CAnalysis:
+    ) -> JavaAnalysis | PythonAnalysis | CAnalysis | GoAnalysis:
         """Initialize and return a language-specific analysis facade.
 
         This factory method creates an appropriate analysis object based on the
@@ -234,6 +235,19 @@ class CLDK:
             )
         elif self.language == "c":
             return CAnalysis(project_dir=project_path)
+        elif self.language == "go":
+            if source_code is not None:
+                raise CldkInitializationException(
+                    "source_code mode is not supported for Go; please pass project_path."
+                )
+            return GoAnalysis(
+                project_dir=project_path,
+                analysis_backend_path=analysis_backend_path,
+                analysis_json_path=analysis_json_path,
+                analysis_level=analysis_level,
+                eager_analysis=eager,
+                cache_dir=cache_dir,
+            )
         else:
             raise NotImplementedError(f"Analysis support for {self.language} is not implemented yet.")
 

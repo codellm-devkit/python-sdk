@@ -85,6 +85,7 @@ include = [
 [tool.backend-versions]
 codeanalyzer-java = "2.3.8"
 codeanalyzer-python = "0.1.14"
+codeanalyzer-go = "0.1.0"
 
 ########################################
 # Tool configurations
