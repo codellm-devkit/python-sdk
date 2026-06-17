@@ -69,6 +69,7 @@ For any questions, feedback, or suggestions, please contact the authors:
     - [Java](#java)
     - [Python](#python)
     - [C](#c)
+    - [Go](#go)
   - [3. **Utilities and Extensions**](#3-utilities-and-extensions)
 - [Contributing](#contributing)
   - [Publication (papers and blogs related to CLDK)](#publication-papers-and-blogs-related-to-cldk)
@@ -158,6 +159,10 @@ User <--> A[CLDK]
     A6 --> A7[treesitter_python]
     A7 --> PA[Analysis]
 
+    A1 --> AG[cldk.analysis.go]
+    AG --> AGG[codeanalyzer-go → go/types]
+    AGG --> GA[Analysis]
+
     A1 --> A8[cldk.analysis.commons]
     A8 --> LSP[LSP]
     A8 --> TS[treesitter base]
@@ -167,6 +172,7 @@ User <--> A[CLDK]
     M --> MJ[Java models]
     M --> MP[Python models]
     M --> MC[C models]
+    M --> MG[Go models]
     M --> MT[treesitter models]
 
     A --> U[cldk.utils]
@@ -179,12 +185,12 @@ User <--> A[CLDK]
 
 The user interacts with the CLDK API via the top-level `CLDK` interface exposed in `core.py`. This interface is responsible for configuring the analysis session, initializing language-specific pipelines, and exposing a high-level, language-agnostic API for interacting with program structure and semantics.
 
-CLDK is currently implemented with full support for **Java**, **Python**, and **C**. Each language module is structured around two core components: **data models** and **analysis backends**.
+CLDK is currently implemented with full support for **Java**, **Python**, **C**, and **Go**. Each language module is structured around two core components: **data models** and **analysis backends**.
 
 
 ### 1. **Data Models**
 
-Each supported language has its own set of Pydantic-based data models, located in the `cldk.models` module (e.g., `cldk.models.java`, `cldk.models.python`, `cldk.models.c`). These models provide:
+Each supported language has its own set of Pydantic-based data models, located in the `cldk.models` module (e.g., `cldk.models.java`, `cldk.models.python`, `cldk.models.c`, `cldk.models.go`). These models provide:
 
 - **Structured representations** of language elements such as classes, methods, annotations, fields, and statements.
 - **Typed access** using dot notation (e.g., `method.return_type` or `klass.methods`), promoting developer productivity.
@@ -223,6 +229,23 @@ Each language has a dedicated analysis backend implemented under `cldk.analysis.
 - **Backend:** `cldk.analysis.c`  
 - **Tools:** Clang frontend  
 - **Capabilities:** Structural symbol resolution and method/function layout using Clang AST
+
+#### Go
+- **Backend:** `cldk.analysis.go`
+- **Tools:** `codeanalyzer-go` (native binary, `go/packages` + `go/types`)
+- **Capabilities:** Symbol table, resolver-based call graph, struct/interface types, exported/unexported members, pointer and value receivers, multi-return types, goroutine call sites, embedded fields, cross-file method attachment, cyclomatic complexity
+- **Prerequisites:** Build `codeanalyzer-go` from the [codeanalyzer-go repo](https://github.com/codellm-devkit/codeanalyzer-go) and place the binary on `PATH` (e.g. `~/.local/bin/`).
+
+```python
+from cldk import CLDK
+
+analysis = CLDK(language="go").analysis(project_path="/path/to/your/go/project")
+for file_path, go_file in analysis.get_symbol_table().items():
+    print(file_path, go_file.package_name)
+    for type_name, go_type in go_file.types.items():
+        for sig, method in go_type.methods.items():
+            print(f"  {sig}  receiver={method.receiver_type}")
+```
 
 All analysis backends share common infrastructure defined in `cldk.analysis.commons`, including:
 - **Tree-sitter utilities** (`treesitter_java`, `treesitter_python`)
