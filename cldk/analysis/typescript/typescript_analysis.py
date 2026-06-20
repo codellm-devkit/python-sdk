@@ -29,6 +29,7 @@ from typing import Dict, List, Set, Tuple
 
 import networkx as nx
 
+from cldk.analysis.typescript.backend import TSAnalysisBackend
 from cldk.analysis.typescript.codeanalyzer import TSCodeanalyzer
 from cldk.analysis.typescript.neo4j import Neo4jConnectionConfig, TSNeo4jBackend
 from cldk.models.typescript import (
@@ -80,7 +81,7 @@ class TypeScriptAnalysis:
         self.target_files = target_files
         self.eager_analysis = eager_analysis
         self.neo4j_config = neo4j_config
-        self.backend: TSCodeanalyzer | TSNeo4jBackend
+        self.backend: TSAnalysisBackend
         if neo4j_config is not None:
             self.backend = TSNeo4jBackend(
                 project_dir=project_dir,

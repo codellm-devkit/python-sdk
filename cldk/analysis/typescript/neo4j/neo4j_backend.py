@@ -61,6 +61,7 @@ from typing import Any, Dict, List, Set, Tuple, Union
 import networkx as nx
 
 from cldk.analysis import AnalysisLevel
+from cldk.analysis.typescript.backend import TSAnalysisBackend
 from cldk.analysis.typescript.neo4j import reconstruct as R
 from cldk.models.typescript import (
     TSApplication,
@@ -85,7 +86,7 @@ from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 logger = logging.getLogger(__name__)
 
 
-class TSNeo4jBackend:
+class TSNeo4jBackend(TSAnalysisBackend):
     """Build and query the application view of a TypeScript project over Neo4j (Cypher).
 
     Args:
