@@ -41,6 +41,7 @@ dependencies = [
     "clang==17.0.6",
     "libclang==17.0.6",
     "codeanalyzer-python==0.1.14",
+    "codeanalyzer-typescript==0.2.1",
 ]
 
 [project.urls]
@@ -85,6 +86,7 @@ include = [
 [tool.backend-versions]
 codeanalyzer-java = "2.3.8"
 codeanalyzer-python = "0.1.14"
+codeanalyzer-typescript = "0.1.0"
 
 ########################################
 # Tool configurations
@@ -138,3 +140,5 @@ sample-c-application = "tests/resources/c/application/"
 sample-application = "tests/resources/java/application/"
 sample-application-analysis-json = "tests/resources/java/analysis_json/"
 codeanalyzer-jar-path = "cldk/analysis/java/codeanalyzer/jar/"
+sample-typescript-application = "tests/resources/typescript/application/"
+sample-typescript-analysis-json = "tests/resources/typescript/analysis_json/"

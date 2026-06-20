@@ -49,6 +49,7 @@ from cldk.analysis.c import CAnalysis
 from cldk.analysis.java import JavaAnalysis
 from cldk.analysis.commons.treesitter import TreesitterJava
 from cldk.analysis.python.python_analysis import PythonAnalysis
+from cldk.analysis.typescript import TypeScriptAnalysis
 from cldk.utils.exceptions import CldkInitializationException
 from cldk.utils.sanitization.java import TreesitterSanitizer
 
@@ -108,7 +109,7 @@ class CLDK:
         cache_dir: str | Path | None = None,
         use_codeql: bool = True,
         use_ray: bool = False,
-    ) -> JavaAnalysis | PythonAnalysis | CAnalysis:
+    ) -> JavaAnalysis | PythonAnalysis | CAnalysis | TypeScriptAnalysis:
         """Initialize and return a language-specific analysis facade.
 
         This factory method creates an appropriate analysis object based on the
@@ -234,6 +235,22 @@ class CLDK:
             )
         elif self.language == "c":
             return CAnalysis(project_dir=project_path)
+        elif self.language == "typescript":
+            if source_code is not None:
+                raise CldkInitializationException("source_code mode is not supported for TypeScript; please pass project_path.")
+            if cache_dir is not None or use_ray:
+                raise CldkInitializationException(
+                    "cache_dir and use_ray are Python-only. For TypeScript, use analysis_backend_path "
+                    "to locate the codeanalyzer-typescript binary (or set $CODEANALYZER_TS_BIN)."
+                )
+            return TypeScriptAnalysis(
+                project_dir=project_path,
+                analysis_level=analysis_level,
+                analysis_backend_path=analysis_backend_path,
+                analysis_json_path=analysis_json_path,
+                target_files=target_files,
+                eager_analysis=eager,
+            )
         else:
             raise NotImplementedError(f"Analysis support for {self.language} is not implemented yet.")
 
