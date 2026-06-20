@@ -28,6 +28,7 @@ from typing import Union
 import networkx as nx
 
 from cldk.analysis import AnalysisLevel
+from cldk.analysis.java.backend import JavaAnalysisBackend
 from cldk.analysis.commons.treesitter import TreesitterJava
 from cldk.models.java import JGraphEdges
 from cldk.models.java.enums import CRUDOperationType
@@ -37,7 +38,7 @@ from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 logger = logging.getLogger(__name__)
 
 
-class JCodeanalyzer:
+class JCodeanalyzer(JavaAnalysisBackend):
     """A class for building the application view of a Java application using Codeanalyzer.
 
     Args:

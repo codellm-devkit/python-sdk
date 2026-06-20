@@ -57,6 +57,7 @@ from cldk.models.java import JCallable
 from cldk.models.java import JApplication
 from cldk.models.java.models import JCRUDOperation, JComment, JCompilationUnit, JMethodDetail, JType, JField
 from cldk.analysis.java.codeanalyzer import JCodeanalyzer
+from cldk.analysis.java.backend import JavaAnalysisBackend
 
 
 class JavaAnalysis:
@@ -154,7 +155,7 @@ class JavaAnalysis:
         self.target_files = target_files
         self.treesitter_java: TreesitterJava = TreesitterJava()
         # Initialize the analysis analysis_backend
-        self.backend: JCodeanalyzer = JCodeanalyzer(
+        self.backend: JavaAnalysisBackend = JCodeanalyzer(
             project_dir=self.project_dir,
             source_code=self.source_code,
             eager_analysis=self.eager_analysis,

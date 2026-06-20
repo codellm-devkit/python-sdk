@@ -54,6 +54,7 @@ import networkx as nx
 from tree_sitter import Tree
 
 from cldk.analysis.commons.treesitter import TreesitterPython
+from cldk.analysis.python.backend import PythonAnalysisBackend
 from cldk.analysis.python.codeanalyzer import PyCodeanalyzer
 from cldk.models.python import (
     PyApplication,
@@ -162,7 +163,7 @@ class PythonAnalysis:
         self.eager_analysis = eager_analysis
         self.target_files = target_files
         self.treesitter_python: TreesitterPython = TreesitterPython()
-        self.backend: PyCodeanalyzer = PyCodeanalyzer(
+        self.backend: PythonAnalysisBackend = PyCodeanalyzer(
             project_dir=project_dir,
             analysis_level=analysis_level,
             analysis_json_path=analysis_json_path,
