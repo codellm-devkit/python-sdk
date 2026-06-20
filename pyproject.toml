@@ -44,6 +44,12 @@ dependencies = [
     "codeanalyzer-typescript==0.2.1",
 ]
 
+[project.optional-dependencies]
+# The Neo4j-backed TypeScript analysis backend (cldk.analysis.typescript.neo4j).
+neo4j = [
+    "neo4j>=5.14,<7",
+]
+
 [project.urls]
 Homepage = "https://codellm-devkit.info"
 Repository = "https://github.com/codellm-devkit/python-sdk"

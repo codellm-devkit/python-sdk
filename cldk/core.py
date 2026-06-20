@@ -50,6 +50,7 @@ from cldk.analysis.java import JavaAnalysis
 from cldk.analysis.commons.treesitter import TreesitterJava
 from cldk.analysis.python.python_analysis import PythonAnalysis
 from cldk.analysis.typescript import TypeScriptAnalysis
+from cldk.analysis.typescript.neo4j import Neo4jConnectionConfig
 from cldk.utils.exceptions import CldkInitializationException
 from cldk.utils.sanitization.java import TreesitterSanitizer
 
@@ -109,6 +110,7 @@ class CLDK:
         cache_dir: str | Path | None = None,
         use_codeql: bool = True,
         use_ray: bool = False,
+        neo4j_config: "Neo4jConnectionConfig | None" = None,
     ) -> JavaAnalysis | PythonAnalysis | CAnalysis | TypeScriptAnalysis:
         """Initialize and return a language-specific analysis facade.
 
@@ -220,8 +222,7 @@ class CLDK:
                 raise CldkInitializationException("source_code mode is not supported for Python; please pass project_path.")
             if analysis_backend_path is not None:
                 raise CldkInitializationException(
-                    "analysis_backend_path is Java-only (it locates codeanalyzer-*.jar). "
-                    "For Python, use cache_dir for the backend's virtualenv/CodeQL cache."
+                    "analysis_backend_path is Java-only (it locates codeanalyzer-*.jar). " "For Python, use cache_dir for the backend's virtualenv/CodeQL cache."
                 )
             return PythonAnalysis(
                 project_dir=project_path,
@@ -250,6 +251,7 @@ class CLDK:
                 analysis_json_path=analysis_json_path,
                 target_files=target_files,
                 eager_analysis=eager,
+                neo4j_config=neo4j_config,
             )
         else:
             raise NotImplementedError(f"Analysis support for {self.language} is not implemented yet.")

@@ -30,6 +30,7 @@ from typing import Dict, List, Set, Tuple
 import networkx as nx
 
 from cldk.analysis.typescript.codeanalyzer import TSCodeanalyzer
+from cldk.analysis.typescript.neo4j import Neo4jConnectionConfig, TSNeo4jBackend
 from cldk.models.typescript import (
     TSApplication,
     TSCallable,
@@ -50,7 +51,17 @@ from cldk.models.typescript import (
 
 
 class TypeScriptAnalysis:
-    """Analysis facade for TypeScript projects (backed by the codeanalyzer-typescript binary)."""
+    """Analysis facade for TypeScript projects.
+
+    Delegates every query to a backend. Two interchangeable backends exist, both exposing the
+    same method surface:
+
+    * :class:`TSCodeanalyzer` (default) — walks the in-memory pydantic ``TSApplication`` / a
+      NetworkX call graph built from ``analysis.json``;
+    * :class:`TSNeo4jBackend` — answers the *same* ``get_*`` queries with Cypher over the graph
+      ``codeanalyzer-typescript`` emits with ``--emit neo4j``. Selected by passing
+      ``neo4j_config``.
+    """
 
     def __init__(
         self,
@@ -60,6 +71,7 @@ class TypeScriptAnalysis:
         analysis_json_path: str | Path | None,
         target_files: List[str] | None,
         eager_analysis: bool,
+        neo4j_config: Neo4jConnectionConfig | None = None,
     ) -> None:
         self.project_dir = project_dir
         self.analysis_level = analysis_level
@@ -67,14 +79,31 @@ class TypeScriptAnalysis:
         self.analysis_json_path = analysis_json_path
         self.target_files = target_files
         self.eager_analysis = eager_analysis
-        self.backend: TSCodeanalyzer = TSCodeanalyzer(
-            project_dir=project_dir,
-            analysis_backend_path=analysis_backend_path,
-            analysis_json_path=analysis_json_path,
-            analysis_level=analysis_level,
-            eager_analysis=eager_analysis,
-            target_files=target_files,
-        )
+        self.neo4j_config = neo4j_config
+        self.backend: TSCodeanalyzer | TSNeo4jBackend
+        if neo4j_config is not None:
+            self.backend = TSNeo4jBackend(
+                project_dir=project_dir,
+                analysis_backend_path=analysis_backend_path,
+                analysis_level=analysis_level,
+                eager_analysis=eager_analysis,
+                target_files=target_files,
+                neo4j_uri=neo4j_config.uri,
+                neo4j_username=neo4j_config.username,
+                neo4j_password=neo4j_config.password,
+                neo4j_database=neo4j_config.database,
+                application_name=neo4j_config.application_name,
+                build_db=neo4j_config.build_db,
+            )
+        else:
+            self.backend = TSCodeanalyzer(
+                project_dir=project_dir,
+                analysis_backend_path=analysis_backend_path,
+                analysis_json_path=analysis_json_path,
+                analysis_level=analysis_level,
+                eager_analysis=eager_analysis,
+                target_files=target_files,
+            )
         self.application: TSApplication = self.backend.get_application()
 
     # -----[ Tier A: lifecycle / whole-program ]-----
@@ -111,9 +140,7 @@ class TypeScriptAnalysis:
         """Callees of a method, with the connecting call-graph edge metadata."""
         return self.backend.get_all_callees(source_class_name, source_method_declaration)
 
-    def get_class_call_graph(
-        self, qualified_class_name: str, method_signature: str | None = None
-    ) -> List[Tuple[str, str]]:
+    def get_class_call_graph(self, qualified_class_name: str, method_signature: str | None = None) -> List[Tuple[str, str]]:
         """Call-graph edges reachable from a class (or one of its methods)."""
         return self.backend.get_class_call_graph(qualified_class_name, method_signature)
 
@@ -147,9 +174,7 @@ class TypeScriptAnalysis:
         Raises:
             NotImplementedError: Always.
         """
-        raise NotImplementedError(
-            "Entrypoint detection is not implemented in the codeanalyzer-typescript backend yet."
-        )
+        raise NotImplementedError("Entrypoint detection is not implemented in the codeanalyzer-typescript backend yet.")
 
     def get_service_entry_point_methods(self, **kwargs) -> Dict[str, Dict[str, TSCallable]]:
         """Return methods that serve as service entry points (e.g. Express/NestJS routes).
@@ -159,9 +184,7 @@ class TypeScriptAnalysis:
         Raises:
             NotImplementedError: Always.
         """
-        raise NotImplementedError(
-            "Entrypoint detection is not implemented in the codeanalyzer-typescript backend yet."
-        )
+        raise NotImplementedError("Entrypoint detection is not implemented in the codeanalyzer-typescript backend yet.")
 
     # -----[ Tier B: navigation ]-----
     def get_classes(self) -> Dict[str, TSClass]:
@@ -170,9 +193,7 @@ class TypeScriptAnalysis:
     def get_class(self, qualified_class_name: str) -> TSClass | None:
         return self.backend.get_class(qualified_class_name)
 
-    def get_classes_by_criteria(
-        self, inclusions: List[str] | None = None, exclusions: List[str] | None = None
-    ) -> Dict[str, TSClass]:
+    def get_classes_by_criteria(self, inclusions: List[str] | None = None, exclusions: List[str] | None = None) -> Dict[str, TSClass]:
         inclusions = inclusions or []
         exclusions = exclusions or []
         result: Dict[str, TSClass] = {}

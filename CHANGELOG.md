@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Neo4j-backed TypeScript analysis backend (`cldk.analysis.typescript.neo4j.TSNeo4jBackend`). It
+  is a drop-in alternative to the in-memory `TSCodeanalyzer`: it answers the **same** `get_*`
+  query surface (call graph, callers/callees, class hierarchy, call sites, decorators, symbol
+  lookups, ...) by running **Cypher over a live Neo4j graph** instead of walking the pydantic /
+  NetworkX structures. The graph is the one `codeanalyzer-typescript` emits with `--emit neo4j`
+  (schema `schema.neo4j.json`); the backend can populate the database for you over Bolt, or query
+  one that is already loaded.
+- `TypeScriptAnalysis` / `CLDK.analysis(language="typescript")` now accept an optional
+  `neo4j_config` (`Neo4jConnectionConfig`) to select the Neo4j backend; without it the in-memory
+  backend is used, unchanged.
+- Optional `neo4j` extra (`pip install cldk[neo4j]`) for the Neo4j Python driver.
+
 ## [v1.0.7] - 2026-02-14
 
 ### Added
