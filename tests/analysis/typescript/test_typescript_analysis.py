@@ -16,6 +16,7 @@
 
 """Tests for the TypeScript analysis facade (backend subprocess mocked)."""
 
+import json
 from unittest.mock import MagicMock, patch
 
 import networkx as nx
@@ -64,7 +65,7 @@ def test_phantom_external_nodes(ts_analysis):
     ext = ts_analysis.get_external_symbols()
     assert "node:crypto.createHash" in ext
     assert ext["node:crypto.createHash"].module == "node:crypto"
-    assert ext["node:crypto.createHash"].is_external is True
+    assert ext["node:crypto.createHash"].name == "createHash"
     assert "node:path.extname" in ext
 
     graph = ts_analysis.get_call_graph()
@@ -169,6 +170,46 @@ def test_exports_and_variables(ts_analysis):
     assert set(variables) == set(ts_analysis.get_symbol_table())
 
 
+def test_exports_and_variables_are_parsed(typescript_application, typescript_analysis_json, monkeypatch):
+    """Behavioral: a real export + module-level const must be parsed and surfaced (the slim
+    fixture carries none, so inject them into the analyzed JSON)."""
+    data = json.loads(typescript_analysis_json)
+    models = data["symbol_table"]["src/models.ts"]
+    models["exports"].append(
+        {"name": "User", "module": None, "alias": None, "is_type_only": False, "export_kind": "named"}
+    )
+    models["variables"].append(
+        {
+            "name": "DEFAULT_ROLE",
+            "type": "Role",
+            "initializer": "Role.Member",
+            "scope": "module",
+            "declaration_kind": "const",
+            "is_exported": True,
+        }
+    )
+
+    monkeypatch.setenv("CODEANALYZER_TS_BIN", "codeanalyzer-typescript")
+    with patch("cldk.analysis.typescript.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
+        run_mock.return_value = MagicMock(stdout=json.dumps(data), returncode=0)
+        analysis = CLDK(language="typescript").analysis(
+            project_path=typescript_application,
+            analysis_backend_path=None,
+            eager=True,
+            analysis_level=AnalysisLevel.call_graph,
+        )
+
+    exported = analysis.get_exports()["src/models.ts"]
+    assert [e.name for e in exported] == ["User"]
+    assert exported[0].export_kind == "named"
+
+    variables = analysis.get_variables()["src/models.ts"]
+    assert [v.name for v in variables] == ["DEFAULT_ROLE"]
+    assert variables[0].declaration_kind == "const"
+    assert variables[0].initializer == "Role.Member"
+    assert variables[0].is_exported is True
+
+
 def test_class_decorators(ts_analysis):
     decos = ts_analysis.get_class_decorators("src/controllers.UserController")
     assert [d.name for d in decos] == ["Controller"]
@@ -209,3 +250,79 @@ def test_source_code_mode_rejected(typescript_application):
 def test_python_only_kwargs_rejected(typescript_application):
     with pytest.raises(CldkInitializationException):
         CLDK(language="typescript").analysis(project_path=typescript_application, cache_dir="/tmp/x")
+
+
+# -----[ facade -> backend wiring / subprocess invocation ]-----
+def test_subprocess_args_stdout_pipe(typescript_application, typescript_analysis_json, monkeypatch):
+    """The facade must forward target_files + analysis_level to the backend, which builds the
+    right subprocess command. With no analysis_json_path, output is read from the stdout pipe
+    (no ``-o``)."""
+    monkeypatch.setenv("CODEANALYZER_TS_BIN", "codeanalyzer-typescript")
+    with patch("cldk.analysis.typescript.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
+        run_mock.return_value = MagicMock(stdout=typescript_analysis_json, returncode=0)
+        CLDK(language="typescript").analysis(
+            project_path=typescript_application,
+            analysis_backend_path=None,
+            eager=True,
+            analysis_level=AnalysisLevel.call_graph,
+            target_files=["src/models.ts", "src/services.ts"],
+        )
+
+    args = run_mock.call_args.args[0]
+    assert args[0] == "codeanalyzer-typescript"  # resolved from $CODEANALYZER_TS_BIN
+    assert args[args.index("-i") + 1] == str(typescript_application)
+    assert args[args.index("-a") + 1] == "2"  # call_graph -> level 2
+    # each target file forwarded with its own -t
+    assert args.count("-t") == 2
+    assert "src/models.ts" in args and "src/services.ts" in args
+    # stdout-pipe mode: no output directory
+    assert "-o" not in args
+
+
+def test_subprocess_args_output_dir(typescript_application, typescript_analysis_json, tmp_path, monkeypatch):
+    """With analysis_json_path set, the backend passes ``-o <dir>`` and reads analysis.json back
+    from disk. Exercises the output-dir branch and level-1 (symbol_table) mapping."""
+    monkeypatch.setenv("CODEANALYZER_TS_BIN", "codeanalyzer-typescript")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+
+    def fake_run(cmd, *a, **kw):
+        # the analyzer writes analysis.json into the -o directory
+        (out_dir / "analysis.json").write_text(typescript_analysis_json, encoding="utf-8")
+        return MagicMock(stdout="", returncode=0)
+
+    with patch("cldk.analysis.typescript.codeanalyzer.codeanalyzer.subprocess.run", side_effect=fake_run) as run_mock:
+        analysis = CLDK(language="typescript").analysis(
+            project_path=typescript_application,
+            analysis_backend_path=None,
+            eager=True,
+            analysis_level=AnalysisLevel.symbol_table,
+            analysis_json_path=out_dir,
+        )
+
+    args = run_mock.call_args.args[0]
+    assert args[args.index("-a") + 1] == "1"  # symbol_table -> level 1
+    assert args[args.index("-o") + 1] == str(out_dir)
+    # the disk read-back path produced a usable application
+    assert len(analysis.get_symbol_table()) == 6
+
+
+def test_cached_analysis_json_skips_subprocess(typescript_application, typescript_analysis_json, tmp_path, monkeypatch):
+    """When a cached analysis.json already exists and eager is False, the backend must reuse it
+    and not invoke the analyzer subprocess."""
+    monkeypatch.setenv("CODEANALYZER_TS_BIN", "codeanalyzer-typescript")
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    (out_dir / "analysis.json").write_text(typescript_analysis_json, encoding="utf-8")
+
+    with patch("cldk.analysis.typescript.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
+        analysis = CLDK(language="typescript").analysis(
+            project_path=typescript_application,
+            analysis_backend_path=None,
+            eager=False,
+            analysis_level=AnalysisLevel.call_graph,
+            analysis_json_path=out_dir,
+        )
+
+    run_mock.assert_not_called()
+    assert len(analysis.get_symbol_table()) == 6

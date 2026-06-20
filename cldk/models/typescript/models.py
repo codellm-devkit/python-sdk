@@ -225,8 +225,7 @@ class TSCallable(_Base):
     inner_classes: Dict[str, "TSClass"] = {}
     local_variables: List[TSVariableDeclaration] = []
     cyclomatic_complexity: int = 0
-    is_entrypoint: bool = False
-    entrypoint_framework: Optional[str] = None
+    entrypoints: List["TSEntrypoint"] = []  # non-empty ⇒ this callable is an entrypoint
     # TypeScript-native typed fields
     kind: str = "function"  # function | method | constructor | getter | setter | arrow | function_expression
     accessibility: Optional[str] = None
@@ -265,6 +264,7 @@ class TSClass(_Base):
     methods: Dict[str, TSCallable] = {}
     attributes: Dict[str, TSClassAttribute] = {}
     inner_classes: Dict[str, "TSClass"] = {}
+    entrypoints: List["TSEntrypoint"] = []  # class-level entrypoint (e.g. @Controller); empty otherwise
     is_abstract: bool = False
     is_exported: bool = False
     is_ambient: bool = False
@@ -406,24 +406,23 @@ class TSExternalSymbol(_Base):
     """A WALA-style phantom node: a synthetic stub for a call target OUTSIDE the project (an
     imported/required library member). An edge's ``target`` byte-matches either a real
     ``TSCallable.signature`` or a ``TSExternalSymbol.signature``, so the call graph stays
-    dangling-free while still recording external (e.g. sink) calls."""
+    dangling-free while still recording external (e.g. sink) calls.
 
-    signature: str  # e.g. "node:fs.readFileSync", "express.Router.get"
+    Slim: the map key in ``TSApplication.external_symbols`` IS the signature (e.g.
+    ``commander.parse``), and membership already means external — so neither is repeated here."""
+
     name: str
     module: str
-    kind: str = "unknown"
-    is_external: bool = True
 
 
 class TSEntrypoint(_Base):
-    """A framework entrypoint (populated by level-2 finders; empty for level 1)."""
+    """A framework entrypoint (populated by level-2 finders; empty for level 1). Embedded on the
+    owning ``TSCallable``/``TSClass``, so it carries no signature/source_file of its own."""
 
-    signature: str
     framework: str
     detection_source: str
     route_path: Optional[str] = None
     http_methods: List[str] = []
-    source_file: Optional[str] = None
     tags: Dict[str, str] = {}
 
 
@@ -433,7 +432,6 @@ class TSApplication(_Base):
     symbol_table: Dict[str, TSModule]
     call_graph: List[TSCallEdge] = []
     external_symbols: Dict[str, TSExternalSymbol] = {}
-    entrypoints: Dict[str, List[TSEntrypoint]] = {}
 
 
 # Resolve forward references for the mutually-recursive models.

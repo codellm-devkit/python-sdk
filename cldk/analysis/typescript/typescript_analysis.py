@@ -178,9 +178,9 @@ class TypeScriptAnalysis:
         """Return methods identified as application entry points.
 
         Not yet supported: the codeanalyzer-typescript backend's entrypoint detection is a stub
-        placeholder — ``TSApplication.entrypoints`` and ``TSCallable.is_entrypoint`` are never
-        populated — so this method exists for API parity with :class:`PythonAnalysis` /
-        :class:`JavaAnalysis` but raises.
+        placeholder — the ``entrypoints`` list on each ``TSCallable``/``TSClass`` is always empty
+        (level-2 finders are not implemented) — so this method exists for API parity with
+        :class:`PythonAnalysis` / :class:`JavaAnalysis` but raises.
 
         Raises:
             NotImplementedError: Always.

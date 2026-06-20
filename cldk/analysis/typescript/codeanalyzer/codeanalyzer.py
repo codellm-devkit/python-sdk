@@ -39,7 +39,6 @@ from typing import Dict, List, Set, Tuple, Union
 import networkx as nx
 
 from cldk.analysis import AnalysisLevel
-from cldk.analysis.typescript.backend import TSAnalysisBackend
 from cldk.models.typescript import (
     TSApplication,
     TSCallable,
@@ -63,7 +62,7 @@ from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 logger = logging.getLogger(__name__)
 
 
-class TSCodeanalyzer(TSAnalysisBackend):
+class TSCodeanalyzer:
     """Build and query the application view of a TypeScript project by invoking the
     codeanalyzer-typescript binary as a subprocess.
 
