@@ -31,7 +31,7 @@ import networkx as nx
 
 from cldk.analysis.typescript.backend import TSAnalysisBackend
 from cldk.analysis.typescript.codeanalyzer import TSCodeanalyzer
-from cldk.analysis.typescript.neo4j import Neo4jConnectionConfig, TSNeo4jBackend
+from cldk.analysis.typescript.neo4j import Neo4jConnectionConfig, TSNeo4jBackend, TSNeo4jIngestor
 from cldk.models.typescript import (
     TSApplication,
     TSCallable,
@@ -83,18 +83,28 @@ class TypeScriptAnalysis:
         self.neo4j_config = neo4j_config
         self.backend: TSAnalysisBackend
         if neo4j_config is not None:
+            application_name = neo4j_config.application_name or (Path(project_dir).name if project_dir else None)
+            # Local/dev convenience: populate the graph from sources before querying it. In a cloud
+            # deployment the graph is loaded out of band, so pass build_db=False and we only read.
+            if neo4j_config.build_db:
+                TSNeo4jIngestor(
+                    project_dir=project_dir,
+                    analysis_backend_path=analysis_backend_path,
+                    analysis_level=analysis_level,
+                    neo4j_uri=neo4j_config.uri,
+                    neo4j_username=neo4j_config.username,
+                    neo4j_password=neo4j_config.password,
+                    neo4j_database=neo4j_config.database,
+                    application_name=application_name,
+                    eager_analysis=eager_analysis,
+                    target_files=target_files,
+                ).build()
             self.backend = TSNeo4jBackend(
-                project_dir=project_dir,
-                analysis_backend_path=analysis_backend_path,
-                analysis_level=analysis_level,
-                eager_analysis=eager_analysis,
-                target_files=target_files,
                 neo4j_uri=neo4j_config.uri,
                 neo4j_username=neo4j_config.username,
                 neo4j_password=neo4j_config.password,
                 neo4j_database=neo4j_config.database,
-                application_name=neo4j_config.application_name,
-                build_db=neo4j_config.build_db,
+                application_name=application_name,
             )
         else:
             self.backend = TSCodeanalyzer(

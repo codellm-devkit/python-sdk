@@ -224,30 +224,42 @@ def test_application_view_round_trips(ts_neo4j):
 
 
 def test_lazy_skips_rebuild(ts_neo4j, typescript_application):
-    """A second, non-eager backend against the already-loaded DB must not re-run the analyzer.
+    """A second, non-eager ingest against the already-loaded DB must not re-run the analyzer.
 
     Depends on ``ts_neo4j`` so the module fixture has already populated this app's subgraph.
     """
     from unittest.mock import patch
 
-    from cldk.analysis.typescript.neo4j import TSNeo4jBackend
+    from cldk.analysis.typescript.neo4j import TSNeo4jIngestor
 
-    with patch.object(TSNeo4jBackend, "_get_codeanalyzer_exec") as exec_mock:
-        backend = TSNeo4jBackend(
+    with patch.object(TSNeo4jIngestor, "_get_codeanalyzer_exec") as exec_mock:
+        ingestor = TSNeo4jIngestor(
             project_dir=str(typescript_application),
             analysis_backend_path=None,
             analysis_level=AnalysisLevel.call_graph,
-            eager_analysis=False,
-            target_files=None,
             neo4j_uri=NEO4J_URI,
             neo4j_username=NEO4J_USER,
             neo4j_password=NEO4J_PASSWORD,
             application_name=APP_NAME,
-            build_db=True,
+            eager_analysis=False,
+            target_files=None,
         )
-        try:
-            # The app already exists from the module fixture ⇒ lazy path, binary never resolved.
-            exec_mock.assert_not_called()
-            assert len(backend.get_all_classes()) == 6
-        finally:
-            backend.close()
+        # The app already exists from the module fixture ⇒ lazy path, binary never resolved.
+        ingestor.build()
+        exec_mock.assert_not_called()
+
+
+def test_read_only_backend_queries_loaded_db(ts_neo4j):
+    """The read-only backend can query an already-loaded DB with no project_dir / binary."""
+    from cldk.analysis.typescript.neo4j import TSNeo4jBackend
+
+    backend = TSNeo4jBackend(
+        neo4j_uri=NEO4J_URI,
+        neo4j_username=NEO4J_USER,
+        neo4j_password=NEO4J_PASSWORD,
+        application_name=APP_NAME,
+    )
+    try:
+        assert len(backend.get_all_classes()) == 6
+    finally:
+        backend.close()

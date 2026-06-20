@@ -18,5 +18,6 @@
 
 from cldk.analysis.typescript.neo4j.config import Neo4jConnectionConfig
 from cldk.analysis.typescript.neo4j.neo4j_backend import TSNeo4jBackend
+from cldk.analysis.typescript.neo4j.neo4j_ingestor import TSNeo4jIngestor
 
-__all__ = ["TSNeo4jBackend", "Neo4jConnectionConfig"]
+__all__ = ["TSNeo4jBackend", "TSNeo4jIngestor", "Neo4jConnectionConfig"]

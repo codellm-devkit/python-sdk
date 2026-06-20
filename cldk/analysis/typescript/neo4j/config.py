@@ -23,7 +23,7 @@ from dataclasses import dataclass
 
 @dataclass
 class Neo4jConnectionConfig:
-    """How :class:`TSNeo4jBackend` reaches (and, optionally, populates) the graph database.
+    """How the TypeScript facade reaches (and, optionally, populates) the graph database.
 
     Attributes:
         uri: Bolt URI of the Neo4j server (e.g. ``bolt://localhost:7687``).
@@ -33,9 +33,12 @@ class Neo4jConnectionConfig:
         application_name: The ``:Application`` anchor name to scope queries to. Defaults to the
             analyzed project directory's name (matching ``codeanalyzer-typescript``'s
             ``--app-name`` default).
-        build_db: If True (default), populate the database from the project on construction by
-            running ``codeanalyzer-typescript --emit neo4j``. Set False to query a DB that is
-            already loaded.
+        build_db: If True (default), first populate the database from the project — via
+            :class:`~cldk.analysis.typescript.neo4j.TSNeo4jIngestor` running
+            ``codeanalyzer-typescript --emit neo4j`` — then query it. This is a local/dev
+            convenience that needs the analyzer binary and the sources on disk. Set False for a
+            cloud deployment where the graph is loaded out of band and the SDK only polls it
+            (read-only, no binary, ``project_dir`` may be None).
     """
 
     uri: str

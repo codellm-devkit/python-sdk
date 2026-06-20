@@ -14,7 +14,7 @@
 # limitations under the License.
 ################################################################################
 
-"""Neo4j-backed TypeScript analysis backend.
+"""Neo4j-backed TypeScript analysis backend (read-only Cypher client).
 
 A drop-in alternative to :class:`TSCodeanalyzer`: it exposes the **same query
 method surface** (``get_all_classes``, ``get_call_graph``, ``get_all_callers``,
@@ -22,12 +22,16 @@ method surface** (``get_all_classes``, ``get_call_graph``, ``get_all_callers``,
 every method answers by running **Cypher over a live Neo4j graph** instead of
 walking the in-memory pydantic/NetworkX structures.
 
+This class is purely a **query client**: it never builds the graph and has no
+dependency on the ``codeanalyzer-typescript`` binary or the project sources. It
+assumes the database is already populated and just polls it — the shape a cloud
+deployment wants, where a third-party job (e.g. inside Kubernetes) loads the
+graph out of band and the SDK only reads it.
+
 The graph is the one ``codeanalyzer-typescript`` emits with ``--emit neo4j``
-(schema: ``codeanalyzer-ts/schema.neo4j.json``). On construction this backend can
-populate the database for you by shelling out to the analyzer binary with
-``--emit neo4j --neo4j-uri ...`` (mirroring how :class:`TSCodeanalyzer` shells
-out to produce ``analysis.json``); or you can point it at an already-loaded DB
-with ``build_db=False``.
+(schema: ``codeanalyzer-ts/schema.neo4j.json``). Populating it is the job of
+:class:`~cldk.analysis.typescript.neo4j.TSNeo4jIngestor` (a local/dev
+convenience), not of this backend.
 
 Identity model (must match the in-memory backend):
 
@@ -50,17 +54,11 @@ Parity caveats (inherent to what the projection stores, not bugs):
 from __future__ import annotations
 
 import logging
-import os
-import shlex
-import subprocess
 from collections import deque
-from importlib import resources
-from pathlib import Path
-from typing import Any, Dict, List, Set, Tuple, Union
+from typing import Any, Dict, List, Set, Tuple
 
 import networkx as nx
 
-from cldk.analysis import AnalysisLevel
 from cldk.analysis.typescript.backend import TSAnalysisBackend
 from cldk.analysis.typescript.neo4j import reconstruct as R
 from cldk.models.typescript import (
@@ -87,61 +85,38 @@ logger = logging.getLogger(__name__)
 
 
 class TSNeo4jBackend(TSAnalysisBackend):
-    """Build and query the application view of a TypeScript project over Neo4j (Cypher).
+    """Query the application view of a TypeScript project over Neo4j (Cypher), read-only.
+
+    The graph must already be loaded — by :class:`TSNeo4jIngestor` on a dev machine, or by a
+    third-party job in a cloud deployment. This backend never writes and needs neither the
+    ``codeanalyzer-typescript`` binary nor the project sources on disk.
 
     Args:
-        project_dir: Root of the TypeScript project (required when ``build_db`` is True).
-        analysis_backend_path: Directory containing the ``codeanalyzer-typescript`` binary. If
-            None, falls back to ``$CODEANALYZER_TS_BIN``, then the ``codeanalyzer_typescript``
-            wheel, then a bundled binary.
-        analysis_level: ``AnalysisLevel.symbol_table`` (1) or ``AnalysisLevel.call_graph`` (2).
-        eager_analysis: If True, force a clean rebuild of the graph even if this application's
-            ``:Application`` anchor already exists in the database.
-        target_files: Restrict analysis to these files (incremental push).
         neo4j_uri: Bolt URI of the Neo4j server (e.g. ``bolt://localhost:7687``).
-        neo4j_username / neo4j_password: Credentials.
+        neo4j_username / neo4j_password: Credentials (read-only is sufficient).
         neo4j_database: Database name (None ⇒ server default).
-        application_name: The ``:Application`` anchor name. Defaults to the project directory
-            name, matching ``codeanalyzer-typescript``'s ``--app-name`` default.
-        build_db: If True (default), populate the database from ``project_dir`` on construction.
-            If False, query an already-loaded graph (``project_dir`` may be None).
+        application_name: The ``:Application`` anchor name to scope every query to. Matches the
+            ``--app-name`` the graph was loaded with (defaults to the project directory name).
     """
 
     def __init__(
         self,
-        project_dir: Union[str, Path, None],
-        analysis_backend_path: Union[str, Path, None],
-        analysis_level: str,
-        eager_analysis: bool,
-        target_files: List[str] | None,
         neo4j_uri: str,
         neo4j_username: str,
         neo4j_password: str,
         neo4j_database: str | None = None,
         application_name: str | None = None,
-        build_db: bool = True,
     ) -> None:
         try:
             from neo4j import GraphDatabase
         except ModuleNotFoundError as e:  # pragma: no cover - import guard
             raise CodeanalyzerExecutionException("The Neo4j backend requires the 'neo4j' driver. Install it with " "`pip install neo4j` (or `pip install cldk[neo4j]`).") from e
 
-        self.project_dir = project_dir
-        self.analysis_backend_path = analysis_backend_path
-        self.analysis_level = analysis_level
-        self.eager_analysis = eager_analysis
-        self.target_files = target_files
-        self.application_name = application_name or (Path(project_dir).name if project_dir else None)
-        if not self.application_name:
-            raise CodeanalyzerExecutionException("application_name could not be inferred; pass application_name explicitly when project_dir is None.")
+        if not application_name:
+            raise CodeanalyzerExecutionException("application_name is required to scope queries to an application.")
+        self.application_name = application_name
         self._database = neo4j_database
         self._driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_username, neo4j_password))
-        self._neo4j_conn = (neo4j_uri, neo4j_username, neo4j_password)
-
-        if build_db:
-            if project_dir is None:
-                raise CodeanalyzerExecutionException("project_dir is required when build_db=True.")
-            self._build_graph()
 
         # The application's module file_keys, used to scope every query to this app.
         self._modules: List[str] = self._load_module_keys()
@@ -168,88 +143,6 @@ class TSNeo4jBackend(TSAnalysisBackend):
             app=self.application_name,
         )
         return [r["k"] for r in rows]
-
-    # -----[ binary resolution + DB population ]-----
-    def _get_codeanalyzer_exec(self) -> List[str]:
-        """Resolve the codeanalyzer-typescript executable command (mirrors TSCodeanalyzer)."""
-        if self.analysis_backend_path:
-            backend = Path(self.analysis_backend_path)
-            binary = next(
-                (p for p in backend.rglob("codeanalyzer-typescript*") if p.is_file()),
-                None,
-            ) or next((p for p in backend.rglob("codeanalyzer-ts*") if p.is_file()), None)
-            if binary is None:
-                raise CodeanalyzerExecutionException("codeanalyzer-typescript binary not found in the provided analysis_backend_path.")
-            return [str(binary)]
-
-        env_bin = os.environ.get("CODEANALYZER_TS_BIN")
-        if env_bin:
-            return shlex.split(env_bin)
-
-        try:
-            import codeanalyzer_typescript
-
-            return [str(codeanalyzer_typescript.bin_path())]
-        except (ModuleNotFoundError, FileNotFoundError):
-            pass
-
-        try:
-            with resources.as_file(resources.files("cldk.analysis.typescript.codeanalyzer.bin")) as bin_dir:
-                binary = next((p for p in bin_dir.iterdir() if p.is_file() and p.name.startswith("codeanalyzer")), None)
-                if binary is not None:
-                    return [str(binary)]
-        except (ModuleNotFoundError, FileNotFoundError):
-            pass
-
-        raise CodeanalyzerExecutionException(
-            "codeanalyzer-typescript binary not found. Pass analysis_backend_path=<dir containing the "
-            "binary>, set $CODEANALYZER_TS_BIN, or bundle it under cldk/analysis/typescript/codeanalyzer/bin/."
-        )
-
-    def _build_graph(self) -> None:
-        """Push this project's graph into Neo4j via ``--emit neo4j --neo4j-uri`` (Bolt).
-
-        Lazy by default: if the ``:Application`` anchor already exists and ``eager_analysis`` is
-        False (and this is not a targeted/incremental run), the push is skipped.
-        """
-        if not self.eager_analysis and not self.target_files and self._application_exists():
-            logger.info("Neo4j already has application '%s'; skipping rebuild (lazy).", self.application_name)
-            return
-
-        uri, user, password = self._neo4j_conn
-        level = 1 if self.analysis_level == AnalysisLevel.symbol_table else 2
-        args = self._get_codeanalyzer_exec() + [
-            "-i",
-            str(Path(self.project_dir)),
-            "-a",
-            str(level),
-            "--emit",
-            "neo4j",
-            "--neo4j-uri",
-            uri,
-            "--neo4j-user",
-            user,
-            "--neo4j-password",
-            password,
-            "--app-name",
-            self.application_name,
-        ]
-        if self._database:
-            args += ["--neo4j-database", self._database]
-        if self.eager_analysis:
-            args += ["--eager"]
-        for tf in self.target_files or []:
-            args += ["-t", str(tf).strip()]
-
-        try:
-            logger.info("Running codeanalyzer-typescript (neo4j emit): %s", " ".join(args))
-            subprocess.run(args, capture_output=True, text=True, check=True)
-        except Exception as e:  # noqa: BLE001
-            raise CodeanalyzerExecutionException(str(e)) from e
-
-    def _application_exists(self) -> bool:
-        rows = self._run("MATCH (a:Application {name: $app}) RETURN count(a) AS c", app=self.application_name)
-        return bool(rows and rows[0]["c"] > 0)
 
     # -----[ child-fetch helpers (reconstruction) ]-----
     def _decorators_of(self, signature: str) -> List[TSDecorator]:
