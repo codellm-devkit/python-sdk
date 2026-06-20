@@ -49,9 +49,7 @@ def test_use_codeql_forwarded_through_facade(monkeypatch, tmp_path):
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-    monkeypatch.setattr(
-        "cldk.analysis.python.python_analysis.PyCodeanalyzer", FakeBackend
-    )
+    monkeypatch.setattr("cldk.analysis.python.python_analysis.PyCodeanalyzer", FakeBackend)
 
     CLDK(language="python").analysis(project_path=tmp_path, use_codeql=False)
     assert captured["use_codeql"] is False
@@ -62,6 +60,30 @@ def test_use_codeql_forwarded_through_facade(monkeypatch, tmp_path):
     assert captured["use_codeql"] is True
 
 
+def test_use_ray_forwarded_through_facade(monkeypatch, tmp_path):
+    """Regression: CLDK.analysis() must forward use_ray down to the backend.
+
+    use_ray is a Python-only option lifted all the way up to the public API
+    (CLDK.analysis → PythonAnalysis → PyCodeanalyzer → AnalysisOptions.using_ray);
+    the façade must not silently drop it (mirrors the use_codeql guard).
+    """
+    captured = {}
+
+    class FakeBackend:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("cldk.analysis.python.python_analysis.PyCodeanalyzer", FakeBackend)
+
+    CLDK(language="python").analysis(project_path=tmp_path, use_ray=True)
+    assert captured["use_ray"] is True
+
+    # Off by default; the façade must forward that faithfully too.
+    captured.clear()
+    CLDK(language="python").analysis(project_path=tmp_path)
+    assert captured["use_ray"] is False
+
+
 def test_cache_dir_forwarded_through_facade(monkeypatch, tmp_path):
     """cache_dir must reach the backend as cache_dir (not analysis_backend_path)."""
     captured = {}
@@ -70,9 +92,7 @@ def test_cache_dir_forwarded_through_facade(monkeypatch, tmp_path):
         def __init__(self, **kwargs):
             captured.update(kwargs)
 
-    monkeypatch.setattr(
-        "cldk.analysis.python.python_analysis.PyCodeanalyzer", FakeBackend
-    )
+    monkeypatch.setattr("cldk.analysis.python.python_analysis.PyCodeanalyzer", FakeBackend)
 
     cache = tmp_path / "mycache"
     CLDK(language="python").analysis(project_path=tmp_path, cache_dir=cache)
@@ -83,6 +103,4 @@ def test_cache_dir_forwarded_through_facade(monkeypatch, tmp_path):
 def test_python_rejects_java_only_analysis_backend_path(tmp_path):
     """analysis_backend_path is Java-only; Python mode must reject it."""
     with pytest.raises(CldkInitializationException, match="Java-only"):
-        CLDK(language="python").analysis(
-            project_path=tmp_path, analysis_backend_path="/some/jar/dir"
-        )
+        CLDK(language="python").analysis(project_path=tmp_path, analysis_backend_path="/some/jar/dir")
