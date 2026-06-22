@@ -1,5 +1,8 @@
+import shutil
+from pathlib import Path
 from typing import Any
 from cldk import CLDK
+from cldk.analysis.commons.backend_config import CodeAnalyzerConfig
 from cldk.models.java.models import JCompilationUnit, JImport
 
 
@@ -99,8 +102,15 @@ def test_jcompilationunit_imports_round_trip_through_dump_apis() -> None:
         assert [(item.path, item.is_static, item.is_wildcard) for item in reparsed.import_declarations] == expected_declarations
 
 
-def test_get_class_call_graph(analysis_json_fixture):
-    """Initialize the CLDK object with the project directory, language, and analysis_backend."""
-    cldk = CLDK(language="java")
-    analysis = cldk.analysis(project_path=analysis_json_fixture, analysis_json_path=analysis_json_fixture, eager=False, analysis_level="call-graph")
+def test_get_class_call_graph(analysis_json_fixture, tmp_path):
+    """The facade reuses a cached analysis.json from the language-keyed cache dir (<cache>/java)."""
+    keyed = tmp_path / "java"
+    keyed.mkdir()
+    shutil.copy(Path(analysis_json_fixture) / "analysis.json", keyed / "analysis.json")
+    analysis = CLDK.java(
+        project_path=analysis_json_fixture,
+        eager=False,
+        analysis_level="call-graph",
+        backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)),
+    )
     assert analysis is not None

@@ -63,19 +63,13 @@ def analysis_json(analysis_json_fixture) -> str:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def codeanalyzer_jar_path():
-    """Fixture to get the path to the codeanalyzer.jar file
+def codeanalyzer_backend_path():
+    """Backend-path override for the Java analyzer in tests.
 
-    Returns:
-        Path: The path to the codeanalyzer.jar file
+    Returns None so the analyzer uses its default: the JVM-free native binary shipped in the
+    ``codeanalyzer-java`` PyPI package (``python -m codeanalyzer_java``).
     """
-    # Path to your pyproject.toml
-    pyproject_path = Path(__file__).parent.parent / "pyproject.toml"
-
-    # Load the configuration
-    config = toml.load(pyproject_path)
-
-    return Path(config["tool"]["cldk"]["testing"]["codeanalyzer-jar-path"])
+    return None
 
 
 @pytest.fixture(scope="session", autouse=True)

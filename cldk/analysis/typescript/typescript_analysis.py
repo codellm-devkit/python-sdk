@@ -29,9 +29,10 @@ from typing import Dict, List, Set, Tuple
 
 import networkx as nx
 
+from cldk.analysis.commons.backend_config import CodeAnalyzerConfig, Neo4jConnectionConfig, TSBackend, cache_subdir
 from cldk.analysis.typescript.backend import TSAnalysisBackend
 from cldk.analysis.typescript.codeanalyzer import TSCodeanalyzer
-from cldk.analysis.typescript.neo4j import Neo4jConnectionConfig, TSNeo4jBackend, TSNeo4jIngestor
+from cldk.analysis.typescript.neo4j import TSNeo4jBackend
 from cldk.models.typescript import (
     TSApplication,
     TSCallable,
@@ -68,49 +69,36 @@ class TypeScriptAnalysis:
         self,
         project_dir: str | Path | None,
         analysis_level: str,
-        analysis_backend_path: str | None,
-        analysis_json_path: str | Path | None,
         target_files: List[str] | None,
         eager_analysis: bool,
-        neo4j_config: Neo4jConnectionConfig | None = None,
+        backend: TSBackend | None = None,
     ) -> None:
         self.project_dir = project_dir
         self.analysis_level = analysis_level
-        self.analysis_backend_path = analysis_backend_path
-        self.analysis_json_path = analysis_json_path
         self.target_files = target_files
         self.eager_analysis = eager_analysis
-        self.neo4j_config = neo4j_config
+        # The backend is selected by the *type* of the config: Neo4jConnectionConfig picks the
+        # read-only Cypher backend, CodeAnalyzerConfig (the default) the in-process analyzer.
+        self.backend_config: TSBackend = backend if backend is not None else CodeAnalyzerConfig()
         self.backend: TSAnalysisBackend
-        if neo4j_config is not None:
-            application_name = neo4j_config.application_name or (Path(project_dir).name if project_dir else None)
-            # Local/dev convenience: populate the graph from sources before querying it. In a cloud
-            # deployment the graph is loaded out of band, so pass build_db=False and we only read.
-            if neo4j_config.build_db:
-                TSNeo4jIngestor(
-                    project_dir=project_dir,
-                    analysis_backend_path=analysis_backend_path,
-                    analysis_level=analysis_level,
-                    neo4j_uri=neo4j_config.uri,
-                    neo4j_username=neo4j_config.username,
-                    neo4j_password=neo4j_config.password,
-                    neo4j_database=neo4j_config.database,
-                    application_name=application_name,
-                    eager_analysis=eager_analysis,
-                    target_files=target_files,
-                ).build()
+        if isinstance(self.backend_config, Neo4jConnectionConfig):
+            # Read-only: the graph is populated out of band; the SDK only polls it.
+            cfg = self.backend_config
+            application_name = cfg.application_name or (Path(project_dir).name if project_dir else None)
             self.backend = TSNeo4jBackend(
-                neo4j_uri=neo4j_config.uri,
-                neo4j_username=neo4j_config.username,
-                neo4j_password=neo4j_config.password,
-                neo4j_database=neo4j_config.database,
+                neo4j_uri=cfg.uri,
+                neo4j_username=cfg.username,
+                neo4j_password=cfg.password,
+                neo4j_database=cfg.database,
                 application_name=application_name,
             )
         else:
+            cache_path = cache_subdir(self.backend_config.cache_dir, project_dir, "typescript")
+            if cache_path is not None:
+                cache_path.mkdir(parents=True, exist_ok=True)
             self.backend = TSCodeanalyzer(
                 project_dir=project_dir,
-                analysis_backend_path=analysis_backend_path,
-                analysis_json_path=analysis_json_path,
+                analysis_json_path=cache_path,
                 analysis_level=analysis_level,
                 eager_analysis=eager_analysis,
                 target_files=target_files,

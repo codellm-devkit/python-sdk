@@ -18,7 +18,7 @@ import logging
 import re
 import shlex
 import subprocess
-from importlib import resources
+import sys
 from itertools import chain, groupby
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -44,7 +44,6 @@ class JCodeanalyzer(JavaAnalysisBackend):
     Args:
         project_dir (str or Path): The path to the root of the Java project.
         source_code (str, optional): The source code of a single Java file to analyze. Defaults to None.
-        analysis_backend_path (str or Path, optional): The path to the analysis backend. Defaults to None.
         analysis_json_path (str or Path, optional): The path to save the intermediate code analysis outputs.
             If None, the analysis will be read from the pipe.
         analysis_level (str): The level of analysis ('symbol_table' or 'call_graph').
@@ -55,7 +54,6 @@ class JCodeanalyzer(JavaAnalysisBackend):
         self,
         project_dir: Union[str, Path],
         source_code: str | None,
-        analysis_backend_path: Union[str, Path, None],
         analysis_json_path: Union[str, Path, None],
         analysis_level: str,
         eager_analysis: bool,
@@ -63,7 +61,6 @@ class JCodeanalyzer(JavaAnalysisBackend):
     ) -> None:
         self.project_dir = project_dir
         self.source_code = source_code
-        self.analysis_backend_path = analysis_backend_path
         self.analysis_json_path = analysis_json_path
         self.eager_analysis = eager_analysis
         self.analysis_level = analysis_level
@@ -89,29 +86,16 @@ class JCodeanalyzer(JavaAnalysisBackend):
         return self.application
 
     def _get_codeanalyzer_exec(self) -> List[str]:
-        """Should return  the executable command for codeanalyzer.
+        """Return the executable command for codeanalyzer-java.
 
         Returns:
             List[str]: The executable command for codeanalyzer.
 
         Notes:
-            - If the analysis_backend_path is provided, the codeanalyzer jar from that path will be used.
-            - If not provided, the latest codeanalyzer jar from GitHub will be downloaded.
+            - The JVM-free native binary shipped in the ``codeanalyzer-java`` PyPI package is used,
+              invoked as ``python -m codeanalyzer_java``.
         """
-
-        if self.analysis_backend_path:
-            analysis_backend_path = Path(self.analysis_backend_path)
-            logger.info(f"Using codeanalyzer jar from {analysis_backend_path}")
-            codeanalyzer_jar_file = next(analysis_backend_path.rglob("codeanalyzer-*.jar"), None)
-            if codeanalyzer_jar_file is None:
-                raise CodeanalyzerExecutionException("Codeanalyzer jar not found in the provided path.")
-            codeanalyzer_exec = shlex.split(f"java -jar {codeanalyzer_jar_file}")
-        else:
-            # Since the path to codeanalyzer.jar we will use the default jar from the cldk/analysis/java/codeanalyzer/jar folder
-            with resources.as_file(resources.files("cldk.analysis.java.codeanalyzer.jar")) as codeanalyzer_jar_path:
-                codeanalyzer_jar_file = next(codeanalyzer_jar_path.rglob("codeanalyzer-*.jar"), None)
-                codeanalyzer_exec = shlex.split(f"java -jar {codeanalyzer_jar_file}")
-        return codeanalyzer_exec
+        return [sys.executable, "-m", "codeanalyzer_java"]
 
     @staticmethod
     def _init_japplication(data: str) -> JApplication:

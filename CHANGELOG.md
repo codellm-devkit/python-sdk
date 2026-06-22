@@ -8,16 +8,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Neo4j-backed TypeScript analysis backend (`cldk.analysis.typescript.neo4j.TSNeo4jBackend`). It
-  is a drop-in alternative to the in-memory `TSCodeanalyzer`: it answers the **same** `get_*`
+- **Per-language factory methods on `CLDK`** — `CLDK.java()`, `CLDK.python()`, `CLDK.typescript()`,
+  and `CLDK.c()` — each with an honest signature exposing only the options that apply to that
+  language. These are the preferred entry points, replacing the stringly-typed
+  `CLDK(language).analysis(...)`.
+- **Typed backend-configuration objects** in `cldk.analysis.commons.backend_config`. The backend is
+  now selected by the *type* of the `backend=` config passed to a factory: `CodeAnalyzerConfig`
+  (default; in-process analyzer) / `PyCodeAnalyzerConfig` (adds `use_codeql`, `use_ray`), or
+  `Neo4jConnectionConfig` (read-only Neo4j). `Neo4jConnectionConfig` is hoisted here and re-exported
+  from `cldk.analysis.{python,typescript}.neo4j` for backward compatibility.
+- **Unified, language-keyed cache directory.** All backends now share a single `cache_dir`
+  (default `<project>/.codeanalyzer`) and write their artifacts under a per-language subdirectory
+  (`<cache_dir>/java`, `<cache_dir>/python`, `<cache_dir>/typescript`), so a polyglot project
+  analyzed under more than one language no longer overwrites a shared `analysis.json`.
+
+### Changed
+- **Caching is on by default for Java/TypeScript.** The in-process backend now caches `analysis.json`
+  to disk (under the language-keyed `cache_dir`) instead of streaming over a stdout pipe.
+- `CLDK(language).analysis(...)` is **deprecated** and retained as a thin compatibility shim that
+  forwards to the new factory methods (emits a `DeprecationWarning`).
+
+### Deprecated
+- Java `source_code` (single-file) input — pass `project_path` instead.
+
+### Removed
+- `analysis_backend_path` from the public interface. The backend binary ships with the packaged
+  `codeanalyzer-*` dependency; for TypeScript, `$CODEANALYZER_TS_BIN` remains as the only
+  out-of-band override.
+- `analysis_json_path` from the public interface — folded into the unified `cache_dir`.
+
+### Migration
+- The language-keyed cache relocates `analysis.json` from `<cache_dir>/analysis.json` to
+  `<cache_dir>/<language>/analysis.json`; existing caches are not found at the new path, so the
+  first run after upgrading recomputes the analysis.
+
+### Added (Neo4j)
+- Read-only Neo4j-backed TypeScript analysis backend (`cldk.analysis.typescript.neo4j.TSNeo4jBackend`).
+  It is a drop-in alternative to the in-memory `TSCodeanalyzer`: it answers the **same** `get_*`
   query surface (call graph, callers/callees, class hierarchy, call sites, decorators, symbol
   lookups, ...) by running **Cypher over a live Neo4j graph** instead of walking the pydantic /
   NetworkX structures. The graph is the one `codeanalyzer-typescript` emits with `--emit neo4j`
-  (schema `schema.neo4j.json`); the backend can populate the database for you over Bolt, or query
-  one that is already loaded.
+  (schema `schema.neo4j.json`); it is always populated out of band, and the SDK only polls it
+  (read-only — never writes, needs no binary or project sources).
 - `TypeScriptAnalysis` / `CLDK.analysis(language="typescript")` now accept an optional
   `neo4j_config` (`Neo4jConnectionConfig`) to select the Neo4j backend; without it the in-memory
   backend is used, unchanged.
+- Read-only Neo4j-backed **Python** analysis backend (`cldk.analysis.python.neo4j.PyNeo4jBackend`),
+  the analog of the TypeScript one. It answers all 21 `PythonAnalysisBackend` queries via Cypher
+  over the graph `codeanalyzer-python` (>= 0.2.0) emits with `--emit neo4j`. Verified against a real
+  57-module project: every node/edge **present in the graph** reconstructs identically to the
+  in-memory `PyCodeanalyzer` (3169/3200 checks; zero weight/provenance mismatches on shared call
+  edges). Known gaps are not in the query layer: projection-lossy fields (comments → docstring,
+  `PyVariableDeclaration.value`/columns, per-binding import detail), and an **upstream emitter bug**
+  where calls to a bare module name that is also imported (e.g. `os`/`re`/`json`) are dropped from
+  the emitted call graph. `PythonAnalysis` / `CLDK.analysis(language="python")` accept the same
+  optional `neo4j_config`.
+- Bumped `codeanalyzer-python` to `0.2.0` (adds the Neo4j graph emitter).
 - Optional `neo4j` extra (`pip install cldk[neo4j]`) for the Neo4j Python driver.
 
 ## [v1.0.7] - 2026-02-14

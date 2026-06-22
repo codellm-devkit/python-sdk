@@ -27,7 +27,7 @@ import pytest
 
 from cldk import CLDK
 from cldk.analysis import AnalysisLevel
-from cldk.analysis.typescript.neo4j import Neo4jConnectionConfig
+from cldk.analysis.commons.backend_config import CodeAnalyzerConfig, Neo4jConnectionConfig
 
 
 def test_neo4j_config_selects_neo4j_backend(typescript_application):
@@ -36,24 +36,22 @@ def test_neo4j_config_selects_neo4j_backend(typescript_application):
         username="neo4j",
         password="secret",
         application_name="myapp",
-        build_db=False,
     )
     with patch("cldk.analysis.typescript.typescript_analysis.TSNeo4jBackend") as backend_cls:
         backend = backend_cls.return_value
         backend.get_application.return_value = MagicMock()
 
-        analysis = CLDK(language="typescript").analysis(
+        analysis = CLDK.typescript(
             project_path=typescript_application,
             analysis_level=AnalysisLevel.call_graph,
-            neo4j_config=config,
+            backend=config,
         )
 
-        # The neo4j backend was constructed with the config's connection details...
+        # The (read-only) neo4j backend was constructed with the config's connection details.
         _, kwargs = backend_cls.call_args
         assert kwargs["neo4j_uri"] == "bolt://example:7687"
         assert kwargs["neo4j_password"] == "secret"
         assert kwargs["application_name"] == "myapp"
-        assert kwargs["build_db"] is False
         assert analysis.backend is backend
 
         # ...and a representative query delegates straight to it.
@@ -67,7 +65,7 @@ def test_no_config_uses_in_memory_backend(typescript_application):
     with patch("cldk.analysis.typescript.typescript_analysis.TSCodeanalyzer") as backend_cls, patch("cldk.analysis.typescript.typescript_analysis.TSNeo4jBackend") as neo4j_cls:
         backend_cls.return_value.get_application.return_value = MagicMock()
 
-        analysis = CLDK(language="typescript").analysis(
+        analysis = CLDK.typescript(
             project_path=typescript_application,
             analysis_level=AnalysisLevel.symbol_table,
         )
@@ -75,6 +73,10 @@ def test_no_config_uses_in_memory_backend(typescript_application):
         backend_cls.assert_called_once()
         neo4j_cls.assert_not_called()
         assert analysis.backend is backend_cls.return_value
+        assert isinstance(analysis.backend_config, CodeAnalyzerConfig)
+        # The in-process backend caches under a language-keyed <cache_dir>/typescript subdir.
+        _, kwargs = backend_cls.call_args
+        assert str(kwargs["analysis_json_path"]).endswith("/.codeanalyzer/typescript")
 
 
 def test_missing_neo4j_driver_raises_helpful_error():
@@ -94,14 +96,8 @@ def test_missing_neo4j_driver_raises_helpful_error():
     with patch("builtins.__import__", side_effect=_no_neo4j):
         with pytest.raises(CodeanalyzerExecutionException, match="neo4j"):
             TSNeo4jBackend(
-                project_dir=None,
-                analysis_backend_path=None,
-                analysis_level=AnalysisLevel.symbol_table,
-                eager_analysis=False,
-                target_files=None,
                 neo4j_uri="bolt://example:7687",
                 neo4j_username="neo4j",
                 neo4j_password="neo4j",
                 application_name="app",
-                build_db=False,
             )

@@ -31,7 +31,6 @@ import os
 import shlex
 import subprocess
 from collections import deque
-from importlib import resources
 from pathlib import Path
 from subprocess import CompletedProcess
 from typing import Dict, List, Set, Tuple, Union
@@ -39,6 +38,7 @@ from typing import Dict, List, Set, Tuple, Union
 import networkx as nx
 
 from cldk.analysis import AnalysisLevel
+from cldk.analysis.typescript.backend import TSAnalysisBackend
 from cldk.models.typescript import (
     TSApplication,
     TSCallable,
@@ -62,7 +62,7 @@ from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 logger = logging.getLogger(__name__)
 
 
-class TSCodeanalyzer:
+class TSCodeanalyzer(TSAnalysisBackend):
     """Build and query the application view of a TypeScript project by invoking the
     codeanalyzer-typescript binary as a subprocess.
 
@@ -74,7 +74,8 @@ class TSCodeanalyzer:
     Args:
         project_dir: Path to the root of the TypeScript project.
         analysis_backend_path: Directory containing the ``codeanalyzer-typescript`` binary. If
-            None, falls back to ``$CODEANALYZER_TS_BIN`` then a bundled binary.
+            None, falls back to ``$CODEANALYZER_TS_BIN`` then the ``codeanalyzer-typescript``
+            PyPI package (``pip install codeanalyzer-typescript``).
         analysis_json_path: Directory to persist ``analysis.json``. If None, output is read from
             the subprocess stdout pipe.
         analysis_level: ``AnalysisLevel.symbol_table`` (1) or ``AnalysisLevel.call_graph`` (2).
@@ -85,14 +86,12 @@ class TSCodeanalyzer:
     def __init__(
         self,
         project_dir: Union[str, Path],
-        analysis_backend_path: Union[str, Path, None],
         analysis_json_path: Union[str, Path, None],
         analysis_level: str,
         eager_analysis: bool,
         target_files: List[str] | None,
     ) -> None:
         self.project_dir = project_dir
-        self.analysis_backend_path = analysis_backend_path
         self.analysis_json_path = analysis_json_path
         self.analysis_level = analysis_level
         self.eager_analysis = eager_analysis
@@ -105,26 +104,17 @@ class TSCodeanalyzer:
 
     # -----[ binary resolution ]-----
     def _get_codeanalyzer_exec(self) -> List[str]:
-        """Resolve the codeanalyzer-typescript executable command."""
-        if self.analysis_backend_path:
-            backend = Path(self.analysis_backend_path)
-            logger.info(f"Using codeanalyzer-typescript from {backend}")
-            binary = next(
-                (p for p in backend.rglob("codeanalyzer-typescript*") if p.is_file()),
-                None,
-            ) or next((p for p in backend.rglob("codeanalyzer-ts*") if p.is_file()), None)
-            if binary is None:
-                raise CodeanalyzerExecutionException(
-                    "codeanalyzer-typescript binary not found in the provided analysis_backend_path."
-                )
-            return [str(binary)]
+        """Resolve the codeanalyzer-typescript executable command.
 
+        The binary ships with the ``codeanalyzer-typescript`` PyPI dependency. ``$CODEANALYZER_TS_BIN``
+        remains the only out-of-band override (e.g. a locally built binary).
+        """
         env_bin = os.environ.get("CODEANALYZER_TS_BIN")
         if env_bin:
             return shlex.split(env_bin)
 
-        # Prebuilt binary from the `codeanalyzer-typescript` PyPI package (platform wheel),
-        # mirroring how the Python backend depends on `codeanalyzer-python`.
+        # Prebuilt binary shipped inside the `codeanalyzer-typescript` PyPI package (platform
+        # wheel), mirroring how the Python backend depends on `codeanalyzer-python`.
         try:
             import codeanalyzer_typescript
 
@@ -132,18 +122,9 @@ class TSCodeanalyzer:
         except (ModuleNotFoundError, FileNotFoundError):
             pass
 
-        # Bundled binary (if shipped with the wheel).
-        try:
-            with resources.as_file(resources.files("cldk.analysis.typescript.codeanalyzer.bin")) as bin_dir:
-                binary = next((p for p in bin_dir.iterdir() if p.is_file() and p.name.startswith("codeanalyzer")), None)
-                if binary is not None:
-                    return [str(binary)]
-        except (ModuleNotFoundError, FileNotFoundError):
-            pass
-
         raise CodeanalyzerExecutionException(
-            "codeanalyzer-typescript binary not found. Pass analysis_backend_path=<dir containing the "
-            "binary>, set $CODEANALYZER_TS_BIN, or bundle it under cldk/analysis/typescript/codeanalyzer/bin/."
+            "codeanalyzer-typescript binary not found. Install it with `pip install codeanalyzer-typescript`, "
+            "or set $CODEANALYZER_TS_BIN."
         )
 
     @staticmethod

@@ -29,9 +29,8 @@ deployment wants, where a third-party job (e.g. inside Kubernetes) loads the
 graph out of band and the SDK only reads it.
 
 The graph is the one ``codeanalyzer-typescript`` emits with ``--emit neo4j``
-(schema: ``codeanalyzer-ts/schema.neo4j.json``). Populating it is the job of
-:class:`~cldk.analysis.typescript.neo4j.TSNeo4jIngestor` (a local/dev
-convenience), not of this backend.
+(schema: ``codeanalyzer-ts/schema.neo4j.json``). Populating it always happens out
+of band — never from this backend.
 
 Identity model (must match the in-memory backend):
 
@@ -87,8 +86,8 @@ logger = logging.getLogger(__name__)
 class TSNeo4jBackend(TSAnalysisBackend):
     """Query the application view of a TypeScript project over Neo4j (Cypher), read-only.
 
-    The graph must already be loaded — by :class:`TSNeo4jIngestor` on a dev machine, or by a
-    third-party job in a cloud deployment. This backend never writes and needs neither the
+    The graph must already be loaded out of band — e.g. a job running
+    ``codeanalyzer-typescript --emit neo4j``. This backend never writes and needs neither the
     ``codeanalyzer-typescript`` binary nor the project sources on disk.
 
     Args:

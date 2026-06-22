@@ -23,10 +23,15 @@ import pytest
 
 from cldk.analysis.python.backend import PythonAnalysisBackend
 from cldk.analysis.python.codeanalyzer.codeanalyzer import PyCodeanalyzer
+from cldk.analysis.python.neo4j import PyNeo4jBackend
+
+# Both interchangeable backends must satisfy the same contract.
+BACKENDS = [PyCodeanalyzer, PyNeo4jBackend]
 
 
-def test_backend_subclasses_contract():
-    assert issubclass(PyCodeanalyzer, PythonAnalysisBackend)
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_backend_subclasses_contract(backend):
+    assert issubclass(backend, PythonAnalysisBackend)
 
 
 def test_contract_is_abstract():
@@ -34,8 +39,9 @@ def test_contract_is_abstract():
         PythonAnalysisBackend()
 
 
-def test_backend_fully_implements_contract():
-    assert PyCodeanalyzer.__abstractmethods__ == frozenset()
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_backend_fully_implements_contract(backend):
+    assert backend.__abstractmethods__ == frozenset()
 
 
 def test_contract_covers_every_method_the_facade_delegates():

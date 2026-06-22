@@ -17,6 +17,7 @@
 """Tests for the TypeScript analysis facade (backend subprocess mocked)."""
 
 import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import networkx as nx
@@ -24,21 +25,42 @@ import pytest
 
 from cldk import CLDK
 from cldk.analysis import AnalysisLevel
+from cldk.analysis.commons.backend_config import CodeAnalyzerConfig
 from cldk.utils.exceptions import CldkInitializationException
 
 
+def _fake_run_writing_output(payload):
+    """A subprocess.run side effect that writes ``analysis.json`` into the ``-o`` directory.
+
+    Caching is on by default now (the facade always passes a language-keyed cache dir), so the
+    backend runs in disk mode rather than reading the stdout pipe. This mirrors the analyzer
+    writing its output where ``-o`` points.
+    """
+
+    def _run(cmd, *args, **kwargs):
+        if "-o" in cmd:
+            out = Path(cmd[cmd.index("-o") + 1])
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "analysis.json").write_text(payload, encoding="utf-8")
+        return MagicMock(stdout=payload, returncode=0)
+
+    return _run
+
+
 @pytest.fixture
-def ts_analysis(typescript_application, typescript_analysis_json, monkeypatch):
-    """Build a TypeScriptAnalysis with the codeanalyzer-typescript subprocess mocked to return
-    the pre-computed analysis.json fixture."""
+def ts_analysis(typescript_application, typescript_analysis_json, tmp_path, monkeypatch):
+    """Build a TypeScriptAnalysis with the codeanalyzer-typescript subprocess mocked to write the
+    pre-computed analysis.json fixture into the language-keyed cache directory."""
     monkeypatch.setenv("CODEANALYZER_TS_BIN", "codeanalyzer-typescript")
-    with patch("cldk.analysis.typescript.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=typescript_analysis_json, returncode=0)
-        return CLDK(language="typescript").analysis(
+    with patch(
+        "cldk.analysis.typescript.codeanalyzer.codeanalyzer.subprocess.run",
+        side_effect=_fake_run_writing_output(typescript_analysis_json),
+    ):
+        return CLDK.typescript(
             project_path=typescript_application,
-            analysis_backend_path=None,
             eager=True,
             analysis_level=AnalysisLevel.call_graph,
+            backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)),
         )
 
 
@@ -170,7 +192,7 @@ def test_exports_and_variables(ts_analysis):
     assert set(variables) == set(ts_analysis.get_symbol_table())
 
 
-def test_exports_and_variables_are_parsed(typescript_application, typescript_analysis_json, monkeypatch):
+def test_exports_and_variables_are_parsed(typescript_application, typescript_analysis_json, tmp_path, monkeypatch):
     """Behavioral: a real export + module-level const must be parsed and surfaced (the slim
     fixture carries none, so inject them into the analyzed JSON)."""
     data = json.loads(typescript_analysis_json)
@@ -190,13 +212,15 @@ def test_exports_and_variables_are_parsed(typescript_application, typescript_ana
     )
 
     monkeypatch.setenv("CODEANALYZER_TS_BIN", "codeanalyzer-typescript")
-    with patch("cldk.analysis.typescript.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=json.dumps(data), returncode=0)
-        analysis = CLDK(language="typescript").analysis(
+    with patch(
+        "cldk.analysis.typescript.codeanalyzer.codeanalyzer.subprocess.run",
+        side_effect=_fake_run_writing_output(json.dumps(data)),
+    ):
+        analysis = CLDK.typescript(
             project_path=typescript_application,
-            analysis_backend_path=None,
             eager=True,
             analysis_level=AnalysisLevel.call_graph,
+            backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)),
         )
 
     exported = analysis.get_exports()["src/models.ts"]
@@ -247,25 +271,39 @@ def test_source_code_mode_rejected(typescript_application):
         CLDK(language="typescript").analysis(source_code="const x = 1;")
 
 
-def test_python_only_kwargs_rejected(typescript_application):
-    with pytest.raises(CldkInitializationException):
-        CLDK(language="typescript").analysis(project_path=typescript_application, cache_dir="/tmp/x")
+def test_cache_dir_now_accepted(typescript_application, typescript_analysis_json, tmp_path, monkeypatch):
+    """cache_dir is no longer Python-only; TypeScript accepts it and keys the cache by language."""
+    monkeypatch.setenv("CODEANALYZER_TS_BIN", "codeanalyzer-typescript")
+    with patch(
+        "cldk.analysis.typescript.codeanalyzer.codeanalyzer.subprocess.run",
+        side_effect=_fake_run_writing_output(typescript_analysis_json),
+    ) as run_mock:
+        CLDK.typescript(
+            project_path=typescript_application,
+            eager=True,
+            analysis_level=AnalysisLevel.symbol_table,
+            backend=CodeAnalyzerConfig(cache_dir=str(tmp_path / "cache")),
+        )
+
+    args = run_mock.call_args.args[0]
+    assert args[args.index("-o") + 1] == str(tmp_path / "cache" / "typescript")
 
 
 # -----[ facade -> backend wiring / subprocess invocation ]-----
-def test_subprocess_args_stdout_pipe(typescript_application, typescript_analysis_json, monkeypatch):
-    """The facade must forward target_files + analysis_level to the backend, which builds the
-    right subprocess command. With no analysis_json_path, output is read from the stdout pipe
-    (no ``-o``)."""
+def test_subprocess_args_default_keyed_output_dir(typescript_application, typescript_analysis_json, tmp_path, monkeypatch):
+    """The facade forwards target_files + analysis_level to the backend, which builds the right
+    subprocess command. Caching is on by default, so output goes to ``-o <cache_dir>/typescript``."""
     monkeypatch.setenv("CODEANALYZER_TS_BIN", "codeanalyzer-typescript")
-    with patch("cldk.analysis.typescript.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=typescript_analysis_json, returncode=0)
-        CLDK(language="typescript").analysis(
+    with patch(
+        "cldk.analysis.typescript.codeanalyzer.codeanalyzer.subprocess.run",
+        side_effect=_fake_run_writing_output(typescript_analysis_json),
+    ) as run_mock:
+        CLDK.typescript(
             project_path=typescript_application,
-            analysis_backend_path=None,
             eager=True,
             analysis_level=AnalysisLevel.call_graph,
             target_files=["src/models.ts", "src/services.ts"],
+            backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)),
         )
 
     args = run_mock.call_args.args[0]
@@ -275,53 +313,48 @@ def test_subprocess_args_stdout_pipe(typescript_application, typescript_analysis
     # each target file forwarded with its own -t
     assert args.count("-t") == 2
     assert "src/models.ts" in args and "src/services.ts" in args
-    # stdout-pipe mode: no output directory
-    assert "-o" not in args
+    # caching on by default: output written to the language-keyed cache dir
+    assert args[args.index("-o") + 1] == str(tmp_path / "typescript")
 
 
 def test_subprocess_args_output_dir(typescript_application, typescript_analysis_json, tmp_path, monkeypatch):
-    """With analysis_json_path set, the backend passes ``-o <dir>`` and reads analysis.json back
-    from disk. Exercises the output-dir branch and level-1 (symbol_table) mapping."""
+    """The backend passes ``-o <cache_dir>/typescript`` and reads analysis.json back from disk.
+    Exercises the output-dir branch and level-1 (symbol_table) mapping."""
     monkeypatch.setenv("CODEANALYZER_TS_BIN", "codeanalyzer-typescript")
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
+    cache = tmp_path / "out"
 
-    def fake_run(cmd, *a, **kw):
-        # the analyzer writes analysis.json into the -o directory
-        (out_dir / "analysis.json").write_text(typescript_analysis_json, encoding="utf-8")
-        return MagicMock(stdout="", returncode=0)
-
-    with patch("cldk.analysis.typescript.codeanalyzer.codeanalyzer.subprocess.run", side_effect=fake_run) as run_mock:
-        analysis = CLDK(language="typescript").analysis(
+    with patch(
+        "cldk.analysis.typescript.codeanalyzer.codeanalyzer.subprocess.run",
+        side_effect=_fake_run_writing_output(typescript_analysis_json),
+    ) as run_mock:
+        analysis = CLDK.typescript(
             project_path=typescript_application,
-            analysis_backend_path=None,
             eager=True,
             analysis_level=AnalysisLevel.symbol_table,
-            analysis_json_path=out_dir,
+            backend=CodeAnalyzerConfig(cache_dir=str(cache)),
         )
 
     args = run_mock.call_args.args[0]
     assert args[args.index("-a") + 1] == "1"  # symbol_table -> level 1
-    assert args[args.index("-o") + 1] == str(out_dir)
+    assert args[args.index("-o") + 1] == str(cache / "typescript")
     # the disk read-back path produced a usable application
     assert len(analysis.get_symbol_table()) == 6
 
 
 def test_cached_analysis_json_skips_subprocess(typescript_application, typescript_analysis_json, tmp_path, monkeypatch):
-    """When a cached analysis.json already exists and eager is False, the backend must reuse it
-    and not invoke the analyzer subprocess."""
+    """When a cached analysis.json already exists (in the language-keyed dir) and eager is False,
+    the backend must reuse it and not invoke the analyzer subprocess."""
     monkeypatch.setenv("CODEANALYZER_TS_BIN", "codeanalyzer-typescript")
-    out_dir = tmp_path / "out"
-    out_dir.mkdir()
-    (out_dir / "analysis.json").write_text(typescript_analysis_json, encoding="utf-8")
+    keyed = tmp_path / "out" / "typescript"
+    keyed.mkdir(parents=True)
+    (keyed / "analysis.json").write_text(typescript_analysis_json, encoding="utf-8")
 
     with patch("cldk.analysis.typescript.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        analysis = CLDK(language="typescript").analysis(
+        analysis = CLDK.typescript(
             project_path=typescript_application,
-            analysis_backend_path=None,
             eager=False,
             analysis_level=AnalysisLevel.call_graph,
-            analysis_json_path=out_dir,
+            backend=CodeAnalyzerConfig(cache_dir=str(tmp_path / "out")),
         )
 
     run_mock.assert_not_called()

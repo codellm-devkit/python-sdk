@@ -31,6 +31,25 @@ from cldk import CLDK
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.java import JavaAnalysis
 from cldk.models.java.models import JCallable, JCallableParameter, JComment, JCompilationUnit, JField, JMethodDetail, JApplication, JType
+from pathlib import Path
+import tempfile as _tempfile
+from cldk.analysis.commons.backend_config import CodeAnalyzerConfig
+
+_CACHE_DIR = _tempfile.mkdtemp()
+_BK = CodeAnalyzerConfig(cache_dir=_CACHE_DIR)
+
+
+def _write_java_output(payload):
+    """subprocess.run side effect: write analysis.json into the -o dir (caching on by default)."""
+
+    def _run(cmd, *a, **kw):
+        if "-o" in cmd:
+            out = Path(cmd[cmd.index("-o") + 1])
+            out.mkdir(parents=True, exist_ok=True)
+            (out / "analysis.json").write_text(payload, encoding="utf-8")
+        return MagicMock(stdout=payload, returncode=0)
+
+    return _run
 
 
 def test_get_symbol_table_is_not_null(test_fixture, analysis_json):
@@ -38,13 +57,13 @@ def test_get_symbol_table_is_not_null(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
 
         # Initialize the CLDK object with the project directory, language, and analysis_backend
         cldk = CLDK(language="java")
         analysis = cldk.analysis(
             project_path=test_fixture,
-            analysis_backend_path=None,
+            cache_dir=_CACHE_DIR,
             eager=True,
             analysis_level=AnalysisLevel.call_graph,
         )
@@ -57,7 +76,6 @@ def test_get_symbol_table_source_code(java_code):
     cldk = CLDK(language="java")
     analysis = cldk.analysis(
         source_code=java_code,
-        analysis_backend_path=None,
         eager=True,
         analysis_level=AnalysisLevel.symbol_table,
     )
@@ -74,12 +92,11 @@ def test_get_imports(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
@@ -96,12 +113,11 @@ def test_get_variables(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
@@ -118,12 +134,11 @@ def test_get_service_entry_point_classes(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
@@ -140,12 +155,11 @@ def test_get_service_entry_point_methods(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
@@ -162,12 +176,11 @@ def test_get_application_view(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
@@ -192,12 +205,11 @@ def test_get_symbol_table(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
@@ -215,12 +227,11 @@ def test_get_compilation_units(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
@@ -235,12 +246,11 @@ def test_get_class_hierarchy(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
@@ -257,12 +267,11 @@ def test_is_parsable(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
@@ -281,12 +290,11 @@ def test_get_raw_ast(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
@@ -308,12 +316,11 @@ def test_get_call_graph(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
@@ -332,12 +339,11 @@ def test_get_call_graph_json(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
             eager_analysis=False,
@@ -358,12 +364,11 @@ def test_get_callers(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
             eager_analysis=False,
@@ -403,12 +408,11 @@ def test_get_callees(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
             eager_analysis=False,
@@ -453,12 +457,11 @@ def test_get_methods(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
@@ -477,12 +480,11 @@ def test_get_classes(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
@@ -501,12 +503,11 @@ def test_get_classes_by_criteria(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
@@ -540,12 +541,11 @@ def test_get_class(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
@@ -561,12 +561,11 @@ def test_get_method(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
@@ -583,12 +582,11 @@ def test_get_method_parameters(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
@@ -610,12 +608,11 @@ def test_get_java_file(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
@@ -639,12 +636,11 @@ def test_get_methods_in_class(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
@@ -664,12 +660,11 @@ def test_get_fields(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
@@ -692,7 +687,6 @@ def test_get_fields_variable_initializers(java_code):
     cldk = CLDK(language="java")
     analysis = cldk.analysis(
         source_code=java_code,
-        analysis_backend_path=None,
         eager=True,
         analysis_level=AnalysisLevel.symbol_table,
     )
@@ -709,12 +703,11 @@ def test_get_nested_classes(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
@@ -733,12 +726,11 @@ def test_get_sub_classes(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
@@ -764,12 +756,11 @@ def test_get_extended_classes(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
@@ -795,12 +786,11 @@ def test_get_implemented_interfaces(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
@@ -826,12 +816,11 @@ def test_get_class_call_graph(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
             eager_analysis=False,
@@ -859,12 +848,11 @@ def test_get_entry_point_classes(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
             eager_analysis=False,
@@ -883,12 +871,11 @@ def test_get_entry_point_methods(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
             eager_analysis=False,
@@ -909,12 +896,11 @@ def test_remove_all_comments(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
             eager_analysis=False,
@@ -936,12 +922,11 @@ def test_get_methods_with_annotations(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
             eager_analysis=False,
@@ -974,12 +959,11 @@ public class TradeDirectDBUtilsTest {
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=java_code_with_test_annotations,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
             eager_analysis=False,
@@ -995,12 +979,11 @@ def test_get_calling_lines(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
             eager_analysis=False,
@@ -1025,12 +1008,11 @@ def test_get_call_targets(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
             eager_analysis=False,
@@ -1054,12 +1036,11 @@ def test_get_all_comments(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
             eager_analysis=False,
@@ -1084,12 +1065,11 @@ def test_get_all_docstrings(test_fixture, analysis_json):
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
+        run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
-            analysis_json_path=None,
+            backend=_BK,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
             eager_analysis=False,

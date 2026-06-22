@@ -14,11 +14,12 @@
 # limitations under the License.
 ################################################################################
 
-"""Integration tests for the Neo4j-backed TypeScript analysis backend.
+"""Integration tests for the read-only Neo4j-backed TypeScript analysis backend.
 
-These exercise the *real* pipeline: the ``codeanalyzer-typescript`` binary pushes the sample
-app's graph into a live Neo4j over Bolt (``--emit neo4j``), and every assertion is answered by
-Cypher in :class:`TSNeo4jBackend`. They mirror the in-memory backend's expectations from
+These exercise the *real* pipeline: the test harness loads the sample app's graph into a live
+Neo4j out of band (``codeanalyzer-typescript --emit neo4j`` over Bolt — the same way a cloud
+deployment would), and every assertion is then answered, read-only, by Cypher in
+:class:`TSNeo4jBackend`. They mirror the in-memory backend's expectations from
 ``test_typescript_analysis.py`` so the two backends are proven to agree.
 
 The whole module is skipped unless a Neo4j server is reachable. Point the tests at one with:
@@ -29,11 +30,14 @@ The whole module is skipped unless a Neo4j server is reachable. Point the tests 
     pytest tests/analysis/typescript/test_typescript_neo4j_backend.py
 
 (e.g. `docker run -p 7687:7687 -e NEO4J_AUTH=neo4j/test neo4j:5`). The binary is resolved the
-usual way: ``$CODEANALYZER_TS_BIN``, the ``codeanalyzer-typescript`` wheel, or a bundled binary.
+usual way: ``$CODEANALYZER_TS_BIN``, then the ``codeanalyzer-typescript`` wheel.
 """
 
 import logging
 import os
+import shlex
+import subprocess
+from pathlib import Path
 
 import networkx as nx
 import pytest
@@ -70,20 +74,55 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def _codeanalyzer_ts_exec() -> list[str]:
+    """Resolve the codeanalyzer-typescript executable: ``$CODEANALYZER_TS_BIN``, else the wheel."""
+    env_bin = os.environ.get("CODEANALYZER_TS_BIN")
+    if env_bin:
+        return shlex.split(env_bin)
+    import codeanalyzer_typescript
+
+    return [str(codeanalyzer_typescript.bin_path())]
+
+
+def _populate_neo4j(project_dir) -> None:
+    """Load the sample app's graph into Neo4j out of band (what a cloud job would do).
+
+    The SDK's Neo4j backend is read-only, so the test harness — not CLDK — runs the analyzer's
+    ``--emit neo4j`` to push the graph over Bolt before the read-only assertions run.
+    """
+    args = _codeanalyzer_ts_exec() + [
+        "-i",
+        str(Path(project_dir)),
+        "-a",
+        "2",  # call_graph
+        "--emit",
+        "neo4j",
+        "--neo4j-uri",
+        NEO4J_URI,
+        "--neo4j-user",
+        NEO4J_USER,
+        "--neo4j-password",
+        NEO4J_PASSWORD,
+        "--app-name",
+        APP_NAME,
+        "--eager",  # clean rebuild of this app's subgraph
+    ]
+    subprocess.run(args, capture_output=True, text=True, check=True)
+
+
 @pytest.fixture(scope="module")
 def ts_neo4j(typescript_application):
-    """A TypeScript facade backed by Neo4j, built by pushing the sample app over Bolt."""
+    """A read-only TypeScript facade over a Neo4j graph loaded out of band for the sample app."""
+    _populate_neo4j(typescript_application)
     config = Neo4jConnectionConfig(
         uri=NEO4J_URI,
         username=NEO4J_USER,
         password=NEO4J_PASSWORD,
         application_name=APP_NAME,
-        build_db=True,
     )
     analysis = CLDK(language="typescript").analysis(
         project_path=typescript_application,
         analysis_level=AnalysisLevel.call_graph,
-        eager=True,  # force a clean rebuild of this app's subgraph
         neo4j_config=config,
     )
     yield analysis
@@ -221,32 +260,6 @@ def test_application_view_round_trips(ts_neo4j):
     app = ts_neo4j.get_application_view()
     assert set(app.symbol_table) == set(ts_neo4j.get_symbol_table())
     assert len(app.call_graph) == ts_neo4j.get_call_graph().number_of_edges()
-
-
-def test_lazy_skips_rebuild(ts_neo4j, typescript_application):
-    """A second, non-eager ingest against the already-loaded DB must not re-run the analyzer.
-
-    Depends on ``ts_neo4j`` so the module fixture has already populated this app's subgraph.
-    """
-    from unittest.mock import patch
-
-    from cldk.analysis.typescript.neo4j import TSNeo4jIngestor
-
-    with patch.object(TSNeo4jIngestor, "_get_codeanalyzer_exec") as exec_mock:
-        ingestor = TSNeo4jIngestor(
-            project_dir=str(typescript_application),
-            analysis_backend_path=None,
-            analysis_level=AnalysisLevel.call_graph,
-            neo4j_uri=NEO4J_URI,
-            neo4j_username=NEO4J_USER,
-            neo4j_password=NEO4J_PASSWORD,
-            application_name=APP_NAME,
-            eager_analysis=False,
-            target_files=None,
-        )
-        # The app already exists from the module fixture ⇒ lazy path, binary never resolved.
-        ingestor.build()
-        exec_mock.assert_not_called()
 
 
 def test_read_only_backend_queries_loaded_db(ts_neo4j):

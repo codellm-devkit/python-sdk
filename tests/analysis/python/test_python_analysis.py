@@ -84,8 +84,8 @@ def test_use_ray_forwarded_through_facade(monkeypatch, tmp_path):
     assert captured["use_ray"] is False
 
 
-def test_cache_dir_forwarded_through_facade(monkeypatch, tmp_path):
-    """cache_dir must reach the backend as cache_dir (not analysis_backend_path)."""
+def test_cache_dir_keyed_by_language_through_facade(monkeypatch, tmp_path):
+    """cache_dir must reach the backend keyed under the python subdir (<cache_dir>/python)."""
     captured = {}
 
     class FakeBackend:
@@ -96,11 +96,21 @@ def test_cache_dir_forwarded_through_facade(monkeypatch, tmp_path):
 
     cache = tmp_path / "mycache"
     CLDK(language="python").analysis(project_path=tmp_path, cache_dir=cache)
-    assert captured["cache_dir"] == cache
+    assert captured["cache_dir"].name == "python"
+    assert captured["cache_dir"].parent.name == "mycache"
     assert "analysis_backend_path" not in captured
 
 
-def test_python_rejects_java_only_analysis_backend_path(tmp_path):
-    """analysis_backend_path is Java-only; Python mode must reject it."""
-    with pytest.raises(CldkInitializationException, match="Java-only"):
+def test_python_ignores_removed_analysis_backend_path(monkeypatch, tmp_path):
+    """analysis_backend_path is removed; the deprecated shim ignores it with a warning."""
+    captured = {}
+
+    class FakeBackend:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("cldk.analysis.python.python_analysis.PyCodeanalyzer", FakeBackend)
+
+    with pytest.warns(DeprecationWarning):
         CLDK(language="python").analysis(project_path=tmp_path, analysis_backend_path="/some/jar/dir")
+    assert "analysis_backend_path" not in captured
