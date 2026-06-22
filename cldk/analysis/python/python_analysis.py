@@ -53,8 +53,11 @@ from typing import Dict, List, Set, Tuple
 import networkx as nx
 from tree_sitter import Tree
 
+from cldk.analysis.commons.backend_config import Neo4jConnectionConfig, PyBackend, PyCodeAnalyzerConfig, cache_subdir
 from cldk.analysis.commons.treesitter import TreesitterPython
+from cldk.analysis.python.backend import PythonAnalysisBackend
 from cldk.analysis.python.codeanalyzer import PyCodeanalyzer
+from cldk.analysis.python.neo4j import PyNeo4jBackend
 from cldk.models.python import (
     PyApplication,
     PyCallable,
@@ -99,32 +102,24 @@ class PythonAnalysis:
 
     def __init__(
         self,
-        project_dir: str | Path,
-        cache_dir: str | Path | None,
-        analysis_json_path: str | Path | None,
+        project_dir: str | Path | None,
         analysis_level: str,
         target_files: List[str] | None,
         eager_analysis: bool,
-        use_codeql: bool = True,
-        use_ray: bool = False,
+        backend: PyBackend | None = None,
     ) -> None:
         """Initialize the Python analysis facade.
 
         Creates a new analysis facade for a Python project. This constructor
-        sets up the Tree-sitter parser and initializes the codeanalyzer-python
-        backend with the provided configuration.
+        sets up the Tree-sitter parser and initializes the analysis backend
+        selected by the type of ``backend``.
 
         Args:
             project_dir: Absolute or relative path to the Python project directory
                 to analyze. This directory should contain Python source files
-                (``*.py``). Required; ``source_code`` mode is not supported.
-            cache_dir: Directory path for the codeanalyzer-python backend's cache,
-                including its virtualenv, CodeQL database, and analysis cache
-                files. If ``None``, defaults to ``<project_dir>/.codeanalyzer``.
-                The backend manages all caching internally.
-            analysis_json_path: Path where the analysis results (``analysis.json``)
-                should be persisted. If ``None``, the backend uses a default
-                location within the cache directory.
+                (``*.py``). Required for the in-process backend (``source_code``
+                mode is not supported); optional for the Neo4j backend, whose
+                graph is populated out of band.
             analysis_level: The depth of analysis to perform. Controls which
                 analysis artifacts are generated. Common values include
                 ``"symbol_table"`` and ``"call_graph"``. See
@@ -137,41 +132,58 @@ class PythonAnalysis:
             eager_analysis: If ``True``, forces regeneration of all analysis
                 caches and databases, ignoring previously cached results.
                 If ``False``, cached results are reused when available.
-            use_codeql: If ``True`` (default), augments Jedi-based call graph
-                resolution with CodeQL analysis for more complete and accurate
-                call edges. Set to ``False`` for faster analysis using only
-                Jedi, at the cost of potentially missing some call relationships.
-            use_ray: If ``True``, enables Ray-based parallel processing for
-                analysis. Recommended for very large projects where sequential
-                Jedi/CodeQL analysis would be slow. Requires Ray to be installed.
-                Defaults to ``False``.
+            backend: The backend configuration object. A
+                :class:`~cldk.analysis.commons.backend_config.PyCodeAnalyzerConfig`
+                (the default) selects the in-process codeanalyzer-python backend;
+                a :class:`~cldk.analysis.commons.backend_config.Neo4jConnectionConfig`
+                selects the read-only Neo4j backend. Defaults to
+                ``PyCodeAnalyzerConfig()``.
 
         Raises:
-            ValueError: If ``project_dir`` is ``None``. Python analysis requires
-                a project directory; single-file source code mode is not supported.
+            ValueError: If ``project_dir`` is ``None`` while using the in-process
+                backend. Python analysis requires a project directory; single-file
+                source code mode is not supported.
 
         """
-        if project_dir is None:
-            raise ValueError(
-                "project_dir is required; source_code mode is not supported for Python."
-            )
+        # The backend is selected by the *type* of the config: Neo4jConnectionConfig picks the
+        # read-only Cypher backend, PyCodeAnalyzerConfig (the default) the in-process analyzer.
+        self.backend_config: PyBackend = backend if backend is not None else PyCodeAnalyzerConfig()
+        # With a Neo4j config the graph is read out of band, so project_dir is optional there;
+        # the in-memory backend still requires it (source_code mode is not supported for Python).
+        if project_dir is None and not isinstance(self.backend_config, Neo4jConnectionConfig):
+            raise ValueError("project_dir is required; source_code mode is not supported for Python.")
         self.project_dir = project_dir
         self.analysis_level = analysis_level
-        self.analysis_json_path = analysis_json_path
-        self.cache_dir = cache_dir
         self.eager_analysis = eager_analysis
         self.target_files = target_files
         self.treesitter_python: TreesitterPython = TreesitterPython()
-        self.backend: PyCodeanalyzer = PyCodeanalyzer(
-            project_dir=project_dir,
-            analysis_level=analysis_level,
-            analysis_json_path=analysis_json_path,
-            eager_analysis=eager_analysis,
-            cache_dir=cache_dir,
-            target_files=target_files,
-            use_codeql=use_codeql,
-            use_ray=use_ray,
-        )
+        self.backend: PythonAnalysisBackend
+        if isinstance(self.backend_config, Neo4jConnectionConfig):
+            # Read-only: the graph is populated out of band; the SDK only polls it.
+            cfg = self.backend_config
+            application_name = cfg.application_name or (Path(project_dir).name if project_dir else None)
+            self.backend = PyNeo4jBackend(
+                neo4j_uri=cfg.uri,
+                neo4j_username=cfg.username,
+                neo4j_password=cfg.password,
+                neo4j_database=cfg.database,
+                application_name=application_name,
+            )
+        else:
+            cfg = self.backend_config
+            cache_path = cache_subdir(cfg.cache_dir, project_dir, "python")
+            if cache_path is not None:
+                cache_path.mkdir(parents=True, exist_ok=True)
+            self.backend = PyCodeanalyzer(
+                project_dir=project_dir,
+                analysis_level=analysis_level,
+                analysis_json_path=None,
+                eager_analysis=eager_analysis,
+                cache_dir=cache_path,
+                target_files=target_files,
+                use_codeql=getattr(cfg, "use_codeql", True),
+                use_ray=getattr(cfg, "use_ray", False),
+            )
 
     # -----[ treesitter passthrough ]-----
     def is_parsable(self, source_code: str) -> bool:

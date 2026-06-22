@@ -61,6 +61,7 @@ from codeanalyzer.options import AnalysisOptions
 from codeanalyzer.schema import model_dump_json
 
 from cldk.analysis import AnalysisLevel
+from cldk.analysis.python.backend import PythonAnalysisBackend
 from cldk.models.python import (
     PyApplication,
     PyCallEdge,
@@ -74,7 +75,7 @@ from cldk.models.python import (
 logger = logging.getLogger(__name__)
 
 
-class PyCodeanalyzer:
+class PyCodeanalyzer(PythonAnalysisBackend):
     """In-process driver for the ``codeanalyzer-python`` analysis backend.
 
     This class serves as the primary interface to the codeanalyzer-python

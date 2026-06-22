@@ -52,11 +52,13 @@ import networkx as nx
 
 from tree_sitter import Tree
 
+from cldk.analysis.commons.backend_config import CodeAnalyzerConfig, JavaBackend, cache_subdir
 from cldk.analysis.commons.treesitter import TreesitterJava
 from cldk.models.java import JCallable
 from cldk.models.java import JApplication
 from cldk.models.java.models import JCRUDOperation, JComment, JCompilationUnit, JMethodDetail, JType, JField
 from cldk.analysis.java.codeanalyzer import JCodeanalyzer
+from cldk.analysis.java.backend import JavaAnalysisBackend
 
 
 class JavaAnalysis:
@@ -84,12 +86,11 @@ class JavaAnalysis:
 
     Attributes:
         project_dir (str | Path | None): Path to the Java project directory.
-        source_code (str | None): Java source code string for single-file mode.
+        source_code (str | None): Java source code string for single-file mode (deprecated).
         analysis_level (str): The depth of analysis performed.
-        analysis_json_path (str | Path | None): Path for persisting analysis results.
-        analysis_backend_path (str | None): Path to the CodeAnalyzer JAR.
         eager_analysis (bool): Whether to force regeneration of analysis.
         target_files (List[str] | None): Specific files to analyze.
+        backend_config (JavaBackend): The backend configuration object.
         treesitter_java (TreesitterJava): Tree-sitter parser for Java.
         backend (JCodeanalyzer): The underlying analysis backend.
 
@@ -102,11 +103,10 @@ class JavaAnalysis:
         self,
         project_dir: str | Path | None,
         source_code: str | None,
-        analysis_backend_path: str | None,
-        analysis_json_path: str | Path | None,
         analysis_level: str,
         target_files: List[str] | None,
         eager_analysis: bool,
+        backend: JavaBackend | None = None,
     ) -> None:
         """Initialize the Java analysis facade.
 
@@ -120,14 +120,8 @@ class JavaAnalysis:
                 Mutually exclusive with ``source_code``.
             source_code: Java source code string for single-file analysis.
                 Useful for quick syntactic analysis without a project structure.
-                Mutually exclusive with ``project_dir``.
-            analysis_backend_path: Path to the directory containing the
-                ``codeanalyzer-*.jar`` backend. If not provided, the JAR is
-                automatically downloaded from the latest release. Only used
-                in project mode.
-            analysis_json_path: Path where the analysis database
-                (``analysis.json``) should be persisted. If ``None``, analysis
-                results are computed on-demand and not cached to disk.
+                Mutually exclusive with ``project_dir``. Deprecated; will be
+                removed in a future release.
             analysis_level: The depth of analysis to perform. Common values:
                 - ``"symbol_table"``: Extract symbols only (faster)
                 - ``"call_graph"``: Full call graph analysis (comprehensive)
@@ -139,6 +133,10 @@ class JavaAnalysis:
             eager_analysis: If ``True``, forces regeneration of the analysis
                 database on each run, ignoring any existing cached results.
                 If ``False``, cached results are reused when available.
+            backend: The backend configuration object. Defaults to
+                :class:`~cldk.analysis.commons.backend_config.CodeAnalyzerConfig`,
+                which runs the packaged codeanalyzer-java binary and caches
+                ``analysis.json`` under a language-keyed cache directory.
 
         Raises:
             NotImplementedError: If the requested analysis configuration is
@@ -148,19 +146,23 @@ class JavaAnalysis:
         self.project_dir = project_dir
         self.source_code = source_code
         self.analysis_level = analysis_level
-        self.analysis_json_path = analysis_json_path
-        self.analysis_backend_path = analysis_backend_path
         self.eager_analysis = eager_analysis
         self.target_files = target_files
+        self.backend_config: JavaBackend = backend if backend is not None else CodeAnalyzerConfig()
+        # Java has a single backend family; the config only carries the cache root. analysis.json
+        # is cached under <cache_dir>/java (None in source_code mode, where the analyzer streams
+        # results over a pipe).
+        cache_path = cache_subdir(self.backend_config.cache_dir, project_dir, "java")
+        if cache_path is not None:
+            cache_path.mkdir(parents=True, exist_ok=True)
         self.treesitter_java: TreesitterJava = TreesitterJava()
-        # Initialize the analysis analysis_backend
-        self.backend: JCodeanalyzer = JCodeanalyzer(
+        # Initialize the analysis backend
+        self.backend: JavaAnalysisBackend = JCodeanalyzer(
             project_dir=self.project_dir,
             source_code=self.source_code,
             eager_analysis=self.eager_analysis,
             analysis_level=self.analysis_level,
-            analysis_json_path=self.analysis_json_path,
-            analysis_backend_path=self.analysis_backend_path,
+            analysis_json_path=cache_path,
             target_files=self.target_files,
         )
 

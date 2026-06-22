@@ -19,6 +19,7 @@ Test Cases for JCodeanalyzer
 """
 
 import os
+import sys
 import json
 from typing import Dict, List, Tuple
 from unittest.mock import patch, MagicMock
@@ -49,7 +50,7 @@ def _build_analysis_json_payload(version: str, imports: list[dict[str, object] |
     return payload
 
 
-def test_init_japplication(test_fixture, codeanalyzer_jar_path, analysis_json):
+def test_init_japplication(test_fixture, codeanalyzer_backend_path, analysis_json):
     """Should return the initialized JApplication"""
 
     # Patch subprocess so that it does not run codeanalyzer
@@ -58,7 +59,6 @@ def test_init_japplication(test_fixture, codeanalyzer_jar_path, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=codeanalyzer_jar_path,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.symbol_table,
             eager_analysis=False,
@@ -78,7 +78,6 @@ def test_init_codeanalyzer_no_json_path(test_fixture, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.symbol_table,
             eager_analysis=False,
@@ -98,7 +97,6 @@ def test_init_codeanalyzer_with_json_path(test_fixture, analysis_json, analysis_
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
             analysis_json_path=analysis_json_fixture,
             analysis_level=AnalysisLevel.symbol_table,
             eager_analysis=False,
@@ -173,7 +171,7 @@ def test_check_existing_analysis_file_level_rejects_invalid_json(tmp_path) -> No
     assert not JCodeanalyzer.check_exisiting_analysis_file_level(analysis_file, analysis_level=1)
 
 
-def test_init_codeanalyzer_reuses_legacy_cache_when_compatible(test_fixture, codeanalyzer_jar_path, tmp_path) -> None:
+def test_init_codeanalyzer_reuses_legacy_cache_when_compatible(test_fixture, codeanalyzer_backend_path, tmp_path) -> None:
     """Should reuse cached analysis.json when legacy imports are still compatible."""
     analysis_json_dir = tmp_path / "analysis-cache"
     analysis_json_dir.mkdir()
@@ -185,7 +183,6 @@ def test_init_codeanalyzer_reuses_legacy_cache_when_compatible(test_fixture, cod
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=codeanalyzer_jar_path,
             analysis_json_path=analysis_json_dir,
             analysis_level=AnalysisLevel.symbol_table,
             eager_analysis=False,
@@ -200,34 +197,25 @@ def test_init_codeanalyzer_reuses_legacy_cache_when_compatible(test_fixture, cod
     assert compilation_unit.import_declarations[0].is_wildcard is False
 
 
-def test_get_codeanalyzer_exec(test_fixture, codeanalyzer_jar_path, analysis_json):
-    """Should return the correct codeanalyzer location"""
+def test_get_codeanalyzer_exec(test_fixture, analysis_json, tmp_path):
+    """Should resolve the codeanalyzer native binary command (packaged binary only)."""
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
         run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
 
-        # Test with GaalVM as the location
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=codeanalyzer_jar_path,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.symbol_table,
             eager_analysis=False,
             target_files=None,
         )
-        # Test with analysis_backend_path as the location
-        jar_file = code_analyzer._get_codeanalyzer_exec()[-1]
-        exec_path = os.path.dirname(jar_file)
-        assert exec_path == str(codeanalyzer_jar_path)
 
-        # Test with internal codeanalyzer jar file
-        code_analyzer.analysis_backend_path = None
-        jar_file = code_analyzer._get_codeanalyzer_exec()[-1]
-        exec_path = os.path.dirname(jar_file)
-        relative_path = exec_path.rsplit("/cldk", 1)[1]
-        assert relative_path == "/analysis/java/codeanalyzer/jar"
+        # The PyPI native binary, invoked via `python -m codeanalyzer_java`. There is no longer a
+        # backend-path override (the binary ships with the packaged dependency).
+        assert code_analyzer._get_codeanalyzer_exec() == [sys.executable, "-m", "codeanalyzer_java"]
 
 
 def test_generate_call_graph(test_fixture, analysis_json):
@@ -239,7 +227,6 @@ def test_generate_call_graph(test_fixture, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.call_graph,
             eager_analysis=False,
@@ -269,7 +256,6 @@ def test_codeanalyzer_single_file(test_fixture, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code="dummy.java",
-            analysis_backend_path=None,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.symbol_table,
             eager_analysis=False,
@@ -289,7 +275,6 @@ def test_get_application(test_fixture, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.symbol_table,
             eager_analysis=False,
@@ -310,7 +295,6 @@ def test_get_symbol_table(test_fixture, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.symbol_table,
             eager_analysis=False,
@@ -333,7 +317,6 @@ def test_get_application_view(test_fixture, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.symbol_table,
             eager_analysis=False,
@@ -360,7 +343,6 @@ def test_get_system_dependency_graph(test_fixture, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.symbol_table,
             eager_analysis=False,
@@ -383,7 +365,6 @@ def test_get_call_graph(test_fixture, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.call_graph,
             eager_analysis=False,
@@ -409,7 +390,6 @@ def test_get_call_graph_json(test_fixture, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.call_graph,
             eager_analysis=False,
@@ -432,7 +412,6 @@ def test_get_all_callers(test_fixture, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.call_graph,
             eager_analysis=False,
@@ -468,7 +447,6 @@ def test_get_all_callees(test_fixture, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.call_graph,
             eager_analysis=False,
@@ -502,7 +480,6 @@ def test_get_all_classes(test_fixture, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.call_graph,
             eager_analysis=False,
@@ -528,7 +505,6 @@ def test_get_class(test_fixture, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.call_graph,
             eager_analysis=False,
@@ -549,7 +525,6 @@ def test_get_method(test_fixture, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.symbol_table,
             eager_analysis=False,
@@ -570,7 +545,6 @@ def test_get_java_file(test_fixture, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.symbol_table,
             eager_analysis=False,
@@ -598,7 +572,6 @@ def test_get_all_methods_in_class(test_fixture, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.symbol_table,
             eager_analysis=False,
@@ -624,7 +597,6 @@ def test_get_all_constructors(test_fixture, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.call_graph,
             eager_analysis=False,
@@ -657,7 +629,6 @@ def test_get_all_sub_classes(test_fixture, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.symbol_table,
             eager_analysis=False,
@@ -680,7 +651,6 @@ def test_get_all_fields(test_fixture, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.symbol_table,
             eager_analysis=False,
@@ -708,7 +678,6 @@ def test_get_all_nested_classes(test_fixture, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.call_graph,
             eager_analysis=False,
@@ -733,7 +702,6 @@ def test_get_extended_classes(test_fixture, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.call_graph,
             eager_analysis=False,
@@ -762,7 +730,6 @@ def test_get_implemented_interfaces(test_fixture, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.call_graph,
             eager_analysis=False,
@@ -793,7 +760,6 @@ def test_get_class_call_graph_using_symbol_table(test_fixture, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.symbol_table,
             eager_analysis=False,
@@ -819,7 +785,6 @@ def test_get_class_call_graph(test_fixture, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.call_graph,
             eager_analysis=False,
@@ -854,7 +819,6 @@ def test_get_all_methods_in_application(test_fixture, analysis_json):
         code_analyzer = JCodeanalyzer(
             project_dir=test_fixture,
             source_code=None,
-            analysis_backend_path=None,
             analysis_json_path=None,
             analysis_level=AnalysisLevel.call_graph,
             eager_analysis=False,
@@ -873,12 +837,11 @@ def test_get_all_methods_in_application(test_fixture, analysis_json):
                 assert isinstance(callable, JCallable)
 
 
-def test_get_all_entrypoint_methods_in_application(test_fixture, codeanalyzer_jar_path):
+def test_get_all_entrypoint_methods_in_application(test_fixture, codeanalyzer_backend_path):
     """Should return all of the entrypoint methods in an application"""
     code_analyzer = JCodeanalyzer(
         project_dir=test_fixture,
         source_code=None,
-        analysis_backend_path=codeanalyzer_jar_path,
         analysis_json_path=None,
         analysis_level=AnalysisLevel.symbol_table,
         eager_analysis=False,
@@ -898,13 +861,12 @@ def test_get_all_entrypoint_methods_in_application(test_fixture, codeanalyzer_ja
             assert callable.is_entrypoint
 
 
-def test_source_analysis_imports_disambiguate_static_and_wildcard(codeanalyzer_jar_path) -> None:
+def test_source_analysis_imports_disambiguate_static_and_wildcard(codeanalyzer_backend_path) -> None:
     """Should preserve static and wildcard import metadata for colliding import paths."""
     source_code = "import static Foo.bar;\nimport Foo.bar.*;\nclass T {}"
     code_analyzer = JCodeanalyzer(
         project_dir=".",
         source_code=source_code,
-        analysis_backend_path=codeanalyzer_jar_path,
         analysis_json_path=None,
         analysis_level=AnalysisLevel.symbol_table,
         eager_analysis=False,
@@ -931,12 +893,11 @@ def test_source_analysis_imports_disambiguate_static_and_wildcard(codeanalyzer_j
     assert wildcard_import.is_static is False
 
 
-def test_get_all_entrypoint_classes_in_the_application(test_fixture, codeanalyzer_jar_path):
+def test_get_all_entrypoint_classes_in_the_application(test_fixture, codeanalyzer_backend_path):
     """Should return all of the entrypoint classes in an application"""
     code_analyzer = JCodeanalyzer(
         project_dir=test_fixture,
         source_code=None,
-        analysis_backend_path=codeanalyzer_jar_path,
         analysis_json_path=None,
         analysis_level=AnalysisLevel.symbol_table,
         eager_analysis=False,
@@ -953,12 +914,11 @@ def test_get_all_entrypoint_classes_in_the_application(test_fixture, codeanalyze
         assert cls.is_entrypoint_class
 
 
-def test_get_all_get_crud_operations(test_fixture_pbw, codeanalyzer_jar_path):
+def test_get_all_get_crud_operations(test_fixture_pbw, codeanalyzer_backend_path):
     """Should return all of the CRUD operations in an application"""
     code_analyzer = JCodeanalyzer(
         project_dir=test_fixture_pbw,
         source_code=None,
-        analysis_backend_path=codeanalyzer_jar_path,
         analysis_json_path=test_fixture_pbw / "build",
         analysis_level=AnalysisLevel.symbol_table,
         eager_analysis=True,
@@ -977,12 +937,11 @@ def test_get_all_get_crud_operations(test_fixture_pbw, codeanalyzer_jar_path):
             assert crud_op.operation_type.value in ["CREATE", "READ", "UPDATE", "DELETE"]
 
 
-def test_get_all_get_crud_read_operations(test_fixture_pbw, codeanalyzer_jar_path):
+def test_get_all_get_crud_read_operations(test_fixture_pbw, codeanalyzer_backend_path):
     """Should return all of the CRUD read operations in an application"""
     code_analyzer = JCodeanalyzer(
         project_dir=test_fixture_pbw,
         source_code=None,
-        analysis_backend_path=codeanalyzer_jar_path,
         analysis_json_path=test_fixture_pbw / "build",
         analysis_level=AnalysisLevel.symbol_table,
         eager_analysis=True,
@@ -1001,12 +960,11 @@ def test_get_all_get_crud_read_operations(test_fixture_pbw, codeanalyzer_jar_pat
             assert crud_op.operation_type.value == "READ"
 
 
-def test_get_all_get_crud_create_operations(test_fixture_pbw, codeanalyzer_jar_path):
+def test_get_all_get_crud_create_operations(test_fixture_pbw, codeanalyzer_backend_path):
     """Should return all of the CRUD create operations in an application"""
     code_analyzer = JCodeanalyzer(
         project_dir=test_fixture_pbw,
         source_code=None,
-        analysis_backend_path=codeanalyzer_jar_path,
         analysis_json_path=test_fixture_pbw / "build",
         analysis_level=AnalysisLevel.symbol_table,
         eager_analysis=True,
@@ -1025,12 +983,11 @@ def test_get_all_get_crud_create_operations(test_fixture_pbw, codeanalyzer_jar_p
             assert crud_op.operation_type.value == "CREATE"
 
 
-def test_get_all_get_crud_update_operations(test_fixture_pbw, codeanalyzer_jar_path):
+def test_get_all_get_crud_update_operations(test_fixture_pbw, codeanalyzer_backend_path):
     """Should return all of the CRUD update operations in an application"""
     code_analyzer = JCodeanalyzer(
         project_dir=test_fixture_pbw,
         source_code=None,
-        analysis_backend_path=codeanalyzer_jar_path,
         analysis_json_path=test_fixture_pbw / "build",
         analysis_level=AnalysisLevel.symbol_table,
         eager_analysis=True,
@@ -1049,12 +1006,11 @@ def test_get_all_get_crud_update_operations(test_fixture_pbw, codeanalyzer_jar_p
             assert crud_op.operation_type.value == "UPDATE"
 
 
-def test_get_all_get_crud_delete_operations(test_fixture_pbw, codeanalyzer_jar_path):
+def test_get_all_get_crud_delete_operations(test_fixture_pbw, codeanalyzer_backend_path):
     """Should return all of the CRUD delete operations in an application"""
     code_analyzer = JCodeanalyzer(
         project_dir=test_fixture_pbw,
         source_code=None,
-        analysis_backend_path=codeanalyzer_jar_path,
         analysis_json_path=test_fixture_pbw / "build",
         analysis_level=AnalysisLevel.symbol_table,
         eager_analysis=True,
@@ -1073,12 +1029,11 @@ def test_get_all_get_crud_delete_operations(test_fixture_pbw, codeanalyzer_jar_p
             assert crud_op.operation_type.value == "DELETE"
 
 
-def test_get_all_get_crud_operations_daytrader8(test_fixture, codeanalyzer_jar_path):
+def test_get_all_get_crud_operations_daytrader8(test_fixture, codeanalyzer_backend_path):
     """Should return all of the CRUD operations in an application"""
     code_analyzer = JCodeanalyzer(
         project_dir=test_fixture,
         source_code=None,
-        analysis_backend_path=codeanalyzer_jar_path,
         analysis_json_path=test_fixture / "build",
         analysis_level=AnalysisLevel.symbol_table,
         eager_analysis=True,
