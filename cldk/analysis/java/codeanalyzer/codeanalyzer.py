@@ -15,10 +15,10 @@
 ################################################################################
 import json
 import logging
+import os
 import re
 import shlex
 import subprocess
-import sys
 from itertools import chain, groupby
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -34,6 +34,8 @@ from cldk.models.java import JGraphEdges
 from cldk.models.java.enums import CRUDOperationType
 from cldk.models.java.models import JApplication, JCRUDOperation, JCallable, JCallableParameter, JComment, JField, JMethodDetail, JType, JCompilationUnit, JGraphEdgesST
 from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
+from cldk.analysis.java.codeanalyzer._jdk import ensure_jdk
+from cldk.analysis.commons.backend_config import cache_subdir
 
 logger = logging.getLogger(__name__)
 
@@ -85,17 +87,35 @@ class JCodeanalyzer(JavaAnalysisBackend):
             self.application = self._init_codeanalyzer()
         return self.application
 
+    def _locate_jar(self) -> Path:
+        """The bundled codeanalyzer jar (placed under ``codeanalyzer/jar/`` at build time)."""
+        jar_dir = Path(__file__).resolve().parent / "jar"
+        jar = next(iter(sorted(jar_dir.glob("codeanalyzer*.jar"))), None)
+        if jar is None:
+            raise CodeanalyzerExecutionException(f"codeanalyzer jar not found in {jar_dir}")
+        return jar
+
     def _get_codeanalyzer_exec(self) -> List[str]:
-        """Return the executable command for codeanalyzer-java.
+        """Return the command that runs codeanalyzer.jar on a bundled-fidelity JVM.
+
+        Resolves (and on first use downloads + caches) a Temurin JDK with ``jmods``
+        under the backend's existing java cache dir (``<cache_dir>/java/jdk/``;
+        ``cache_dir`` defaults to ``<project>/.codeanalyzer``) and runs the bundled
+        jar with it. ``JAVA_HOME`` is exported so the analyzer's WALA scope (call
+        graph / ``-a 2``) can read ``$JAVA_HOME/jmods``. Running on a real HotSpot JVM
+        gives full analysis fidelity (unlike the GraalVM native image).
 
         Returns:
-            List[str]: The executable command for codeanalyzer.
-
-        Notes:
-            - The JVM-free native binary shipped in the ``codeanalyzer-java`` PyPI package is used,
-              invoked as ``python -m codeanalyzer_java``.
+            List[str]: ``[<jdk>/bin/java, -jar, <codeanalyzer.jar>]``.
         """
-        return [sys.executable, "-m", "codeanalyzer_java"]
+        # analysis_json_path IS the java cache subdir (cache_subdir(cache_dir, project, "java"));
+        # fall back to the same helper in source/pipe mode where it is None.
+        java_cache = Path(self.analysis_json_path) if self.analysis_json_path else cache_subdir(None, self.project_dir, "java")
+        java_home = ensure_jdk(java_cache)
+        # ScopeUtils reads the JAVA_HOME env var (not java.home); child procs inherit os.environ.
+        os.environ["JAVA_HOME"] = str(java_home)
+        java_bin = java_home / "bin" / ("java.exe" if os.name == "nt" else "java")
+        return [str(java_bin), "-jar", str(self._locate_jar())]
 
     @staticmethod
     def _init_japplication(data: str) -> JApplication:
