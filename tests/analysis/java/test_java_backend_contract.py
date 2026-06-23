@@ -23,10 +23,15 @@ import pytest
 
 from cldk.analysis.java.backend import JavaAnalysisBackend
 from cldk.analysis.java.codeanalyzer.codeanalyzer import JCodeanalyzer
+from cldk.analysis.java.neo4j import JNeo4jBackend
+
+# Both interchangeable backends must satisfy the same contract.
+BACKENDS = [JCodeanalyzer, JNeo4jBackend]
 
 
-def test_backend_subclasses_contract():
-    assert issubclass(JCodeanalyzer, JavaAnalysisBackend)
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_backend_subclasses_contract(backend):
+    assert issubclass(backend, JavaAnalysisBackend)
 
 
 def test_contract_is_abstract():
@@ -34,8 +39,9 @@ def test_contract_is_abstract():
         JavaAnalysisBackend()
 
 
-def test_backend_fully_implements_contract():
-    assert JCodeanalyzer.__abstractmethods__ == frozenset()
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_backend_fully_implements_contract(backend):
+    assert backend.__abstractmethods__ == frozenset()
 
 
 def test_contract_covers_every_method_the_facade_delegates():

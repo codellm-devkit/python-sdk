@@ -63,7 +63,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   where calls to a bare module name that is also imported (e.g. `os`/`re`/`json`) are dropped from
   the emitted call graph. `PythonAnalysis` / `CLDK.analysis(language="python")` accept the same
   optional `neo4j_config`.
-- Bumped `codeanalyzer-python` to `0.2.0` (adds the Neo4j graph emitter).
+- Read-only Neo4j-backed **Java** analysis backend (`cldk.analysis.java.neo4j.JNeo4jBackend`),
+  completing Neo4j parity across all three languages. It reconstructs the canonical `JApplication`
+  from the graph `codeanalyzer-java` (>= 2.4.0) emits with `--emit neo4j` and answers all 36
+  `JavaAnalysisBackend` queries with the in-memory backend's logic. Verified against the daytrader8
+  sample (145 classes): everything the graph actually contains reconstructs identically to
+  `JCodeanalyzer`. Three producer-side gaps in the 2.4.0 emitter make the graph an incomplete
+  projection (tracked upstream, not query-layer bugs): all fields of a class collapse to one node
+  (codeanalyzer-java#156), imports lose the type name (codeanalyzer-java#157), and `J_CALLS`
+  materializes only a fraction of the call graph (codeanalyzer-java#158). `JavaAnalysis` /
+  `CLDK.java(...)` accept a `Neo4jConnectionConfig` as the `backend=` config to select it.
+- Bumped `codeanalyzer-python` to `0.2.0` (adds the Neo4j graph emitter); bumped `codeanalyzer-java`
+  to `2.4.0` (adds the Neo4j graph emitter).
 - Optional `neo4j` extra (`pip install cldk[neo4j]`) for the Neo4j Python driver.
 
 ## [v1.0.7] - 2026-02-14

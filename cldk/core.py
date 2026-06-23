@@ -145,7 +145,10 @@ class CLDK:
             CldkInitializationException: If neither or both of ``project_path`` / ``source_code``
                 are provided.
         """
-        if project_path is None and source_code is None:
+        # The read-only Neo4j backend reads a graph populated out of band, so it needs neither
+        # project_path nor source_code.
+        is_neo4j = isinstance(backend, Neo4jConnectionConfig)
+        if project_path is None and source_code is None and not is_neo4j:
             raise CldkInitializationException("Either project_path or source_code must be provided.")
         if project_path is not None and source_code is not None:
             raise CldkInitializationException("Both project_path and source_code are provided. Please provide only one.")
