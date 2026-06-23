@@ -300,11 +300,12 @@ wheels = [
 
 [[package]]
 name = "cldk"
-version = "1.0.7"
+version = "1.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "clang" },
     { name = "codeanalyzer-python" },
+    { name = "codeanalyzer-typescript" },
     { name = "libclang" },
     { name = "networkx" },
     { name = "pyarrow" },
@@ -318,6 +319,11 @@ dependencies = [
     { name = "tree-sitter-javascript" },
     { name = "tree-sitter-python" },
     { name = "wget" },
+]
+
+[package.optional-dependencies]
+neo4j = [
+    { name = "neo4j" },
 ]
 
 [package.dev-dependencies]
@@ -340,8 +346,10 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "clang", specifier = "==17.0.6" },
-    { name = "codeanalyzer-python", specifier = "==0.1.14" },
+    { name = "codeanalyzer-python", specifier = "==0.2.0" },
+    { name = "codeanalyzer-typescript", specifier = "==0.4.0" },
     { name = "libclang", specifier = "==17.0.6" },
+    { name = "neo4j", marker = "extra == 'neo4j'", specifier = ">=5.14,<7" },
     { name = "networkx", specifier = ">=3.4.2,<4" },
     { name = "pyarrow", specifier = "==20.0.0" },
     { name = "pydantic", specifier = ">=2.10.6,<3" },
@@ -355,6 +363,7 @@ requires-dist = [
     { name = "tree-sitter-python", specifier = "==0.23.6" },
     { name = "wget", specifier = "==3.2" },
 ]
+provides-extras = ["neo4j"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -387,7 +396,7 @@ wheels = [
 
 [[package]]
 name = "codeanalyzer-python"
-version = "0.1.14"
+version = "0.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jedi" },
@@ -403,9 +412,21 @@ dependencies = [
     { name = "typer" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/68/39/d396c51264c6e73e8cdbf62594f748a198c2a1b4ef2f54fa2d8b67b55eb1/codeanalyzer_python-0.1.14.tar.gz", hash = "sha256:70d58ebcf758d373e441dfbb4f5c43dbb40dbdf51b9ab94b082d0660742de7a8", size = 49274, upload-time = "2026-05-13T23:58:45.302Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/86/54/25a48b6c5d39c11be6b1fd222e7126b8b2f75b9a44bfe0bde5b0d3c6d943/codeanalyzer_python-0.2.0.tar.gz", hash = "sha256:0657dc0062bbbe30c14fee59b294e62aa7e006b94d872bb3ef5cb34f6d4c5f0e", size = 68804, upload-time = "2026-06-20T19:57:52.817Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ae/49/dae2be8f365780adba909b6481c772981a133e03a7919ae7d3735f2f6854/codeanalyzer_python-0.1.14-py3-none-any.whl", hash = "sha256:0b8800e6895264b4fd1f249a2f35c0db9b64b9f4a119f42738922c4e333dfdb6", size = 48949, upload-time = "2026-05-13T23:58:46.395Z" },
+    { url = "https://files.pythonhosted.org/packages/4f/4c/0b680068f63885568160484153254abca8598aa738214b9f2513e55246e6/codeanalyzer_python-0.2.0-py3-none-any.whl", hash = "sha256:37f27d2b8925f9acc10c6494c0105795d7fac651be343beac61c83a0fc36de9a", size = 71371, upload-time = "2026-06-20T19:57:51.896Z" },
+]
+
+[[package]]
+name = "codeanalyzer-typescript"
+version = "0.4.0"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/b0/81/da7f318dc2465fe0a37c072746cabc6f44ae6f4a541898390055285e6db1/codeanalyzer_typescript-0.4.0-py3-none-macosx_10_12_x86_64.whl", hash = "sha256:01bd9ff546302b105656a6b38c4039bab1a61f9c3c98f087d53990d3fc750a50", size = 31038787, upload-time = "2026-06-19T23:05:39.331Z" },
+    { url = "https://files.pythonhosted.org/packages/5f/8e/c02efa6d5bbdc2ce3bf21f2e312c6152dd60c2b53924e9160c3ae87ec23d/codeanalyzer_typescript-0.4.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:a5e23461301f3206ebe5f71a04ab5e3f7e1e38a447660e6de1cd667ec65e69c7", size = 28679376, upload-time = "2026-06-19T23:05:42.093Z" },
+    { url = "https://files.pythonhosted.org/packages/4e/f7/10ccfb06a19e608b0745e6195a71f3728c0abbec8718eed5f8411544ed8e/codeanalyzer_typescript-0.4.0-py3-none-manylinux2014_aarch64.whl", hash = "sha256:1ee5c678c7d19b91665e03af3008d091a7fd89112fa72c12937d8508c95fba17", size = 40232939, upload-time = "2026-06-19T23:05:44.987Z" },
+    { url = "https://files.pythonhosted.org/packages/00/bb/68292380194671e674d3b6dbc15659f0bb90d2bb6270fdd159e93a661a4a/codeanalyzer_typescript-0.4.0-py3-none-manylinux2014_x86_64.whl", hash = "sha256:25b6596e18483e807e157494ceb692b8a348610304f1e6658024fe99c56338ff", size = 40502175, upload-time = "2026-06-19T23:05:47.89Z" },
+    { url = "https://files.pythonhosted.org/packages/ab/17/c619bbfb9db1b1b8612a4bb5a2d21dfbe863ddf7ec1f7ba9e1c6f06e4e13/codeanalyzer_typescript-0.4.0-py3-none-win_amd64.whl", hash = "sha256:95d4d228c17b5bd44f83a4dd15e7e33cbf362d980b17fe9d740e1cd2ab68a9c3", size = 42889400, upload-time = "2026-06-19T23:05:50.857Z" },
 ]
 
 [[package]]
@@ -1242,6 +1263,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/6d/fd/91545e604bc3dad7dca9ed03284086039b294c6b3d75c0d2fa45f9e9caf3/nbformat-5.10.4.tar.gz", hash = "sha256:322168b14f937a5d11362988ecac2a4952d3d8e3a2cbeb2319584631226d5b3a", size = 142749, upload-time = "2024-04-04T11:20:37.371Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a9/82/0340caa499416c78e5d8f5f05947ae4bc3cba53c9f038ab6e9ed964e22f1/nbformat-5.10.4-py3-none-any.whl", hash = "sha256:3b48d6c8fbca4b299bf3982ea7db1af21580e4fec269ad087b9e81588891200b", size = 78454, upload-time = "2024-04-04T11:20:34.895Z" },
+]
+
+[[package]]
+name = "neo4j"
+version = "6.2.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pytz" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ce/f4/aaa4ac19adae4b01bc742b63afd2672a77e7351566f02721e713e4b863ee/neo4j-6.2.0.tar.gz", hash = "sha256:e1e246b65b572bd8ea97f9e0e721b7d40a5ce53e53d0007c29aef63e4f9124d9", size = 241459, upload-time = "2026-05-04T07:35:41.428Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e6/cf/1c3795866cefaac6e648d4e98c373cafd97810f6e317c307371007ab4abb/neo4j-6.2.0-py3-none-any.whl", hash = "sha256:b87abdd13a5cc2e3bd51026926c2f20ac38fa3febe98c340520dce19e97388d0", size = 327824, upload-time = "2026-05-04T07:35:39.604Z" },
 ]
 
 [[package]]
