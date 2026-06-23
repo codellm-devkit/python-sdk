@@ -91,3 +91,15 @@ jobs:
 
       - name: Publish package distributions to PyPI
         run: uv publish --token ${{ secrets.PYPI_API_TOKEN }}
+
+      - name: Trigger docs API-reference update
+        # After a successful release, tell the docs repo to regenerate and PR the
+        # Python API reference against this tag. Requires a DOCS_DISPATCH_TOKEN
+        # secret: a PAT (or fine-grained token) with contents:write on
+        # codellm-devkit/docs. See docs-astro .github/workflows/update-api-docs.yml.
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.DOCS_DISPATCH_TOKEN }}
+          repository: codellm-devkit/docs
+          event-type: sdk-release
+          client-payload: '{"ref": "${{ github.ref_name }}"}'
