@@ -47,6 +47,8 @@ def _arr(props: Props, key: str) -> List[str]:
     return list(props.get(key, []) or [])
 
 
+
+
 def _kind_flags(kind: str | None) -> Dict[str, bool]:
     """Derive the type-discriminator booleans from the projected ``kind`` string."""
     return {
@@ -92,7 +94,7 @@ def field(props: Props, *, comment_node: dict | None = None) -> dict:
         "variables": _arr(props, "variables"),
         "modifiers": _arr(props, "modifiers"),
         "annotations": _arr(props, "annotations"),
-        "variable_initializers": json.loads(raw) if raw else None,
+        "variable_initializers": json.loads(raw) if raw else {},
     }
 
 

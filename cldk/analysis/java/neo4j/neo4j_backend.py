@@ -41,18 +41,22 @@ every project-owned node carries a ``_module`` provenance prop, so one DB can ho
 scoped under ``(:JApplication {name})-[:J_HAS_UNIT]->(:JCompilationUnit)``.
 
 Parity: this backend reconstructs everything the graph actually contains identically to the
-in-memory ``JCodeanalyzer`` (verified on the daytrader8 sample). It cannot recover what the
-``codeanalyzer-java`` (2.4.0) emitter drops, however — three known producer-side gaps make the graph
-an incomplete projection (tracked upstream, NOT query-layer bugs):
+in-memory ``JCodeanalyzer`` (verified on the daytrader8 sample — 97% of checks, the rest being the
+caveats below). The ``codeanalyzer-java`` **2.4.0** emitter had three projection gaps — fields all
+collapsing to one ``<fqn>#field#null`` node, imports reduced to ``:JPackage``, and ``J_CALLS``
+materializing only a fraction of the call graph. All three are **fixed in 2.4.1**
+(codeanalyzer-java#156/#157/#158); the SDK currently pins 2.4.0, so with the pinned emitter those
+gaps still apply until 2.4.1 is released.
 
-* every ``:JField`` is emitted with the id ``<fqn>#field#null``, so all fields of a class collapse to
-  one node (codeanalyzer-java#156);
-* imports are projected to ``:JPackage`` only, losing the imported type name (codeanalyzer-java#157);
-* ``J_CALLS`` materializes only a small fraction of the call graph — edges are absent even when both
-  endpoint callables are present as nodes (codeanalyzer-java#158).
+Inherent caveats (present even on a complete graph, NOT query-layer bugs):
 
-Projection-lossy-by-design: a ``:JType``'s ``is_class_or_interface_declaration`` /
-``is_concrete_class`` flags are not projected (only the ``kind`` discriminator is).
+* ``J_CALLS`` only links resolved app callables, so call edges to external/library targets (which the
+  in-memory backend keeps as synthetic nodes) are absent;
+* the call graph is built by a separate analyzer run from the in-memory backend's ``analysis.json``,
+  so the two can differ by run-to-run WALA variance;
+* a ``:JType``'s ``is_class_or_interface_declaration`` / ``is_concrete_class`` flags are not
+  projected (only the ``kind`` discriminator is); an absent singular ``comment`` rehydrates to
+  ``None``.
 """
 
 from __future__ import annotations
