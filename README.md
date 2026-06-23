@@ -182,10 +182,12 @@ If you use CLDK in your research, please cite:
 
 CLDK ([Krishna et al., 2024](https://arxiv.org/abs/2410.13007)) is used and cited in a growing body of research on program analysis and code LLMs:
 
+- **SAINT: Service-Level Integration Test Generation with Program Analysis and LLM-Based Agents** — Pan, Pavuluri, Huang, Krishna et al. (2026). *ICSE*. [arXiv:2511.13305](https://arxiv.org/abs/2511.13305)
 - **RECON: An LLM-Enhanced Backward Constraint Analysis Framework** — Bappah et al. (2026). [arXiv:2606.10264](https://arxiv.org/abs/2606.10264)
 - **Architecting Open, Accountable, and Trustworthy AI-IDEs** — Contreras, Guerra & de Lara (2026). *Automated Software Engineering*. [doi:10.1007/s10515-026-00608-x](https://doi.org/10.1007/s10515-026-00608-x)
 - **Resolving Java Code Repository Issues with iSWE Agent** — Ganhotra et al. (2026). [arXiv:2603.11356](https://arxiv.org/abs/2603.11356)
 - **HookLens: Visual Analytics for Understanding React Hooks Structures** — Hwang et al. (2026). *IEEE PacificVis*. [arXiv:2602.17891](https://arxiv.org/abs/2602.17891)
+- **ASTER: Natural and Multi-Language Unit Test Generation with LLMs** — Pan, Kim, Krishna, Pavuluri & Sinha (2025). *ICSE-SEIP*. [arXiv:2409.03093](https://arxiv.org/abs/2409.03093)
 - **PRAXIS: Integrating Program Analysis with Observability for Root-Cause Analysis** — Cui, Krishna & Jha et al. (2025). [arXiv:2512.22113](https://arxiv.org/abs/2512.22113)
 - **Examining Software Developers' Needs for Privacy Enforcing Techniques: A Survey** — Theophilou & Kapitsaki (2025). *ACM SAC*. [arXiv:2512.14756](https://arxiv.org/abs/2512.14756)
 - **LLM as an Execution Estimator: Recovering Missing Dependency for Practical Time-Travelling Debugging** — Pei, Wang & Zhang et al. (2025). [arXiv:2508.18721](https://arxiv.org/abs/2508.18721)
