@@ -81,8 +81,8 @@ analysis = CLDK.java(project_path="/path/to/java/project")
 for file_path, class_file in analysis.get_symbol_table().items():
     for type_name, type_declaration in class_file.type_declarations.items():
         for method in type_declaration.callable_declarations.values():
-            body = analysis.get_method(type_name, method).code
-            print(f"{type_name}.{method}\n{body}\n")
+            body = analysis.get_method_body(method.declaration)
+            print(f"{type_name}.{method.declaration}\n{body}\n")
 ```
 
 Build a call graph by raising the analysis level:
@@ -91,21 +91,20 @@ Build a call graph by raising the analysis level:
 from cldk import CLDK
 from cldk.analysis import AnalysisLevel
 
-analysis = CLDK.java(
-    project_path="/path/to/java/project",
+analysis = CLDK.python(
+    project_path="/path/to/python/project",
     analysis_level=AnalysisLevel.call_graph,
 )
 call_graph = analysis.get_call_graph()  # a networkx.DiGraph
 ```
 
-Select a backend by passing a typed config. For example, query a pre-populated graph **read-only**
-over Neo4j (no source or analyzer run needed) — available for all three languages:
+Select a backend by passing a typed config. For example, query a pre-populated graph **read-only** over Neo4j (no source or analyzer run needed):
 
 ```python
 from cldk import CLDK
 from cldk.analysis.commons.backend_config import Neo4jConnectionConfig
 
-analysis = CLDK.java(
+analysis = CLDK.python(
     backend=Neo4jConnectionConfig(
         uri="bolt://localhost:7687",
         application_name="my-app",  # the graph is populated out of band
@@ -127,6 +126,8 @@ Each language is analyzed by a dedicated `codeanalyzer-*` engine; CLDK normalize
 | **TypeScript / JavaScript** | [`codeanalyzer-typescript`](https://github.com/codellm-devkit/codeanalyzer-typescript) | ts-morph with Jelly-based call graphs. Symbols, call graph, types, decorators, and call sites. Optional read-only **Neo4j** graph backend. |
 
 The backend is selected by the **type** of the `backend=` config you pass to a factory: the in-process analyzer (default) or a `Neo4jConnectionConfig` for the read-only graph backend.
+
+> **Analysis cache (Python):** caching is owned by `codeanalyzer-python` — the backend virtualenv, CodeQL database, and analysis cache live under `cache_dir` (default `<project>/.codeanalyzer`). CodeQL is on by default, so the first run is slow (it provisions a CodeQL DB) and later runs reuse a checksum-validated cache. Add the cache directory to your `.gitignore`.
 
 ## Architecture
 
@@ -153,7 +154,7 @@ graph TD
 
 **Data models** — each language has its own set of Pydantic models under `cldk.models` (`cldk.models.java`, `cldk.models.python`, `cldk.models.typescript`). They give you structured, typed, dot-accessible representations of classes, methods, fields, and statements, with JSON serialization and shared conventions across languages.
 
-**Analysis backends** — each language has a backend under `cldk.analysis.<language>` that coordinates its engine (see the table above) and maps the result onto the data models. The read-only Neo4j backends (`cldk.analysis.<language>.neo4j`) reconstruct the *same* models from a Cypher graph, so they are drop-in interchangeable with the in-process analyzers. Backends are orchestrated internally; you only call high-level methods such as `get_symbol_table()`, `get_method(...)`, and `get_call_graph(...)`, and CLDK handles tool coordination, parsing, and marshalling under the hood.
+**Analysis backends** — each language has a backend under `cldk.analysis.<language>` that coordinates its engine (see the table above) and maps the result onto the data models. The read-only Neo4j backends (`cldk.analysis.<language>.neo4j`) reconstruct the *same* models from a Cypher graph, so they are drop-in interchangeable with the in-process analyzers. Backends are orchestrated internally; you only call high-level methods such as `get_symbol_table()`, `get_method_body(...)`, and `get_call_graph(...)`, and CLDK handles tool coordination, parsing, and marshalling under the hood.
 
 ## Documentation
 
