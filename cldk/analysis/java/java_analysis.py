@@ -52,12 +52,13 @@ import networkx as nx
 
 from tree_sitter import Tree
 
-from cldk.analysis.commons.backend_config import CodeAnalyzerConfig, JavaBackend, cache_subdir
+from cldk.analysis.commons.backend_config import CodeAnalyzerConfig, JavaBackend, Neo4jConnectionConfig, cache_subdir
 from cldk.analysis.commons.treesitter import TreesitterJava
 from cldk.models.java import JCallable
 from cldk.models.java import JApplication
 from cldk.models.java.models import JCRUDOperation, JComment, JCompilationUnit, JMethodDetail, JType, JField
 from cldk.analysis.java.codeanalyzer import JCodeanalyzer
+from cldk.analysis.java.neo4j import JNeo4jBackend
 from cldk.analysis.java.backend import JavaAnalysisBackend
 
 
@@ -149,22 +150,33 @@ class JavaAnalysis:
         self.eager_analysis = eager_analysis
         self.target_files = target_files
         self.backend_config: JavaBackend = backend if backend is not None else CodeAnalyzerConfig()
-        # Java has a single backend family; the config only carries the cache root. analysis.json
-        # is cached under <cache_dir>/java (None in source_code mode, where the analyzer streams
-        # results over a pipe).
-        cache_path = cache_subdir(self.backend_config.cache_dir, project_dir, "java")
-        if cache_path is not None:
-            cache_path.mkdir(parents=True, exist_ok=True)
         self.treesitter_java: TreesitterJava = TreesitterJava()
-        # Initialize the analysis backend
-        self.backend: JavaAnalysisBackend = JCodeanalyzer(
-            project_dir=self.project_dir,
-            source_code=self.source_code,
-            eager_analysis=self.eager_analysis,
-            analysis_level=self.analysis_level,
-            analysis_json_path=cache_path,
-            target_files=self.target_files,
-        )
+        self.backend: JavaAnalysisBackend
+        if isinstance(self.backend_config, Neo4jConnectionConfig):
+            # Read-only: the graph is populated out of band; the SDK only polls it.
+            cfg = self.backend_config
+            application_name = cfg.application_name or (Path(project_dir).name if project_dir else None)
+            self.backend = JNeo4jBackend(
+                neo4j_uri=cfg.uri,
+                neo4j_username=cfg.username,
+                neo4j_password=cfg.password,
+                neo4j_database=cfg.database,
+                application_name=application_name,
+            )
+        else:
+            # The config only carries the cache root. analysis.json is cached under <cache_dir>/java
+            # (None in source_code mode, where the analyzer streams results over a pipe).
+            cache_path = cache_subdir(self.backend_config.cache_dir, project_dir, "java")
+            if cache_path is not None:
+                cache_path.mkdir(parents=True, exist_ok=True)
+            self.backend = JCodeanalyzer(
+                project_dir=self.project_dir,
+                source_code=self.source_code,
+                eager_analysis=self.eager_analysis,
+                analysis_level=self.analysis_level,
+                analysis_json_path=cache_path,
+                target_files=self.target_files,
+            )
 
     def get_imports(self) -> List[str]:
         """Return all import statements in the source code.

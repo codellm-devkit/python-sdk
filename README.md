@@ -55,7 +55,7 @@ pip install cldk
 Optional extras:
 
 ```bash
-pip install "cldk[neo4j]"   # read-only Neo4j graph backend (Python / TypeScript)
+pip install "cldk[neo4j]"   # read-only Neo4j graph backend (Java / Python / TypeScript)
 ```
 
 ## Quick Start
@@ -117,11 +117,11 @@ classes = analysis.get_all_classes()
 
 ## Supported Languages & Backends
 
-Each language is analyzed by a dedicated `codeanalyzer-*` engine; CLDK normalizes the result into typed models exposed through the same API.
+Each language is analyzed by a dedicated `codeanalyzer-*` engine; CLDK normalizes the result into typed models exposed through the same API. All three also support an optional **read-only Neo4j backend** — pass a `Neo4jConnectionConfig` and the SDK answers the same queries with Cypher over a graph the analyzer populates out of band (`--emit neo4j`).
 
 | Language | Analysis engine | What it provides |
 | --- | --- | --- |
-| **Java** | [`codeanalyzer-java`](https://github.com/codellm-devkit/codeanalyzer-java) | WALA + JavaParser. Bytecode-level call graphs, type hierarchies, symbol resolution, and method/field declarations. |
+| **Java** | [`codeanalyzer-java`](https://github.com/codellm-devkit/codeanalyzer-java) | WALA + JavaParser. Bytecode-level call graphs, type hierarchies, symbol resolution, CRUD-operation and entry-point detection. Optional read-only **Neo4j** graph backend. |
 | **Python** | [`codeanalyzer-python`](https://github.com/codellm-devkit/codeanalyzer-python) | Jedi with optional CodeQL augmentation. Symbol tables, call graphs, and class/method resolution. Optional read-only **Neo4j** graph backend. |
 | **TypeScript / JavaScript** | [`codeanalyzer-typescript`](https://github.com/codellm-devkit/codeanalyzer-typescript) | ts-morph with Jelly-based call graphs. Symbols, call graph, types, decorators, and call sites. Optional read-only **Neo4j** graph backend. |
 
@@ -147,13 +147,14 @@ graph TD
     P --> EP[codeanalyzer-python<br/>Jedi · CodeQL]
     T --> ET[codeanalyzer-typescript<br/>ts-morph · Jelly]
 
-    P -. read-only .-> N[(Neo4j)]
+    J -. read-only .-> N[(Neo4j)]
+    P -. read-only .-> N
     T -. read-only .-> N
 ```
 
 **Data models** — each language has its own set of Pydantic models under `cldk.models` (`cldk.models.java`, `cldk.models.python`, `cldk.models.typescript`). They give you structured, typed, dot-accessible representations of classes, methods, fields, and statements, with JSON serialization and shared conventions across languages.
 
-**Analysis backends** — each language has a backend under `cldk.analysis.<language>` that coordinates its engine (see the table above) and maps the result onto the data models. Backends are orchestrated internally; you only call high-level methods such as `get_symbol_table()`, `get_method_body(...)`, and `get_call_graph(...)`, and CLDK handles tool coordination, parsing, and marshalling under the hood.
+**Analysis backends** — each language has a backend under `cldk.analysis.<language>` that coordinates its engine (see the table above) and maps the result onto the data models. The read-only Neo4j backends (`cldk.analysis.<language>.neo4j`) reconstruct the *same* models from a Cypher graph, so they are drop-in interchangeable with the in-process analyzers. Backends are orchestrated internally; you only call high-level methods such as `get_symbol_table()`, `get_method_body(...)`, and `get_call_graph(...)`, and CLDK handles tool coordination, parsing, and marshalling under the hood.
 
 ## Documentation
 

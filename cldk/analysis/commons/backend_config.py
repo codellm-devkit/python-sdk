@@ -99,9 +99,8 @@ class Neo4jConnectionConfig:
     application_name: str | None = None
 
 
-# Per-language discriminated unions the facades match on. Java has no Neo4j backend yet, so its
-# only admissible config is the codeanalyzer one.
-JavaBackend = CodeAnalyzerConfig
+# Per-language discriminated unions the facades match on.
+JavaBackend = Union[CodeAnalyzerConfig, Neo4jConnectionConfig]
 PyBackend = Union[PyCodeAnalyzerConfig, Neo4jConnectionConfig]
 TSBackend = Union[CodeAnalyzerConfig, Neo4jConnectionConfig]
 

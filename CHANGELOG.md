@@ -63,8 +63,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   where calls to a bare module name that is also imported (e.g. `os`/`re`/`json`) are dropped from
   the emitted call graph. `PythonAnalysis` / `CLDK.analysis(language="python")` accept the same
   optional `neo4j_config`.
-- Bumped `codeanalyzer-python` to `0.2.0` (adds the Neo4j graph emitter).
+- Read-only Neo4j-backed **Java** analysis backend (`cldk.analysis.java.neo4j.JNeo4jBackend`),
+  completing Neo4j parity across all three languages. It reconstructs the canonical `JApplication`
+  from the graph `codeanalyzer-java` (>= 2.4.0) emits with `--emit neo4j` and answers all 36
+  `JavaAnalysisBackend` queries with the in-memory backend's logic. Verified against the daytrader8
+  sample (145 classes): everything the graph actually contains reconstructs identically to
+  `JCodeanalyzer` (97% of checks). Three projection gaps in the `codeanalyzer-java` 2.4.0 emitter
+  (fields collapsing to one node, imports reduced to packages, a truncated call graph) are **fixed
+  in 2.4.1** (codeanalyzer-java#156/#157/#158, verified on daytrader — `J_CALLS` went 287 → 1702),
+  the version the SDK release now bundles. `JavaAnalysis` / `CLDK.java(...)` accept a
+  `Neo4jConnectionConfig` as the `backend=` config to select it.
+- Bumped `codeanalyzer-python` to `0.2.0` (adds the Neo4j graph emitter); the bundled
+  `codeanalyzer-java` jar is now `2.4.1` (adds the Neo4j graph emitter + the field/import/call-graph
+  projection fixes). The Java analyzer jar is no longer a pip dependency — the SDK release workflow
+  downloads the latest `codeanalyzer-java` jar into the bundled `jar/` directory.
 - Optional `neo4j` extra (`pip install cldk[neo4j]`) for the Neo4j Python driver.
+
+### Fixed
+- **Bundled JDK download for the Java backend.** `ensure_jdk` resolved the Temurin JVM via the
+  Adoptium `/assets/version/{release}` endpoint, which now returns 404 for pinned releases (e.g.
+  `jdk-21.0.5+11`) — so the first Java analysis on a clean machine failed before it started. It now
+  resolves via the `/binary/version/...` endpoint (following the redirect to the GitHub asset) and
+  reads the checksum from the asset's `.sha256.txt`.
 
 ## [v1.0.7] - 2026-02-14
 
