@@ -35,22 +35,6 @@ CLDK is:
 
 > Developed at IBM Research. CLDK is an actively evolving project — issues and contributions are welcome.
 
-## Cited By
-
-CLDK ([Krishna et al., 2024](https://arxiv.org/abs/2410.13007)) is used and cited in a growing body of research on program analysis and code LLMs:
-
-- **RECON: An LLM-Enhanced Backward Constraint Analysis Framework** — Bappah et al. (2026). [arXiv:2606.10264](https://arxiv.org/abs/2606.10264)
-- **Architecting Open, Accountable, and Trustworthy AI-IDEs** — Contreras, Guerra & de Lara (2026). *Automated Software Engineering*. [doi:10.1007/s10515-026-00608-x](https://doi.org/10.1007/s10515-026-00608-x)
-- **Resolving Java Code Repository Issues with iSWE Agent** — Ganhotra et al. (2026). [arXiv:2603.11356](https://arxiv.org/abs/2603.11356)
-- **HookLens: Visual Analytics for Understanding React Hooks Structures** — Hwang et al. (2026). *IEEE PacificVis*. [arXiv:2602.17891](https://arxiv.org/abs/2602.17891)
-- **PRAXIS: Integrating Program Analysis with Observability for Root-Cause Analysis** — Cui, Krishna & Jha et al. (2025). [arXiv:2512.22113](https://arxiv.org/abs/2512.22113)
-- **Examining Software Developers' Needs for Privacy Enforcing Techniques: A Survey** — Theophilou & Kapitsaki (2025). *ACM SAC*. [arXiv:2512.14756](https://arxiv.org/abs/2512.14756)
-- **LLM as an Execution Estimator: Recovering Missing Dependency for Practical Time-Travelling Debugging** — Pei, Wang & Zhang et al. (2025). [arXiv:2508.18721](https://arxiv.org/abs/2508.18721)
-- **Agentic Multi-Modal LLMs for Software Comprehension: Structuring Code Summarization with Business Process Awareness** — Tamilselvam & Saxena (2025). *IEEE SSE*. [doi:10.1109/SSE67621.2025.00024](https://doi.org/10.1109/SSE67621.2025.00024)
-- **Phaedrus: Predicting Dynamic Application Behavior with Lightweight Generative Models and LLMs** — Chatterjee, Jadhav & Pande (2024). *PACMPL (OOPSLA)*. [arXiv:2412.06994](https://arxiv.org/abs/2412.06994)
-
-<sub>List compiled from Semantic Scholar / OpenAlex citation data; please open a PR to add a missing paper.</sub>
-
 ## Table of Contents
 
 - [Cited By](#cited-by)
@@ -193,6 +177,22 @@ If you use CLDK in your research, please cite:
   year    = {2024}
 }
 ```
+
+## Cited By
+
+CLDK ([Krishna et al., 2024](https://arxiv.org/abs/2410.13007)) is used and cited in a growing body of research on program analysis and code LLMs:
+
+- **RECON: An LLM-Enhanced Backward Constraint Analysis Framework** — Bappah et al. (2026). [arXiv:2606.10264](https://arxiv.org/abs/2606.10264)
+- **Architecting Open, Accountable, and Trustworthy AI-IDEs** — Contreras, Guerra & de Lara (2026). *Automated Software Engineering*. [doi:10.1007/s10515-026-00608-x](https://doi.org/10.1007/s10515-026-00608-x)
+- **Resolving Java Code Repository Issues with iSWE Agent** — Ganhotra et al. (2026). [arXiv:2603.11356](https://arxiv.org/abs/2603.11356)
+- **HookLens: Visual Analytics for Understanding React Hooks Structures** — Hwang et al. (2026). *IEEE PacificVis*. [arXiv:2602.17891](https://arxiv.org/abs/2602.17891)
+- **PRAXIS: Integrating Program Analysis with Observability for Root-Cause Analysis** — Cui, Krishna & Jha et al. (2025). [arXiv:2512.22113](https://arxiv.org/abs/2512.22113)
+- **Examining Software Developers' Needs for Privacy Enforcing Techniques: A Survey** — Theophilou & Kapitsaki (2025). *ACM SAC*. [arXiv:2512.14756](https://arxiv.org/abs/2512.14756)
+- **LLM as an Execution Estimator: Recovering Missing Dependency for Practical Time-Travelling Debugging** — Pei, Wang & Zhang et al. (2025). [arXiv:2508.18721](https://arxiv.org/abs/2508.18721)
+- **Agentic Multi-Modal LLMs for Software Comprehension: Structuring Code Summarization with Business Process Awareness** — Tamilselvam & Saxena (2025). *IEEE SSE*. [doi:10.1109/SSE67621.2025.00024](https://doi.org/10.1109/SSE67621.2025.00024)
+- **Phaedrus: Predicting Dynamic Application Behavior with Lightweight Generative Models and LLMs** — Chatterjee, Jadhav & Pande (2024). *PACMPL (OOPSLA)*. [arXiv:2412.06994](https://arxiv.org/abs/2412.06994)
+
+<sub>List compiled from Semantic Scholar / OpenAlex citation data; please open a PR to add a missing paper.</sub>
 
 Related publications:
 
