@@ -44,9 +44,9 @@ Parity: this backend reconstructs everything the graph actually contains identic
 in-memory ``JCodeanalyzer`` (verified on the daytrader8 sample — 97% of checks, the rest being the
 caveats below). The ``codeanalyzer-java`` **2.4.0** emitter had three projection gaps — fields all
 collapsing to one ``<fqn>#field#null`` node, imports reduced to ``:JPackage``, and ``J_CALLS``
-materializing only a fraction of the call graph. All three are **fixed in 2.4.1**
-(codeanalyzer-java#156/#157/#158); the SDK currently pins 2.4.0, so with the pinned emitter those
-gaps still apply until 2.4.1 is released.
+materializing only a fraction of the call graph — all **fixed in 2.4.1**
+(codeanalyzer-java#156/#157/#158), the version the SDK now bundles (its release workflow fetches the
+latest codeanalyzer-java jar). So a graph emitted by a current analyzer is a complete projection.
 
 Inherent caveats (present even on a complete graph, NOT query-layer bugs):
 

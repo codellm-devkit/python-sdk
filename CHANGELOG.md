@@ -70,12 +70,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sample (145 classes): everything the graph actually contains reconstructs identically to
   `JCodeanalyzer` (97% of checks). Three projection gaps in the `codeanalyzer-java` 2.4.0 emitter
   (fields collapsing to one node, imports reduced to packages, a truncated call graph) are **fixed
-  in 2.4.1** (codeanalyzer-java#156/#157/#158, verified by rebuilding the 2.4.1 jar — `J_CALLS` on
-  daytrader went 287 → 1702); the SDK still pins 2.4.0, so they apply until 2.4.1 is released.
-  `JavaAnalysis` / `CLDK.java(...)` accept a `Neo4jConnectionConfig` as the `backend=` config to
-  select it.
-- Bumped `codeanalyzer-python` to `0.2.0` (adds the Neo4j graph emitter); bumped `codeanalyzer-java`
-  to `2.4.0` (adds the Neo4j graph emitter).
+  in 2.4.1** (codeanalyzer-java#156/#157/#158, verified on daytrader — `J_CALLS` went 287 → 1702),
+  the version the SDK release now bundles. `JavaAnalysis` / `CLDK.java(...)` accept a
+  `Neo4jConnectionConfig` as the `backend=` config to select it.
+- Bumped `codeanalyzer-python` to `0.2.0` (adds the Neo4j graph emitter); the bundled
+  `codeanalyzer-java` jar is now `2.4.1` (adds the Neo4j graph emitter + the field/import/call-graph
+  projection fixes). The Java analyzer jar is no longer a pip dependency — the SDK release workflow
+  downloads the latest `codeanalyzer-java` jar into the bundled `jar/` directory.
 - Optional `neo4j` extra (`pip install cldk[neo4j]`) for the Neo4j Python driver.
 
 ### Fixed
