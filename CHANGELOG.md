@@ -77,6 +77,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   to `2.4.0` (adds the Neo4j graph emitter).
 - Optional `neo4j` extra (`pip install cldk[neo4j]`) for the Neo4j Python driver.
 
+### Fixed
+- **Bundled JDK download for the Java backend.** `ensure_jdk` resolved the Temurin JVM via the
+  Adoptium `/assets/version/{release}` endpoint, which now returns 404 for pinned releases (e.g.
+  `jdk-21.0.5+11`) — so the first Java analysis on a clean machine failed before it started. It now
+  resolves via the `/binary/version/...` endpoint (following the redirect to the GitHub asset) and
+  reads the checksum from the asset's `.sha256.txt`.
+
 ## [v1.0.7] - 2026-02-14
 
 ### Added

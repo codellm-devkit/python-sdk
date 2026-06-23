@@ -36,12 +36,13 @@ JVM gives full analysis fidelity (unlike the GraalVM native image).
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import platform
 import stat
 import tarfile
+import urllib.error
+import urllib.parse
 import urllib.request
 import zipfile
 from pathlib import Path
@@ -70,20 +71,36 @@ class JdkLoader:
 
     @classmethod
     def _resolve_asset(cls) -> tuple[str, str]:
-        """Return ``(download_url, sha256)`` for the pinned JDK binary."""
+        """Return ``(download_url, sha256)`` for the pinned JDK binary.
+
+        Resolves via the Adoptium ``/binary/version`` endpoint, which 307-redirects to the
+        GitHub release asset; the checksum comes from the asset's adjacent ``.sha256.txt``. The
+        older ``/assets/version/{release}`` query endpoint is not used: it returns 404 for pinned
+        releases (e.g. ``jdk-21.0.5+11``), even though the release exists.
+        """
         os_, arch = cls._os_arch()
-        url = (
-            f"{cls._API}/assets/version/{JDK_RELEASE}"
-            f"?os={os_}&architecture={arch}&image_type=jdk"
-            f"&jvm_impl=hotspot&heap_size=normal&vendor=eclipse"
-        )
-        req = urllib.request.Request(url, headers={"User-Agent": "cldk"})
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            data = json.load(resp)
-        if not data:
-            raise RuntimeError(f"No Temurin {JDK_RELEASE} build for {os_}/{arch}")
-        pkg = data[0]["binaries"][0]["package"]
-        return pkg["link"], pkg["checksum"]
+        release = urllib.parse.quote(JDK_RELEASE, safe="")  # encode the '+' in the path
+        binary_url = f"{cls._API}/binary/version/{release}/{os_}/{arch}/jdk/hotspot/normal/eclipse"
+
+        # Capture the redirect target (the GitHub asset URL) without downloading the binary.
+        class _NoRedirect(urllib.request.HTTPRedirectHandler):
+            def redirect_request(self, *args, **kwargs):
+                return None
+
+        opener = urllib.request.build_opener(_NoRedirect)
+        req = urllib.request.Request(binary_url, headers={"User-Agent": "cldk"})
+        try:
+            opener.open(req, timeout=30)
+            raise RuntimeError(f"Expected a redirect to the Temurin {JDK_RELEASE} asset from {binary_url}")
+        except urllib.error.HTTPError as exc:
+            if exc.code not in (301, 302, 303, 307, 308) or not exc.headers.get("Location"):
+                raise RuntimeError(f"No Temurin {JDK_RELEASE} build for {os_}/{arch} (HTTP {exc.code})") from exc
+            asset_url = exc.headers["Location"]
+
+        sha_req = urllib.request.Request(asset_url + ".sha256.txt", headers={"User-Agent": "cldk"})
+        with urllib.request.urlopen(sha_req, timeout=30) as resp:
+            sha = resp.read().decode().split()[0]
+        return asset_url, sha
 
     @classmethod
     def _java_home(cls, root: Path) -> Path:
