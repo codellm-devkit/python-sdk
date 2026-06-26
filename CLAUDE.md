@@ -228,15 +228,73 @@ change.
   **`make test`**. This is the Python analog of "passes `cargo fmt`, `cargo clippy`, and tests" —
   non-negotiable before pushing.
 
-## Tests
+## Testing protocol & fidelity bar
 
-- Layout **mirrors** `cldk/`: `tests/analysis/<lang>/`, `tests/models/<lang>/`. Place new tests in
-  the mirrored location.
-- Sample applications and fixture paths are declared in `pyproject.toml` `[tool.cldk.testing]` and
-  read via `tests/conftest.py`. Reuse these fixtures; don't hardcode resource paths.
-- Backend-contract tests (`test_*_backend_contract.py`) are introspection-only and must pass without
-  running an analyzer. Per-language `test_*_analysis.py`, `test_*_neo4j_backend.py`, and
-  tree-sitter tests cover the real behavior.
+**Java is the reference standard. Every language and every backend/framework added MUST reach the
+same testing fidelity Java has.** Java carries ~120 tests across 8 files exercising every layer;
+the other languages are not there yet (see the gap matrix). When you add a language, a backend, or a
+framework integration, replicate the *full* Java layer set — do not ship a facade with one smoke test.
+
+### Layout & fixtures (the mechanics)
+
+- Tests **mirror** `cldk/`: `tests/analysis/<lang>/`, `tests/models/<lang>/`. Place new tests in the
+  mirrored location; never invent a new tree.
+- Sample apps and fixture paths are declared in `pyproject.toml` `[tool.cldk.testing]` and read via
+  `tests/conftest.py`. **Reuse the fixtures; never hardcode resource paths.** Session-scoped,
+  autouse fixtures unzip real sample apps (`daytrader8`, `plantsbywebsphere`, `binutils`) and load a
+  committed slim `analysis.json`.
+- **Two execution modes, both required:**
+  1. **Mocked/offline** — patch `subprocess.run` (or the engine entry point) to write the committed
+     fixture `analysis.json` into the `-o` cache dir, so facade/query tests run **fast,
+     deterministic, and without invoking the real analyzer** (see `_write_java_output` in
+     `test_java_analysis.py`). Most tests use this.
+  2. **Real-analyzer** — a smaller set runs the actual engine against a real sample app for
+     behavior that can't be faked (e.g. CRUD detection, entry-point discovery on `daytrader8`).
+
+### The required test layers (replicate all that apply per language)
+
+Each layer is a distinct file following the `test_*` naming below. A layer is *required* wherever
+its component exists for that language (tree-sitter only where a `treesitter_<lang>.py` parser
+exists; Neo4j only where a `neo4j/` backend exists).
+
+| # | Layer | File pattern | What it must cover | Java reference |
+| --- | --- | --- | --- | --- |
+| 1 | **Facade** | `test_<lang>_analysis.py` | **Every public method** on the facade — both real query results (against the fixture) and `NotImplemented`/error paths. Project mode *and* source-code mode where supported. | 40 tests |
+| 2 | **In-process backend** | `test_<engine>.py` (e.g. `test_jcodeanalyzer.py`) | The codeanalyzer backend directly: init, exec-command construction, cache write/reuse/validation, legacy-vs-structured schema handling, call-graph generation, and every query method. | 43 tests |
+| 3 | **Tree-sitter** | `test_<lang>_sitter.py` / `test_treesitter_<lang>.py` | The syntactic parser/sanitizer: parsability, raw AST, imports, names, methods, comments, pruning. *(Only Java & Python have tree-sitter parsers today.)* | 21 tests |
+| 4 | **Backend contract** | `test_<lang>_backend_contract.py` | Introspection-only (no analyzer run): every backend subclasses the ABC, fully implements it (`__abstractmethods__ == frozenset()`), and **every `self.backend.X` the facade calls exists on the ABC**. | 4 tests |
+| 5 | **Neo4j backend** | `test_<lang>_neo4j_backend.py` | The read-only Cypher backend rebuilds the *same* models from a graph. | 4 tests |
+| 6 | **Backend selection** | `test_<lang>_neo4j_selection.py` | Passing each typed config selects the right backend (assert the in-process class is *not* constructed and the Neo4j class *is*, via `patch`). | 3 tests |
+| 7 | **Deep semantics** | `test_<feature>.py` (e.g. `test_inheritance_call_graph.py`) | Non-trivial cross-cutting behavior — call-graph correctness, inheritance, type hierarchy — beyond single-method smoke checks. | 8 tests |
+| 8 | **Models** | `tests/models/<lang>/test_<lang>_models.py` | Pydantic schema behavior: construction, schema-evolution/back-compat (legacy vs structured), and **JSON round-trip** (`model_dump`/reload). | 6 tests |
+
+### Current fidelity gaps (close these to reach the bar)
+
+Treat this as the live backlog — bring every cell up to the Java standard.
+
+| Layer | Java | Python | TypeScript | C |
+| --- | :-: | :-: | :-: | :-: |
+| 1 Facade (all methods) | ✅ 40 | ⚠️ 6 (dispatch only — does **not** exercise query methods) | ✅ 22 | ❌ 1 (smoke) |
+| 2 In-process backend | ✅ 43 | ❌ none (no `test_pycodeanalyzer.py`) | ⚠️ folded into facade | ❌ none |
+| 3 Tree-sitter | ✅ 21 | ⚠️ 3 (minimal) | n/a | n/a |
+| 4 Backend contract | ✅ 4 | ✅ 4 | ✅ 4 | ❌ none |
+| 5 Neo4j backend | ✅ 4 | ✅ 5 | ✅ 17 | n/a |
+| 6 Backend selection | ✅ 3 | ✅ 5 | ✅ 3 | n/a |
+| 7 Deep semantics | ✅ 8 | ❌ none | ❌ none | ❌ none |
+| 8 Models | ✅ 6 | ❌ 0 (empty file) | ❌ none | ❌ none |
+
+### Rules for new code
+
+- **New facade method →** add a facade test (layer 1) *and*, if it delegates, a backend test
+  (layer 2). If it's a new `self.backend.X`, it must be on the ABC or layer 4 fails.
+- **New language →** stand up layers 1–4 and 8 at minimum on day one; add 5–6 when a Neo4j backend
+  lands and 7 as semantics grow. A language is not "done" at one smoke test.
+- **New backend/framework →** it must satisfy the same ABC (layer 4), get its own selection test
+  (layer 6), and a behavior test that reconstructs the identical models the in-process backend
+  returns (layers 2/5). Interchangeability is the contract — prove it.
+- **Coverage floors:** `pyproject.toml` sets `--cov-fail-under=50`; the Makefile relaxes to 33 for
+  local `make test`. New code should raise the real number, not ride the floor. Run `make test` and
+  read the `show_missing` report before pushing.
 
 ## Git / contribution conventions
 
