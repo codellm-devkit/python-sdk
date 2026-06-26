@@ -142,6 +142,92 @@ Run a single test: `uv run pytest tests/analysis/python/test_python_analysis.py 
 - **Exceptions:** raise the typed exceptions in `cldk/utils/exceptions/` (e.g.
   `CldkInitializationException`) rather than bare built-ins.
 
+## Programming design patterns (enforced)
+
+These are the **design principles I enforce** on this codebase, adapted from a strong-typing,
+fail-early discipline. The guiding philosophy: **make invalid states unrepresentable, push errors
+to the earliest possible boundary, and be explicit about types and ownership.** Match these in every
+change.
+
+### Make invalid states unrepresentable
+
+- **Model with types, not dicts.** Every program fact is a Pydantic v2 model in `cldk/models/<lang>/`
+  — never pass raw `dict`s across the public surface. If a backend returns JSON, marshal it into a
+  model at the boundary; downstream code consumes the typed object.
+- **Honest signatures over flags.** Factory methods in `core.py` expose **only** the options that
+  apply to that language (`CLDK.python()` has `use_codeql`, `CLDK.java()` does not). Don't add a
+  parameter that's meaningful for only some inputs — split the method or the config type instead.
+- **Discriminate on type, not strings.** Backend selection keys off the *type* of the `backend=`
+  config (`CodeAnalyzerConfig` / `PyCodeAnalyzerConfig` / `Neo4jConnectionConfig`), via the
+  `JavaBackend`/`PyBackend`/`TSBackend` unions — not a stringly-typed `backend="neo4j"` argument.
+  New behavior gets a new typed config, not a new magic string.
+- **Newtype-style domain types.** Use the `AnalysisLevel` enum and the Pydantic models rather than
+  bare `str`/`int` for domain concepts. A function that takes an analysis level takes `AnalysisLevel`.
+
+### Error handling — fail loud, fail typed (the `unwrap` rule)
+
+- **Raise the typed exceptions in `cldk/utils/exceptions/`** (e.g. `CldkInitializationException`,
+  `CodeanalyzerExecutionException`) — never a bare `Exception`/`ValueError` for domain failures.
+- **No silent `unwrap`.** The Python analog of Rust's forbidden `.unwrap()` is an unchecked
+  `dict[key]`, `list[0]`, `next(...)`, or an `Optional` used as if non-`None`. Validate at the
+  boundary and raise a typed error with context (see `_normalize_project_path`, which resolves and
+  validates the path *once* and raises `CldkInitializationException` if it isn't a directory).
+- **Never swallow.** No bare `except:` and no `except Exception: pass`. Catch the narrowest type,
+  add context, re-raise (or raise a typed wrapper). Let unexpected failures surface.
+- **`None` is a deliberate value, not an error channel.** Return `None` only where it's a documented,
+  expected outcome (e.g. `cache_subdir(...)` returns `None` when no cache root can be derived).
+  Document it in the docstring's `Returns`.
+
+### Ownership & boundaries — normalize once, keep the facade thin (the `&str` rule)
+
+- **Normalize at the edge, trust within.** Accept flexible input (`str | Path | None`), convert and
+  validate it at the entry point (`_normalize_project_path`), and pass the canonical typed value
+  inward. Don't re-parse/re-validate the same value at every call site.
+- **The facade delegates; it does not implement.** `JavaAnalysis`/`PythonAnalysis`/… stay thin: they
+  dispatch on config type and forward analysis queries to `self.backend`. Real work lives in the
+  backend. Adding logic to a facade is a smell — push it into the backend (or a `commons/` helper).
+- **One source of truth for shared logic.** Cross-language helpers live in `analysis/commons/`
+  (e.g. `cache_subdir`, the tree-sitter parsers). Don't copy a helper into each language package.
+
+### API design — minimal public surface, internal by default (the `pub(crate)` rule)
+
+- **Export only what users need.** `cldk/__init__.py` exports `CLDK` and nothing else. Re-export the
+  intended public API from the package `__init__.py`; everything else is internal.
+- **Mark internals with a leading underscore.** Module-private helpers and functions get `_name`
+  (e.g. `_normalize_project_path`, `_CACHE_KEYS`, `JCodeanalyzer._locate_jar`). Treat unprefixed
+  names as the supported contract.
+- **Typed config objects are Parameter Objects (the builder analog).** Complex setup goes through a
+  dataclass config passed to a factory, not a long positional argument list. Add a field to the
+  config rather than another positional parameter.
+- **The backend ABC is the contract.** Any method a facade calls via `self.backend.X` MUST be
+  declared on the language's `backend.py` ABC; all backends must implement it. The
+  `test_*_backend_contract.py` introspection tests fail otherwise — keep them green.
+
+### Collections & data flow — prefer expressions, stay lazy
+
+- **Comprehensions and generators over manual accumulation.** Build with comprehensions /
+  `itertools` rather than `result = []; for ...: result.append(...)`. Reach for a generator when the
+  caller iterates once and the set is large (symbol tables, ASTs, call-graph edges) — don't
+  materialize a full list you immediately consume.
+- **Call graphs are `networkx.DiGraph`.** Don't reinvent graph traversal; use `networkx`.
+
+### Performance — measure before optimizing, let the engine do heavy lifting
+
+- **Cache is owned, not reinvented.** Analysis artifacts are cached under the language-keyed
+  `cache_dir`; reuse it rather than re-running an analyzer. Heavy parallelism (Ray, CodeQL) is a
+  knob on the engine config (`use_ray`, `use_codeql`) — expose engine capabilities, don't hand-roll
+  thread pools in the SDK.
+- **Don't pay for analysis you won't use.** Default to the lowest sufficient `AnalysisLevel`
+  (`symbol_table`); only raise to `call_graph` when the query needs it.
+- **Profile before optimizing.** Don't micro-optimize speculatively; keep code readable and measure
+  first.
+
+### Before review
+
+- Every change passes **`make lint`** (`black`, `flake8`, `pylint` at line-length 180) and
+  **`make test`**. This is the Python analog of "passes `cargo fmt`, `cargo clippy`, and tests" —
+  non-negotiable before pushing.
+
 ## Tests
 
 - Layout **mirrors** `cldk/`: `tests/analysis/<lang>/`, `tests/models/<lang>/`. Place new tests in
