@@ -76,6 +76,22 @@ class PyCodeAnalyzerConfig(CodeAnalyzerConfig):
 
 
 @dataclass
+class TSCodeAnalyzerConfig(CodeAnalyzerConfig):
+    """Select the in-process codeanalyzer backend for TypeScript.
+
+    Adds the TypeScript-only call-graph knob on top of :class:`CodeAnalyzerConfig`.
+
+    Attributes:
+        tsc_only: If ``True``, restrict the analyzer to the tsc resolver call graph by passing
+            ``--tsc-only`` (codeanalyzer-typescript >= 0.4.2). Defaults to ``False`` (let the
+            binary choose its default). This is the supported replacement for the obsolete
+            ``--call-graph-provider both``.
+    """
+
+    tsc_only: bool = False
+
+
+@dataclass
 class Neo4jConnectionConfig:
     """Select the read-only Neo4j-backed analysis backend.
 
@@ -102,7 +118,7 @@ class Neo4jConnectionConfig:
 # Per-language discriminated unions the facades match on.
 JavaBackend = Union[CodeAnalyzerConfig, Neo4jConnectionConfig]
 PyBackend = Union[PyCodeAnalyzerConfig, Neo4jConnectionConfig]
-TSBackend = Union[CodeAnalyzerConfig, Neo4jConnectionConfig]
+TSBackend = Union[TSCodeAnalyzerConfig, CodeAnalyzerConfig, Neo4jConnectionConfig]
 
 
 def cache_subdir(cache_dir: Union[str, Path, None], project_dir: Union[str, Path, None], language: str) -> Path | None:

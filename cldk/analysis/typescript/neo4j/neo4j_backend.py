@@ -75,6 +75,7 @@ from cldk.models.typescript import (
     TSImport,
     TSInterface,
     TSModule,
+    TSSynthesizedCallable,
     TSTypeAlias,
     TSVariableDeclaration,
 )
@@ -238,6 +239,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
             symbol_table=self.get_symbol_table(),
             call_graph=self._call_edges(),
             external_symbols=self.get_external_symbols(),
+            synthesized_callables=self.get_synthesized_callables(),
         )
 
     def get_symbol_table(self) -> Dict[str, TSModule]:
@@ -261,6 +263,15 @@ class TSNeo4jBackend(TSAnalysisBackend):
             mods=self._modules,
         )
         return {r["p"]["signature"]: R.external(r["p"]) for r in rows}
+
+    def get_synthesized_callables(self) -> Dict[str, TSSynthesizedCallable]:
+        """Anonymous-callback endpoints minted as ``:AnonymousCallable`` nodes (keyed by signature),
+        scoped to this application's modules."""
+        rows = self._run(
+            "MATCH (a:AnonymousCallable) WHERE a._module IN $mods RETURN DISTINCT properties(a) AS p",
+            mods=self._modules,
+        )
+        return {r["p"]["signature"]: R.synthesized(r["p"]) for r in rows}
 
     def get_typescript_file(self, qualified_name: str) -> str | None:
         rows = self._run(

@@ -47,6 +47,7 @@ from cldk.models.typescript import (
     TSImport,
     TSInterface,
     TSModule,
+    TSSynthesizedCallable,
     TSTypeAlias,
     TSVariableDeclaration,
 )
@@ -102,6 +103,7 @@ class TypeScriptAnalysis:
                 analysis_level=analysis_level,
                 eager_analysis=eager_analysis,
                 target_files=target_files,
+                tsc_only=getattr(self.backend_config, "tsc_only", False),
             )
         self.application: TSApplication = self.backend.get_application()
 
@@ -125,6 +127,12 @@ class TypeScriptAnalysis:
         points at (e.g. ``node:fs.readFileSync``, ``js-yaml.load``). Useful for source→sink
         reachability."""
         return self.backend.get_external_symbols()
+
+    def get_synthesized_callables(self) -> Dict[str, TSSynthesizedCallable]:
+        """The synthesized anonymous-callback endpoints the call graph points at — Jelly-resolved
+        callbacks the symbol table never names (keyed by their ``<host>:<line:col>`` signature).
+        Empty under the ``tsc``-only resolver. Materialized so anonymous call edges don't dangle."""
+        return self.backend.get_synthesized_callables()
 
     def get_call_graph_json(self) -> str:
         return self.backend.get_call_graph_json()

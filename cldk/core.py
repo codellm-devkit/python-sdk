@@ -55,6 +55,7 @@ from cldk.analysis.commons.backend_config import (
     PyBackend,
     PyCodeAnalyzerConfig,
     TSBackend,
+    TSCodeAnalyzerConfig,
 )
 from cldk.analysis.commons.treesitter import TreesitterJava
 from cldk.analysis.python.python_analysis import PythonAnalysis
@@ -213,8 +214,10 @@ class CLDK:
             analysis_level: Analysis depth (see :class:`~cldk.analysis.AnalysisLevel`).
             target_files: Restrict analysis to these files.
             eager: Force regeneration of cached analysis.
-            backend: Backend configuration. Defaults to :class:`CodeAnalyzerConfig`;
-                pass a :class:`Neo4jConnectionConfig` to use the read-only Neo4j backend.
+            backend: Backend configuration. Defaults to :class:`CodeAnalyzerConfig`; pass a
+                :class:`TSCodeAnalyzerConfig` to set TypeScript-only knobs such as ``tsc_only``
+                (passes ``--tsc-only``), or a :class:`Neo4jConnectionConfig` to use the read-only
+                Neo4j backend.
         """
         return TypeScriptAnalysis(
             project_dir=_normalize_project_path(project_path),

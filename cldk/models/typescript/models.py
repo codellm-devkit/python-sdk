@@ -415,6 +415,22 @@ class TSExternalSymbol(_Base):
     module: str
 
 
+class TSSynthesizedCallable(_Base):
+    """A first-party anonymous callback that Jelly resolves as a call-graph endpoint but the symbol
+    table never names (the canonicalizer returns ``null`` for anonymous functions). Materialized so
+    that ``call_graph`` edges to anonymous callbacks don't dangle.
+
+    Slim, like :class:`TSExternalSymbol`: the map key in ``TSApplication.synthesized_callables`` IS
+    the synthesized signature ``<nearest-named-enclosing-signature>:<line:col>``, so an edge's
+    ``source``/``target`` byte-matches it just like a real ``TSCallable.signature``. The ``tsc``
+    resolver emits an empty map; Jelly (the union default) populates it."""
+
+    name: str  # display name — always "<anonymous>"; the signature key carries the precise identity
+    path: str  # owning module key (project-relative POSIX path WITH extension)
+    start_line: int
+    start_column: int
+
+
 class TSEntrypoint(_Base):
     """A framework entrypoint (populated by level-2 finders; empty for level 1). Embedded on the
     owning ``TSCallable``/``TSClass``, so it carries no signature/source_file of its own."""
@@ -432,6 +448,7 @@ class TSApplication(_Base):
     symbol_table: Dict[str, TSModule]
     call_graph: List[TSCallEdge] = []
     external_symbols: Dict[str, TSExternalSymbol] = {}
+    synthesized_callables: Dict[str, TSSynthesizedCallable] = {}
 
 
 # Resolve forward references for the mutually-recursive models.
