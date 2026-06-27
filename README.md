@@ -25,7 +25,7 @@
 
 **A unified, multilingual program-analysis SDK for Code LLMs.** CLDK turns raw source code into structured, LLM-ready program facts — symbol tables, call graphs, type hierarchies, and more — behind a single Python API, so you can build analysis-augmented LLM pipelines without wrangling a different static-analysis tool for every language.
 
-Under the hood, CLDK orchestrates mature analysis engines (WALA, Tree-sitter, Jedi, CodeQL, ts-morph) and normalizes their output into consistent, typed [Pydantic](https://docs.pydantic.dev/) models. You get the same ergonomic interface whether you are analyzing Java, Python, or TypeScript.
+Under the hood, CLDK orchestrates mature analysis engines (WALA, Tree-sitter, Jedi, PyCG, ts-morph) and normalizes their output into consistent, typed [Pydantic](https://docs.pydantic.dev/) models. You get the same ergonomic interface whether you are analyzing Java, Python, or TypeScript.
 
 CLDK is:
 
@@ -125,12 +125,12 @@ Each language is analyzed by a dedicated `codeanalyzer-*` engine; CLDK normalize
 | Language | Analysis engine | What it provides |
 | --- | --- | --- |
 | **Java** | [`codeanalyzer-java`](https://github.com/codellm-devkit/codeanalyzer-java) | WALA + JavaParser. Bytecode-level call graphs, type hierarchies, symbol resolution, CRUD-operation and entry-point detection. Optional read-only **Neo4j** graph backend. |
-| **Python** | [`codeanalyzer-python`](https://github.com/codellm-devkit/codeanalyzer-python) | Jedi with optional CodeQL augmentation. Symbol tables, call graphs, and class/method resolution. Optional read-only **Neo4j** graph backend. |
+| **Python** | [`codeanalyzer-python`](https://github.com/codellm-devkit/codeanalyzer-python) | Jedi with PyCG-based call graphs. Symbol tables, call graphs, and class/method resolution. Optional read-only **Neo4j** graph backend. |
 | **TypeScript / JavaScript** | [`codeanalyzer-typescript`](https://github.com/codellm-devkit/codeanalyzer-typescript) | ts-morph with Jelly-based call graphs. Symbols, call graph, types, decorators, and call sites. Optional read-only **Neo4j** graph backend. |
 
 The backend is selected by the **type** of the `backend=` config you pass to a factory: the in-process analyzer (default) or a `Neo4jConnectionConfig` for the read-only graph backend.
 
-> **Analysis cache (Python):** caching is owned by `codeanalyzer-python` — the backend virtualenv, CodeQL database, and analysis cache live under `cache_dir` (default `<project>/.codeanalyzer`). CodeQL is on by default, so the first run is slow (it provisions a CodeQL DB) and later runs reuse a checksum-validated cache. Add the cache directory to your `.gitignore`.
+> **Analysis cache (Python):** caching is owned by `codeanalyzer-python` — the backend virtualenv and analysis cache live under `cache_dir` (default `<project>/.codeanalyzer`). The first run is slower (it provisions the backend virtualenv) and later runs reuse a checksum-validated cache. Add the cache directory to your `.gitignore`.
 
 ## Architecture
 
@@ -147,7 +147,7 @@ graph TD
     A --> T[cldk.analysis.typescript]
 
     J --> EJ[codeanalyzer-java<br/>WALA · JavaParser]
-    P --> EP[codeanalyzer-python<br/>Jedi · CodeQL]
+    P --> EP[codeanalyzer-python<br/>Jedi · PyCG]
     T --> ET[codeanalyzer-typescript<br/>ts-morph · Jelly]
 
     J -. read-only .-> N[(Neo4j)]

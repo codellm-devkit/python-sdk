@@ -25,8 +25,7 @@ The analysis is powered by the ``codeanalyzer-python`` backend, which uses a
 combination of:
     - **Jedi**: For semantic code understanding, symbol resolution, and basic
       call graph construction.
-    - **CodeQL** (optional): For enhanced call graph resolution and more
-      accurate inter-procedural analysis.
+    - **PyCG**: For call-graph construction.
     - **Tree-sitter**: For fast syntactic parsing and AST operations.
 
 Key capabilities include:
@@ -183,7 +182,6 @@ class PythonAnalysis:
                 eager_analysis=eager_analysis,
                 cache_dir=cache_path,
                 target_files=target_files,
-                use_codeql=getattr(cfg, "use_codeql", True),
                 use_ray=getattr(cfg, "use_ray", False),
             )
 
@@ -370,7 +368,7 @@ class PythonAnalysis:
 
         The call graph is built using:
             - Jedi for semantic call resolution
-            - CodeQL (if enabled) for enhanced inter-procedural analysis
+            - PyCG for inter-procedural call-graph construction
 
         Returns:
             A ``networkx.DiGraph`` where:
@@ -380,9 +378,8 @@ class PythonAnalysis:
                 - Edge attributes may include call site information
 
         Note:
-            The completeness of the call graph depends on the analysis
-            configuration. With ``use_codeql=True``, more call relationships
-            are typically discovered at the cost of longer analysis time.
+            The completeness of the call graph depends on the analysis backend
+            (Jedi plus PyCG in codeanalyzer-python 0.3.0).
 
         See Also:
             :meth:`get_callers`: For finding callers of a specific method.

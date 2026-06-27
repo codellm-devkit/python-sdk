@@ -16,9 +16,8 @@
 
 """Fetch + cache a self-contained Temurin JDK to run codeanalyzer.jar.
 
-Mirrors the codeanalyzer-python ``CodeQLLoader`` pattern (download a platform
-archive from a release, extract restoring exec bits, locate the binary), adapted
-for a JDK:
+Follows a platform-binary loader pattern (download a platform archive from a
+release, extract restoring exec bits, locate the binary), adapted for a JDK:
 
   * pinned to an exact Temurin release (reproducible) instead of "latest",
   * SHA256-verified,
@@ -55,7 +54,7 @@ JDK_RELEASE = "jdk-21.0.5+11"
 
 
 class JdkLoader:
-    """Resolve a Temurin JDK from the Adoptium API, mirroring CodeQLLoader."""
+    """Resolve a Temurin JDK from the Adoptium API."""
 
     _API = "https://api.adoptium.net/v3"
 
@@ -131,8 +130,7 @@ class JdkLoader:
 
         logger.info(f"Extracting JDK to {dest}")
         if archive.name.endswith(".zip"):
-            # zipfile.extractall drops the executable bit; copy each stored mode
-            # back (same fix the CodeQL loader applies).
+            # zipfile.extractall drops the executable bit; copy each stored mode back.
             with zipfile.ZipFile(archive) as zf:
                 for info in zf.infolist():
                     out = zf.extract(info, dest)
@@ -160,7 +158,7 @@ def ensure_jdk(java_cache_dir: Path) -> Path:
             cached at ``<java_cache_dir>/jdk/<release>/`` -- the existing per-language
             cache root, not a new location.
 
-    Resolution order (mirrors codeanalyzer-python's ``_ensure_codeql_bin``):
+    Resolution order:
       1. the cached JDK under ``<java_cache_dir>/jdk/<release>/`` -- reused across runs;
       2. a system ``$JAVA_HOME`` that actually has ``jmods`` -- honored verbatim;
       3. otherwise download + extract the pinned Temurin JDK into the cache.

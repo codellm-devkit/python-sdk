@@ -144,7 +144,7 @@ def backends(tmp_path_factory):
     (pkg / "models.py").write_text(MODELS_PY)
     (pkg / "service.py").write_text(SERVICE_PY)
 
-    ref = PyCodeanalyzer(project_dir=proj, analysis_level="call_graph", analysis_json_path=None, eager_analysis=True, use_codeql=False)
+    ref = PyCodeanalyzer(project_dir=proj, analysis_level="call_graph", analysis_json_path=None, eager_analysis=True)
 
     # Load the graph out of band (in-process), exactly as a populator job would.
     opts = AnalysisOptions(
@@ -152,7 +152,6 @@ def backends(tmp_path_factory):
         emit=EmitTarget.NEO4J,
         app_name=APP_NAME,
         rebuild_analysis=True,
-        using_codeql=False,
         neo4j_uri=NEO4J_URI,
         neo4j_user=NEO4J_USER,
         neo4j_password=NEO4J_PASSWORD,

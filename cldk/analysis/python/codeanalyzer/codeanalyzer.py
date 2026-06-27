@@ -29,7 +29,7 @@ The backend produces:
 
 The analysis leverages:
     - **Jedi**: For semantic code understanding and symbol resolution.
-    - **CodeQL** (optional): For enhanced call graph resolution.
+    - **PyCG**: For call-graph construction.
     - **Tree-sitter**: For fast syntactic parsing.
 
 Key features:
@@ -111,7 +111,6 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         analysis_level (str): The depth of analysis performed.
         eager_analysis (bool): Whether to force regeneration of caches.
         target_files (List[str] | None): Specific files to analyze.
-        use_codeql (bool): Whether CodeQL is used for call graph enhancement.
         cache_dir (Path | None): Cache directory for the backend.
         analysis_json_path (Path | None): Path for persisting analysis results.
         application (PyApplication): The analyzed application model.
@@ -129,7 +128,6 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         eager_analysis: bool,
         cache_dir: Union[str, Path, None] = None,
         target_files: List[str] | None = None,
-        use_codeql: bool = True,
         use_ray: bool = False,
     ) -> None:
         """Initialize the Python code analyzer and run analysis.
@@ -154,18 +152,15 @@ class PyCodeanalyzer(PythonAnalysisBackend):
                 its analysis from scratch, ignoring any cached results.
                 If ``False``, cached results are reused when available.
             cache_dir: Directory for codeanalyzer-python's caches, including
-                its virtualenv, CodeQL database, and analysis cache files.
-                If ``None``, defaults to ``<project_dir>/.codeanalyzer``.
+                its virtualenv and analysis cache files. If ``None``, defaults
+                to ``<project_dir>/.codeanalyzer``.
             target_files: Optional list of specific files to analyze. Note
                 that codeanalyzer-python currently supports only a single
                 target file; if multiple are provided, only the first is
                 used and a warning is logged.
-            use_codeql: If ``True`` (default), uses CodeQL to enhance call
-                graph resolution beyond what Jedi provides. Set to ``False``
-                for faster analysis without CodeQL.
             use_ray: If ``True``, enables Ray-based parallel processing for
-                analysis. Recommended for very large projects where Jedi/CodeQL
-                analysis would otherwise be slow. Requires Ray to be installed.
+                analysis. Recommended for very large projects where analysis
+                would otherwise be slow. Requires Ray to be installed.
                 Defaults to ``False``.
 
         Raises:
@@ -173,8 +168,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
 
         Note:
             Analysis is performed synchronously during initialization.
-            For large projects, this may take significant time, especially
-            with ``use_codeql=True``.
+            For large projects, this may take significant time.
         """
         if project_dir is None:
             raise ValueError("project_dir is required for Python analysis.")
@@ -185,7 +179,6 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         self.analysis_level = analysis_level
         self.eager_analysis = eager_analysis
         self.target_files = target_files
-        self.use_codeql = use_codeql
         self.use_ray = use_ray
 
         # codeanalyzer-python owns all caching. CLDK forwards these paths
@@ -234,7 +227,6 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             input=self.project_dir,
             output=self.analysis_json_path,
             format=OutputFormat.JSON,
-            using_codeql=self.use_codeql,
             using_ray=self.use_ray,
             rebuild_analysis=self.eager_analysis,
             skip_tests=True,
