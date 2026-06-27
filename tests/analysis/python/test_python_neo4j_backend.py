@@ -231,6 +231,14 @@ def test_bulk_accessors_parity(backends):
         assert dec_ref == dec_neo
     assert ref.get_decorated_callables(["__no_such_decorator__"]) == neo.get_decorated_callables(["__no_such_decorator__"]) == []
 
+    # get_callsites_for: same keys (every existing signature) and identical, identically-ordered sites.
+    cs_ref = ref.get_callsites_for(sigs)
+    cs_neo = neo.get_callsites_for(sigs)
+    assert set(cs_ref) == set(cs_neo)
+    for sig in cs_ref:
+        assert [_norm(s) for s in cs_ref[sig]] == [_norm(s) for s in cs_neo[sig]], f"call sites for {sig} differ"
+    assert ref.get_callsites_for(["nope.not.here"]) == neo.get_callsites_for(["nope.not.here"]) == {}
+
 
 def test_call_graph_parity(backends):
     ref, neo = backends

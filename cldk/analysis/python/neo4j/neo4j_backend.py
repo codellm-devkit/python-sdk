@@ -83,6 +83,7 @@ from cldk.models.python import (
     PyCallEdge,
     PyCallable,
     PyCallableOverview,
+    PyCallsite,
     PyClass,
     PyClassAttribute,
     PyModule,
@@ -491,3 +492,22 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             markers=list(markers),
         )
         return [R.overview(r) for r in rows]
+
+    def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:
+        # OPTIONAL MATCH so a requested callable with no call sites still yields a row (p is null),
+        # giving it an empty-list entry — parity with the in-process backend, which keys every
+        # existing signature. ORDER mirrors _callable_full's call-site ordering.
+        rows = self._run(
+            "MATCH (c:PyCallable) WHERE c._module IN $mods AND c.signature IN $sigs "
+            "OPTIONAL MATCH (c)-[:PY_HAS_CALLSITE]->(s:PyCallSite) "
+            "RETURN c.signature AS owner, properties(s) AS p "
+            "ORDER BY s.start_line, s.start_column",
+            mods=self._modules,
+            sigs=list(signatures),
+        )
+        out: Dict[str, List[PyCallsite]] = {}
+        for r in rows:
+            sites = out.setdefault(r["owner"], [])
+            if r["p"] is not None:
+                sites.append(R.callsite(r["p"]))
+        return out

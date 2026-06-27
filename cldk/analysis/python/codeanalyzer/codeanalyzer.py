@@ -67,6 +67,7 @@ from cldk.models.python import (
     PyCallEdge,
     PyCallable,
     PyCallableOverview,
+    PyCallsite,
     PyClass,
     PyClassAttribute,
     PyComment,
@@ -588,6 +589,11 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             for c, class_sig, kind in self._iter_callables()
             if marker_set.intersection(c.decorators or [])
         ]
+
+    def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:
+        """Return ``{signature: call_sites}`` for the requested signatures that exist."""
+        wanted = set(signatures)
+        return {c.signature: list(c.call_sites) for c, _, _ in self._iter_callables() if c.signature in wanted}
 
     # ----------------------------------------------------------- callers/callees
     def get_all_callers(self, target_class_name: str, target_method_declaration: str) -> Dict:

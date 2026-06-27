@@ -23,12 +23,12 @@ Neo4j backend is checked for byte-for-byte parity against this same logic in
 ``test_python_neo4j_backend.py`` when a server is available.
 """
 
-from codeanalyzer.schema.py_schema import PyApplication, PyCallable, PyClass, PyModule
+from codeanalyzer.schema.py_schema import PyApplication, PyCallable, PyCallsite, PyClass, PyModule
 
 from cldk.analysis.python.codeanalyzer.codeanalyzer import PyCodeanalyzer
 
 
-def _callable(name, signature, *, code="", decorators=None, inner_callables=None, inner_classes=None):
+def _callable(name, signature, *, code="", decorators=None, inner_callables=None, inner_classes=None, call_sites=None):
     return PyCallable(
         name=name,
         path="pkg/models.py",
@@ -37,6 +37,7 @@ def _callable(name, signature, *, code="", decorators=None, inner_callables=None
         decorators=decorators or [],
         inner_callables=inner_callables or {},
         inner_classes=inner_classes or {},
+        call_sites=call_sites or [],
     )
 
 
@@ -64,7 +65,13 @@ def _backend():
         "pkg.models.Entity",
         methods={
             "__init__": _callable("__init__", "pkg.models.Entity.__init__", code="self.x = 1"),
-            "describe": _callable("describe", "pkg.models.Entity.describe", code="return self.x", decorators=["property"]),
+            "describe": _callable(
+                "describe",
+                "pkg.models.Entity.describe",
+                code="return self.x",
+                decorators=["property"],
+                call_sites=[PyCallsite(method_name="greet", start_line=7, start_column=4)],
+            ),
         },
         inner_classes={"pkg.models.Entity.Meta": meta},
     )
@@ -131,3 +138,14 @@ def test_decorated_callables_filters_by_marker():
     assert [o.signature for o in props] == ["pkg.models.Entity.describe"]
 
     assert backend.get_decorated_callables(["nonexistent"]) == []
+
+
+def test_callsites_for_keys_existing_signatures_only():
+    backend = _backend()
+    sites = backend.get_callsites_for(
+        ["pkg.models.Entity.describe", "pkg.models.greet", "does.not.exist"]
+    )
+    # both existing callables get a key; the one with no call sites maps to an empty list
+    assert set(sites) == {"pkg.models.Entity.describe", "pkg.models.greet"}
+    assert [s.method_name for s in sites["pkg.models.Entity.describe"]] == ["greet"]
+    assert sites["pkg.models.greet"] == []

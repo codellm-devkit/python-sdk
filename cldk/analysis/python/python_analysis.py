@@ -62,6 +62,7 @@ from cldk.models.python import (
     PyApplication,
     PyCallable,
     PyCallableOverview,
+    PyCallsite,
     PyClass,
     PyClassAttribute,
     PyComment,
@@ -572,6 +573,22 @@ class PythonAnalysis:
             :meth:`get_callables_overview`: The unfiltered projection.
         """
         return self.backend.get_decorated_callables(markers)
+
+    def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:
+        """Return the call sites of the given callables, keyed by signature, in one bulk read.
+
+        Avoids the per-callable reconstruction fan-out when you need call sites for a specific
+        frontier (e.g. dispatch-edge synthesis or external-reader detection).
+
+        Args:
+            signatures: Callable signatures to fetch call sites for.
+
+        Returns:
+            A dict mapping each existing signature to its list of
+            :class:`~cldk.models.python.PyCallsite` (empty if the callable has no call sites).
+            Signatures with no matching callable are omitted.
+        """
+        return self.backend.get_callsites_for(signatures)
 
     def get_methods_in_class(self, qualified_class_name: str) -> Dict[str, PyCallable]:
         """Return all methods defined in a specific class.

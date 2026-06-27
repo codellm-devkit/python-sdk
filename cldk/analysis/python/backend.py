@@ -38,6 +38,7 @@ from cldk.models.python import (
     PyApplication,
     PyCallable,
     PyCallableOverview,
+    PyCallsite,
     PyClass,
     PyClassAttribute,
     PyModule,
@@ -159,3 +160,9 @@ class PythonAnalysisBackend(ABC):
     def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:
         """Overviews of callables decorated with any of ``markers`` (matched against the decorator
         names)."""
+
+    @abstractmethod
+    def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:
+        """Call sites of the given callable signatures, keyed by owning signature. Each existing
+        signature gets an entry (an empty list if it has no call sites); signatures with no matching
+        callable are omitted."""
