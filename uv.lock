@@ -347,7 +347,7 @@ test = [
 requires-dist = [
     { name = "clang", specifier = "==17.0.6" },
     { name = "codeanalyzer-python", specifier = "==0.2.0" },
-    { name = "codeanalyzer-typescript", specifier = "==0.4.0" },
+    { name = "codeanalyzer-typescript", specifier = "==0.4.3" },
     { name = "libclang", specifier = "==17.0.6" },
     { name = "neo4j", marker = "extra == 'neo4j'", specifier = ">=5.14,<7" },
     { name = "networkx", specifier = ">=3.4.2,<4" },
@@ -419,14 +419,14 @@ wheels = [
 
 [[package]]
 name = "codeanalyzer-typescript"
-version = "0.4.0"
+version = "0.4.3"
 source = { registry = "https://pypi.org/simple" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b0/81/da7f318dc2465fe0a37c072746cabc6f44ae6f4a541898390055285e6db1/codeanalyzer_typescript-0.4.0-py3-none-macosx_10_12_x86_64.whl", hash = "sha256:01bd9ff546302b105656a6b38c4039bab1a61f9c3c98f087d53990d3fc750a50", size = 31038787, upload-time = "2026-06-19T23:05:39.331Z" },
-    { url = "https://files.pythonhosted.org/packages/5f/8e/c02efa6d5bbdc2ce3bf21f2e312c6152dd60c2b53924e9160c3ae87ec23d/codeanalyzer_typescript-0.4.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:a5e23461301f3206ebe5f71a04ab5e3f7e1e38a447660e6de1cd667ec65e69c7", size = 28679376, upload-time = "2026-06-19T23:05:42.093Z" },
-    { url = "https://files.pythonhosted.org/packages/4e/f7/10ccfb06a19e608b0745e6195a71f3728c0abbec8718eed5f8411544ed8e/codeanalyzer_typescript-0.4.0-py3-none-manylinux2014_aarch64.whl", hash = "sha256:1ee5c678c7d19b91665e03af3008d091a7fd89112fa72c12937d8508c95fba17", size = 40232939, upload-time = "2026-06-19T23:05:44.987Z" },
-    { url = "https://files.pythonhosted.org/packages/00/bb/68292380194671e674d3b6dbc15659f0bb90d2bb6270fdd159e93a661a4a/codeanalyzer_typescript-0.4.0-py3-none-manylinux2014_x86_64.whl", hash = "sha256:25b6596e18483e807e157494ceb692b8a348610304f1e6658024fe99c56338ff", size = 40502175, upload-time = "2026-06-19T23:05:47.89Z" },
-    { url = "https://files.pythonhosted.org/packages/ab/17/c619bbfb9db1b1b8612a4bb5a2d21dfbe863ddf7ec1f7ba9e1c6f06e4e13/codeanalyzer_typescript-0.4.0-py3-none-win_amd64.whl", hash = "sha256:95d4d228c17b5bd44f83a4dd15e7e33cbf362d980b17fe9d740e1cd2ab68a9c3", size = 42889400, upload-time = "2026-06-19T23:05:50.857Z" },
+    { url = "https://files.pythonhosted.org/packages/f9/ff/be99765bd13613eb518184df08141a44b5d55a96306c9c177dba725b9310/codeanalyzer_typescript-0.4.3-py3-none-macosx_10_12_x86_64.whl", hash = "sha256:f0d60a457c30b94ac52140701f89d20cb552118fc63146d7d69199ae226ca853", size = 31040212, upload-time = "2026-06-27T18:50:27.121Z" },
+    { url = "https://files.pythonhosted.org/packages/ed/df/3c2eaf131bc1c8c1333fc33c0157d5230e347390d982013f71d87e010177/codeanalyzer_typescript-0.4.3-py3-none-macosx_11_0_arm64.whl", hash = "sha256:48098a7cc38a8acc74a10a64c19f79a549e919503e6d89b25200935d910424db", size = 28680981, upload-time = "2026-06-27T18:50:30.005Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/98/19e27a40be65b76853a8e21713cb9ffa3126956481c65d748e3727918ac0/codeanalyzer_typescript-0.4.3-py3-none-manylinux2014_aarch64.whl", hash = "sha256:5cd3b76040719914463d9aa0bf87bcb346e7f4c568e7d62085bb88c03f555ab8", size = 40234190, upload-time = "2026-06-27T18:50:32.951Z" },
+    { url = "https://files.pythonhosted.org/packages/14/61/fa7e886b66c67dd19fc16c8da032a304ff6ad8b06d1232b716fcc55e1f16/codeanalyzer_typescript-0.4.3-py3-none-manylinux2014_x86_64.whl", hash = "sha256:6f87e9e2fdc2b6d926c536c5517661c70aee3720a5803c91fcf4af54d52320e6", size = 40503499, upload-time = "2026-06-27T18:50:36.031Z" },
+    { url = "https://files.pythonhosted.org/packages/de/bf/06f1a820ec8ded7721ce61057d67c2758079f5c31f0e70933c3c29dd78c4/codeanalyzer_typescript-0.4.3-py3-none-win_amd64.whl", hash = "sha256:1af81d1ec28c503790d7d3dc745bb5c5418f87b69c427535b76f7c112a297359", size = 42890644, upload-time = "2026-06-27T18:50:38.974Z" },
 ]
 
 [[package]]

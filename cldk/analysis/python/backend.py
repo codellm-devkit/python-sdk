@@ -37,6 +37,8 @@ import networkx as nx
 from cldk.models.python import (
     PyApplication,
     PyCallable,
+    PyCallableOverview,
+    PyCallsite,
     PyClass,
     PyClassAttribute,
     PyModule,
@@ -139,3 +141,28 @@ class PythonAnalysisBackend(ABC):
     @abstractmethod
     def get_all_fields(self, qualified_class_name: str) -> List[PyClassAttribute]:
         """The attributes/fields of a class."""
+
+    # -----[ bulk / projected accessors ]-----
+    # Set-at-a-time, field-projected reads — one round-trip on the Neo4j backend, one symbol-table
+    # walk in-process — for callers that enumerate the whole application and would otherwise pay the
+    # per-entity reconstruction of get_all_methods_in_application.
+    @abstractmethod
+    def get_callables_overview(self) -> List[PyCallableOverview]:
+        """A lightweight projection of every callable in the application (methods, module-level and
+        nested functions), without the full :class:`PyCallable` reconstruction."""
+
+    @abstractmethod
+    def get_method_bodies(self, signatures: List[str]) -> Dict[str, str]:
+        """Source bodies for the given callable signatures, keyed by signature. Signatures with no
+        matching callable are omitted."""
+
+    @abstractmethod
+    def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:
+        """Overviews of callables decorated with any of ``markers`` (matched against the decorator
+        names)."""
+
+    @abstractmethod
+    def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:
+        """Call sites of the given callable signatures, keyed by owning signature. Each existing
+        signature gets an entry (an empty list if it has no call sites); signatures with no matching
+        callable are omitted."""

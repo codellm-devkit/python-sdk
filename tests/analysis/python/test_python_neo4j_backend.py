@@ -208,6 +208,38 @@ def test_methods_and_fields_parity(backends):
         assert _norm(ref.get_all_fields(sig)) == _norm(neo.get_all_fields(sig))
 
 
+def test_bulk_accessors_parity(backends):
+    ref, neo = backends
+
+    # get_callables_overview: same set of callables, identical projection per signature.
+    ov_ref = {o.signature: o.model_dump() for o in ref.get_callables_overview()}
+    ov_neo = {o.signature: o.model_dump() for o in neo.get_callables_overview()}
+    assert set(ov_ref) == set(ov_neo)
+    for sig in ov_ref:
+        assert ov_ref[sig] == ov_neo[sig], f"overview for {sig} differs"
+
+    # get_method_bodies: identical bodies for the whole frontier, and missing sigs omitted on both.
+    sigs = list(ov_ref)
+    assert ref.get_method_bodies(sigs) == neo.get_method_bodies(sigs)
+    assert ref.get_method_bodies(["nope.not.here"]) == neo.get_method_bodies(["nope.not.here"]) == {}
+
+    # get_decorated_callables: parity for whatever decorators the project actually uses.
+    markers = sorted({d for o in ov_ref.values() for d in o["decorators"]})
+    if markers:
+        dec_ref = {o.signature: o.model_dump() for o in ref.get_decorated_callables(markers)}
+        dec_neo = {o.signature: o.model_dump() for o in neo.get_decorated_callables(markers)}
+        assert dec_ref == dec_neo
+    assert ref.get_decorated_callables(["__no_such_decorator__"]) == neo.get_decorated_callables(["__no_such_decorator__"]) == []
+
+    # get_callsites_for: same keys (every existing signature) and identical, identically-ordered sites.
+    cs_ref = ref.get_callsites_for(sigs)
+    cs_neo = neo.get_callsites_for(sigs)
+    assert set(cs_ref) == set(cs_neo)
+    for sig in cs_ref:
+        assert [_norm(s) for s in cs_ref[sig]] == [_norm(s) for s in cs_neo[sig]], f"call sites for {sig} differ"
+    assert ref.get_callsites_for(["nope.not.here"]) == neo.get_callsites_for(["nope.not.here"]) == {}
+
+
 def test_call_graph_parity(backends):
     ref, neo = backends
     g_ref, g_neo = ref.get_call_graph(), neo.get_call_graph()

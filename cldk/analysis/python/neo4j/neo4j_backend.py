@@ -82,6 +82,8 @@ from cldk.models.python import (
     PyApplication,
     PyCallEdge,
     PyCallable,
+    PyCallableOverview,
+    PyCallsite,
     PyClass,
     PyClassAttribute,
     PyModule,
@@ -127,6 +129,9 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         self.application_name = application_name
         self._database = neo4j_database
         self._driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_username, neo4j_password))
+        # One long-lived read session reused across queries (see _run). Reconstruction is an N+1
+        # fan-out, so reopening a session per query added real per-call overhead. Created lazily.
+        self._session_obj: Any | None = None
 
         # The application's module file_keys, used to scope every query to this app.
         self._modules: List[str] = self._load_module_keys()
@@ -135,8 +140,17 @@ class PyNeo4jBackend(PythonAnalysisBackend):
 
     # -----[ lifecycle ]-----
     def close(self) -> None:
-        """Close the underlying Neo4j driver."""
+        """Close the reused session (if any) and the underlying Neo4j driver."""
+        self._close_session()
         self._driver.close()
+
+    def _close_session(self) -> None:
+        if self._session_obj is not None:
+            try:
+                self._session_obj.close()
+            except Exception:  # noqa: BLE001 - best-effort cleanup
+                pass
+            self._session_obj = None
 
     def __enter__(self) -> "PyNeo4jBackend":
         return self
@@ -144,10 +158,23 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     def __exit__(self, *exc: Any) -> None:
         self.close()
 
+    def _session(self) -> Any:
+        """The reused read session, opened lazily on first use."""
+        if self._session_obj is None:
+            self._session_obj = self._driver.session(database=self._database)
+        return self._session_obj
+
     def _run(self, query: str, **params: Any) -> List[Dict[str, Any]]:
-        """Run a Cypher statement and return the records as plain dicts (nodes/rels → prop maps)."""
-        with self._driver.session(database=self._database) as session:
-            return [record.data() for record in session.run(query, **params)]
+        """Run a Cypher statement and return the records as plain dicts (nodes/rels → prop maps).
+
+        Reuses one long-lived session across calls. If a query fails the session may be left in a
+        bad state, so it is dropped before re-raising and the next call reopens a fresh one.
+        """
+        try:
+            return [record.data() for record in self._session().run(query, **params)]
+        except Exception:
+            self._close_session()
+            raise
 
     def _load_module_keys(self) -> List[str]:
         """The application's module ``file_key``s — the scope key for every other query."""
@@ -428,3 +455,59 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     def get_all_fields(self, qualified_class_name: str) -> List[PyClassAttribute]:
         cls = self.get_class(qualified_class_name)
         return list(cls.attributes.values()) if cls else []
+
+    # =====================================================================================
+    # PythonAnalysisBackend — bulk / projected accessors (one round-trip each)
+    # =====================================================================================
+    # Field-projected RETURNs that sidestep the per-entity reconstruction fan-out: each is a single
+    # Cypher statement, not the N+1 walk get_symbol_table()/get_all_methods_in_application() pays.
+    _OVERVIEW_PROJECTION = (
+        "OPTIONAL MATCH (owner:PyClass)-[:PY_HAS_METHOD]->(c) "
+        "RETURN c.signature AS signature, c.name AS name, c.decorators AS decorators, "
+        "c.path AS path, c.start_line AS start_line, c.end_line AS end_line, "
+        "owner.signature AS class_signature"
+    )
+
+    def get_callables_overview(self) -> List[PyCallableOverview]:
+        rows = self._run(
+            "MATCH (c:PyCallable) WHERE c._module IN $mods " + self._OVERVIEW_PROJECTION,
+            mods=self._modules,
+        )
+        return [R.overview(r) for r in rows]
+
+    def get_method_bodies(self, signatures: List[str]) -> Dict[str, str]:
+        rows = self._run(
+            "MATCH (c:PyCallable) WHERE c._module IN $mods AND c.signature IN $sigs "
+            "RETURN c.signature AS signature, c.code AS code",
+            mods=self._modules,
+            sigs=list(signatures),
+        )
+        return {r["signature"]: r.get("code") for r in rows}
+
+    def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:
+        rows = self._run(
+            "MATCH (c:PyCallable) WHERE c._module IN $mods "
+            "AND any(d IN c.decorators WHERE d IN $markers) " + self._OVERVIEW_PROJECTION,
+            mods=self._modules,
+            markers=list(markers),
+        )
+        return [R.overview(r) for r in rows]
+
+    def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:
+        # OPTIONAL MATCH so a requested callable with no call sites still yields a row (p is null),
+        # giving it an empty-list entry — parity with the in-process backend, which keys every
+        # existing signature. ORDER mirrors _callable_full's call-site ordering.
+        rows = self._run(
+            "MATCH (c:PyCallable) WHERE c._module IN $mods AND c.signature IN $sigs "
+            "OPTIONAL MATCH (c)-[:PY_HAS_CALLSITE]->(s:PyCallSite) "
+            "RETURN c.signature AS owner, properties(s) AS p "
+            "ORDER BY s.start_line, s.start_column",
+            mods=self._modules,
+            sigs=list(signatures),
+        )
+        out: Dict[str, List[PyCallsite]] = {}
+        for r in rows:
+            sites = out.setdefault(r["owner"], [])
+            if r["p"] is not None:
+                sites.append(R.callsite(r["p"]))
+        return out
