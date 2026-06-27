@@ -82,6 +82,7 @@ from cldk.models.python import (
     PyApplication,
     PyCallEdge,
     PyCallable,
+    PyCallableOverview,
     PyClass,
     PyClassAttribute,
     PyModule,
@@ -428,3 +429,40 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     def get_all_fields(self, qualified_class_name: str) -> List[PyClassAttribute]:
         cls = self.get_class(qualified_class_name)
         return list(cls.attributes.values()) if cls else []
+
+    # =====================================================================================
+    # PythonAnalysisBackend — bulk / projected accessors (one round-trip each)
+    # =====================================================================================
+    # Field-projected RETURNs that sidestep the per-entity reconstruction fan-out: each is a single
+    # Cypher statement, not the N+1 walk get_symbol_table()/get_all_methods_in_application() pays.
+    _OVERVIEW_PROJECTION = (
+        "OPTIONAL MATCH (owner:PyClass)-[:PY_HAS_METHOD]->(c) "
+        "RETURN c.signature AS signature, c.name AS name, c.decorators AS decorators, "
+        "c.path AS path, c.start_line AS start_line, c.end_line AS end_line, "
+        "owner.signature AS class_signature"
+    )
+
+    def get_callables_overview(self) -> List[PyCallableOverview]:
+        rows = self._run(
+            "MATCH (c:PyCallable) WHERE c._module IN $mods " + self._OVERVIEW_PROJECTION,
+            mods=self._modules,
+        )
+        return [R.overview(r) for r in rows]
+
+    def get_method_bodies(self, signatures: List[str]) -> Dict[str, str]:
+        rows = self._run(
+            "MATCH (c:PyCallable) WHERE c._module IN $mods AND c.signature IN $sigs "
+            "RETURN c.signature AS signature, c.code AS code",
+            mods=self._modules,
+            sigs=list(signatures),
+        )
+        return {r["signature"]: r.get("code") for r in rows}
+
+    def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:
+        rows = self._run(
+            "MATCH (c:PyCallable) WHERE c._module IN $mods "
+            "AND any(d IN c.decorators WHERE d IN $markers) " + self._OVERVIEW_PROJECTION,
+            mods=self._modules,
+            markers=list(markers),
+        )
+        return [R.overview(r) for r in rows]

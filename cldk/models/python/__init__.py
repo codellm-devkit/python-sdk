@@ -36,10 +36,13 @@ from codeanalyzer.schema.py_schema import (
     PyVariableDeclaration,
 )
 
+from .projections import PyCallableOverview
+
 __all__ = [
     "PyApplication",
     "PyCallEdge",
     "PyCallable",
+    "PyCallableOverview",
     "PyCallableParameter",
     "PyCallsite",
     "PyClass",

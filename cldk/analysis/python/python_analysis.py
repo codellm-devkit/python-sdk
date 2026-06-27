@@ -61,6 +61,7 @@ from cldk.analysis.python.neo4j import PyNeo4jBackend
 from cldk.models.python import (
     PyApplication,
     PyCallable,
+    PyCallableOverview,
     PyClass,
     PyClassAttribute,
     PyComment,
@@ -523,6 +524,54 @@ class PythonAnalysis:
             :meth:`get_method`: For a single method by name.
         """
         return self.backend.get_all_methods_in_application()
+
+    def get_callables_overview(self) -> List[PyCallableOverview]:
+        """Return a lightweight overview of every callable in the project, in one bulk read.
+
+        A field-projected alternative to :meth:`get_methods` for enumeration: each
+        :class:`~cldk.models.python.PyCallableOverview` carries the callable's signature, owning
+        class (if any), kind, location, and decorators — but not the full reconstruction (call
+        sites, inner callables, locals). On the Neo4j backend this is a single Cypher query instead
+        of the per-entity fan-out :meth:`get_methods` pays. Body-inspect the few you need afterwards
+        via :meth:`get_method` or :meth:`get_method_bodies`.
+
+        Returns:
+            A flat list of :class:`~cldk.models.python.PyCallableOverview`, one per callable
+            (methods, module-level functions, and nested functions).
+
+        See Also:
+            :meth:`get_decorated_callables`: The same projection filtered by decorator.
+            :meth:`get_method_bodies`: Bulk source-body fetch for chosen signatures.
+        """
+        return self.backend.get_callables_overview()
+
+    def get_method_bodies(self, signatures: List[str]) -> Dict[str, str]:
+        """Return source bodies for the given callable signatures, in one bulk read.
+
+        Args:
+            signatures: Callable signatures to fetch bodies for (e.g. from
+                :meth:`get_callables_overview`).
+
+        Returns:
+            A dict mapping each signature to its source body. Signatures with no matching callable
+            are omitted.
+        """
+        return self.backend.get_method_bodies(signatures)
+
+    def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:
+        """Return overviews of callables decorated with any of the given markers, in one bulk read.
+
+        Args:
+            markers: Decorator names to match (e.g. ``["staticmethod", "app.route"]``).
+
+        Returns:
+            A list of :class:`~cldk.models.python.PyCallableOverview` for every callable carrying at
+            least one of ``markers`` as a decorator.
+
+        See Also:
+            :meth:`get_callables_overview`: The unfiltered projection.
+        """
+        return self.backend.get_decorated_callables(markers)
 
     def get_methods_in_class(self, qualified_class_name: str) -> Dict[str, PyCallable]:
         """Return all methods defined in a specific class.

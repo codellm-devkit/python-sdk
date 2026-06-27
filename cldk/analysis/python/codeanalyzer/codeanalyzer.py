@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Tuple, Union
+from typing import Dict, Iterator, List, Tuple, Union
 
 import networkx as nx
 
@@ -66,6 +66,7 @@ from cldk.models.python import (
     PyApplication,
     PyCallEdge,
     PyCallable,
+    PyCallableOverview,
     PyClass,
     PyClassAttribute,
     PyComment,
@@ -73,6 +74,20 @@ from cldk.models.python import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _overview(c: PyCallable, class_signature: str | None, kind: str) -> PyCallableOverview:
+    """Project a :class:`PyCallable` into a lightweight :class:`PyCallableOverview`."""
+    return PyCallableOverview(
+        signature=c.signature,
+        name=c.name,
+        class_signature=class_signature,
+        kind=kind,
+        path=c.path,
+        start_line=c.start_line,
+        end_line=c.end_line,
+        decorators=list(c.decorators or []),
+    )
 
 
 class PyCodeanalyzer(PythonAnalysisBackend):
@@ -522,6 +537,57 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         """
         cls = self.get_class(qualified_class_name)
         return list(cls.attributes.values()) if cls else []
+
+    # ----------------------------------------------------------- bulk / projected accessors
+    def _iter_callables(self) -> Iterator[Tuple[PyCallable, "str | None", str]]:
+        """Yield ``(callable, class_signature, kind)`` for every callable in the application.
+
+        Walks the in-memory symbol table the same way the Neo4j backend's ``MATCH (c:PyCallable)``
+        sees nodes: a callable is a ``"method"`` only when a class declares it directly (mirroring
+        ``PY_HAS_METHOD``); module-level functions and functions nested inside a callable are
+        ``"function"`` with a ``None`` class signature. The two backends therefore enumerate the
+        same set.
+        """
+
+        def from_callable(c: PyCallable):
+            for inner in c.inner_callables.values():
+                yield inner, None, "function"
+                yield from from_callable(inner)
+            for inner_cls in c.inner_classes.values():
+                yield from from_class(inner_cls)
+
+        def from_class(cls: PyClass):
+            for m in cls.methods.values():
+                yield m, cls.signature, "method"
+                yield from from_callable(m)
+            for inner_cls in cls.inner_classes.values():
+                yield from from_class(inner_cls)
+
+        for module in self.application.symbol_table.values():
+            for cls in module.classes.values():
+                yield from from_class(cls)
+            for fn in module.functions.values():
+                yield fn, None, "function"
+                yield from from_callable(fn)
+
+    def get_callables_overview(self) -> List[PyCallableOverview]:
+        """Return a lightweight overview of every callable in the application (see
+        :meth:`PythonAnalysisBackend.get_callables_overview`)."""
+        return [_overview(c, class_sig, kind) for c, class_sig, kind in self._iter_callables()]
+
+    def get_method_bodies(self, signatures: List[str]) -> Dict[str, str]:
+        """Return ``{signature: code}`` for the requested signatures that exist."""
+        wanted = set(signatures)
+        return {c.signature: c.code for c, _, _ in self._iter_callables() if c.signature in wanted}
+
+    def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:
+        """Return overviews of callables decorated with any of ``markers``."""
+        marker_set = set(markers)
+        return [
+            _overview(c, class_sig, kind)
+            for c, class_sig, kind in self._iter_callables()
+            if marker_set.intersection(c.decorators or [])
+        ]
 
     # ----------------------------------------------------------- callers/callees
     def get_all_callers(self, target_class_name: str, target_method_declaration: str) -> Dict:
