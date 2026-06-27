@@ -1,6 +1,6 @@
 [project]
 name = "cldk"
-version = "1.3.0"
+version = "1.4.0"
 description = "The official Python SDK for Codellm-Devkit."
 readme = "README.md"
 license = { text = "Apache-2.0" }

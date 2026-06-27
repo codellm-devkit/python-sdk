@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.4.0] - 2026-06-27
+
 ### Changed
 - **Upgraded `codeanalyzer-python` 0.2.0 → 0.3.0**, which drops CodeQL and uses **PyCG** for
   call-graph construction.
