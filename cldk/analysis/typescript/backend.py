@@ -55,6 +55,7 @@ from cldk.models.typescript import (
     TSImport,
     TSInterface,
     TSModule,
+    TSSynthesizedCallable,
     TSTypeAlias,
     TSVariableDeclaration,
 )
@@ -85,6 +86,11 @@ class TSAnalysisBackend(ABC):
     @abstractmethod
     def get_external_symbols(self) -> Dict[str, TSExternalSymbol]:
         """Phantom (external) call targets — imported/required library members."""
+
+    @abstractmethod
+    def get_synthesized_callables(self) -> Dict[str, TSSynthesizedCallable]:
+        """Anonymous-callback endpoints the symbol table never names (Jelly-resolved). Keyed by the
+        synthesized signature that ``call_graph`` edges reference. Empty for the ``tsc`` resolver."""
 
     @abstractmethod
     def get_typescript_file(self, qualified_name: str) -> str | None:

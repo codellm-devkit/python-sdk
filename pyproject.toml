@@ -41,7 +41,7 @@ dependencies = [
     "clang==17.0.6",
     "libclang==17.0.6",
     "codeanalyzer-python==0.2.0",
-    "codeanalyzer-typescript==0.4.0",
+    "codeanalyzer-typescript==0.4.3",
 ]
 
 [project.optional-dependencies]
@@ -89,7 +89,7 @@ include = [
 [tool.backend-versions]
 codeanalyzer-java = "2.4.1"
 codeanalyzer-python = "0.2.0"
-codeanalyzer-typescript = "0.4.0"
+codeanalyzer-typescript = "0.4.3"
 
 ########################################
 # Tool configurations
