@@ -7,9 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.3.0] - 2026-06-27
+
 ### Added
+- **Bulk, field-projected accessors on the Python facade** (`PythonAnalysis`) for enumerating an
+  application set-at-a-time, instead of paying the per-entity reconstruction `get_methods()` does
+  (tens of thousands of round-trips on the Neo4j backend for a large app): `get_callables_overview()`
+  (returns the new `PyCallableOverview` projection), `get_method_bodies(signatures)`,
+  `get_decorated_callables(markers)`, and `get_callsites_for(signatures)`. On the read-only Neo4j
+  backend each is a single projected Cypher query; in-process each is one symbol-table walk. New
+  `PyCallableOverview` model in `cldk.models.python`.
+- **`tsc_only` toggle for the TypeScript backend.** New `TSCodeAnalyzerConfig` backend config exposes
+  `tsc_only`, which passes `--tsc-only` (codeanalyzer-typescript >= 0.4.2) to pin the call graph to
+  the resolver path, replacing reliance on the obsolete `--call-graph-provider both`.
+- **Synthesized anonymous callables for TypeScript.** New `TSSynthesizedCallable` model and
+  `get_synthesized_callables()` on the TypeScript analysis surface expose the Jelly-resolved
+  anonymous-callback endpoints the symbol table never names, so anonymous call-graph edges no longer
+  dangle. Empty under the `tsc`-only resolver.
 - README **Cited By** section highlighting papers that cite CLDK (SAINT, ASTER, RECON, PRAXIS,
   Phaedrus, and others), compiled from Semantic Scholar / OpenAlex citation data.
+
+### Changed
+- The read-only Neo4j Python backend now reuses a single read session across queries instead of
+  opening one per Cypher statement, cutting per-call overhead on the reconstruction path.
+- Bumped `codeanalyzer-typescript` 0.4.0 → 0.4.3.
 
 ## [v1.2.0] - 2026-06-22
 
