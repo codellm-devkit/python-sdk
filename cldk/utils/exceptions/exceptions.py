@@ -23,8 +23,6 @@ The exceptions are organized by category:
     - **Initialization Errors**: :class:`CldkInitializationException`
     - **Analysis Backend Errors**: :class:`CodeanalyzerExecutionException`,
       :class:`CodeanalyzerUsageException`
-    - **CodeQL Errors**: :class:`CodeQLDatabaseBuildException`,
-      :class:`CodeQLQueryExecutionException`
 
 All exceptions inherit from Python's built-in :class:`Exception` class and
 include a descriptive message attribute.
@@ -84,75 +82,6 @@ class CodeanalyzerExecutionException(Exception):
         Args:
             message: A descriptive error message explaining what went wrong
                 during CodeAnalyzer execution.
-        """
-        self.message = message
-        super().__init__(self.message)
-
-
-class CodeQLDatabaseBuildException(Exception):
-    """Exception raised for errors during CodeQL database building.
-
-    This exception is raised when the CodeQL database creation fails.
-    CodeQL databases are used for enhanced call graph analysis in Python.
-    Common causes include:
-        - CodeQL CLI not installed or not on PATH
-        - Invalid project structure for CodeQL
-        - Insufficient disk space
-        - Build errors in the target project
-
-    Attributes:
-        message (str): A descriptive error message explaining the
-            database build failure.
-
-    Note:
-        This exception is primarily relevant for Python analysis when
-        ``use_codeql=True`` is specified.
-
-    See Also:
-        :class:`~cldk.analysis.python.PythonAnalysis`: Python analysis
-            that may use CodeQL.
-    """
-
-    def __init__(self, message: str) -> None:
-        """Initialize the exception with a descriptive message.
-
-        Args:
-            message: A descriptive error message explaining what went wrong
-                during CodeQL database creation.
-        """
-        self.message = message
-        super().__init__(self.message)
-
-
-class CodeQLQueryExecutionException(Exception):
-    """Exception raised for errors during CodeQL query execution.
-
-    This exception is raised when a CodeQL query fails to execute against
-    a CodeQL database. Common causes include:
-        - Invalid query syntax
-        - Query timeout
-        - Database corruption
-        - Incompatible CodeQL version
-
-    Attributes:
-        message (str): A descriptive error message explaining the
-            query execution failure.
-
-    Note:
-        This exception is primarily relevant for Python analysis when
-        ``use_codeql=True`` is specified.
-
-    See Also:
-        :class:`CodeQLDatabaseBuildException`: Related exception for
-            database creation failures.
-    """
-
-    def __init__(self, message: str) -> None:
-        """Initialize the exception with a descriptive message.
-
-        Args:
-            message: A descriptive error message explaining what went wrong
-                during CodeQL query execution.
         """
         self.message = message
         super().__init__(self.message)

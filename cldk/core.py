@@ -25,8 +25,8 @@ parsers, and sanitization utilities.
 The CLDK supports the following languages:
     - **Java**: Full static analysis via CodeAnalyzer backend, including symbol
       tables, call graphs, and code metrics.
-    - **Python**: Static analysis via codeanalyzer-python backend with optional
-      CodeQL-augmented call graph resolution.
+    - **Python**: Static analysis via codeanalyzer-python backend (Jedi plus
+      PyCG call-graph construction).
     - **C**: Basic analysis via libclang for parsing and extracting code structure.
 
 Typical usage involves instantiating :class:`CLDK` with a target language, then
@@ -252,7 +252,6 @@ class CLDK:
         analysis_backend_path: str | None = None,
         analysis_json_path: str | Path | None = None,
         cache_dir: str | Path | None = None,
-        use_codeql: bool = True,
         use_ray: bool = False,
         neo4j_config: "Neo4jConnectionConfig | None" = None,
     ) -> JavaAnalysis | PythonAnalysis | CAnalysis | TypeScriptAnalysis:
@@ -300,7 +299,7 @@ class CLDK:
         elif self.language == "python":
             if source_code is not None:
                 raise CldkInitializationException("source_code mode is not supported for Python; please pass project_path.")
-            backend = neo4j_config if neo4j_config is not None else PyCodeAnalyzerConfig(cache_dir=cache_root, use_codeql=use_codeql, use_ray=use_ray)
+            backend = neo4j_config if neo4j_config is not None else PyCodeAnalyzerConfig(cache_dir=cache_root, use_ray=use_ray)
             return CLDK.python(
                 project_path=project_path,
                 analysis_level=analysis_level,

@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.4.0] - 2026-06-27
+
+### Changed
+- **Upgraded `codeanalyzer-python` 0.2.0 → 0.3.0**, which drops CodeQL and uses **PyCG** for
+  call-graph construction.
+
+### Removed
+- **`use_codeql` (BREAKING).** Because codeanalyzer-python 0.3.0 removed CodeQL, the `use_codeql`
+  knob no longer maps to anything and is removed from CLDK's public surface: the
+  `PyCodeAnalyzerConfig.use_codeql` field, the deprecated `CLDK(language).analysis(use_codeql=...)`
+  parameter, and the `PyCodeanalyzer(use_codeql=...)` argument. The `CodeQLDatabaseBuildException`
+  and `CodeQLQueryExecutionException` exception classes are removed as well. Call-graph results may
+  differ (PyCG vs CodeQL-augmented Jedi). See #185.
+
 ## [v1.3.0] - 2026-06-27
 
 ### Added

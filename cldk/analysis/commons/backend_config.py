@@ -67,11 +67,9 @@ class PyCodeAnalyzerConfig(CodeAnalyzerConfig):
     Adds the Python-only call-graph knobs on top of :class:`CodeAnalyzerConfig`.
 
     Attributes:
-        use_codeql: If ``True`` (default), augment Jedi-based call-graph resolution with CodeQL.
         use_ray: If ``True``, enable Ray-based parallel processing for large projects.
     """
 
-    use_codeql: bool = True
     use_ray: bool = False
 
 
