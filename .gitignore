@@ -68,3 +68,6 @@ poetry.lock
 
 # CLDK files
 .codeanalyzer
+
+# Track this repo's CLAUDE.md despite a global CLAUDE.md ignore
+!CLAUDE.md
