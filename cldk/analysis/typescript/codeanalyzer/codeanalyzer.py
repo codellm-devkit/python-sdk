@@ -54,6 +54,7 @@ from cldk.models.typescript import (
     TSInterface,
     TSModule,
     TSNamespace,
+    TSSynthesizedCallable,
     TSTypeAlias,
     TSVariableDeclaration,
 )
@@ -81,6 +82,9 @@ class TSCodeanalyzer(TSAnalysisBackend):
         analysis_level: ``AnalysisLevel.symbol_table`` (1) or ``AnalysisLevel.call_graph`` (2).
         eager_analysis: If True, re-run the analyzer even if a cached ``analysis.json`` exists.
         target_files: Restrict analysis to these files (incremental).
+        tsc_only: If True, restrict the analyzer to the tsc resolver call graph by passing
+            ``--tsc-only`` (codeanalyzer-typescript >= 0.4.2). Defaults to False (let the binary
+            choose its default). Replaces reliance on the obsolete ``--call-graph-provider both``.
     """
 
     def __init__(
@@ -90,12 +94,14 @@ class TSCodeanalyzer(TSAnalysisBackend):
         analysis_level: str,
         eager_analysis: bool,
         target_files: List[str] | None,
+        tsc_only: bool = False,
     ) -> None:
         self.project_dir = project_dir
         self.analysis_json_path = analysis_json_path
         self.analysis_level = analysis_level
         self.eager_analysis = eager_analysis
         self.target_files = target_files
+        self.tsc_only = tsc_only
         self.application: TSApplication = self._init_codeanalyzer(
             analysis_level=1 if analysis_level == AnalysisLevel.symbol_table else 2
         )
@@ -139,6 +145,11 @@ class TSCodeanalyzer(TSAnalysisBackend):
         if self.target_files:
             for tf in self.target_files:
                 target_args += ["-t", str(tf).strip()]
+        # Restrict the call graph to the tsc resolver path when requested, replacing the obsolete
+        # `--call-graph-provider both`. The `--tsc-only` flag lands in codeanalyzer-typescript
+        # 0.4.2; older binaries reject it, so only opt in when running >= 0.4.2.
+        if self.tsc_only:
+            target_args += ["--tsc-only"]
 
         if self.analysis_json_path is None:
             # Read compact JSON from the stdout pipe.
@@ -285,6 +296,11 @@ class TSCodeanalyzer(TSAnalysisBackend):
     def get_external_symbols(self) -> Dict[str, TSExternalSymbol]:
         return self.application.external_symbols
 
+    def get_synthesized_callables(self) -> Dict[str, TSSynthesizedCallable]:
+        """Anonymous-callback endpoints Jelly resolves that the symbol table never names. Keyed by
+        the synthesized signature an edge's ``source``/``target`` references."""
+        return self.application.synthesized_callables
+
     def get_typescript_file(self, qualified_name: str) -> str | None:
         return self._file_of.get(qualified_name)
 
@@ -293,8 +309,9 @@ class TSCodeanalyzer(TSAnalysisBackend):
 
     # -----[ call graph ]-----
     def get_call_graph(self) -> nx.DiGraph:
-        """Build (and cache) a NetworkX DiGraph whose nodes are callable signatures (and phantom
-        external symbols) and whose edges are the identity-only call edges."""
+        """Build (and cache) a NetworkX DiGraph whose nodes are callable signatures (plus phantom
+        external symbols and synthesized anonymous callbacks) and whose edges are the identity-only
+        call edges."""
         if self._call_graph is not None:
             return self._call_graph
         graph = nx.DiGraph()
@@ -303,6 +320,9 @@ class TSCodeanalyzer(TSAnalysisBackend):
         # Phantom (external) nodes so that import-attributed edges don't dangle.
         for sig, ext in self.application.external_symbols.items():
             graph.add_node(sig, external=True, module=ext.module, name=ext.name)
+        # Synthesized anonymous-callback nodes so Jelly's anonymous edges don't dangle.
+        for sig, syn in self.application.synthesized_callables.items():
+            graph.add_node(sig, external=False, synthesized=True, name=syn.name, path=syn.path)
         for edge in self.application.call_graph:
             graph.add_edge(
                 edge.source,

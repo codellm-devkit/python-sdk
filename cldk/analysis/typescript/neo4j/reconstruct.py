@@ -53,6 +53,7 @@ from cldk.models.typescript import (
     TSModule,
     TSNamespace,
     TSSymbol,
+    TSSynthesizedCallable,
     TSTypeAlias,
     TSTypeParameter,
     TSVariableDeclaration,
@@ -177,6 +178,15 @@ def external(props: Props) -> TSExternalSymbol:
         name=props.get("name", ""),
         module=props.get("module", ""),
         kind=props.get("kind", "unknown"),
+    )
+
+
+def synthesized(props: Props) -> TSSynthesizedCallable:
+    return TSSynthesizedCallable(
+        name=props.get("name", "<anonymous>"),
+        path=props.get("path", ""),
+        start_line=props.get("start_line", -1),
+        start_column=props.get("start_column", -1),
     )
 
 
