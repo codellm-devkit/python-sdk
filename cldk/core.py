@@ -67,10 +67,13 @@ logger = logging.getLogger(__name__)
 
 
 def _normalize_project_path(project_path: str | Path | None) -> Path | None:
-    """Expand and resolve a project path, validating it is a directory.
+    """Expand, resolve, and validate a project path.
 
-    Returns ``None`` unchanged (the Neo4j backends read their graph out of band, so a project
-    directory is optional there).
+    Validation is keyed off the *path*, not the backend: any non-``None`` path is resolved and
+    must exist and be a directory, otherwise :class:`CldkInitializationException` is raised — this
+    holds on every backend, including Neo4j. ``None`` is returned unchanged and skips validation
+    entirely, because the Neo4j backends read their graph out of band (over Bolt), so a project
+    directory is optional there.
     """
     if project_path is None:
         return None
@@ -135,7 +138,10 @@ class CLDK:
         """Create a Java analysis facade.
 
         Args:
-            project_path: Path to the Java project directory.
+            project_path: Path to the Java project directory. Optional only when ``backend`` is a
+                :class:`Neo4jConnectionConfig` (the graph is read out of band over Bolt). When
+                provided, the path is validated — it must exist and be a directory — regardless of
+                backend.
             source_code: Single Java source string (deprecated; pass ``project_path`` instead).
             analysis_level: Analysis depth (see :class:`~cldk.analysis.AnalysisLevel`).
             target_files: Restrict analysis to these files.
@@ -182,7 +188,9 @@ class CLDK:
 
         Args:
             project_path: Path to the Python project directory. Optional only when ``backend`` is a
-                :class:`Neo4jConnectionConfig` (the graph is populated out of band).
+                :class:`Neo4jConnectionConfig` (the graph is populated out of band over Bolt). When
+                provided, the path is validated — it must exist and be a directory — regardless of
+                backend.
             analysis_level: Analysis depth (see :class:`~cldk.analysis.AnalysisLevel`).
             target_files: Restrict analysis to these files.
             eager: Force regeneration of cached analysis.
@@ -210,7 +218,9 @@ class CLDK:
 
         Args:
             project_path: Path to the TypeScript project directory. Optional only when ``backend``
-                is a :class:`Neo4jConnectionConfig` (the graph is populated out of band).
+                is a :class:`Neo4jConnectionConfig` (the graph is populated out of band over Bolt).
+                When provided, the path is validated — it must exist and be a directory — regardless
+                of backend.
             analysis_level: Analysis depth (see :class:`~cldk.analysis.AnalysisLevel`).
             target_files: Restrict analysis to these files.
             eager: Force regeneration of cached analysis.
