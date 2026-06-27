@@ -128,6 +128,9 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         self.application_name = application_name
         self._database = neo4j_database
         self._driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_username, neo4j_password))
+        # One long-lived read session reused across queries (see _run). Reconstruction is an N+1
+        # fan-out, so reopening a session per query added real per-call overhead. Created lazily.
+        self._session_obj: Any | None = None
 
         # The application's module file_keys, used to scope every query to this app.
         self._modules: List[str] = self._load_module_keys()
@@ -136,8 +139,17 @@ class PyNeo4jBackend(PythonAnalysisBackend):
 
     # -----[ lifecycle ]-----
     def close(self) -> None:
-        """Close the underlying Neo4j driver."""
+        """Close the reused session (if any) and the underlying Neo4j driver."""
+        self._close_session()
         self._driver.close()
+
+    def _close_session(self) -> None:
+        if self._session_obj is not None:
+            try:
+                self._session_obj.close()
+            except Exception:  # noqa: BLE001 - best-effort cleanup
+                pass
+            self._session_obj = None
 
     def __enter__(self) -> "PyNeo4jBackend":
         return self
@@ -145,10 +157,23 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     def __exit__(self, *exc: Any) -> None:
         self.close()
 
+    def _session(self) -> Any:
+        """The reused read session, opened lazily on first use."""
+        if self._session_obj is None:
+            self._session_obj = self._driver.session(database=self._database)
+        return self._session_obj
+
     def _run(self, query: str, **params: Any) -> List[Dict[str, Any]]:
-        """Run a Cypher statement and return the records as plain dicts (nodes/rels → prop maps)."""
-        with self._driver.session(database=self._database) as session:
-            return [record.data() for record in session.run(query, **params)]
+        """Run a Cypher statement and return the records as plain dicts (nodes/rels → prop maps).
+
+        Reuses one long-lived session across calls. If a query fails the session may be left in a
+        bad state, so it is dropped before re-raising and the next call reopens a fresh one.
+        """
+        try:
+            return [record.data() for record in self._session().run(query, **params)]
+        except Exception:
+            self._close_session()
+            raise
 
     def _load_module_keys(self) -> List[str]:
         """The application's module ``file_key``s — the scope key for every other query."""
