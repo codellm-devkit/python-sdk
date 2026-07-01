@@ -2,6 +2,23 @@
 
 Agent guidance for `codellm-devkit/python-sdk`.
 
+## Supported languages
+
+The SDK exposes one static factory method per language on `CLDK`. Each returns a facade backed by
+a per-language `<Lang>AnalysisBackend` ABC, with a local codeanalyzer backend and (where available)
+an optional read-only Neo4j backend — selected by the *type* of the `backend=` config object.
+
+| Language | Entry point | Local backend | Neo4j backend | Models |
+|----------|-------------|---------------|---------------|--------|
+| Java | `CLDK.java(...)` | `JCodeanalyzer` (bundled JAR, subprocess) | `JNeo4jBackend` | `cldk/models/java/` |
+| Python | `CLDK.python(...)` | `PyCodeanalyzer` (in-process `codeanalyzer-python`) | `PyNeo4jBackend` | re-exported from `codeanalyzer-python` |
+| TypeScript | `CLDK.typescript(...)` | `TSCodeanalyzer` (`codeanalyzer-typescript` binary, subprocess) | `TSNeo4jBackend` | `cldk/models/typescript/` |
+| C | `CLDK.c(...)` | libclang (in-process, syntactic only) | — | `cldk/models/c/` |
+
+The legacy `CLDK(language="<lang>").analysis(...)` entry still works as a compat shim. Adding a
+language means a new factory method + facade + backend ABC/impl(s) + models + tests — **update this
+table in the same change**.
+
 ## I implement features myself — you assist
 
 For feature work, **I write the implementation myself** to stay fluent in my own SDK. Act as a helper, not the author:
