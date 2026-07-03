@@ -16,6 +16,7 @@
 
 """Go analysis package."""
 
+from cldk.analysis.go.backend import GoAnalysisBackend
 from cldk.analysis.go.go_analysis import GoAnalysis
 
-__all__ = ["GoAnalysis"]
+__all__ = ["GoAnalysis", "GoAnalysisBackend"]

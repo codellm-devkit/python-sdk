@@ -83,7 +83,7 @@ def test_e2e_application_round_trips_pydantic(tmp_path):
     """GoApplication.model_validate must accept the raw analysis.json without errors."""
     import json
     _analysis(tmp_path)
-    with open(tmp_path / "analysis.json") as f:
+    with open(tmp_path / "go" / "analysis.json") as f:
         raw = json.load(f)
     app = GoApplication(**raw)
     assert len(app.symbol_table) == 4

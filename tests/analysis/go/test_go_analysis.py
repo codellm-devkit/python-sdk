@@ -28,7 +28,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from cldk import CLDK
-from cldk.analysis.go import GoAnalysis
+from cldk.analysis.go import GoAnalysis, GoAnalysisBackend
 from cldk.analysis.go.codeanalyzer import GoCodeanalyzer
 from cldk.models.go.models import (
     GoApplication,
@@ -372,3 +372,18 @@ def test_target_files_absent_when_none(tmp_path):
             )
             invoked_args = mock_run.call_args[0][0]
             assert "--target-files" not in invoked_args
+
+
+# ── Backend ABC ────────────────────────────────────────────────────────────────
+
+def test_go_codeanalyzer_implements_backend_abc():
+    """GoCodeanalyzer must be a concrete subclass of GoAnalysisBackend."""
+    assert issubclass(GoCodeanalyzer, GoAnalysisBackend)
+
+
+def test_go_analysis_backend_field_is_abc_type(tmp_path):
+    """GoAnalysis._codeanalyzer must be a GoAnalysisBackend instance at runtime."""
+    with patch("cldk.analysis.go.codeanalyzer.codeanalyzer.shutil.which", return_value="/bin/codeanalyzer-go"):
+        with patch("cldk.analysis.go.codeanalyzer.codeanalyzer.subprocess.run", side_effect=_make_subprocess_stub()):
+            analysis = GoAnalysis(project_dir=tmp_path, analysis_level="symbol_table", eager_analysis=False)
+            assert isinstance(analysis._codeanalyzer, GoAnalysisBackend)

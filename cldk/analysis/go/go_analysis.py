@@ -46,6 +46,7 @@ import networkx as nx
 
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.backend_config import GoBackend, cache_subdir
+from cldk.analysis.go.backend import GoAnalysisBackend
 from cldk.analysis.go.codeanalyzer import GoCodeanalyzer
 from cldk.models.go.models import (
     GoApplication,
@@ -83,7 +84,7 @@ class GoAnalysis:
         self.target_files = target_files
         cache_dir = backend.cache_dir if backend is not None else None
         analysis_json_path = cache_subdir(cache_dir, project_dir, "go")
-        self._codeanalyzer: GoCodeanalyzer = GoCodeanalyzer(
+        self._codeanalyzer: GoAnalysisBackend = GoCodeanalyzer(
             project_dir=self.project_dir,
             analysis_json_path=analysis_json_path,
             analysis_level=self.analysis_level,

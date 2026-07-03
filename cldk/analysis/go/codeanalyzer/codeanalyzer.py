@@ -33,6 +33,7 @@ from subprocess import CompletedProcess
 from typing import Dict, List, Optional, Union
 
 from cldk.analysis import AnalysisLevel
+from cldk.analysis.go.backend import GoAnalysisBackend
 from cldk.models.go.models import GoApplication, GoCallable, GoFile, GoType
 from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 
@@ -41,7 +42,7 @@ logger = logging.getLogger(__name__)
 _BINARY_NAME = "codeanalyzer-go"
 
 
-class GoCodeanalyzer:
+class GoCodeanalyzer(GoAnalysisBackend):
     """Subprocess driver for the ``codeanalyzer-go`` native binary.
 
     Args:
