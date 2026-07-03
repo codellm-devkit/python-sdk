@@ -25,8 +25,7 @@ The analysis is powered by the ``codeanalyzer-python`` backend, which uses a
 combination of:
     - **Jedi**: For semantic code understanding, symbol resolution, and basic
       call graph construction.
-    - **CodeQL** (optional): For enhanced call graph resolution and more
-      accurate inter-procedural analysis.
+    - **PyCG**: For call-graph construction.
     - **Tree-sitter**: For fast syntactic parsing and AST operations.
 
 Key capabilities include:
@@ -53,11 +52,16 @@ from typing import Dict, List, Set, Tuple
 import networkx as nx
 from tree_sitter import Tree
 
+from cldk.analysis.commons.backend_config import Neo4jConnectionConfig, PyBackend, PyCodeAnalyzerConfig, cache_subdir
 from cldk.analysis.commons.treesitter import TreesitterPython
+from cldk.analysis.python.backend import PythonAnalysisBackend
 from cldk.analysis.python.codeanalyzer import PyCodeanalyzer
+from cldk.analysis.python.neo4j import PyNeo4jBackend
 from cldk.models.python import (
     PyApplication,
     PyCallable,
+    PyCallableOverview,
+    PyCallsite,
     PyClass,
     PyClassAttribute,
     PyComment,
@@ -99,32 +103,24 @@ class PythonAnalysis:
 
     def __init__(
         self,
-        project_dir: str | Path,
-        cache_dir: str | Path | None,
-        analysis_json_path: str | Path | None,
+        project_dir: str | Path | None,
         analysis_level: str,
         target_files: List[str] | None,
         eager_analysis: bool,
-        use_codeql: bool = True,
-        use_ray: bool = False,
+        backend: PyBackend | None = None,
     ) -> None:
         """Initialize the Python analysis facade.
 
         Creates a new analysis facade for a Python project. This constructor
-        sets up the Tree-sitter parser and initializes the codeanalyzer-python
-        backend with the provided configuration.
+        sets up the Tree-sitter parser and initializes the analysis backend
+        selected by the type of ``backend``.
 
         Args:
             project_dir: Absolute or relative path to the Python project directory
                 to analyze. This directory should contain Python source files
-                (``*.py``). Required; ``source_code`` mode is not supported.
-            cache_dir: Directory path for the codeanalyzer-python backend's cache,
-                including its virtualenv, CodeQL database, and analysis cache
-                files. If ``None``, defaults to ``<project_dir>/.codeanalyzer``.
-                The backend manages all caching internally.
-            analysis_json_path: Path where the analysis results (``analysis.json``)
-                should be persisted. If ``None``, the backend uses a default
-                location within the cache directory.
+                (``*.py``). Required for the in-process backend (``source_code``
+                mode is not supported); optional for the Neo4j backend, whose
+                graph is populated out of band.
             analysis_level: The depth of analysis to perform. Controls which
                 analysis artifacts are generated. Common values include
                 ``"symbol_table"`` and ``"call_graph"``. See
@@ -137,41 +133,57 @@ class PythonAnalysis:
             eager_analysis: If ``True``, forces regeneration of all analysis
                 caches and databases, ignoring previously cached results.
                 If ``False``, cached results are reused when available.
-            use_codeql: If ``True`` (default), augments Jedi-based call graph
-                resolution with CodeQL analysis for more complete and accurate
-                call edges. Set to ``False`` for faster analysis using only
-                Jedi, at the cost of potentially missing some call relationships.
-            use_ray: If ``True``, enables Ray-based parallel processing for
-                analysis. Recommended for very large projects where sequential
-                Jedi/CodeQL analysis would be slow. Requires Ray to be installed.
-                Defaults to ``False``.
+            backend: The backend configuration object. A
+                :class:`~cldk.analysis.commons.backend_config.PyCodeAnalyzerConfig`
+                (the default) selects the in-process codeanalyzer-python backend;
+                a :class:`~cldk.analysis.commons.backend_config.Neo4jConnectionConfig`
+                selects the read-only Neo4j backend. Defaults to
+                ``PyCodeAnalyzerConfig()``.
 
         Raises:
-            ValueError: If ``project_dir`` is ``None``. Python analysis requires
-                a project directory; single-file source code mode is not supported.
+            ValueError: If ``project_dir`` is ``None`` while using the in-process
+                backend. Python analysis requires a project directory; single-file
+                source code mode is not supported.
 
         """
-        if project_dir is None:
-            raise ValueError(
-                "project_dir is required; source_code mode is not supported for Python."
-            )
+        # The backend is selected by the *type* of the config: Neo4jConnectionConfig picks the
+        # read-only Cypher backend, PyCodeAnalyzerConfig (the default) the in-process analyzer.
+        self.backend_config: PyBackend = backend if backend is not None else PyCodeAnalyzerConfig()
+        # With a Neo4j config the graph is read out of band, so project_dir is optional there;
+        # the in-memory backend still requires it (source_code mode is not supported for Python).
+        if project_dir is None and not isinstance(self.backend_config, Neo4jConnectionConfig):
+            raise ValueError("project_dir is required; source_code mode is not supported for Python.")
         self.project_dir = project_dir
         self.analysis_level = analysis_level
-        self.analysis_json_path = analysis_json_path
-        self.cache_dir = cache_dir
         self.eager_analysis = eager_analysis
         self.target_files = target_files
         self.treesitter_python: TreesitterPython = TreesitterPython()
-        self.backend: PyCodeanalyzer = PyCodeanalyzer(
-            project_dir=project_dir,
-            analysis_level=analysis_level,
-            analysis_json_path=analysis_json_path,
-            eager_analysis=eager_analysis,
-            cache_dir=cache_dir,
-            target_files=target_files,
-            use_codeql=use_codeql,
-            use_ray=use_ray,
-        )
+        self.backend: PythonAnalysisBackend
+        if isinstance(self.backend_config, Neo4jConnectionConfig):
+            # Read-only: the graph is populated out of band; the SDK only polls it.
+            cfg = self.backend_config
+            application_name = cfg.application_name or (Path(project_dir).name if project_dir else None)
+            self.backend = PyNeo4jBackend(
+                neo4j_uri=cfg.uri,
+                neo4j_username=cfg.username,
+                neo4j_password=cfg.password,
+                neo4j_database=cfg.database,
+                application_name=application_name,
+            )
+        else:
+            cfg = self.backend_config
+            cache_path = cache_subdir(cfg.cache_dir, project_dir, "python")
+            if cache_path is not None:
+                cache_path.mkdir(parents=True, exist_ok=True)
+            self.backend = PyCodeanalyzer(
+                project_dir=project_dir,
+                analysis_level=analysis_level,
+                analysis_json_path=None,
+                eager_analysis=eager_analysis,
+                cache_dir=cache_path,
+                target_files=target_files,
+                use_ray=getattr(cfg, "use_ray", False),
+            )
 
     # -----[ treesitter passthrough ]-----
     def is_parsable(self, source_code: str) -> bool:
@@ -356,7 +368,7 @@ class PythonAnalysis:
 
         The call graph is built using:
             - Jedi for semantic call resolution
-            - CodeQL (if enabled) for enhanced inter-procedural analysis
+            - PyCG for inter-procedural call-graph construction
 
         Returns:
             A ``networkx.DiGraph`` where:
@@ -366,9 +378,8 @@ class PythonAnalysis:
                 - Edge attributes may include call site information
 
         Note:
-            The completeness of the call graph depends on the analysis
-            configuration. With ``use_codeql=True``, more call relationships
-            are typically discovered at the cost of longer analysis time.
+            The completeness of the call graph depends on the analysis backend
+            (Jedi plus PyCG in codeanalyzer-python 0.3.0).
 
         See Also:
             :meth:`get_callers`: For finding callers of a specific method.
@@ -511,6 +522,70 @@ class PythonAnalysis:
             :meth:`get_method`: For a single method by name.
         """
         return self.backend.get_all_methods_in_application()
+
+    def get_callables_overview(self) -> List[PyCallableOverview]:
+        """Return a lightweight overview of every callable in the project, in one bulk read.
+
+        A field-projected alternative to :meth:`get_methods` for enumeration: each
+        :class:`~cldk.models.python.PyCallableOverview` carries the callable's signature, owning
+        class (if any), kind, location, and decorators — but not the full reconstruction (call
+        sites, inner callables, locals). On the Neo4j backend this is a single Cypher query instead
+        of the per-entity fan-out :meth:`get_methods` pays. Body-inspect the few you need afterwards
+        via :meth:`get_method` or :meth:`get_method_bodies`.
+
+        Returns:
+            A flat list of :class:`~cldk.models.python.PyCallableOverview`, one per callable
+            (methods, module-level functions, and nested functions).
+
+        See Also:
+            :meth:`get_decorated_callables`: The same projection filtered by decorator.
+            :meth:`get_method_bodies`: Bulk source-body fetch for chosen signatures.
+        """
+        return self.backend.get_callables_overview()
+
+    def get_method_bodies(self, signatures: List[str]) -> Dict[str, str]:
+        """Return source bodies for the given callable signatures, in one bulk read.
+
+        Args:
+            signatures: Callable signatures to fetch bodies for (e.g. from
+                :meth:`get_callables_overview`).
+
+        Returns:
+            A dict mapping each signature to its source body. Signatures with no matching callable
+            are omitted.
+        """
+        return self.backend.get_method_bodies(signatures)
+
+    def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:
+        """Return overviews of callables decorated with any of the given markers, in one bulk read.
+
+        Args:
+            markers: Decorator names to match (e.g. ``["staticmethod", "app.route"]``).
+
+        Returns:
+            A list of :class:`~cldk.models.python.PyCallableOverview` for every callable carrying at
+            least one of ``markers`` as a decorator.
+
+        See Also:
+            :meth:`get_callables_overview`: The unfiltered projection.
+        """
+        return self.backend.get_decorated_callables(markers)
+
+    def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:
+        """Return the call sites of the given callables, keyed by signature, in one bulk read.
+
+        Avoids the per-callable reconstruction fan-out when you need call sites for a specific
+        frontier (e.g. dispatch-edge synthesis or external-reader detection).
+
+        Args:
+            signatures: Callable signatures to fetch call sites for.
+
+        Returns:
+            A dict mapping each existing signature to its list of
+            :class:`~cldk.models.python.PyCallsite` (empty if the callable has no call sites).
+            Signatures with no matching callable are omitted.
+        """
+        return self.backend.get_callsites_for(signatures)
 
     def get_methods_in_class(self, qualified_class_name: str) -> Dict[str, PyCallable]:
         """Return all methods defined in a specific class.

@@ -5,6 +5,128 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [v1.4.0] - 2026-06-27
+
+### Changed
+- **Upgraded `codeanalyzer-python` 0.2.0 → 0.3.0**, which drops CodeQL and uses **PyCG** for
+  call-graph construction.
+
+### Removed
+- **`use_codeql` (BREAKING).** Because codeanalyzer-python 0.3.0 removed CodeQL, the `use_codeql`
+  knob no longer maps to anything and is removed from CLDK's public surface: the
+  `PyCodeAnalyzerConfig.use_codeql` field, the deprecated `CLDK(language).analysis(use_codeql=...)`
+  parameter, and the `PyCodeanalyzer(use_codeql=...)` argument. The `CodeQLDatabaseBuildException`
+  and `CodeQLQueryExecutionException` exception classes are removed as well. Call-graph results may
+  differ (PyCG vs CodeQL-augmented Jedi). See #185.
+
+## [v1.3.0] - 2026-06-27
+
+### Added
+- **Bulk, field-projected accessors on the Python facade** (`PythonAnalysis`) for enumerating an
+  application set-at-a-time, instead of paying the per-entity reconstruction `get_methods()` does
+  (tens of thousands of round-trips on the Neo4j backend for a large app): `get_callables_overview()`
+  (returns the new `PyCallableOverview` projection), `get_method_bodies(signatures)`,
+  `get_decorated_callables(markers)`, and `get_callsites_for(signatures)`. On the read-only Neo4j
+  backend each is a single projected Cypher query; in-process each is one symbol-table walk. New
+  `PyCallableOverview` model in `cldk.models.python`.
+- **`tsc_only` toggle for the TypeScript backend.** New `TSCodeAnalyzerConfig` backend config exposes
+  `tsc_only`, which passes `--tsc-only` (codeanalyzer-typescript >= 0.4.2) to pin the call graph to
+  the resolver path, replacing reliance on the obsolete `--call-graph-provider both`.
+- **Synthesized anonymous callables for TypeScript.** New `TSSynthesizedCallable` model and
+  `get_synthesized_callables()` on the TypeScript analysis surface expose the Jelly-resolved
+  anonymous-callback endpoints the symbol table never names, so anonymous call-graph edges no longer
+  dangle. Empty under the `tsc`-only resolver.
+- README **Cited By** section highlighting papers that cite CLDK (SAINT, ASTER, RECON, PRAXIS,
+  Phaedrus, and others), compiled from Semantic Scholar / OpenAlex citation data.
+
+### Changed
+- The read-only Neo4j Python backend now reuses a single read session across queries instead of
+  opening one per Cypher statement, cutting per-call overhead on the reconstruction path.
+- Bumped `codeanalyzer-typescript` 0.4.0 → 0.4.3.
+
+## [v1.2.0] - 2026-06-22
+
+### Added
+- **Per-language factory methods on `CLDK`** — `CLDK.java()`, `CLDK.python()`, `CLDK.typescript()`,
+  and `CLDK.c()` — each with an honest signature exposing only the options that apply to that
+  language. These are the preferred entry points, replacing the stringly-typed
+  `CLDK(language).analysis(...)`.
+- **Typed backend-configuration objects** in `cldk.analysis.commons.backend_config`. The backend is
+  now selected by the *type* of the `backend=` config passed to a factory: `CodeAnalyzerConfig`
+  (default; in-process analyzer) / `PyCodeAnalyzerConfig` (adds `use_codeql`, `use_ray`), or
+  `Neo4jConnectionConfig` (read-only Neo4j). `Neo4jConnectionConfig` is hoisted here and re-exported
+  from `cldk.analysis.{python,typescript}.neo4j` for backward compatibility.
+- **Unified, language-keyed cache directory.** All backends now share a single `cache_dir`
+  (default `<project>/.codeanalyzer`) and write their artifacts under a per-language subdirectory
+  (`<cache_dir>/java`, `<cache_dir>/python`, `<cache_dir>/typescript`), so a polyglot project
+  analyzed under more than one language no longer overwrites a shared `analysis.json`.
+
+### Changed
+- **Caching is on by default for Java/TypeScript.** The in-process backend now caches `analysis.json`
+  to disk (under the language-keyed `cache_dir`) instead of streaming over a stdout pipe.
+- `CLDK(language).analysis(...)` is **deprecated** and retained as a thin compatibility shim that
+  forwards to the new factory methods (emits a `DeprecationWarning`).
+
+### Deprecated
+- Java `source_code` (single-file) input — pass `project_path` instead.
+
+### Removed
+- `analysis_backend_path` from the public interface. The backend binary ships with the packaged
+  `codeanalyzer-*` dependency; for TypeScript, `$CODEANALYZER_TS_BIN` remains as the only
+  out-of-band override.
+- `analysis_json_path` from the public interface — folded into the unified `cache_dir`.
+
+### Migration
+- The language-keyed cache relocates `analysis.json` from `<cache_dir>/analysis.json` to
+  `<cache_dir>/<language>/analysis.json`; existing caches are not found at the new path, so the
+  first run after upgrading recomputes the analysis.
+
+### Added (Neo4j)
+- Read-only Neo4j-backed TypeScript analysis backend (`cldk.analysis.typescript.neo4j.TSNeo4jBackend`).
+  It is a drop-in alternative to the in-memory `TSCodeanalyzer`: it answers the **same** `get_*`
+  query surface (call graph, callers/callees, class hierarchy, call sites, decorators, symbol
+  lookups, ...) by running **Cypher over a live Neo4j graph** instead of walking the pydantic /
+  NetworkX structures. The graph is the one `codeanalyzer-typescript` emits with `--emit neo4j`
+  (schema `schema.neo4j.json`); it is always populated out of band, and the SDK only polls it
+  (read-only — never writes, needs no binary or project sources).
+- `TypeScriptAnalysis` / `CLDK.analysis(language="typescript")` now accept an optional
+  `neo4j_config` (`Neo4jConnectionConfig`) to select the Neo4j backend; without it the in-memory
+  backend is used, unchanged.
+- Read-only Neo4j-backed **Python** analysis backend (`cldk.analysis.python.neo4j.PyNeo4jBackend`),
+  the analog of the TypeScript one. It answers all 21 `PythonAnalysisBackend` queries via Cypher
+  over the graph `codeanalyzer-python` (>= 0.2.0) emits with `--emit neo4j`. Verified against a real
+  57-module project: every node/edge **present in the graph** reconstructs identically to the
+  in-memory `PyCodeanalyzer` (3169/3200 checks; zero weight/provenance mismatches on shared call
+  edges). Known gaps are not in the query layer: projection-lossy fields (comments → docstring,
+  `PyVariableDeclaration.value`/columns, per-binding import detail), and an **upstream emitter bug**
+  where calls to a bare module name that is also imported (e.g. `os`/`re`/`json`) are dropped from
+  the emitted call graph. `PythonAnalysis` / `CLDK.analysis(language="python")` accept the same
+  optional `neo4j_config`.
+- Read-only Neo4j-backed **Java** analysis backend (`cldk.analysis.java.neo4j.JNeo4jBackend`),
+  completing Neo4j parity across all three languages. It reconstructs the canonical `JApplication`
+  from the graph `codeanalyzer-java` (>= 2.4.0) emits with `--emit neo4j` and answers all 36
+  `JavaAnalysisBackend` queries with the in-memory backend's logic. Verified against the daytrader8
+  sample (145 classes): everything the graph actually contains reconstructs identically to
+  `JCodeanalyzer` (97% of checks). Three projection gaps in the `codeanalyzer-java` 2.4.0 emitter
+  (fields collapsing to one node, imports reduced to packages, a truncated call graph) are **fixed
+  in 2.4.1** (codeanalyzer-java#156/#157/#158, verified on daytrader — `J_CALLS` went 287 → 1702),
+  the version the SDK release now bundles. `JavaAnalysis` / `CLDK.java(...)` accept a
+  `Neo4jConnectionConfig` as the `backend=` config to select it.
+- Bumped `codeanalyzer-python` to `0.2.0` (adds the Neo4j graph emitter); the bundled
+  `codeanalyzer-java` jar is now `2.4.1` (adds the Neo4j graph emitter + the field/import/call-graph
+  projection fixes). The Java analyzer jar is no longer a pip dependency — the SDK release workflow
+  downloads the latest `codeanalyzer-java` jar into the bundled `jar/` directory.
+- Optional `neo4j` extra (`pip install cldk[neo4j]`) for the Neo4j Python driver.
+
+### Fixed
+- **Bundled JDK download for the Java backend.** `ensure_jdk` resolved the Temurin JVM via the
+  Adoptium `/assets/version/{release}` endpoint, which now returns 404 for pinned releases (e.g.
+  `jdk-21.0.5+11`) — so the first Java analysis on a clean machine failed before it started. It now
+  resolves via the `/binary/version/...` endpoint (following the redirect to the GitHub asset) and
+  reads the checksum from the asset's `.sha256.txt`.
+
 ## [v1.0.7] - 2026-02-14
 
 ### Added

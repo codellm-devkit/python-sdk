@@ -26,9 +26,8 @@ The binary must be on ``PATH`` or provided via ``analysis_backend_path``.
 
 import json
 import logging
-import shlex
+import shutil
 import subprocess
-from importlib import resources
 from pathlib import Path
 from subprocess import CompletedProcess
 from typing import Dict, List, Optional, Union
@@ -61,44 +60,25 @@ class GoCodeanalyzer:
     def __init__(
         self,
         project_dir: Union[str, Path],
-        analysis_backend_path: Union[str, Path, None],
         analysis_json_path: Union[str, Path, None],
         analysis_level: str,
         eager_analysis: bool,
-        cache_dir: Union[str, Path, None] = None,
     ) -> None:
         self.project_dir = Path(project_dir)
-        self.analysis_backend_path = Path(analysis_backend_path) if analysis_backend_path else None
         self.analysis_json_path = Path(analysis_json_path) if analysis_json_path else None
         self.analysis_level = analysis_level
         self.eager_analysis = eager_analysis
-        self.cache_dir = Path(cache_dir) if cache_dir else None
         self.application: GoApplication = self._init_codeanalyzer()
 
     # ── Binary resolution ──────────────────────────────────────────────────────
 
     def _get_codeanalyzer_exec(self) -> List[str]:
         """Return the shell argv list for the codeanalyzer-go binary."""
-        if self.analysis_backend_path:
-            binary = self.analysis_backend_path / _BINARY_NAME
-            if not binary.exists():
-                # Try without extension and with .exe on Windows.
-                binary_exe = self.analysis_backend_path / f"{_BINARY_NAME}.exe"
-                if binary_exe.exists():
-                    binary = binary_exe
-                else:
-                    raise CodeanalyzerExecutionException(
-                        f"codeanalyzer-go binary not found in {self.analysis_backend_path}"
-                    )
-            return [str(binary)]
-
-        # Fall back to PATH.
-        import shutil
         found = shutil.which(_BINARY_NAME)
         if found is None:
             raise CodeanalyzerExecutionException(
-                f"'{_BINARY_NAME}' not found on PATH and no analysis_backend_path provided. "
-                "Install codeanalyzer-go or pass analysis_backend_path."
+                f"'{_BINARY_NAME}' not found on PATH. "
+                "Build codeanalyzer-go and place the binary on PATH."
             )
         return [found]
 
@@ -153,8 +133,6 @@ class GoCodeanalyzer:
             "--output", str(output_dir),
             "--analysis-level", level_flag,
         ]
-        if self.cache_dir:
-            args += ["--cache", str(self.cache_dir)]
 
         logger.info("Running codeanalyzer-go: %s", " ".join(args))
         try:

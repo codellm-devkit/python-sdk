@@ -68,3 +68,9 @@ poetry.lock
 
 # CLDK files
 .codeanalyzer
+
+# Agent guide files — un-ignore past the global ~/.gitignore_global rule that
+# excludes AGENTS.md, so the CLAUDE.md/AGENTS.md/GEMINI.md guide is tracked.
+!CLAUDE.md
+!AGENTS.md
+!GEMINI.md

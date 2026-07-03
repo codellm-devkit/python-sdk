@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  discussions: write  # attach the release-linked repo Discussion (Announcements)
 
 jobs:
   release:
@@ -52,7 +53,10 @@ jobs:
 
       - name: Inject the latest Code Analyzer JAR
         run: |
-          CODE_ANALYZER_URL=$(curl -s https://api.github.com/repos/codellm-devkit/codeanalyzer-java/releases/latest | jq -r '.assets[] | select(.name | endswith(".jar")) | .browser_download_url')
+          # The release has multiple .jar assets (the versioned codeanalyzer-<v>.jar and an
+          # unversioned codeanalyzer.jar) — select only the versioned one so $CODE_ANALYZER_URL
+          # is a single URL.
+          CODE_ANALYZER_URL=$(curl -s https://api.github.com/repos/codellm-devkit/codeanalyzer-java/releases/latest | jq -r '.assets[] | select(.name | test("^codeanalyzer-[0-9].*\\.jar$")) | .browser_download_url')
           echo "Downloading: $CODE_ANALYZER_URL"
           wget -q "$CODE_ANALYZER_URL"
           mkdir -p ${{ github.workspace }}/cldk/analysis/java/codeanalyzer/jar/
@@ -79,12 +83,58 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish Release on GitHub
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           files: dist/*
           body: ${{ steps.gen_changelog.outputs.changelog }}
+          # Auto-open a repo-level Discussion linked to this release, seeded with
+          # the same notes. Requires Discussions enabled and this category to exist.
+          discussion_category_name: Announcements
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # Mirror the release announcement into the ORG-level discussions, which are
+      # backed by codellm-devkit/.github. GITHUB_TOKEN can't write cross-repo, so
+      # this uses a PAT (ORG_DISCUSSIONS_TOKEN) with repo scope, and posts via the
+      # createDiscussion GraphQL mutation. The body (the generated changelog) is
+      # passed via env to avoid shell-injection, matching the repo-level post.
+      - name: Announce in org-level discussions (codellm-devkit/.github)
+        continue-on-error: true   # a failed org post must not fail an otherwise-good release
+        env:
+          GH_TOKEN: ${{ secrets.ORG_DISCUSSIONS_TOKEN }}
+          BODY: ${{ steps.gen_changelog.outputs.changelog }}
+        run: |
+          set -uo pipefail
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          OWNER="codellm-devkit"; REPO=".github"; CATEGORY="Announcements"
+          # The mutation needs GraphQL node IDs, not names — resolve them first.
+          RESP=$(gh api graphql \
+            -f query='query($o:String!,$r:String!){repository(owner:$o,name:$r){id discussionCategories(first:25){nodes{id name}}}}' \
+            -f o="$OWNER" -f r="$REPO") \
+            || { echo "::warning::org discussion lookup failed — skipping org announcement."; exit 0; }
+          REPO_ID=$(echo "$RESP" | jq -r '.data.repository.id')
+          CAT_ID=$(echo "$RESP" | jq -r --arg c "$CATEGORY" '.data.repository.discussionCategories.nodes[]|select(.name==$c)|.id')
+          if [[ -z "$REPO_ID" || "$REPO_ID" == "null" || -z "$CAT_ID" ]]; then
+            echo "::warning::could not resolve $OWNER/$REPO discussion category '$CATEGORY' — skipping org announcement."
+            exit 0
+          fi
+          gh api graphql \
+            -f query='mutation($rid:ID!,$cid:ID!,$t:String!,$b:String!){createDiscussion(input:{repositoryId:$rid,categoryId:$cid,title:$t,body:$b}){discussion{url}}}' \
+            -f rid="$REPO_ID" -f cid="$CAT_ID" \
+            -f t="python-sdk v$VERSION" \
+            -f b="$BODY"
+
       - name: Publish package distributions to PyPI
         run: uv publish --token ${{ secrets.PYPI_API_TOKEN }}
+
+      - name: Trigger docs API-reference update
+        # After a successful release, tell the docs repo to regenerate and PR the
+        # Python API reference against this tag. Requires a DOCS_DISPATCH_TOKEN
+        # secret: a PAT (or fine-grained token) with contents:write on
+        # codellm-devkit/docs. See docs-astro .github/workflows/update-api-docs.yml.
+        uses: peter-evans/repository-dispatch@v3
+        with:
+          token: ${{ secrets.DOCS_DISPATCH_TOKEN }}
+          repository: codellm-devkit/docs
+          event-type: sdk-release
+          client-payload: '{"ref": "${{ github.ref_name }}"}'

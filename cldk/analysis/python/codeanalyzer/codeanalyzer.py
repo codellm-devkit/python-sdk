@@ -29,7 +29,7 @@ The backend produces:
 
 The analysis leverages:
     - **Jedi**: For semantic code understanding and symbol resolution.
-    - **CodeQL** (optional): For enhanced call graph resolution.
+    - **PyCG**: For call-graph construction.
     - **Tree-sitter**: For fast syntactic parsing.
 
 Key features:
@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, List, Tuple, Union
+from typing import Dict, Iterator, List, Tuple, Union
 
 import networkx as nx
 
@@ -61,10 +61,13 @@ from codeanalyzer.options import AnalysisOptions
 from codeanalyzer.schema import model_dump_json
 
 from cldk.analysis import AnalysisLevel
+from cldk.analysis.python.backend import PythonAnalysisBackend
 from cldk.models.python import (
     PyApplication,
     PyCallEdge,
     PyCallable,
+    PyCallableOverview,
+    PyCallsite,
     PyClass,
     PyClassAttribute,
     PyComment,
@@ -74,7 +77,21 @@ from cldk.models.python import (
 logger = logging.getLogger(__name__)
 
 
-class PyCodeanalyzer:
+def _overview(c: PyCallable, class_signature: str | None, kind: str) -> PyCallableOverview:
+    """Project a :class:`PyCallable` into a lightweight :class:`PyCallableOverview`."""
+    return PyCallableOverview(
+        signature=c.signature,
+        name=c.name,
+        class_signature=class_signature,
+        kind=kind,
+        path=c.path,
+        start_line=c.start_line,
+        end_line=c.end_line,
+        decorators=list(c.decorators or []),
+    )
+
+
+class PyCodeanalyzer(PythonAnalysisBackend):
     """In-process driver for the ``codeanalyzer-python`` analysis backend.
 
     This class serves as the primary interface to the codeanalyzer-python
@@ -94,7 +111,6 @@ class PyCodeanalyzer:
         analysis_level (str): The depth of analysis performed.
         eager_analysis (bool): Whether to force regeneration of caches.
         target_files (List[str] | None): Specific files to analyze.
-        use_codeql (bool): Whether CodeQL is used for call graph enhancement.
         cache_dir (Path | None): Cache directory for the backend.
         analysis_json_path (Path | None): Path for persisting analysis results.
         application (PyApplication): The analyzed application model.
@@ -112,7 +128,6 @@ class PyCodeanalyzer:
         eager_analysis: bool,
         cache_dir: Union[str, Path, None] = None,
         target_files: List[str] | None = None,
-        use_codeql: bool = True,
         use_ray: bool = False,
     ) -> None:
         """Initialize the Python code analyzer and run analysis.
@@ -137,18 +152,15 @@ class PyCodeanalyzer:
                 its analysis from scratch, ignoring any cached results.
                 If ``False``, cached results are reused when available.
             cache_dir: Directory for codeanalyzer-python's caches, including
-                its virtualenv, CodeQL database, and analysis cache files.
-                If ``None``, defaults to ``<project_dir>/.codeanalyzer``.
+                its virtualenv and analysis cache files. If ``None``, defaults
+                to ``<project_dir>/.codeanalyzer``.
             target_files: Optional list of specific files to analyze. Note
                 that codeanalyzer-python currently supports only a single
                 target file; if multiple are provided, only the first is
                 used and a warning is logged.
-            use_codeql: If ``True`` (default), uses CodeQL to enhance call
-                graph resolution beyond what Jedi provides. Set to ``False``
-                for faster analysis without CodeQL.
             use_ray: If ``True``, enables Ray-based parallel processing for
-                analysis. Recommended for very large projects where Jedi/CodeQL
-                analysis would otherwise be slow. Requires Ray to be installed.
+                analysis. Recommended for very large projects where analysis
+                would otherwise be slow. Requires Ray to be installed.
                 Defaults to ``False``.
 
         Raises:
@@ -156,8 +168,7 @@ class PyCodeanalyzer:
 
         Note:
             Analysis is performed synchronously during initialization.
-            For large projects, this may take significant time, especially
-            with ``use_codeql=True``.
+            For large projects, this may take significant time.
         """
         if project_dir is None:
             raise ValueError("project_dir is required for Python analysis.")
@@ -168,7 +179,6 @@ class PyCodeanalyzer:
         self.analysis_level = analysis_level
         self.eager_analysis = eager_analysis
         self.target_files = target_files
-        self.use_codeql = use_codeql
         self.use_ray = use_ray
 
         # codeanalyzer-python owns all caching. CLDK forwards these paths
@@ -217,7 +227,6 @@ class PyCodeanalyzer:
             input=self.project_dir,
             output=self.analysis_json_path,
             format=OutputFormat.JSON,
-            using_codeql=self.use_codeql,
             using_ray=self.use_ray,
             rebuild_analysis=self.eager_analysis,
             skip_tests=True,
@@ -521,6 +530,62 @@ class PyCodeanalyzer:
         """
         cls = self.get_class(qualified_class_name)
         return list(cls.attributes.values()) if cls else []
+
+    # ----------------------------------------------------------- bulk / projected accessors
+    def _iter_callables(self) -> Iterator[Tuple[PyCallable, "str | None", str]]:
+        """Yield ``(callable, class_signature, kind)`` for every callable in the application.
+
+        Walks the in-memory symbol table the same way the Neo4j backend's ``MATCH (c:PyCallable)``
+        sees nodes: a callable is a ``"method"`` only when a class declares it directly (mirroring
+        ``PY_HAS_METHOD``); module-level functions and functions nested inside a callable are
+        ``"function"`` with a ``None`` class signature. The two backends therefore enumerate the
+        same set.
+        """
+
+        def from_callable(c: PyCallable):
+            for inner in c.inner_callables.values():
+                yield inner, None, "function"
+                yield from from_callable(inner)
+            for inner_cls in c.inner_classes.values():
+                yield from from_class(inner_cls)
+
+        def from_class(cls: PyClass):
+            for m in cls.methods.values():
+                yield m, cls.signature, "method"
+                yield from from_callable(m)
+            for inner_cls in cls.inner_classes.values():
+                yield from from_class(inner_cls)
+
+        for module in self.application.symbol_table.values():
+            for cls in module.classes.values():
+                yield from from_class(cls)
+            for fn in module.functions.values():
+                yield fn, None, "function"
+                yield from from_callable(fn)
+
+    def get_callables_overview(self) -> List[PyCallableOverview]:
+        """Return a lightweight overview of every callable in the application (see
+        :meth:`PythonAnalysisBackend.get_callables_overview`)."""
+        return [_overview(c, class_sig, kind) for c, class_sig, kind in self._iter_callables()]
+
+    def get_method_bodies(self, signatures: List[str]) -> Dict[str, str]:
+        """Return ``{signature: code}`` for the requested signatures that exist."""
+        wanted = set(signatures)
+        return {c.signature: c.code for c, _, _ in self._iter_callables() if c.signature in wanted}
+
+    def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:
+        """Return overviews of callables decorated with any of ``markers``."""
+        marker_set = set(markers)
+        return [
+            _overview(c, class_sig, kind)
+            for c, class_sig, kind in self._iter_callables()
+            if marker_set.intersection(c.decorators or [])
+        ]
+
+    def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:
+        """Return ``{signature: call_sites}`` for the requested signatures that exist."""
+        wanted = set(signatures)
+        return {c.signature: list(c.call_sites) for c, _, _ in self._iter_callables() if c.signature in wanted}
 
     # ----------------------------------------------------------- callers/callees
     def get_all_callers(self, target_class_name: str, target_method_declaration: str) -> Dict:

@@ -38,6 +38,7 @@ import pytest
 
 from cldk.analysis.go import GoAnalysis
 from cldk.analysis import AnalysisLevel
+from cldk.analysis.commons.backend_config import GoCodeAnalyzerConfig
 from cldk.models.go.models import GoApplication
 
 
@@ -54,10 +55,9 @@ pytestmark = pytest.mark.skipif(
 def _analysis(tmp_path: Path, level: str = AnalysisLevel.symbol_table) -> GoAnalysis:
     return GoAnalysis(
         project_dir=FIXTURE_DIR,
-        analysis_backend_path=None,
-        analysis_json_path=tmp_path,
         analysis_level=level,
         eager_analysis=True,
+        backend=GoCodeAnalyzerConfig(cache_dir=tmp_path),
     )
 
 
@@ -373,24 +373,22 @@ def test_e2e_second_run_reuses_cache(tmp_path):
     # First run (eager=True to seed the cache).
     GoAnalysis(
         project_dir=FIXTURE_DIR,
-        analysis_backend_path=None,
-        analysis_json_path=tmp_path,
         analysis_level=AnalysisLevel.symbol_table,
         eager_analysis=True,
+        backend=GoCodeAnalyzerConfig(cache_dir=tmp_path),
     )
-    mtime_after_first = (tmp_path / "analysis.json").stat().st_mtime
+    mtime_after_first = (tmp_path / "go" / "analysis.json").stat().st_mtime
 
     time.sleep(0.05)
 
     # Second run (eager=False) — must reuse the cached file.
     GoAnalysis(
         project_dir=FIXTURE_DIR,
-        analysis_backend_path=None,
-        analysis_json_path=tmp_path,
         analysis_level=AnalysisLevel.symbol_table,
         eager_analysis=False,
+        backend=GoCodeAnalyzerConfig(cache_dir=tmp_path),
     )
-    mtime_after_second = (tmp_path / "analysis.json").stat().st_mtime
+    mtime_after_second = (tmp_path / "go" / "analysis.json").stat().st_mtime
 
     assert mtime_after_first == mtime_after_second, (
         "analysis.json was rewritten on the second run despite eager=False"

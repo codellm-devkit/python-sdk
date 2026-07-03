@@ -40,10 +40,12 @@ See Also:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional
 
 import networkx as nx
 
+from cldk.analysis import AnalysisLevel
+from cldk.analysis.commons.backend_config import GoBackend, cache_subdir
 from cldk.analysis.go.codeanalyzer import GoCodeanalyzer
 from cldk.models.go.models import (
     GoApplication,
@@ -62,36 +64,28 @@ class GoAnalysis:
 
     Args:
         project_dir: Path to the root of the Go project (must contain ``go.mod``).
-        analysis_backend_path: Directory containing the ``codeanalyzer-go`` binary.
-            When ``None``, the binary must be on ``PATH``.
-        analysis_json_path: Directory where ``analysis.json`` should be written.
         analysis_level: ``"symbol_table"`` (default) or ``"call_graph"``.
         eager_analysis: When ``True``, always re-run the binary.
-        cache_dir: Optional cache directory passed to the binary.
+        backend: Backend configuration. Defaults to :class:`~cldk.analysis.commons.backend_config.GoCodeAnalyzerConfig`.
     """
 
     def __init__(
         self,
-        project_dir: Union[str, Path, None],
-        analysis_backend_path: Union[str, None],
-        analysis_json_path: Union[str, Path, None],
-        analysis_level: str,
-        eager_analysis: bool,
-        cache_dir: Union[str, Path, None] = None,
+        project_dir: Path | None,
+        analysis_level: str = AnalysisLevel.symbol_table,
+        eager_analysis: bool = False,
+        backend: GoBackend | None = None,
     ) -> None:
         self.project_dir = project_dir
         self.analysis_level = analysis_level
-        self.analysis_json_path = analysis_json_path
-        self.analysis_backend_path = analysis_backend_path
         self.eager_analysis = eager_analysis
-        self.cache_dir = cache_dir
-        self.backend: GoCodeanalyzer = GoCodeanalyzer(
+        cache_dir = backend.cache_dir if backend is not None else None
+        analysis_json_path = cache_subdir(cache_dir, project_dir, "go")
+        self._codeanalyzer: GoCodeanalyzer = GoCodeanalyzer(
             project_dir=self.project_dir,
-            analysis_backend_path=self.analysis_backend_path,
-            analysis_json_path=self.analysis_json_path,
+            analysis_json_path=analysis_json_path,
             analysis_level=self.analysis_level,
             eager_analysis=self.eager_analysis,
-            cache_dir=self.cache_dir,
         )
         self._call_graph: Optional[nx.DiGraph] = None
 
@@ -99,21 +93,21 @@ class GoAnalysis:
 
     def get_application_view(self) -> GoApplication:
         """Return the complete analyzed application model."""
-        return self.backend.get_application()
+        return self._codeanalyzer.get_application()
 
     def get_symbol_table(self) -> Dict[str, GoFile]:
         """Return the symbol table mapping relative file paths to :class:`GoFile` objects."""
-        return self.backend.get_symbol_table()
+        return self._codeanalyzer.get_symbol_table()
 
     def get_file(self, file_path: str) -> Optional[GoFile]:
         """Return the :class:`GoFile` for a given relative file path, or ``None``."""
-        return self.backend.get_file(file_path)
+        return self._codeanalyzer.get_file(file_path)
 
     # ── Types ──────────────────────────────────────────────────────────────────
 
     def get_all_types(self) -> Dict[str, GoType]:
         """Return all named types (structs and interfaces) keyed by qualified name."""
-        return self.backend.get_all_types()
+        return self._codeanalyzer.get_all_types()
 
     def get_types_in_file(self, file_path: str) -> Dict[str, GoType]:
         """Return all named types defined in a specific file.
@@ -124,7 +118,7 @@ class GoAnalysis:
         Returns:
             A ``{type_name: GoType}`` dict, or an empty dict if the file is not found.
         """
-        go_file = self.backend.get_file(file_path)
+        go_file = self._codeanalyzer.get_file(file_path)
         if go_file is None:
             return {}
         return go_file.classes
@@ -146,7 +140,7 @@ class GoAnalysis:
 
     def get_all_callables(self) -> Dict[str, GoCallable]:
         """Return all functions and methods across all files, keyed by signature."""
-        return self.backend.get_all_callables()
+        return self._codeanalyzer.get_all_callables()
 
     def get_callables_in_file(self, file_path: str) -> Dict[str, GoCallable]:
         """Return all top-level functions and type methods defined in a specific file.
@@ -157,7 +151,7 @@ class GoAnalysis:
         Returns:
             A ``{signature: GoCallable}`` dict.
         """
-        go_file = self.backend.get_file(file_path)
+        go_file = self._codeanalyzer.get_file(file_path)
         if go_file is None:
             return {}
         callables: Dict[str, GoCallable] = dict(go_file.functions)
@@ -167,7 +161,7 @@ class GoAnalysis:
 
     def get_callable(self, signature: str) -> Optional[GoCallable]:
         """Return a callable by its fully-qualified signature, or ``None``."""
-        return self.backend.get_all_callables().get(signature)
+        return self._codeanalyzer.get_all_callables().get(signature)
 
     # ── Call graph ─────────────────────────────────────────────────────────────
 
@@ -186,7 +180,7 @@ class GoAnalysis:
 
     def _build_call_graph(self) -> nx.DiGraph:
         cg = nx.DiGraph()
-        for edge in self.backend.get_application().call_graph:
+        for edge in self._codeanalyzer.get_application().call_graph:
             cg.add_edge(
                 edge.source,
                 edge.target,
@@ -226,4 +220,4 @@ class GoAnalysis:
 
     def get_call_graph_edges(self) -> List[GoCallEdge]:
         """Return the raw call graph edge list from the analyzed application."""
-        return self.backend.get_application().call_graph
+        return self._codeanalyzer.get_application().call_graph

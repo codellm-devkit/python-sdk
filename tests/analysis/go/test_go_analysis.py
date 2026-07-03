@@ -141,8 +141,6 @@ def test_go_analysis_requires_inputs():
 def test_get_symbol_table_non_empty(mock_backend, tmp_path):
     analysis = GoAnalysis(
         project_dir=tmp_path,
-        analysis_backend_path=None,
-        analysis_json_path=None,
         analysis_level="symbol_table",
         eager_analysis=False,
     )
@@ -153,8 +151,6 @@ def test_get_symbol_table_non_empty(mock_backend, tmp_path):
 def test_get_file_returns_correct_file(mock_backend, tmp_path):
     analysis = GoAnalysis(
         project_dir=tmp_path,
-        analysis_backend_path=None,
-        analysis_json_path=None,
         analysis_level="symbol_table",
         eager_analysis=False,
     )
@@ -166,8 +162,6 @@ def test_get_file_returns_correct_file(mock_backend, tmp_path):
 def test_get_file_missing_returns_none(mock_backend, tmp_path):
     analysis = GoAnalysis(
         project_dir=tmp_path,
-        analysis_backend_path=None,
-        analysis_json_path=None,
         analysis_level="symbol_table",
         eager_analysis=False,
     )
@@ -179,8 +173,6 @@ def test_get_file_missing_returns_none(mock_backend, tmp_path):
 def test_get_types_in_file(mock_backend, tmp_path):
     analysis = GoAnalysis(
         project_dir=tmp_path,
-        analysis_backend_path=None,
-        analysis_json_path=None,
         analysis_level="symbol_table",
         eager_analysis=False,
     )
@@ -192,8 +184,6 @@ def test_get_types_in_file(mock_backend, tmp_path):
 def test_get_type_by_name(mock_backend, tmp_path):
     analysis = GoAnalysis(
         project_dir=tmp_path,
-        analysis_backend_path=None,
-        analysis_json_path=None,
         analysis_level="symbol_table",
         eager_analysis=False,
     )
@@ -207,8 +197,6 @@ def test_get_type_by_name(mock_backend, tmp_path):
 def test_get_callables_in_file(mock_backend, tmp_path):
     analysis = GoAnalysis(
         project_dir=tmp_path,
-        analysis_backend_path=None,
-        analysis_json_path=None,
         analysis_level="symbol_table",
         eager_analysis=False,
     )
@@ -220,8 +208,6 @@ def test_get_callables_in_file(mock_backend, tmp_path):
 def test_get_callable_by_signature(mock_backend, tmp_path):
     analysis = GoAnalysis(
         project_dir=tmp_path,
-        analysis_backend_path=None,
-        analysis_json_path=None,
         analysis_level="symbol_table",
         eager_analysis=False,
     )
@@ -236,8 +222,6 @@ def test_get_callable_by_signature(mock_backend, tmp_path):
 def test_get_call_graph_has_edges(mock_backend, tmp_path):
     analysis = GoAnalysis(
         project_dir=tmp_path,
-        analysis_backend_path=None,
-        analysis_json_path=None,
         analysis_level="call_graph",
         eager_analysis=False,
     )
@@ -248,8 +232,6 @@ def test_get_call_graph_has_edges(mock_backend, tmp_path):
 def test_get_callees(mock_backend, tmp_path):
     analysis = GoAnalysis(
         project_dir=tmp_path,
-        analysis_backend_path=None,
-        analysis_json_path=None,
         analysis_level="call_graph",
         eager_analysis=False,
     )
@@ -260,8 +242,6 @@ def test_get_callees(mock_backend, tmp_path):
 def test_get_callers(mock_backend, tmp_path):
     analysis = GoAnalysis(
         project_dir=tmp_path,
-        analysis_backend_path=None,
-        analysis_json_path=None,
         analysis_level="call_graph",
         eager_analysis=False,
     )
@@ -272,8 +252,6 @@ def test_get_callers(mock_backend, tmp_path):
 def test_get_callers_unknown_node(mock_backend, tmp_path):
     analysis = GoAnalysis(
         project_dir=tmp_path,
-        analysis_backend_path=None,
-        analysis_json_path=None,
         analysis_level="call_graph",
         eager_analysis=False,
     )

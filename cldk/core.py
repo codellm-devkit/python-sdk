@@ -25,8 +25,8 @@ parsers, and sanitization utilities.
 The CLDK supports the following languages:
     - **Java**: Full static analysis via CodeAnalyzer backend, including symbol
       tables, call graphs, and code metrics.
-    - **Python**: Static analysis via codeanalyzer-python backend with optional
-      CodeQL-augmented call graph resolution.
+    - **Python**: Static analysis via codeanalyzer-python backend (Jedi plus
+      PyCG call-graph construction).
     - **C**: Basic analysis via libclang for parsing and extracting code structure.
 
 Typical usage involves instantiating :class:`CLDK` with a target language, then
@@ -42,18 +42,48 @@ Note:
 from pathlib import Path
 
 import logging
+import warnings
 from typing import List
 
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.c import CAnalysis
 from cldk.analysis.go import GoAnalysis
 from cldk.analysis.java import JavaAnalysis
+from cldk.analysis.commons.backend_config import (
+    CodeAnalyzerConfig,
+    GoBackend,
+    GoCodeAnalyzerConfig,
+    JavaBackend,
+    Neo4jConnectionConfig,
+    PyBackend,
+    PyCodeAnalyzerConfig,
+    TSBackend,
+    TSCodeAnalyzerConfig,
+)
 from cldk.analysis.commons.treesitter import TreesitterJava
 from cldk.analysis.python.python_analysis import PythonAnalysis
+from cldk.analysis.typescript import TypeScriptAnalysis
 from cldk.utils.exceptions import CldkInitializationException
 from cldk.utils.sanitization.java import TreesitterSanitizer
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_project_path(project_path: str | Path | None) -> Path | None:
+    """Expand, resolve, and validate a project path.
+
+    Validation is keyed off the *path*, not the backend: any non-``None`` path is resolved and
+    must exist and be a directory, otherwise :class:`CldkInitializationException` is raised — this
+    holds on every backend, including Neo4j. ``None`` is returned unchanged and skips validation
+    entirely, because the Neo4j backends read their graph out of band (over Bolt), so a project
+    directory is optional there.
+    """
+    if project_path is None:
+        return None
+    resolved = Path(project_path).expanduser().resolve()
+    if not resolved.is_dir():
+        raise CldkInitializationException(f"project_path does not exist or is not a directory: {resolved}")
+    return resolved
 
 
 class CLDK:
@@ -97,6 +127,147 @@ class CLDK:
         """
         self.language: str = language
 
+    # -----[ per-language factory methods (preferred entry points) ]-----
+    @staticmethod
+    def java(
+        project_path: str | Path | None = None,
+        source_code: str | None = None,
+        *,
+        analysis_level: str = AnalysisLevel.symbol_table,
+        target_files: List[str] | None = None,
+        eager: bool = False,
+        backend: JavaBackend | None = None,
+    ) -> JavaAnalysis:
+        """Create a Java analysis facade.
+
+        Args:
+            project_path: Path to the Java project directory. Optional only when ``backend`` is a
+                :class:`Neo4jConnectionConfig` (the graph is read out of band over Bolt). When
+                provided, the path is validated — it must exist and be a directory — regardless of
+                backend.
+            source_code: Single Java source string (deprecated; pass ``project_path`` instead).
+            analysis_level: Analysis depth (see :class:`~cldk.analysis.AnalysisLevel`).
+            target_files: Restrict analysis to these files.
+            eager: Force regeneration of cached analysis.
+            backend: Backend configuration. Defaults to :class:`CodeAnalyzerConfig`.
+
+        Raises:
+            CldkInitializationException: If neither or both of ``project_path`` / ``source_code``
+                are provided.
+        """
+        # The read-only Neo4j backend reads a graph populated out of band, so it needs neither
+        # project_path nor source_code.
+        is_neo4j = isinstance(backend, Neo4jConnectionConfig)
+        if project_path is None and source_code is None and not is_neo4j:
+            raise CldkInitializationException("Either project_path or source_code must be provided.")
+        if project_path is not None and source_code is not None:
+            raise CldkInitializationException("Both project_path and source_code are provided. Please provide only one.")
+        if source_code is not None:
+            warnings.warn(
+                "Passing source_code for Java analysis is deprecated and will be removed in a "
+                "future release; provide project_path instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        return JavaAnalysis(
+            project_dir=_normalize_project_path(project_path),
+            source_code=source_code,
+            analysis_level=analysis_level,
+            target_files=target_files,
+            eager_analysis=eager,
+            backend=backend,
+        )
+
+    @staticmethod
+    def python(
+        project_path: str | Path | None = None,
+        *,
+        analysis_level: str = AnalysisLevel.symbol_table,
+        target_files: List[str] | None = None,
+        eager: bool = False,
+        backend: PyBackend | None = None,
+    ) -> PythonAnalysis:
+        """Create a Python analysis facade.
+
+        Args:
+            project_path: Path to the Python project directory. Optional only when ``backend`` is a
+                :class:`Neo4jConnectionConfig` (the graph is populated out of band over Bolt). When
+                provided, the path is validated — it must exist and be a directory — regardless of
+                backend.
+            analysis_level: Analysis depth (see :class:`~cldk.analysis.AnalysisLevel`).
+            target_files: Restrict analysis to these files.
+            eager: Force regeneration of cached analysis.
+            backend: Backend configuration. Defaults to :class:`PyCodeAnalyzerConfig`;
+                pass a :class:`Neo4jConnectionConfig` to use the read-only Neo4j backend.
+        """
+        return PythonAnalysis(
+            project_dir=_normalize_project_path(project_path),
+            analysis_level=analysis_level,
+            target_files=target_files,
+            eager_analysis=eager,
+            backend=backend,
+        )
+
+    @staticmethod
+    def typescript(
+        project_path: str | Path | None = None,
+        *,
+        analysis_level: str = AnalysisLevel.symbol_table,
+        target_files: List[str] | None = None,
+        eager: bool = False,
+        backend: TSBackend | None = None,
+    ) -> TypeScriptAnalysis:
+        """Create a TypeScript analysis facade.
+
+        Args:
+            project_path: Path to the TypeScript project directory. Optional only when ``backend``
+                is a :class:`Neo4jConnectionConfig` (the graph is populated out of band over Bolt).
+                When provided, the path is validated — it must exist and be a directory — regardless
+                of backend.
+            analysis_level: Analysis depth (see :class:`~cldk.analysis.AnalysisLevel`).
+            target_files: Restrict analysis to these files.
+            eager: Force regeneration of cached analysis.
+            backend: Backend configuration. Defaults to :class:`CodeAnalyzerConfig`; pass a
+                :class:`TSCodeAnalyzerConfig` to set TypeScript-only knobs such as ``tsc_only``
+                (passes ``--tsc-only``), or a :class:`Neo4jConnectionConfig` to use the read-only
+                Neo4j backend.
+        """
+        return TypeScriptAnalysis(
+            project_dir=_normalize_project_path(project_path),
+            analysis_level=analysis_level,
+            target_files=target_files,
+            eager_analysis=eager,
+            backend=backend,
+        )
+
+    @staticmethod
+    def c(project_path: str | Path) -> CAnalysis:
+        """Create a C analysis facade for the given project directory."""
+        return CAnalysis(project_dir=_normalize_project_path(project_path))
+
+    @staticmethod
+    def go(
+        project_path: str | Path,
+        *,
+        analysis_level: str = AnalysisLevel.symbol_table,
+        eager: bool = False,
+        backend: GoBackend | None = None,
+    ) -> GoAnalysis:
+        """Create a Go analysis facade.
+
+        Args:
+            project_path: Path to the Go project directory (must contain ``go.mod``).
+            analysis_level: Analysis depth (see :class:`~cldk.analysis.AnalysisLevel`).
+            eager: Force regeneration of cached analysis.
+            backend: Backend configuration. Defaults to :class:`GoCodeAnalyzerConfig`.
+        """
+        return GoAnalysis(
+            project_dir=_normalize_project_path(project_path),
+            analysis_level=analysis_level,
+            eager_analysis=eager,
+            backend=backend,
+        )
+
     def analysis(
         self,
         project_path: str | Path | None = None,
@@ -105,148 +276,84 @@ class CLDK:
         analysis_level: str = AnalysisLevel.symbol_table,
         target_files: List[str] | None = None,
         analysis_backend_path: str | None = None,
-        analysis_json_path: str | Path = None,
+        analysis_json_path: str | Path | None = None,
         cache_dir: str | Path | None = None,
-        use_codeql: bool = True,
         use_ray: bool = False,
-    ) -> JavaAnalysis | PythonAnalysis | CAnalysis | GoAnalysis:
-        """Initialize and return a language-specific analysis facade.
+        neo4j_config: "Neo4jConnectionConfig | None" = None,
+    ) -> JavaAnalysis | PythonAnalysis | CAnalysis | TypeScriptAnalysis | GoAnalysis:
+        """Deprecated entry point. Use the per-language factory methods instead.
 
-        This factory method creates an appropriate analysis object based on the
-        language specified during CLDK initialization. The analysis facade provides
-        methods for extracting code structure, call graphs, symbol tables, and
-        other static analysis artifacts.
+        ``CLDK(language).analysis(...)`` is retained as a thin compatibility shim that forwards to
+        :meth:`java` / :meth:`python` / :meth:`typescript` / :meth:`c` with an appropriate
+        ``backend=`` configuration object.
 
-        The method supports two modes of operation:
+        The former ``analysis_json_path`` is folded into the unified ``cache_dir`` (it is used as
+        the cache root when ``cache_dir`` is not given). ``analysis_backend_path`` is no longer
+        supported: the backend binary ships with the packaged dependency, and passing it is ignored.
 
-        1. **Project mode**: Analyze an entire project directory by providing
-           ``project_path``. This is the recommended mode for comprehensive
-           analysis.
-        2. **Source code mode** (Java only): Analyze a single source code string
-           by providing ``source_code``. Useful for quick analysis of code
-           snippets.
-
-        Args:
-            project_path: Absolute or relative path to the project directory
-                to analyze. The directory should contain source files in the
-                target language. Mutually exclusive with ``source_code``.
-            source_code: Raw source code string to analyze (Java only). Useful
-                for analyzing code snippets without a project structure.
-                Mutually exclusive with ``project_path``. Not supported for
-                Python or C languages.
-            eager: If ``True``, forces regeneration of all analysis caches and
-                databases, ignoring any previously cached results. Defaults to
-                ``False`` for incremental analysis performance.
-            analysis_level: The depth of analysis to perform. Controls which
-                analysis artifacts are generated. See :class:`~cldk.analysis.AnalysisLevel`
-                for available options. Defaults to ``AnalysisLevel.symbol_table``.
-            target_files: Optional list of specific file paths (relative to
-                ``project_path``) to analyze. When provided, only these files
-                are included in the analysis, improving performance for large
-                projects. Defaults to ``None`` (analyze all files).
-            analysis_backend_path: **Java only.** Path to the directory containing
-                the ``codeanalyzer-*.jar`` backend executable. If not provided,
-                the JAR is automatically downloaded. Not valid for Python
-                analysis; use ``cache_dir`` instead.
-            analysis_json_path: Path where the analysis database (typically
-                ``analysis.json``) should be persisted. Useful for caching
-                analysis results between sessions. If not provided, a default
-                location within the project is used.
-            cache_dir: **Python only.** Directory path for the codeanalyzer-python
-                backend's cache, including its virtualenv, CodeQL database, and
-                ``analysis_cache.json``. When omitted, defaults to
-                ``<project_path>/.codeanalyzer``. Ignored for Java and C.
-            use_codeql: **Python only.** If ``True`` (default), augments
-                Jedi-based call graph resolution with CodeQL analysis for more
-                complete call edges. Set to ``False`` for faster analysis using
-                only Jedi. Ignored for Java and C.
-            use_ray: **Python only.** If ``True``, enables Ray-based parallel
-                processing for analysis. Recommended for very large projects
-                where sequential Jedi/CodeQL analysis would be slow. Requires
-                Ray to be installed. Defaults to ``False``. Ignored for Java
-                and C.
-
-        Returns:
-            A language-specific analysis facade instance:
-                - :class:`~cldk.analysis.java.JavaAnalysis` for Java projects
-                - :class:`~cldk.analysis.python.PythonAnalysis` for Python projects
-                - :class:`~cldk.analysis.c.CAnalysis` for C projects
-
-        Raises:
-            CldkInitializationException: Raised in the following cases:
-                - Neither ``project_path`` nor ``source_code`` is provided.
-                - Both ``project_path`` and ``source_code`` are provided.
-                - ``source_code`` is provided for Python analysis (not supported).
-                - ``analysis_backend_path`` is provided for Python analysis
-                  (use ``cache_dir`` instead).
-            NotImplementedError: If the language specified during CLDK
-                initialization is not supported.
-
-        Note:
-            The analysis process may download or build backend tools on first
-            run, which can take additional time. Subsequent runs use cached
-            backends for faster startup.
-
-        See Also:
-            - :class:`~cldk.analysis.AnalysisLevel`: Available analysis depth options.
-            - :class:`~cldk.analysis.java.JavaAnalysis`: Java analysis methods.
-            - :class:`~cldk.analysis.python.PythonAnalysis`: Python analysis methods.
+        .. deprecated::
+            Use :meth:`CLDK.java`, :meth:`CLDK.python`, :meth:`CLDK.typescript`, or :meth:`CLDK.c`
+            with a ``backend=<config>`` object.
         """
-
-        if project_path is None and source_code is None:
+        warnings.warn(
+            "CLDK(language).analysis(...) is deprecated; use the per-language factory methods "
+            "CLDK.java()/CLDK.python()/CLDK.typescript()/CLDK.c() with a backend=<config> object.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if analysis_backend_path is not None:
+            warnings.warn(
+                "analysis_backend_path is no longer supported and is ignored; the backend binary "
+                "ships with the packaged codeanalyzer-* dependency.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+        if project_path is None and source_code is None and neo4j_config is None:
             raise CldkInitializationException("Either project_path or source_code must be provided.")
-
-        if project_path is not None and source_code is not None:
-            raise CldkInitializationException("Both project_path and source_code are provided. Please provide " "only one.")
-
-        # Normalize project_path: expand ~ and resolve to absolute path
-        if project_path is not None:
-            project_path = Path(project_path).expanduser().resolve()
-            if not project_path.is_dir():
-                raise CldkInitializationException(f"project_path does not exist or is not a directory: {project_path}")
+        # The former analysis_json_path now folds into the unified cache_dir.
+        cache_root = cache_dir if cache_dir is not None else analysis_json_path
 
         if self.language == "java":
-            return JavaAnalysis(
-                project_dir=project_path,
+            return CLDK.java(
+                project_path=project_path,
                 source_code=source_code,
                 analysis_level=analysis_level,
-                analysis_backend_path=analysis_backend_path,
-                analysis_json_path=analysis_json_path,
                 target_files=target_files,
-                eager_analysis=eager,
+                eager=eager,
+                backend=CodeAnalyzerConfig(cache_dir=cache_root),
             )
         elif self.language == "python":
             if source_code is not None:
                 raise CldkInitializationException("source_code mode is not supported for Python; please pass project_path.")
-            if analysis_backend_path is not None:
-                raise CldkInitializationException(
-                    "analysis_backend_path is Java-only (it locates codeanalyzer-*.jar). "
-                    "For Python, use cache_dir for the backend's virtualenv/CodeQL cache."
-                )
-            return PythonAnalysis(
-                project_dir=project_path,
+            backend = neo4j_config if neo4j_config is not None else PyCodeAnalyzerConfig(cache_dir=cache_root, use_ray=use_ray)
+            return CLDK.python(
+                project_path=project_path,
                 analysis_level=analysis_level,
-                cache_dir=cache_dir,
-                analysis_json_path=analysis_json_path,
                 target_files=target_files,
-                eager_analysis=eager,
-                use_codeql=use_codeql,
-                use_ray=use_ray,
+                eager=eager,
+                backend=backend,
+            )
+        elif self.language == "typescript":
+            if source_code is not None:
+                raise CldkInitializationException("source_code mode is not supported for TypeScript; please pass project_path.")
+            backend = neo4j_config if neo4j_config is not None else CodeAnalyzerConfig(cache_dir=cache_root)
+            return CLDK.typescript(
+                project_path=project_path,
+                analysis_level=analysis_level,
+                target_files=target_files,
+                eager=eager,
+                backend=backend,
             )
         elif self.language == "c":
-            return CAnalysis(project_dir=project_path)
+            return CLDK.c(project_path)
         elif self.language == "go":
             if source_code is not None:
-                raise CldkInitializationException(
-                    "source_code mode is not supported for Go; please pass project_path."
-                )
-            return GoAnalysis(
-                project_dir=project_path,
-                analysis_backend_path=analysis_backend_path,
-                analysis_json_path=analysis_json_path,
+                raise CldkInitializationException("source_code mode is not supported for Go; please pass project_path.")
+            return CLDK.go(
+                project_path=project_path,
                 analysis_level=analysis_level,
-                eager_analysis=eager,
-                cache_dir=cache_dir,
+                eager=eager,
+                backend=GoCodeAnalyzerConfig(cache_dir=cache_root),
             )
         else:
             raise NotImplementedError(f"Analysis support for {self.language} is not implemented yet.")
