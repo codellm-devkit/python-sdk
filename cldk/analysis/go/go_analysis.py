@@ -75,10 +75,12 @@ class GoAnalysis:
         analysis_level: str = AnalysisLevel.symbol_table,
         eager_analysis: bool = False,
         backend: GoBackend | None = None,
+        target_files: List[str] | None = None,
     ) -> None:
         self.project_dir = project_dir
         self.analysis_level = analysis_level
         self.eager_analysis = eager_analysis
+        self.target_files = target_files
         cache_dir = backend.cache_dir if backend is not None else None
         analysis_json_path = cache_subdir(cache_dir, project_dir, "go")
         self._codeanalyzer: GoCodeanalyzer = GoCodeanalyzer(
@@ -86,6 +88,7 @@ class GoAnalysis:
             analysis_json_path=analysis_json_path,
             analysis_level=self.analysis_level,
             eager_analysis=self.eager_analysis,
+            target_files=self.target_files,
         )
         self._call_graph: Optional[nx.DiGraph] = None
 

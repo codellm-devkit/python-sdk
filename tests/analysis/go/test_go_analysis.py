@@ -338,3 +338,37 @@ def test_eager_flag_absent_when_not_eager(tmp_path):
             )
             invoked_args = mock_run.call_args[0][0]
             assert "--eager" not in invoked_args
+
+
+def test_target_files_passed_to_binary(tmp_path):
+    """Each entry in target_files must appear as a separate --target-files arg."""
+    targets = ["pkg/server.go", "pkg/handler.go"]
+    with patch("cldk.analysis.go.codeanalyzer.codeanalyzer.shutil.which", return_value="/bin/codeanalyzer-go"):
+        with patch("cldk.analysis.go.codeanalyzer.codeanalyzer.subprocess.run", side_effect=_make_subprocess_stub()) as mock_run:
+            GoCodeanalyzer(
+                project_dir=tmp_path,
+                analysis_json_path=None,
+                analysis_level="symbol_table",
+                eager_analysis=False,
+                target_files=targets,
+            )
+            invoked_args = mock_run.call_args[0][0]
+            assert "--target-files" in invoked_args
+            # Both files must be present as individual flag values.
+            tf_values = [invoked_args[i + 1] for i, a in enumerate(invoked_args) if a == "--target-files"]
+            assert set(tf_values) == set(targets)
+
+
+def test_target_files_absent_when_none(tmp_path):
+    """GoCodeanalyzer must not add --target-files when target_files is None."""
+    with patch("cldk.analysis.go.codeanalyzer.codeanalyzer.shutil.which", return_value="/bin/codeanalyzer-go"):
+        with patch("cldk.analysis.go.codeanalyzer.codeanalyzer.subprocess.run", side_effect=_make_subprocess_stub()) as mock_run:
+            GoCodeanalyzer(
+                project_dir=tmp_path,
+                analysis_json_path=None,
+                analysis_level="symbol_table",
+                eager_analysis=False,
+                target_files=None,
+            )
+            invoked_args = mock_run.call_args[0][0]
+            assert "--target-files" not in invoked_args

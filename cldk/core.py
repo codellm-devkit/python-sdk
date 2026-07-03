@@ -250,6 +250,7 @@ class CLDK:
         project_path: str | Path,
         *,
         analysis_level: str = AnalysisLevel.symbol_table,
+        target_files: List[str] | None = None,
         eager: bool = False,
         backend: GoBackend | None = None,
     ) -> GoAnalysis:
@@ -258,6 +259,7 @@ class CLDK:
         Args:
             project_path: Path to the Go project directory (must contain ``go.mod``).
             analysis_level: Analysis depth (see :class:`~cldk.analysis.AnalysisLevel`).
+            target_files: Restrict analysis to these files (incremental mode).
             eager: Force regeneration of cached analysis.
             backend: Backend configuration. Defaults to :class:`GoCodeAnalyzerConfig`.
         """
@@ -266,6 +268,7 @@ class CLDK:
             analysis_level=analysis_level,
             eager_analysis=eager,
             backend=backend,
+            target_files=target_files,
         )
 
     def analysis(
@@ -352,6 +355,7 @@ class CLDK:
             return CLDK.go(
                 project_path=project_path,
                 analysis_level=analysis_level,
+                target_files=target_files,
                 eager=eager,
                 backend=GoCodeAnalyzerConfig(cache_dir=cache_root),
             )

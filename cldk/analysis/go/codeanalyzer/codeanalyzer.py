@@ -63,11 +63,13 @@ class GoCodeanalyzer:
         analysis_json_path: Union[str, Path, None],
         analysis_level: str,
         eager_analysis: bool,
+        target_files: Optional[List[str]] = None,
     ) -> None:
         self.project_dir = Path(project_dir)
         self.analysis_json_path = Path(analysis_json_path) if analysis_json_path else None
         self.analysis_level = analysis_level
         self.eager_analysis = eager_analysis
+        self.target_files = target_files
         self.application: GoApplication = self._init_codeanalyzer()
 
     # ── Binary resolution ──────────────────────────────────────────────────────
@@ -135,6 +137,9 @@ class GoCodeanalyzer:
         ]
         if self.eager_analysis:
             args.append("--eager")
+        if self.target_files:
+            for f in self.target_files:
+                args += ["--target-files", f]
 
         logger.info("Running codeanalyzer-go: %s", " ".join(args))
         try:
