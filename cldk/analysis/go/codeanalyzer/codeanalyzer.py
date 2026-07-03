@@ -133,6 +133,8 @@ class GoCodeanalyzer:
             "--output", str(output_dir),
             "--analysis-level", level_flag,
         ]
+        if self.eager_analysis:
+            args.append("--eager")
 
         logger.info("Running codeanalyzer-go: %s", " ".join(args))
         try:

@@ -29,6 +29,7 @@ import pytest
 
 from cldk import CLDK
 from cldk.analysis.go import GoAnalysis
+from cldk.analysis.go.codeanalyzer import GoCodeanalyzer
 from cldk.models.go.models import (
     GoApplication,
     GoCallEdge,
@@ -293,3 +294,47 @@ def test_go_callable_receiver_fields():
     )
     assert method.receiver_type == "*MyStruct"
     assert method.receiver_name == "s"
+
+
+# ── Binary invocation flags ────────────────────────────────────────────────────
+
+def _make_subprocess_stub(output_dir_arg_index: int = None):
+    """Return a fake subprocess.run that writes analysis.json to the --output dir."""
+    minimal = '{"symbol_table": {}, "call_graph": [], "entrypoints": {}}'
+
+    def fake_run(args, **kwargs):
+        out_idx = args.index("--output") + 1
+        out = Path(args[out_idx])
+        out.mkdir(parents=True, exist_ok=True)
+        (out / "analysis.json").write_text(minimal)
+        return MagicMock(returncode=0)
+
+    return fake_run
+
+
+def test_eager_flag_passed_to_binary(tmp_path):
+    """GoCodeanalyzer must append --eager to the subprocess args when eager_analysis=True."""
+    with patch("cldk.analysis.go.codeanalyzer.codeanalyzer.shutil.which", return_value="/bin/codeanalyzer-go"):
+        with patch("cldk.analysis.go.codeanalyzer.codeanalyzer.subprocess.run", side_effect=_make_subprocess_stub()) as mock_run:
+            GoCodeanalyzer(
+                project_dir=tmp_path,
+                analysis_json_path=None,
+                analysis_level="symbol_table",
+                eager_analysis=True,
+            )
+            invoked_args = mock_run.call_args[0][0]
+            assert "--eager" in invoked_args
+
+
+def test_eager_flag_absent_when_not_eager(tmp_path):
+    """GoCodeanalyzer must NOT pass --eager when eager_analysis=False."""
+    with patch("cldk.analysis.go.codeanalyzer.codeanalyzer.shutil.which", return_value="/bin/codeanalyzer-go"):
+        with patch("cldk.analysis.go.codeanalyzer.codeanalyzer.subprocess.run", side_effect=_make_subprocess_stub()) as mock_run:
+            GoCodeanalyzer(
+                project_dir=tmp_path,
+                analysis_json_path=None,
+                analysis_level="symbol_table",
+                eager_analysis=False,
+            )
+            invoked_args = mock_run.call_args[0][0]
+            assert "--eager" not in invoked_args
