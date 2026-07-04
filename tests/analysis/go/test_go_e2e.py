@@ -16,9 +16,10 @@
 
 """End-to-end tests for GoAnalysis against the cldk-e2e Go fixture.
 
-Requires ``codeanalyzer-go`` on PATH (built from codeanalyzer-go repo and
-installed to e.g. ~/.local/bin). Tests are skipped automatically when the
-binary is absent, so CI without Go toolchain does not break.
+Requires the ``codeanalyzer-go`` analyzer to be resolvable — via ``pip install
+codeanalyzer-go``, the ``codeanalyzer-go``/``cango`` command on PATH, or
+``$CODEANALYZER_GO_BIN``. Tests are skipped automatically when it is absent, so
+CI without the analyzer does not break.
 
 Fixture: tests/resources/go/application/
   calc/calc.go      — Calculator struct, Operator interface, exported/unexported methods,
@@ -31,6 +32,7 @@ Fixture: tests/resources/go/application/
 All assertions reference exact values from the JSON the binary emits.
 """
 
+import os
 import shutil
 from pathlib import Path
 
@@ -46,9 +48,24 @@ from cldk.models.go.models import GoApplication
 
 FIXTURE_DIR = Path(__file__).parent.parent.parent / "resources" / "go" / "application"
 
+
+def _codeanalyzer_available() -> bool:
+    """Mirror GoCodeanalyzer's resolution order: env override, PyPI package, PATH."""
+    if os.environ.get("CODEANALYZER_GO_BIN"):
+        return True
+    try:
+        import codeanalyzer_go
+
+        codeanalyzer_go.bin_path()
+        return True
+    except Exception:
+        pass
+    return shutil.which("codeanalyzer-go") is not None or shutil.which("cango") is not None
+
+
 pytestmark = pytest.mark.skipif(
-    shutil.which("codeanalyzer-go") is None,
-    reason="codeanalyzer-go not found on PATH — install from codeanalyzer-go repo",
+    not _codeanalyzer_available(),
+    reason="codeanalyzer-go not resolvable — pip install codeanalyzer-go, put codeanalyzer-go/cango on PATH, or set $CODEANALYZER_GO_BIN",
 )
 
 

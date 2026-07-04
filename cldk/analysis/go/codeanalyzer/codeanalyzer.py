@@ -21,11 +21,20 @@ analysis. It shells out to the ``codeanalyzer-go`` native binary (analogous to
 Java shelling out to the ``codeanalyzer-*.jar``), reads the produced
 ``analysis.json``, and deserializes it into a :class:`~cldk.models.go.GoApplication`.
 
-The binary must be on ``PATH`` or provided via ``analysis_backend_path``.
+The binary is resolved in this order (see :meth:`GoCodeanalyzer._get_codeanalyzer_exec`):
+
+1. ``$CODEANALYZER_GO_BIN`` — an explicit override (e.g. a locally built binary).
+2. The ``codeanalyzer-go`` PyPI package, which ships the prebuilt, platform-specific
+   binary and exposes ``codeanalyzer_go.bin_path()`` — mirroring how the Python and
+   TypeScript backends depend on ``codeanalyzer-python`` / ``codeanalyzer-typescript``.
+3. The ``codeanalyzer-go`` (or ``cango``) command on ``PATH`` — e.g. a Homebrew,
+   shell-installer, or ``go build`` install.
 """
 
 import json
 import logging
+import os
+import shlex
 import shutil
 import subprocess
 from pathlib import Path
@@ -76,14 +85,37 @@ class GoCodeanalyzer(GoAnalysisBackend):
     # ── Binary resolution ──────────────────────────────────────────────────────
 
     def _get_codeanalyzer_exec(self) -> List[str]:
-        """Return the shell argv list for the codeanalyzer-go binary."""
-        found = shutil.which(_BINARY_NAME)
-        if found is None:
-            raise CodeanalyzerExecutionException(
-                f"'{_BINARY_NAME}' not found on PATH. "
-                "Build codeanalyzer-go and place the binary on PATH."
-            )
-        return [found]
+        """Resolve the argv list for the codeanalyzer-go binary.
+
+        Resolution order: ``$CODEANALYZER_GO_BIN`` override, then the prebuilt binary
+        shipped in the ``codeanalyzer-go`` PyPI package, then the ``codeanalyzer-go`` /
+        ``cango`` command on ``PATH``.
+        """
+        # 1. Explicit override (e.g. a locally built binary).
+        env_bin = os.environ.get("CODEANALYZER_GO_BIN")
+        if env_bin:
+            return shlex.split(env_bin)
+
+        # 2. Prebuilt binary shipped inside the `codeanalyzer-go` PyPI package (platform
+        #    wheel), mirroring how the Python/TypeScript backends depend on their analyzers.
+        try:
+            import codeanalyzer_go
+
+            return [str(codeanalyzer_go.bin_path())]
+        except (ModuleNotFoundError, FileNotFoundError):
+            pass
+
+        # 3. `codeanalyzer-go` (canonical) or `cango` on PATH — Homebrew, shell installer,
+        #    or a `go build` install. `codeanalyzer-go` is an alias for `cango`.
+        for name in (_BINARY_NAME, "cango"):
+            found = shutil.which(name)
+            if found is not None:
+                return [found]
+
+        raise CodeanalyzerExecutionException(
+            "codeanalyzer-go binary not found. Install it with `pip install codeanalyzer-go`, "
+            "place `codeanalyzer-go` or `cango` on PATH, or set $CODEANALYZER_GO_BIN."
+        )
 
     # ── Init / cache check ─────────────────────────────────────────────────────
 
