@@ -14,6 +14,7 @@ an optional read-only Neo4j backend — selected by the *type* of the `backend=`
 | Python | `CLDK.python(...)` | `PyCodeanalyzer` (in-process `codeanalyzer-python`) | `PyNeo4jBackend` | re-exported from `codeanalyzer-python` |
 | TypeScript | `CLDK.typescript(...)` | `TSCodeanalyzer` (`codeanalyzer-typescript` binary, subprocess) | `TSNeo4jBackend` | `cldk/models/typescript/` |
 | C | `CLDK.c(...)` | libclang (in-process, syntactic only) | — | `cldk/models/c/` |
+| Go | `CLDK.go(...)` | `GoCodeanalyzer` (`codeanalyzer-go` binary, subprocess) | — | `cldk/models/go/` |
 
 The legacy `CLDK(language="<lang>").analysis(...)` entry still works as a compat shim. Adding a
 language means a new factory method + facade + backend ABC/impl(s) + models + tests — **update this
