@@ -47,9 +47,12 @@ from typing import List
 
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.c import CAnalysis
+from cldk.analysis.go import GoAnalysis
 from cldk.analysis.java import JavaAnalysis
 from cldk.analysis.commons.backend_config import (
     CodeAnalyzerConfig,
+    GoBackend,
+    GoCodeAnalyzerConfig,
     JavaBackend,
     Neo4jConnectionConfig,
     PyBackend,
@@ -242,6 +245,32 @@ class CLDK:
         """Create a C analysis facade for the given project directory."""
         return CAnalysis(project_dir=_normalize_project_path(project_path))
 
+    @staticmethod
+    def go(
+        project_path: str | Path,
+        *,
+        analysis_level: str = AnalysisLevel.symbol_table,
+        target_files: List[str] | None = None,
+        eager: bool = False,
+        backend: GoBackend | None = None,
+    ) -> GoAnalysis:
+        """Create a Go analysis facade.
+
+        Args:
+            project_path: Path to the Go project directory (must contain ``go.mod``).
+            analysis_level: Analysis depth (see :class:`~cldk.analysis.AnalysisLevel`).
+            target_files: Restrict analysis to these files (incremental mode).
+            eager: Force regeneration of cached analysis.
+            backend: Backend configuration. Defaults to :class:`GoCodeAnalyzerConfig`.
+        """
+        return GoAnalysis(
+            project_dir=_normalize_project_path(project_path),
+            analysis_level=analysis_level,
+            eager_analysis=eager,
+            backend=backend,
+            target_files=target_files,
+        )
+
     def analysis(
         self,
         project_path: str | Path | None = None,
@@ -254,7 +283,7 @@ class CLDK:
         cache_dir: str | Path | None = None,
         use_ray: bool = False,
         neo4j_config: "Neo4jConnectionConfig | None" = None,
-    ) -> JavaAnalysis | PythonAnalysis | CAnalysis | TypeScriptAnalysis:
+    ) -> JavaAnalysis | PythonAnalysis | CAnalysis | TypeScriptAnalysis | GoAnalysis:
         """Deprecated entry point. Use the per-language factory methods instead.
 
         ``CLDK(language).analysis(...)`` is retained as a thin compatibility shim that forwards to
@@ -320,6 +349,16 @@ class CLDK:
             )
         elif self.language == "c":
             return CLDK.c(project_path)
+        elif self.language == "go":
+            if source_code is not None:
+                raise CldkInitializationException("source_code mode is not supported for Go; please pass project_path.")
+            return CLDK.go(
+                project_path=project_path,
+                analysis_level=analysis_level,
+                target_files=target_files,
+                eager=eager,
+                backend=GoCodeAnalyzerConfig(cache_dir=cache_root),
+            )
         else:
             raise NotImplementedError(f"Analysis support for {self.language} is not implemented yet.")
 

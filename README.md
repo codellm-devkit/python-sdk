@@ -25,7 +25,7 @@
 
 **A unified, multilingual program-analysis SDK for Code LLMs.** CLDK turns raw source code into structured, LLM-ready program facts — symbol tables, call graphs, type hierarchies, and more — behind a single Python API, so you can build analysis-augmented LLM pipelines without wrangling a different static-analysis tool for every language.
 
-Under the hood, CLDK orchestrates mature analysis engines (WALA, Tree-sitter, Jedi, PyCG, ts-morph) and normalizes their output into consistent, typed [Pydantic](https://docs.pydantic.dev/) models. You get the same ergonomic interface whether you are analyzing Java, Python, or TypeScript.
+Under the hood, CLDK orchestrates mature analysis engines (WALA, Tree-sitter, Jedi, PyCG, ts-morph, `go/packages` + `go/types`) and normalizes their output into consistent, typed [Pydantic](https://docs.pydantic.dev/) models. You get the same ergonomic interface whether you are analyzing Java, Python, TypeScript, C, or Go.
 
 CLDK is:
 
@@ -70,6 +70,7 @@ from cldk import CLDK
 analysis = CLDK.java(project_path="/path/to/java/project")
 # analysis = CLDK.python(project_path="/path/to/python/project")
 # analysis = CLDK.typescript(project_path="/path/to/ts/project")
+# analysis = CLDK.go(project_path="/path/to/go/project")
 ```
 
 Walk the symbol table and pull method bodies:
@@ -116,7 +117,7 @@ classes = analysis.get_all_classes()
 
 > **`project_path` with the Neo4j backend:** it's **optional** — the graph is read over Bolt, so you can omit it as shown above. CLDK validates `project_path` only when you actually pass one (it must exist and be a directory, on every backend); passing `None` skips that check. Supply a real path only if you also need on-disk source access (e.g. file content/snippets) alongside the graph.
 
-> **Deprecation:** the old `CLDK(language="java").analysis(...)` entry point still works as a thin compatibility shim (it emits a `DeprecationWarning`). Prefer the `CLDK.java()` / `CLDK.python()` / `CLDK.typescript()` factory methods.
+> **Deprecation:** the old `CLDK(language="java").analysis(...)` entry point still works as a thin compatibility shim (it emits a `DeprecationWarning`). Prefer the `CLDK.java()` / `CLDK.python()` / `CLDK.typescript()` / `CLDK.c()` / `CLDK.go()` factory methods.
 
 ## Supported Languages & Backends
 
@@ -127,6 +128,7 @@ Each language is analyzed by a dedicated `codeanalyzer-*` engine; CLDK normalize
 | **Java** | [`codeanalyzer-java`](https://github.com/codellm-devkit/codeanalyzer-java) | WALA + JavaParser. Bytecode-level call graphs, type hierarchies, symbol resolution, CRUD-operation and entry-point detection. Optional read-only **Neo4j** graph backend. |
 | **Python** | [`codeanalyzer-python`](https://github.com/codellm-devkit/codeanalyzer-python) | Jedi with PyCG-based call graphs. Symbol tables, call graphs, and class/method resolution. Optional read-only **Neo4j** graph backend. |
 | **TypeScript / JavaScript** | [`codeanalyzer-typescript`](https://github.com/codellm-devkit/codeanalyzer-typescript) | ts-morph with Jelly-based call graphs. Symbols, call graph, types, decorators, and call sites. Optional read-only **Neo4j** graph backend. |
+| **Go** | [`codeanalyzer-go`](https://github.com/codellm-devkit/codeanalyzer-go) | `go/packages` + `go/types`. Symbol table, resolver-based call graph, struct/interface types, pointer/value receivers, multi-return, goroutine call sites, embedded fields. External binary on `PATH`. |
 
 The backend is selected by the **type** of the `backend=` config you pass to a factory: the in-process analyzer (default) or a `Neo4jConnectionConfig` for the read-only graph backend.
 
@@ -149,13 +151,15 @@ graph TD
     J --> EJ[codeanalyzer-java<br/>WALA · JavaParser]
     P --> EP[codeanalyzer-python<br/>Jedi · PyCG]
     T --> ET[codeanalyzer-typescript<br/>ts-morph · Jelly]
+    A --> G[cldk.analysis.go]
+    G --> EG[codeanalyzer-go<br/>go/packages · go/types]
 
     J -. read-only .-> N[(Neo4j)]
     P -. read-only .-> N
     T -. read-only .-> N
 ```
 
-**Data models** — each language has its own set of Pydantic models under `cldk.models` (`cldk.models.java`, `cldk.models.python`, `cldk.models.typescript`). They give you structured, typed, dot-accessible representations of classes, methods, fields, and statements, with JSON serialization and shared conventions across languages.
+**Data models** — each language has its own set of Pydantic models under `cldk.models` (`cldk.models.java`, `cldk.models.python`, `cldk.models.typescript`, `cldk.models.c`, `cldk.models.go`). They give you structured, typed, dot-accessible representations of classes, methods, fields, and statements, with JSON serialization and shared conventions across languages.
 
 **Analysis backends** — each language has a backend under `cldk.analysis.<language>` that coordinates its engine (see the table above) and maps the result onto the data models. The read-only Neo4j backends (`cldk.analysis.<language>.neo4j`) reconstruct the *same* models from a Cypher graph, so they are drop-in interchangeable with the in-process analyzers. Backends are orchestrated internally; you only call high-level methods such as `get_symbol_table()`, `get_method_body(...)`, and `get_call_graph(...)`, and CLDK handles tool coordination, parsing, and marshalling under the hood.
 

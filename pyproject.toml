@@ -90,6 +90,7 @@ include = [
 codeanalyzer-java = "2.4.1"
 codeanalyzer-python = "0.3.0"
 codeanalyzer-typescript = "0.4.3"
+codeanalyzer-go = "0.1.0"
 
 ########################################
 # Tool configurations

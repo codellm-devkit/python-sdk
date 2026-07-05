@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Go language support** via the `codeanalyzer-go` subprocess backend. New `CLDK.go()` factory
+  method returns a `GoAnalysis` facade backed by the `GoAnalysisBackend` ABC (parity with
+  Java/Python/TypeScript), with a `GoCodeanalyzer` local backend that shells out to the
+  `codeanalyzer-go` binary on `PATH`. Exposes symbol table, call graph, type, and caller/callee
+  queries over `cldk.models.go` Pydantic models. Supports `analysis_level`, `eager`, and
+  `target_files`. The binary must be installed and on `PATH`.
+
 ## [v1.4.0] - 2026-06-27
 
 ### Changed

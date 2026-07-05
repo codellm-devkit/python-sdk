@@ -41,7 +41,7 @@ from typing import Union
 # The canonical sub-directory name each language's artifacts live under inside the shared cache
 # root. Keyed so that a polyglot repository analyzed under more than one language does not have its
 # backends overwrite a single shared ``analysis.json``.
-_CACHE_KEYS = {"java": "java", "python": "python", "typescript": "typescript", "c": "c"}
+_CACHE_KEYS = {"java": "java", "python": "python", "typescript": "typescript", "c": "c", "go": "go"}
 
 
 @dataclass
@@ -113,10 +113,20 @@ class Neo4jConnectionConfig:
     application_name: str | None = None
 
 
+@dataclass
+class GoCodeAnalyzerConfig(CodeAnalyzerConfig):
+    """Select the in-process codeanalyzer backend for Go.
+
+    Inherits :attr:`cache_dir` from :class:`CodeAnalyzerConfig`. Go analysis has no
+    additional backend-specific knobs at this time.
+    """
+
+
 # Per-language discriminated unions the facades match on.
 JavaBackend = Union[CodeAnalyzerConfig, Neo4jConnectionConfig]
 PyBackend = Union[PyCodeAnalyzerConfig, Neo4jConnectionConfig]
 TSBackend = Union[TSCodeAnalyzerConfig, CodeAnalyzerConfig, Neo4jConnectionConfig]
+GoBackend = Union[GoCodeAnalyzerConfig, CodeAnalyzerConfig]
 
 
 def cache_subdir(cache_dir: Union[str, Path, None], project_dir: Union[str, Path, None], language: str) -> Path | None:
