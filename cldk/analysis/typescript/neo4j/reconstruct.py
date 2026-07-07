@@ -174,10 +174,8 @@ def enum_member(name: str, value: str | None) -> TSEnumMember:
 
 def external(props: Props) -> TSExternalSymbol:
     return TSExternalSymbol(
-        signature=props.get("signature", ""),
         name=props.get("name", ""),
         module=props.get("module", ""),
-        kind=props.get("kind", "unknown"),
     )
 
 
