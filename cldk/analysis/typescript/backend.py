@@ -190,7 +190,10 @@ class TSAnalysisBackend(ABC):
 
     @abstractmethod
     def get_method(self, qualified_class_name: str, qualified_method_name: str) -> TSCallable | None:
-        """A single method of a class/interface."""
+        """A single method of a class/interface, or a module/namespace-level function.
+        ``qualified_class_name`` accepts either a class/interface signature (resolving to that
+        type's methods) or a module/namespace scope, in which case module-level functions are
+        resolved as a fallback; returns ``None`` if nothing resolves."""
 
     @abstractmethod
     def get_method_parameters(self, qualified_class_name: str, qualified_method_name: str) -> List[str]:

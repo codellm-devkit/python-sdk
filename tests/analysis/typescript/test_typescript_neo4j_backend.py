@@ -185,8 +185,11 @@ def test_get_method_resolves_module_level_function(ts_neo4j):
 
 
 def test_get_method_parameters_module_level_function(ts_neo4j):
+    # "main" is declared as `function main(): void` (see index.ts), so it takes no parameters —
+    # this exercises the module-level fallback path in get_method_parameters/get_method, not just
+    # that some list comes back.
     params = ts_neo4j.get_method_parameters("src/index", "main")
-    assert isinstance(params, list)
+    assert params == []
 
 
 def test_structured_decorators(ts_neo4j):
