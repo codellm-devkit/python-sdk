@@ -173,11 +173,12 @@ def enum_member(name: str, value: str | None) -> TSEnumMember:
 
 
 def external(props: Props) -> TSExternalSymbol:
+    # Slim by design (#231): the model carries name+module only. The graph node's
+    # ``signature`` is its merge key and becomes the ``external_symbols`` map key at the
+    # call site; ``kind`` does not exist in the analyzer's published Neo4j schema.
     return TSExternalSymbol(
-        signature=props.get("signature", ""),
         name=props.get("name", ""),
         module=props.get("module", ""),
-        kind=props.get("kind", "unknown"),
     )
 
 
