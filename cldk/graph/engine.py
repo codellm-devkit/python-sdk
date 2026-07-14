@@ -59,8 +59,8 @@ class Engine:
         g = _filter_edges(self.p.program_graph(self.p.callable_of(seeds[0])), edges)
         if want_inter:
             for e in self.p.sdg_edges():
-                g.add_edge(e.src, e.dst, family="sdg", var=getattr(e, "var", None),
-                           prov=getattr(e, "prov", []))
+                g.add_edge(e.src, e.dst, family="sdg", kind=getattr(e, "kind", None),
+                           var=getattr(e, "var", None), prov=getattr(e, "prov", []))
         walk = g.reverse(copy=False) if backward else g
         reached = set(seeds)
         for s in seeds:
@@ -107,8 +107,8 @@ class Engine:
                 g.add_edge(u, v, key=k, **d)
         if self.p.max_level() >= 4:
             for e in self.p.sdg_edges():
-                g.add_edge(e.src, e.dst, family="sdg", var=getattr(e, "var", None),
-                           prov=getattr(e, "prov", []))
+                g.add_edge(e.src, e.dst, family="sdg", kind=getattr(e, "kind", None),
+                           var=getattr(e, "var", None), prov=getattr(e, "prov", []))
         return g
 
     def flows_to(self, source_seed, sink_seed, *, strict: bool = False) -> FlowResult:
@@ -140,7 +140,10 @@ class Engine:
                                key=lambda d: _TIER_RANK[_ddg_tier(d.get("prov", []))])
                     t = _ddg_tier(best.get("prov", []))
                     tiers.append(t)
-                    hops.append({"from": a, "to": b, "kind": best.get("family"),
+                    # Intra edges report their family (cfg/cdg/ddg have no kind); sdg
+                    # boundary edges report the concrete kind (param_in/param_out/summary).
+                    hops.append({"from": a, "to": b,
+                                 "kind": best.get("kind") or best.get("family"),
                                  "var": best.get("var"), "confidence": t})
                 conf = _RANK_TIER[min(_TIER_RANK[t] for t in tiers)] if tiers else "unresolved"
                 paths.append(FlowPath(source=src, sink=dst, hops=hops, confidence=conf))

@@ -81,6 +81,21 @@ def test_flows_to_crosses_callable_boundary():
     assert [h["to"] for h in p.hops] == ["c@call", "d@in", "d@sink"]
 
 
+def test_flow_boundary_hop_reports_sdg_kind():
+    # I6: a hop crossing the callable boundary must report WHICH sdg edge carried the
+    # flow (param_in/param_out/summary), not the opaque family name "sdg". Intra hops
+    # keep reporting their family ("ddg").
+    e = Engine(CrossCallableFlowProvider())
+    class Src: id = "c@src"
+    class Snk: id = "d@sink"
+    p = e.flows_to(Src(), Snk()).paths[0]
+    kinds = [h["kind"] for h in p.hops]
+    assert kinds[0] == "ddg"                                # intra hop: family
+    assert kinds[1] in {"param_in", "param_out", "summary"}  # boundary hop: sdg kind
+    assert kinds[1] == "param_in"
+    assert kinds[2] == "ddg"
+
+
 def test_family_scoped_slice_has_no_sdg_overlay_at_l4():
     # C3: the sdg (dataflow: param_in/param_out/summary) overlay must be gated on the
     # ddg family being REQUESTED, not just on level/interprocedural intent. A cfg-only
