@@ -20,6 +20,14 @@ def _filter_edges(g: nx.MultiDiGraph, families: Iterable[str]) -> nx.MultiDiGrap
 _TIER_RANK = {"unresolved": 0, "structural": 1, "resolved": 2}
 _RANK_TIER = {v: k for k, v in _TIER_RANK.items()}
 
+# Provisional witness-enumeration bounds (to be tuned against real graphs in a later
+# task): flows_to explores simple paths no deeper than _PATH_CUTOFF hops and stops
+# collecting witnesses at _MAX_PATHS; explain()["truncated"] reports whether the
+# path cap was hit (depth-cutoff drops are not separately detectable and are folded
+# into the same provisional-bounds caveat).
+_MAX_PATHS = 1000
+_PATH_CUTOFF = 64
+
 
 def _ddg_tier(prov) -> str:
     if prov == ["points-to"]:
@@ -130,12 +138,16 @@ class Engine:
         g = self._dataflow_graph(self.p.callable_of(src), self.p.callable_of(dst))
         paths: List[FlowPath] = []
         reached = set()
+        truncated = False
         if src in g and dst in g:
             # A MultiDiGraph enumerates a route once per parallel-edge combination, yielding
             # byte-identical duplicate witnesses. Enumerate over a plain-DiGraph VIEW (one path
             # per distinct node route) and read per-hop parallel evidence from the MultiDiGraph g.
             routes = nx.DiGraph(g)
-            for path in nx.all_simple_paths(routes, src, dst, cutoff=64):
+            for path in nx.all_simple_paths(routes, src, dst, cutoff=_PATH_CUTOFF):
+                if len(paths) >= _MAX_PATHS:
+                    truncated = True
+                    break
                 hops, tiers = [], []
                 for a, b in zip(path, path[1:]):
                     # MultiDiGraph: get_edge_data returns {key: attrdict} over parallel edges.
@@ -155,7 +167,7 @@ class Engine:
                 paths.append(FlowPath(source=src, sink=dst, hops=hops, confidence=conf))
                 reached.update(path)
         explain = {"source": src, "sink": dst, "level": self.p.max_level(),
-                   "paths": len(paths)}
+                   "paths": len(paths), "truncated": truncated}
         if note:
             explain["degraded"] = note
         sub = g.subgraph(reached).copy()

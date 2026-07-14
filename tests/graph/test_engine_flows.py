@@ -80,6 +80,45 @@ def test_flows_to_strict_on_l3_raises():
         e.flows_to("m:1", "m:3", strict=True)
 
 
+class DiamondProvider(ProgramGraphProvider):
+    # TWO distinct node routes: c@s -> c@a -> c@t and c@s -> c@b -> c@t.
+    def program_graph(self, callable_uri):
+        g = nx.MultiDiGraph()
+        g.add_edge("c@s", "c@a", key="ddg", family="ddg", var="x", prov=["ssa"])
+        g.add_edge("c@a", "c@t", key="ddg", family="ddg", var="x", prov=["ssa"])
+        g.add_edge("c@s", "c@b", key="ddg", family="ddg", var="x", prov=["ssa"])
+        g.add_edge("c@b", "c@t", key="ddg", family="ddg", var="x", prov=["ssa"])
+        return g
+    def sdg_edges(self): return []
+    def resolve_location(self, file, line, col=None): return [f"c@{line}"]
+    def source_slice(self, vertex_uri): return (vertex_uri, vertex_uri)
+    def callable_of(self, vertex_uri): return "c"
+    def max_level(self): return 4
+
+
+def test_flows_to_sets_truncated_when_path_cap_hit(monkeypatch):
+    # I5: witness enumeration is bounded; when the cap drops paths the result must SAY
+    # so via explain()["truncated"], instead of silently presenting a partial set as
+    # complete. Shrink the cap to 1 so the diamond's second route is dropped.
+    import cldk.graph.engine as eng
+    monkeypatch.setattr(eng, "_MAX_PATHS", 1)
+    e = Engine(DiamondProvider())
+    class S: id = "c@s"
+    class T: id = "c@t"
+    r = e.flows_to(S(), T())
+    assert len(r.paths) == 1                     # capped at _MAX_PATHS
+    assert r.explain()["truncated"] is True
+
+
+def test_flows_to_not_truncated_within_bounds():
+    e = Engine(DiamondProvider())
+    class S: id = "c@s"
+    class T: id = "c@t"
+    r = e.flows_to(S(), T())
+    assert len(r.paths) == 2                     # both diamond routes enumerated
+    assert r.explain()["truncated"] is False
+
+
 def test_def_use_returns_downstream_uses():
     e = Engine(OneCallableProvider())
     r = e.def_use("m:1")  # def at s1 flows to s2, s3
