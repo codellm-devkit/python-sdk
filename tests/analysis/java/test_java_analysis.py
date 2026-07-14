@@ -1250,3 +1250,23 @@ def test_call_graph_source_method_miss_mid_construction_no_crash(test_fixture, a
             backend.get_method = original_get_method
 
         assert isinstance(result, dict)
+
+
+def test_get_comments_in_a_class_miss_returns_empty_list(test_fixture, analysis_json):
+    """get_comments_in_a_class must not crash with AttributeError when the class is missing.
+
+    Before the fix, this raised: AttributeError: 'NoneType' object has no attribute 'comments'.
+    """
+
+    with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
+        run_mock.side_effect = _write_java_output(analysis_json)
+        java_analysis = JavaAnalysis(
+            project_dir=test_fixture,
+            source_code=None,
+            backend=_BK,
+            analysis_level=AnalysisLevel.symbol_table,
+            target_files=None,
+            eager_analysis=False,
+        )
+
+        assert java_analysis.backend.get_comments_in_a_class("com.example.NoSuchClass") == []

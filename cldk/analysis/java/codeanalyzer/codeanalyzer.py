@@ -1101,10 +1101,10 @@ class JCodeanalyzer(JavaAnalysisBackend):
             qualified_class_name (str): Qualified name of the class.
 
         Returns:
-            List[str]: List of comments in the class.
+            List[str]: List of comments in the class. Empty list if the class is not found.
         """
         klass = self.get_class(qualified_class_name)
-        return klass.comments
+        return klass.comments if klass is not None else []
 
     def get_comment_in_file(self, file_path: str) -> List[JComment]:
         """Get all comments in a file.

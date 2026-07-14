@@ -567,9 +567,15 @@ class JNeo4jBackend(JavaAnalysisBackend):
         if cg is None:
             cg = []
         target_method_details = self.get_method(qualified_class_name=target_class_name, method_signature=target_method_signature)
+        if target_method_details is None:
+            # The target method doesn't exist, so no edges into it can be constructed.
+            return cg
         for class_name in self.get_all_classes():
             for method in self.get_all_methods_in_class(qualified_class_name=class_name):
                 method_details = self.get_method(qualified_class_name=class_name, method_signature=method)
+                if method_details is None:
+                    # The symbol table momentarily disagreed with itself; skip this entry.
+                    continue
                 for call_site in method_details.call_sites:
                     source_method_details = None
                     source_class = ""
@@ -692,10 +698,12 @@ class JNeo4jBackend(JavaAnalysisBackend):
         return self._crud(CRUDOperationType.DELETE)
 
     def get_comments_in_a_method(self, qualified_class_name: str, method_signature: str) -> List[JComment]:
-        return self.get_method(qualified_class_name, method_signature).comments
+        callable = self.get_method(qualified_class_name, method_signature)
+        return callable.comments if callable is not None else []
 
     def get_comments_in_a_class(self, qualified_class_name: str) -> List[JComment]:
-        return self.get_class(qualified_class_name).comments
+        klass = self.get_class(qualified_class_name)
+        return klass.comments if klass is not None else []
 
     def get_comment_in_file(self, file_path: str) -> List[JComment]:
         compilation_unit = self.get_symbol_table().get(file_path, None)
