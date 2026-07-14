@@ -453,26 +453,30 @@ class JNeo4jBackend(JavaAnalysisBackend):
             class_dict.update(v.type_declarations)
         return class_dict
 
-    def get_class(self, qualified_class_name) -> JType:
+    def get_class(self, qualified_class_name) -> JType | None:
         for v in self.get_symbol_table().values():
             if qualified_class_name in v.type_declarations.keys():
                 return v.type_declarations.get(qualified_class_name)
+        return None
 
-    def get_method(self, qualified_class_name, method_signature) -> JCallable:
+    def get_method(self, qualified_class_name, method_signature) -> JCallable | None:
         for v in self.get_symbol_table().values():
             if qualified_class_name in v.type_declarations.keys():
                 ci = v.type_declarations[qualified_class_name]
                 for cd in ci.callable_declarations.keys():
                     if cd == method_signature:
                         return ci.callable_declarations[cd]
+        return None
 
     def get_method_parameters(self, qualified_class_name, method_signature) -> List[JCallableParameter]:
-        return self.get_method(qualified_class_name, method_signature).parameters
+        method = self.get_method(qualified_class_name, method_signature)
+        return method.parameters if method is not None else []
 
-    def get_java_file(self, qualified_class_name) -> str:
+    def get_java_file(self, qualified_class_name) -> str | None:
         for k, v in self.get_symbol_table().items():
             if qualified_class_name in v.type_declarations.keys():
                 return k
+        return None
 
     def get_all_methods_in_class(self, qualified_class_name) -> Dict[str, JCallable]:
         ci = self.get_class(qualified_class_name)

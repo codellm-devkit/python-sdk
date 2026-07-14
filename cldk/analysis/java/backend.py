@@ -76,8 +76,8 @@ class JavaAnalysisBackend(ABC):
         """All compilation units."""
 
     @abstractmethod
-    def get_java_file(self, qualified_class_name: str) -> str:
-        """The file path declaring a class."""
+    def get_java_file(self, qualified_class_name: str) -> str | None:
+        """The file path declaring a class. ``None`` if the class is not found."""
 
     @abstractmethod
     def get_java_compilation_unit(self, file_path: str) -> JCompilationUnit:
@@ -114,8 +114,8 @@ class JavaAnalysisBackend(ABC):
         """Every class, keyed by qualified name."""
 
     @abstractmethod
-    def get_class(self, qualified_class_name: str) -> JType:
-        """A single class by qualified name."""
+    def get_class(self, qualified_class_name: str) -> JType | None:
+        """A single class by qualified name. ``None`` if not found."""
 
     @abstractmethod
     def get_all_sub_classes(self, qualified_class_name: str) -> Dict[str, JType]:
@@ -142,12 +142,12 @@ class JavaAnalysisBackend(ABC):
         """The methods of a class."""
 
     @abstractmethod
-    def get_method(self, qualified_class_name: str, method_signature: str) -> JCallable:
-        """A single method of a class."""
+    def get_method(self, qualified_class_name: str, method_signature: str) -> JCallable | None:
+        """A single method of a class. ``None`` if not found."""
 
     @abstractmethod
     def get_method_parameters(self, qualified_class_name: str, method_signature: str) -> List[JCallableParameter]:
-        """The parameters of a method."""
+        """The parameters of a method. Empty list if the method is not found."""
 
     @abstractmethod
     def get_all_constructors(self, qualified_class_name: str) -> Dict[str, JCallable]:
