@@ -86,6 +86,16 @@ def test_def_use_returns_downstream_uses():
     assert set(r.uris()) == {"c@1:0", "c@2:0", "c@3:0"}
 
 
+def test_def_use_evidence_role_is_use():
+    # I4: downstream vertices in a def_use result are USES of the seed's definition.
+    e = Engine(OneCallableProvider())
+    r = e.def_use("m:1")
+    roles = {ev["uri"]: ev["role"] for ev in r.evidence}
+    assert roles["c@1:0"] == "seed"
+    assert roles["c@2:0"] == "use"
+    assert roles["c@3:0"] == "use"
+
+
 def test_def_use_seed_absent_is_consistent():
     # seed resolving to a vertex not in the dataflow graph is still in its own result;
     # uris()/evidence must equal the subgraph node set (no uris/bool contradiction).

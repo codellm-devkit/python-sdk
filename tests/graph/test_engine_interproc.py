@@ -138,3 +138,19 @@ def test_control_deps_stays_intraprocedural_at_l4():
     assert set(r.uris()) == {"c@guard", "c@body"}   # only intra cdg reachability, no d@in
     assert "d@in" not in set(r.uris())              # sdg dataflow did NOT cross the boundary
     assert r.explain()["interprocedural"] is False  # control_deps is always intraprocedural
+
+
+def test_control_deps_evidence_role_is_control():
+    # I4: a non-seed vertex in a control_deps result is there as a controlling guard,
+    # not as a definition — its evidence role must say so.
+    class CDGProvider(TwoCallableProvider):
+        def program_graph(self, callable_uri):
+            g = nx.MultiDiGraph()
+            g.add_edge("c@guard", "c@body", key="cdg", family="cdg")
+            return g
+    e = Engine(CDGProvider())
+    class Seed: id = "c@body"
+    r = e.control_deps(Seed())
+    roles = {ev["uri"]: ev["role"] for ev in r.evidence}
+    assert roles["c@body"] == "seed"
+    assert roles["c@guard"] == "control"

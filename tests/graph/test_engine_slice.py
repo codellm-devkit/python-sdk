@@ -58,6 +58,16 @@ def test_family_scoped_slices_differ():
     assert ddg_set != cfg_set              # families are distinct, not merged
 
 
+def test_slice_evidence_default_role_is_def():
+    # I4 guard: slices keep the "def" role for non-seed vertices (only control_deps
+    # and def_use re-role their evidence).
+    e = Engine(OneCallableProvider())
+    r = e.slice_backward("m:3", edges=("ddg",))
+    roles = {ev["uri"]: ev["role"] for ev in r.evidence}
+    assert roles["c@3:0"] == "seed"
+    assert roles["c@1:0"] == "def" and roles["c@2:0"] == "def"
+
+
 def test_seed_absent_from_graph_is_consistent():
     # a seed resolving to a vertex not in the callable graph is still in its own
     # slice; uris()/evidence must equal the subgraph's node set (no contradiction).

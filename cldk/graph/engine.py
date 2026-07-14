@@ -33,16 +33,19 @@ class Engine:
     def __init__(self, provider: ProgramGraphProvider):
         self.p = provider
 
-    def _evidence(self, uris, seeds, roles=None):
+    def _evidence(self, uris, seeds, roles=None, default_role="def"):
+        # Seeds are always "seed"; other vertices take the verb's default_role
+        # (slices/flows: "def", control_deps: "control", def_use: "use").
         roles = roles or {}
         ev = []
         for u in uris:
             fl, code = self.p.source_slice(u)
             ev.append({"uri": u, "file_line": fl, "code": code,
-                       "role": "seed" if u in seeds else roles.get(u, "def")})
+                       "role": "seed" if u in seeds else roles.get(u, default_role)})
         return ev
 
-    def _intra(self, seed, edges, backward, strict, what, interprocedural=None) -> SliceResult:
+    def _intra(self, seed, edges, backward, strict, what, interprocedural=None,
+               default_role="def") -> SliceResult:
         note = require(3, self.p, strict=strict, what=what)
         want_inter = interprocedural if interprocedural is not None else (self.p.max_level() >= 4)
         if interprocedural is True:
@@ -78,7 +81,9 @@ class Engine:
                    "vertices": len(sub), "interprocedural": bool(want_inter)}
         if note:
             explain["degraded"] = note
-        return SliceResult(subgraph=sub, evidence=self._evidence(ev_nodes, set(seeds)),
+        return SliceResult(subgraph=sub,
+                           evidence=self._evidence(ev_nodes, set(seeds),
+                                                   default_role=default_role),
                            _explain=explain)
 
     def slice_backward(self, seed, *, edges=("cfg", "cdg", "ddg"),
@@ -94,7 +99,8 @@ class Engine:
         # crosses boundaries. Force interprocedural=False so the sdg overlay is never merged
         # into a pure CDG slice, even on an L4 backend.
         return self._intra(seed, ("cdg",), backward=True, strict=strict,
-                           what="control_deps", interprocedural=False)
+                           what="control_deps", interprocedural=False,
+                           default_role="control")
 
     def _dataflow_graph(self, *callable_uris) -> nx.MultiDiGraph:
         # Union of the given callables' intra ddg graphs, plus the summary/param_*
@@ -169,5 +175,7 @@ class Engine:
         explain = {"seed": s, "level": self.p.max_level(), "vertices": len(sub)}
         if note:
             explain["degraded"] = note
-        return FlowResult(subgraph=sub, evidence=self._evidence(sorted(sub.nodes()), {s}),
+        return FlowResult(subgraph=sub,
+                          evidence=self._evidence(sorted(sub.nodes()), {s},
+                                                  default_role="use"),
                           _explain=explain, paths=[])
