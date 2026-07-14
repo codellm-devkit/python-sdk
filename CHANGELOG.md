@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.4.3] - 2026-07-14
+
+### Fixed
+- **`pip install cldk` no longer fails on Python 3.14.** Removed the unused `pyarrow==20.0.0`
+  dependency (the orphaned companion of the previously removed pandas): nothing in the SDK
+  imports it, and its cp39–cp313-only wheels forced an Arrow C++ source build — and usually a
+  failure — on Python 3.14 installs. (#145)
+- **TypeScript Neo4j backend: `get_external_symbols()` works again.** Reconstructing External
+  (phantom) nodes raised a Pydantic `extra_forbidden` error for every node, because the
+  reconstructor forwarded graph properties (`signature`, and a fabricated `kind`) that the slim
+  `TSExternalSymbol` model deliberately omits. The reconstructor now conforms to the model and
+  the analyzer's published Neo4j schema; the node's `signature` remains the map key. (#231)
+
 ## [v1.4.2] - 2026-07-14
 
 ### Fixed
