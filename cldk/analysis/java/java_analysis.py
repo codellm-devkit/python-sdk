@@ -610,7 +610,7 @@ class JavaAnalysis:
                 class_dict[application_class] = all_classes[application_class]
         return class_dict
 
-    def get_class(self, qualified_class_name: str) -> JType:
+    def get_class(self, qualified_class_name: str) -> JType | None:
         """Return a specific class by its qualified name.
 
         Retrieves detailed information about a single class, including its
@@ -632,7 +632,7 @@ class JavaAnalysis:
 
         return self.backend.get_class(qualified_class_name)
 
-    def get_method(self, qualified_class_name: str, qualified_method_name: str) -> JCallable:
+    def get_method(self, qualified_class_name: str, qualified_method_name: str) -> JCallable | None:
         """Return a specific method by class and method signature.
 
         Retrieves detailed information about a single method, including its
@@ -676,7 +676,7 @@ class JavaAnalysis:
         """
         return self.backend.get_method_parameters(qualified_class_name, qualified_method_name)
 
-    def get_java_file(self, qualified_class_name: str) -> str:
+    def get_java_file(self, qualified_class_name: str) -> str | None:
         """Return the file path containing a class with the given name.
 
         Given a qualified class name, returns the file path where that class

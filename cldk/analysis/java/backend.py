@@ -198,11 +198,11 @@ class JavaAnalysisBackend(ABC):
 
     @abstractmethod
     def get_comments_in_a_class(self, qualified_class_name: str) -> List[JComment]:
-        """The comments in a class."""
+        """The comments in a class. Returns an empty list if the class is not found."""
 
     @abstractmethod
     def get_comments_in_a_method(self, qualified_class_name: str, method_signature: str) -> List[JComment]:
-        """The comments in a method."""
+        """The comments in a method. Returns an empty list if the method is not found."""
 
     @abstractmethod
     def get_all_docstrings(self) -> List[Tuple[str, JComment]]:
