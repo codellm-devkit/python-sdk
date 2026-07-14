@@ -42,24 +42,35 @@ class Engine:
                        "role": "seed" if u in seeds else roles.get(u, "def")})
         return ev
 
-    def _intra(self, seed, edges, backward, strict, what) -> SliceResult:
+    def _intra(self, seed, edges, backward, strict, what, interprocedural=None) -> SliceResult:
         note = require(3, self.p, strict=strict, what=what)
+        want_inter = interprocedural if interprocedural is not None else (self.p.max_level() >= 4)
+        if interprocedural is True:
+            inter_note = require(4, self.p, strict=strict, what=f"interprocedural {what}")
+            if inter_note:
+                note = inter_note
+                want_inter = False
         seeds = resolve_vertex(self.p, seed)
-        cal = self.p.callable_of(seeds[0])
-        g = _filter_edges(self.p.program_graph(cal), edges)
+        g = _filter_edges(self.p.program_graph(self.p.callable_of(seeds[0])), edges)
+        if want_inter and self.p.max_level() >= 4:
+            for e in self.p.sdg_edges():
+                g.add_edge(e.src, e.dst, family="sdg", var=getattr(e, "var", None),
+                           prov=getattr(e, "prov", []))
         walk = g.reverse(copy=False) if backward else g
         reached = set(seeds)
         for s in seeds:
             if s in walk:
                 reached |= nx.descendants(walk, s)
-        sub = g.subgraph(reached & set(g.nodes())).copy()
-        for s in seeds:                       # a seed is trivially in its own slice
+        # seed-consistency (Task 4 fix, carried here): evidence/uris must equal subgraph nodes,
+        # and a seed is trivially in its own slice.
+        sub = g.subgraph(reached & set(g.nodes())).copy()   # MultiDiGraph
+        for s in seeds:
             if s not in sub:
                 sub.add_node(s, kind="seed")
-        ev_nodes = sorted(sub.nodes())        # evidence == subgraph nodes, deterministic
+        ev_nodes = sorted(sub.nodes())   # deterministic; evidence set == subgraph nodes
         explain = {"seed": seeds, "direction": "backward" if backward else "forward",
                    "edges": list(edges), "level": self.p.max_level(),
-                   "vertices": len(sub), "interprocedural": False}
+                   "vertices": len(sub), "interprocedural": bool(want_inter)}
         if note:
             explain["degraded"] = note
         return SliceResult(subgraph=sub, evidence=self._evidence(ev_nodes, set(seeds)),
@@ -67,11 +78,11 @@ class Engine:
 
     def slice_backward(self, seed, *, edges=("cfg", "cdg", "ddg"),
                        interprocedural: Optional[bool] = None, strict: bool = False) -> SliceResult:
-        return self._intra(seed, edges, backward=True, strict=strict, what="slice_backward")
+        return self._intra(seed, edges, True, strict, "slice_backward", interprocedural)
 
     def slice_forward(self, seed, *, edges=("cfg", "cdg", "ddg"),
                       interprocedural: Optional[bool] = None, strict: bool = False) -> SliceResult:
-        return self._intra(seed, edges, backward=False, strict=strict, what="slice_forward")
+        return self._intra(seed, edges, False, strict, "slice_forward", interprocedural)
 
     def control_deps(self, seed, *, strict: bool = False) -> SliceResult:
         return self._intra(seed, ("cdg",), backward=True, strict=strict, what="control_deps")
