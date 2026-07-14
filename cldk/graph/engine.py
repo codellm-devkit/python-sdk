@@ -93,7 +93,11 @@ class Engine:
         paths: List[FlowPath] = []
         reached = set()
         if src in g and dst in g:
-            for path in nx.all_simple_paths(g, src, dst, cutoff=64):
+            # A MultiDiGraph enumerates a route once per parallel-edge combination, yielding
+            # byte-identical duplicate witnesses. Enumerate over a plain-DiGraph VIEW (one path
+            # per distinct node route) and read per-hop parallel evidence from the MultiDiGraph g.
+            routes = nx.DiGraph(g)
+            for path in nx.all_simple_paths(routes, src, dst, cutoff=64):
                 hops, tiers = [], []
                 for a, b in zip(path, path[1:]):
                     # MultiDiGraph: get_edge_data returns {key: attrdict} over parallel edges.
@@ -113,17 +117,20 @@ class Engine:
                    "paths": len(paths)}
         if note:
             explain["degraded"] = note
-        return FlowResult(subgraph=g.subgraph(reached).copy(),
-                          evidence=self._evidence(reached, {src, dst}), _explain=explain,
-                          paths=paths)
+        sub = g.subgraph(reached).copy()
+        return FlowResult(subgraph=sub, evidence=self._evidence(sorted(sub.nodes()), {src, dst}),
+                          _explain=explain, paths=paths)
 
     def def_use(self, seed, *, strict: bool = False) -> FlowResult:
         note = require(3, self.p, strict=strict, what="def_use")
         s = resolve_vertex(self.p, seed)[0]
         g = self._dataflow_graph(self.p.callable_of(s))
         reached = {s} | (nx.descendants(g, s) if s in g else set())
-        explain = {"seed": s, "level": self.p.max_level(), "vertices": len(reached)}
+        sub = g.subgraph(reached & set(g.nodes())).copy()
+        if s not in sub:                          # a seed is trivially in its own def-use result
+            sub.add_node(s, kind="seed")
+        explain = {"seed": s, "level": self.p.max_level(), "vertices": len(sub)}
         if note:
             explain["degraded"] = note
-        return FlowResult(subgraph=g.subgraph(reached).copy(),
-                          evidence=self._evidence(reached, {s}), _explain=explain, paths=[])
+        return FlowResult(subgraph=sub, evidence=self._evidence(sorted(sub.nodes()), {s}),
+                          _explain=explain, paths=[])
