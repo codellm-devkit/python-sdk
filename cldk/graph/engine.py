@@ -50,9 +50,14 @@ class Engine:
             if inter_note:
                 note = inter_note
                 want_inter = False
+        # Only dataflow (param_in/param_out/summary) crosses callable boundaries, so the
+        # sdg overlay is additionally gated on the ddg family being requested: a cfg- or
+        # cdg-only slice never crosses, even on an L4 backend. want_inter is the single
+        # source of truth — it both gates the overlay and feeds explain()["interprocedural"].
+        want_inter = want_inter and self.p.max_level() >= 4 and "ddg" in set(edges)
         seeds = resolve_vertex(self.p, seed)
         g = _filter_edges(self.p.program_graph(self.p.callable_of(seeds[0])), edges)
-        if want_inter and self.p.max_level() >= 4:
+        if want_inter:
             for e in self.p.sdg_edges():
                 g.add_edge(e.src, e.dst, family="sdg", var=getattr(e, "var", None),
                            prov=getattr(e, "prov", []))

@@ -43,6 +43,26 @@ def test_explicit_interproc_on_l3_strict_raises():
         Engine(L3()).slice_forward("c@call", interprocedural=True, strict=True)
 
 
+def test_family_scoped_slice_has_no_sdg_overlay_at_l4():
+    # C3: the sdg (dataflow: param_in/param_out/summary) overlay must be gated on the
+    # ddg family being REQUESTED, not just on level/interprocedural intent. A cfg-only
+    # backward slice on an L4 backend must not pull in dataflow vertices from other
+    # callables — only dataflow crosses boundaries, and no dataflow family was asked for.
+    class CFGProvider(TwoCallableProvider):
+        def program_graph(self, callable_uri):
+            g = nx.MultiDiGraph()
+            g.add_edge("c@1", "c@2", key="cfg", family="cfg")
+            g.add_edge("c@2", "c@3", key="cfg", family="cfg")
+            return g
+        def sdg_edges(self): return [_Edge("d@in", "c@2")]  # foreign DATAFLOW vertex
+    e = Engine(CFGProvider())
+    class Seed: id = "c@3"
+    r = e.slice_backward(Seed(), edges=("cfg",))
+    assert "d@in" not in set(r.uris())               # no dataflow contamination
+    assert set(r.uris()) == {"c@1", "c@2", "c@3"}
+    assert r.explain()["interprocedural"] is False   # no dataflow family => no crossing
+
+
 def test_control_deps_stays_intraprocedural_at_l4():
     # Control dependence has NO interprocedural notion in this model — only dataflow
     # (param_in/param_out/summary) crosses callable boundaries. control_deps must force
