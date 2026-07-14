@@ -151,6 +151,20 @@ def test_callers_and_callees(ts_analysis):
     assert "provenance" in main_edge and "tags" in main_edge
 
 
+def test_get_method_resolves_module_level_function(ts_analysis):
+    # regression for #247: get_method used to be class-scope only, so "src/index.main" (a
+    # module-level function that participates in a call edge, see test_callers_and_callees) was
+    # unreachable through it.
+    method = ts_analysis.get_method("src/index", "main")
+    assert method is not None
+    assert method.signature == "src/index.main"
+
+
+def test_get_method_parameters_module_level_function(ts_analysis):
+    params = ts_analysis.get_method_parameters("src/index", "main")
+    assert isinstance(params, list)
+
+
 def test_call_sites(ts_analysis):
     # rich syntactic call sites inside a callable
     sites = ts_analysis.get_call_sites("src/controllers.UserController.show")

@@ -472,7 +472,26 @@ class TSCodeanalyzer(TSAnalysisBackend):
         return self._methods_by_class.get(qualified_class_name, {})
 
     def get_method(self, qualified_class_name: str, qualified_method_name: str) -> TSCallable | None:
-        return self._methods_by_class.get(qualified_class_name, {}).get(qualified_method_name)
+        method = self._methods_by_class.get(qualified_class_name, {}).get(qualified_method_name)
+        if method is not None:
+            return method
+        # Class lookup missed (or the scope isn't a class at all): fall back to module/namespace
+        # -level functions, which live in `_functions` rather than `_methods_by_class`.
+        return self._resolve_function(qualified_class_name, qualified_method_name)
+
+    def _resolve_function(self, scope: str, name: str) -> TSCallable | None:
+        """Resolve a module/namespace-level function: an exact signature match first (``name`` is
+        already a full signature, ``scope`` ignored), then a short-name match scoped under
+        ``scope`` (handles functions nested in a namespace the caller doesn't know the full path
+        of, e.g. ``StringUtil.repeat`` when the caller only knows the module ``src/util``)."""
+        exact = self._functions.get(name)
+        if exact is not None:
+            return exact
+        prefix = f"{scope}."
+        for sig, fn in self._functions.items():
+            if fn.name == name and sig.startswith(prefix):
+                return fn
+        return None
 
     def get_method_parameters(self, qualified_class_name: str, qualified_method_name: str) -> List[str]:
         method = self.get_method(qualified_class_name, qualified_method_name)
