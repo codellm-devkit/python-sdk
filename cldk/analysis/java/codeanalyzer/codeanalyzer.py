@@ -458,21 +458,22 @@ class JCodeanalyzer(JavaAnalysisBackend):
             class_dict.update(v.type_declarations)
         return class_dict
 
-    def get_class(self, qualified_class_name) -> JType:
+    def get_class(self, qualified_class_name) -> JType | None:
         """Should return  a class given the qualified class name.
 
         Args:
             qualified_class_name (str): The qualified name of the class.
 
         Returns:
-            JType: A class for the given qualified class name.
+            JType | None: A class for the given qualified class name, or None if not found.
         """
         symtab = self.get_symbol_table()
         for _, v in symtab.items():
             if qualified_class_name in v.type_declarations.keys():
                 return v.type_declarations.get(qualified_class_name)
+        return None
 
-    def get_method(self, qualified_class_name, method_signature) -> JCallable:
+    def get_method(self, qualified_class_name, method_signature) -> JCallable | None:
         """Should return  a method given the qualified method name.
 
         Args:
@@ -480,7 +481,7 @@ class JCodeanalyzer(JavaAnalysisBackend):
             method_signature (str): The signature of the method.
 
         Returns:
-            JCallable: A method for the given qualified method name.
+            JCallable | None: A method for the given qualified method name, or None if not found.
         """
         symtab = self.get_symbol_table()
         for v in symtab.values():
@@ -489,6 +490,7 @@ class JCodeanalyzer(JavaAnalysisBackend):
                 for cd in ci.callable_declarations.keys():
                     if cd == method_signature:
                         return ci.callable_declarations[cd]
+        return None
 
     def get_method_parameters(self, qualified_class_name, method_signature) -> List[JCallableParameter]:
         """Should return  a dictionary of method parameters given the qualified class name and method signature.
@@ -498,9 +500,11 @@ class JCodeanalyzer(JavaAnalysisBackend):
             method_signature (str): The signature of the method.
 
         Returns:
-            Dict[str, str]: A dictionary of method parameters for the given qualified class name and method signature.
+            List[JCallableParameter]: The method parameters for the given qualified class name and method
+            signature. Empty list if the method is not found.
         """
-        return self.get_method(qualified_class_name, method_signature).parameters
+        method = self.get_method(qualified_class_name, method_signature)
+        return method.parameters if method is not None else []
 
     def get_parameters_from_callable(self, callable: JCallable) -> List[JCallableParameter]:
         """Should return  a dictionary of method parameters given the callable.
@@ -513,19 +517,20 @@ class JCodeanalyzer(JavaAnalysisBackend):
         """
         return callable.parameters
 
-    def get_java_file(self, qualified_class_name) -> str:
+    def get_java_file(self, qualified_class_name) -> str | None:
         """Should return  java file name given the qualified class name.
 
         Args:
             qualified_class_name (str): The qualified name of the class.
 
         Returns:
-            str: Java file name containing the given qualified class.
+            str | None: Java file name containing the given qualified class, or None if not found.
         """
         symtab = self.get_symbol_table()
         for k, v in symtab.items():
             if (qualified_class_name) in v.type_declarations.keys():
                 return k
+        return None
 
     def get_compilation_units(self) -> List[JCompilationUnit]:
         """Get all the compilation units in the symbol table.
@@ -736,9 +741,15 @@ class JCodeanalyzer(JavaAnalysisBackend):
         if cg is None:
             cg = []
         target_method_details = self.get_method(qualified_class_name=target_class_name, method_signature=target_method_signature)
+        if target_method_details is None:
+            # The target method doesn't exist, so no edges into it can be constructed.
+            return cg
         for class_name in self.get_all_classes():
             for method in self.get_all_methods_in_class(qualified_class_name=class_name):
                 method_details = self.get_method(qualified_class_name=class_name, method_signature=method)
+                if method_details is None:
+                    # The symbol table momentarily disagreed with itself; skip this entry.
+                    continue
                 for call_site in method_details.call_sites:
                     source_method_details = None
                     source_class = ""
@@ -1078,10 +1089,10 @@ class JCodeanalyzer(JavaAnalysisBackend):
             method_signature (str): Signature of the method.
 
         Returns:
-            List[str]: List of comments in the method.
+            List[str]: List of comments in the method. Empty list if the method is not found.
         """
         callable = self.get_method(qualified_class_name, method_signature)
-        return callable.comments
+        return callable.comments if callable is not None else []
 
     def get_comments_in_a_class(self, qualified_class_name: str) -> List[JComment]:
         """Get all comments in a class.
@@ -1090,10 +1101,10 @@ class JCodeanalyzer(JavaAnalysisBackend):
             qualified_class_name (str): Qualified name of the class.
 
         Returns:
-            List[str]: List of comments in the class.
+            List[str]: List of comments in the class. Empty list if the class is not found.
         """
         klass = self.get_class(qualified_class_name)
-        return klass.comments
+        return klass.comments if klass is not None else []
 
     def get_comment_in_file(self, file_path: str) -> List[JComment]:
         """Get all comments in a file.

@@ -1086,3 +1086,187 @@ def test_get_all_docstrings(test_fixture, analysis_json):
                 assert isinstance(doc, JComment)
                 if doc.content:
                     print(f"Docstring: {doc.content}")
+
+
+# --------------------------------------------------------------------------------------------
+# Miss-path tests (#248): lookups must return None/[] honestly on a miss, never crash.
+# --------------------------------------------------------------------------------------------
+
+
+def test_get_class_miss_returns_none(test_fixture, analysis_json):
+    """A qualified class name that doesn't exist should return None, not fall off the end."""
+
+    with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
+        run_mock.side_effect = _write_java_output(analysis_json)
+        java_analysis = JavaAnalysis(
+            project_dir=test_fixture,
+            source_code=None,
+            backend=_BK,
+            analysis_level=AnalysisLevel.symbol_table,
+            target_files=None,
+            eager_analysis=False,
+        )
+
+        assert java_analysis.get_class("com.example.NoSuchClass") is None
+
+
+def test_get_method_miss_returns_none(test_fixture, analysis_json):
+    """A method signature that doesn't exist should return None, not fall off the end."""
+
+    with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
+        run_mock.side_effect = _write_java_output(analysis_json)
+        java_analysis = JavaAnalysis(
+            project_dir=test_fixture,
+            source_code=None,
+            backend=_BK,
+            analysis_level=AnalysisLevel.symbol_table,
+            target_files=None,
+            eager_analysis=False,
+        )
+
+        # Known class, typo'd signature.
+        assert java_analysis.get_method("com.ibm.websphere.samples.daytrader.util.Log", "noSuchMethod()") is None
+        # Unknown class altogether.
+        assert java_analysis.get_method("com.example.NoSuchClass", "trace(java.lang.String)") is None
+
+
+def test_get_java_file_miss_returns_none(test_fixture, analysis_json):
+    """A qualified class name that doesn't exist should return None, not fall off the end."""
+
+    with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
+        run_mock.side_effect = _write_java_output(analysis_json)
+        java_analysis = JavaAnalysis(
+            project_dir=test_fixture,
+            source_code=None,
+            backend=_BK,
+            analysis_level=AnalysisLevel.symbol_table,
+            target_files=None,
+            eager_analysis=False,
+        )
+
+        assert java_analysis.get_java_file("com.example.NoSuchClass") is None
+
+
+def test_get_method_parameters_miss_returns_empty_list(test_fixture, analysis_json):
+    """get_method_parameters must not crash with AttributeError when the method is missing.
+
+    Before the fix, this raised: AttributeError: 'NoneType' object has no attribute 'parameters'.
+    """
+
+    with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
+        run_mock.side_effect = _write_java_output(analysis_json)
+        java_analysis = JavaAnalysis(
+            project_dir=test_fixture,
+            source_code=None,
+            backend=_BK,
+            analysis_level=AnalysisLevel.symbol_table,
+            target_files=None,
+            eager_analysis=False,
+        )
+
+        assert java_analysis.get_method_parameters("com.ibm.websphere.samples.daytrader.util.Log", "noSuchMethod()") == []
+        assert java_analysis.get_method_parameters("com.example.NoSuchClass", "trace(java.lang.String)") == []
+
+
+def test_get_comments_in_a_method_miss_returns_empty_list(test_fixture, analysis_json):
+    """get_comments_in_a_method must not crash with AttributeError when the method is missing."""
+
+    with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
+        run_mock.side_effect = _write_java_output(analysis_json)
+        java_analysis = JavaAnalysis(
+            project_dir=test_fixture,
+            source_code=None,
+            backend=_BK,
+            analysis_level=AnalysisLevel.symbol_table,
+            target_files=None,
+            eager_analysis=False,
+        )
+
+        assert java_analysis.backend.get_comments_in_a_method("com.ibm.websphere.samples.daytrader.util.Log", "noSuchMethod()") == []
+
+
+def test_call_graph_target_method_miss_mid_construction_no_crash(test_fixture, analysis_json):
+    """A get_method miss for the *target* method of a symbol-table call graph must not crash.
+
+    Exercises JCodeanalyzer.__raw_call_graph_using_symbol_table_target_method (codeanalyzer.py:738),
+    reached through the public get_all_callers(using_symbol_table=True) path.
+    """
+
+    with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
+        run_mock.side_effect = _write_java_output(analysis_json)
+        java_analysis = JavaAnalysis(
+            project_dir=test_fixture,
+            source_code=None,
+            backend=_BK,
+            analysis_level=AnalysisLevel.symbol_table,
+            target_files=None,
+            eager_analysis=False,
+        )
+
+        result = java_analysis.backend.get_all_callers(
+            target_class_name="com.ibm.websphere.samples.daytrader.util.Log",
+            target_method_signature="noSuchMethod()",
+            using_symbol_table=True,
+        )
+        assert result == {}
+
+
+def test_call_graph_source_method_miss_mid_construction_no_crash(test_fixture, analysis_json):
+    """A get_method miss for a *candidate source* method mid-construction must be skipped, not crash.
+
+    Exercises codeanalyzer.py:741 (and the crash it guards at the old :742 `.call_sites` dereference)
+    by making a single (class, signature) pair momentarily miss while the target method is real,
+    simulating a symbol table that disagrees with itself mid-construction.
+    """
+
+    with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
+        run_mock.side_effect = _write_java_output(analysis_json)
+        java_analysis = JavaAnalysis(
+            project_dir=test_fixture,
+            source_code=None,
+            backend=_BK,
+            analysis_level=AnalysisLevel.symbol_table,
+            target_files=None,
+            eager_analysis=False,
+        )
+        backend = java_analysis.backend
+        original_get_method = backend.get_method
+        flaky_class, flaky_signature = "com.ibm.websphere.samples.daytrader.util.Log", "log(java.lang.String)"
+
+        def flaky_get_method(qualified_class_name, method_signature):
+            if qualified_class_name == flaky_class and method_signature == flaky_signature:
+                return None
+            return original_get_method(qualified_class_name, method_signature)
+
+        backend.get_method = flaky_get_method
+        try:
+            # Real target method; a real class/method pair in the enumeration loop is simulated missing.
+            result = backend.get_all_callers(
+                target_class_name="com.ibm.websphere.samples.daytrader.util.Log",
+                target_method_signature="trace(java.lang.String)",
+                using_symbol_table=True,
+            )
+        finally:
+            backend.get_method = original_get_method
+
+        assert isinstance(result, dict)
+
+
+def test_get_comments_in_a_class_miss_returns_empty_list(test_fixture, analysis_json):
+    """get_comments_in_a_class must not crash with AttributeError when the class is missing.
+
+    Before the fix, this raised: AttributeError: 'NoneType' object has no attribute 'comments'.
+    """
+
+    with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
+        run_mock.side_effect = _write_java_output(analysis_json)
+        java_analysis = JavaAnalysis(
+            project_dir=test_fixture,
+            source_code=None,
+            backend=_BK,
+            analysis_level=AnalysisLevel.symbol_table,
+            target_files=None,
+            eager_analysis=False,
+        )
+
+        assert java_analysis.backend.get_comments_in_a_class("com.example.NoSuchClass") == []

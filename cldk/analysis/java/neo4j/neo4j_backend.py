@@ -453,26 +453,30 @@ class JNeo4jBackend(JavaAnalysisBackend):
             class_dict.update(v.type_declarations)
         return class_dict
 
-    def get_class(self, qualified_class_name) -> JType:
+    def get_class(self, qualified_class_name) -> JType | None:
         for v in self.get_symbol_table().values():
             if qualified_class_name in v.type_declarations.keys():
                 return v.type_declarations.get(qualified_class_name)
+        return None
 
-    def get_method(self, qualified_class_name, method_signature) -> JCallable:
+    def get_method(self, qualified_class_name, method_signature) -> JCallable | None:
         for v in self.get_symbol_table().values():
             if qualified_class_name in v.type_declarations.keys():
                 ci = v.type_declarations[qualified_class_name]
                 for cd in ci.callable_declarations.keys():
                     if cd == method_signature:
                         return ci.callable_declarations[cd]
+        return None
 
     def get_method_parameters(self, qualified_class_name, method_signature) -> List[JCallableParameter]:
-        return self.get_method(qualified_class_name, method_signature).parameters
+        method = self.get_method(qualified_class_name, method_signature)
+        return method.parameters if method is not None else []
 
-    def get_java_file(self, qualified_class_name) -> str:
+    def get_java_file(self, qualified_class_name) -> str | None:
         for k, v in self.get_symbol_table().items():
             if qualified_class_name in v.type_declarations.keys():
                 return k
+        return None
 
     def get_all_methods_in_class(self, qualified_class_name) -> Dict[str, JCallable]:
         ci = self.get_class(qualified_class_name)
@@ -563,9 +567,15 @@ class JNeo4jBackend(JavaAnalysisBackend):
         if cg is None:
             cg = []
         target_method_details = self.get_method(qualified_class_name=target_class_name, method_signature=target_method_signature)
+        if target_method_details is None:
+            # The target method doesn't exist, so no edges into it can be constructed.
+            return cg
         for class_name in self.get_all_classes():
             for method in self.get_all_methods_in_class(qualified_class_name=class_name):
                 method_details = self.get_method(qualified_class_name=class_name, method_signature=method)
+                if method_details is None:
+                    # The symbol table momentarily disagreed with itself; skip this entry.
+                    continue
                 for call_site in method_details.call_sites:
                     source_method_details = None
                     source_class = ""
@@ -688,10 +698,12 @@ class JNeo4jBackend(JavaAnalysisBackend):
         return self._crud(CRUDOperationType.DELETE)
 
     def get_comments_in_a_method(self, qualified_class_name: str, method_signature: str) -> List[JComment]:
-        return self.get_method(qualified_class_name, method_signature).comments
+        callable = self.get_method(qualified_class_name, method_signature)
+        return callable.comments if callable is not None else []
 
     def get_comments_in_a_class(self, qualified_class_name: str) -> List[JComment]:
-        return self.get_class(qualified_class_name).comments
+        klass = self.get_class(qualified_class_name)
+        return klass.comments if klass is not None else []
 
     def get_comment_in_file(self, file_path: str) -> List[JComment]:
         compilation_unit = self.get_symbol_table().get(file_path, None)
