@@ -7,13 +7,13 @@ from cldk.graph.capability import require
 from cldk.graph.result import SliceResult, FlowResult, FlowPath
 
 
-def _filter_edges(g: nx.DiGraph, families: Iterable[str]) -> nx.DiGraph:
+def _filter_edges(g: nx.MultiDiGraph, families: Iterable[str]) -> nx.MultiDiGraph:
     fam = set(families)
-    out = nx.DiGraph()
+    out = nx.MultiDiGraph()
     out.add_nodes_from(g.nodes(data=True))
-    for u, v, d in g.edges(data=True):
+    for u, v, k, d in g.edges(keys=True, data=True):
         if d.get("family") in fam:
-            out.add_edge(u, v, **d)
+            out.add_edge(u, v, key=k, **d)
     return out
 
 
@@ -40,13 +40,17 @@ class Engine:
         for s in seeds:
             if s in walk:
                 reached |= nx.descendants(walk, s)
-        sub = g.subgraph(reached).copy()
+        sub = g.subgraph(reached & set(g.nodes())).copy()
+        for s in seeds:                       # a seed is trivially in its own slice
+            if s not in sub:
+                sub.add_node(s, kind="seed")
+        ev_nodes = sorted(sub.nodes())        # evidence == subgraph nodes, deterministic
         explain = {"seed": seeds, "direction": "backward" if backward else "forward",
                    "edges": list(edges), "level": self.p.max_level(),
-                   "vertices": len(reached), "interprocedural": False}
+                   "vertices": len(sub), "interprocedural": False}
         if note:
             explain["degraded"] = note
-        return SliceResult(subgraph=sub, evidence=self._evidence(reached, set(seeds)),
+        return SliceResult(subgraph=sub, evidence=self._evidence(ev_nodes, set(seeds)),
                            _explain=explain)
 
     def slice_backward(self, seed, *, edges=("cfg", "cdg", "ddg"),
