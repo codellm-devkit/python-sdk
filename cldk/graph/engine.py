@@ -96,9 +96,15 @@ class Engine:
         return self._intra(seed, ("cdg",), backward=True, strict=strict,
                            what="control_deps", interprocedural=False)
 
-    def _dataflow_graph(self, callable_uri) -> nx.DiGraph:
-        # ddg (intra) plus summary/param_* (inter) at L4; here L3 uses ddg only
-        g = _filter_edges(self.p.program_graph(callable_uri), ("ddg",))
+    def _dataflow_graph(self, *callable_uris) -> nx.MultiDiGraph:
+        # Union of the given callables' intra ddg graphs, plus the summary/param_*
+        # (inter) sdg overlay at L4; below L4 this is intraprocedural ddg only.
+        g = nx.MultiDiGraph()
+        for c in dict.fromkeys(callable_uris):          # dedupe, keep order
+            cg = _filter_edges(self.p.program_graph(c), ("ddg",))
+            g.add_nodes_from(cg.nodes(data=True))
+            for u, v, k, d in cg.edges(keys=True, data=True):
+                g.add_edge(u, v, key=k, **d)
         if self.p.max_level() >= 4:
             for e in self.p.sdg_edges():
                 g.add_edge(e.src, e.dst, family="sdg", var=getattr(e, "var", None),
@@ -112,7 +118,10 @@ class Engine:
         note = require(4, self.p, strict=strict, what="flows_to")
         src = resolve_vertex(self.p, source_seed)[0]
         dst = resolve_vertex(self.p, sink_seed)[0]
-        g = self._dataflow_graph(self.p.callable_of(src))
+        # A sink in a different callable is reachable via param_in/param_out/summary,
+        # so the dataflow graph must span BOTH endpoint callables. (Multi-hop flows
+        # through a THIRD callable's interior need the whole-program graph — deferred.)
+        g = self._dataflow_graph(self.p.callable_of(src), self.p.callable_of(dst))
         paths: List[FlowPath] = []
         reached = set()
         if src in g and dst in g:
@@ -147,6 +156,8 @@ class Engine:
     def def_use(self, seed, *, strict: bool = False) -> FlowResult:
         note = require(3, self.p, strict=strict, what="def_use")
         s = resolve_vertex(self.p, seed)[0]
+        # NOTE: currently scoped to the seed's callable plus sdg endpoints; uses inside
+        # OTHER callables' interiors arrive with the whole-program dataflow graph (deferred).
         g = self._dataflow_graph(self.p.callable_of(s))
         reached = {s} | (nx.descendants(g, s) if s in g else set())
         sub = g.subgraph(reached & set(g.nodes())).copy()

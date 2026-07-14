@@ -43,6 +43,44 @@ def test_explicit_interproc_on_l3_strict_raises():
         Engine(L3()).slice_forward("c@call", interprocedural=True, strict=True)
 
 
+class _SDGEdge:
+    def __init__(self, src, dst, kind):
+        self.src, self.dst, self.kind = src, dst, kind
+        self.var, self.prov = "a", ["points-to"]
+
+
+class CrossCallableFlowProvider(ProgramGraphProvider):
+    # caller c: c@src --ddg--> c@call;  sdg: c@call --param_in--> d@in;
+    # callee d: d@in --ddg--> d@sink.  The flow c@src -> d@sink exists only if the
+    # dataflow graph spans BOTH endpoint callables plus the sdg overlay.
+    def program_graph(self, callable_uri):
+        g = nx.MultiDiGraph()
+        if callable_uri == "c":
+            g.add_edge("c@src", "c@call", key="ddg", family="ddg", var="a", prov=["ssa"])
+        else:
+            g.add_edge("d@in", "d@sink", key="ddg", family="ddg", var="a", prov=["ssa"])
+        return g
+    def sdg_edges(self): return [_SDGEdge("c@call", "d@in", "param_in")]
+    def resolve_location(self, file, line, col=None): return [f"c@{line}"]
+    def source_slice(self, vertex_uri): return (vertex_uri, vertex_uri)
+    def callable_of(self, vertex_uri): return vertex_uri.split("@")[0]
+    def max_level(self): return 4
+
+
+def test_flows_to_crosses_callable_boundary():
+    # C2: a sink in a DIFFERENT callable (reachable via param_in into the callee's
+    # interior) must be found. Building the dataflow graph from the source's callable
+    # alone loses the callee's intra ddg edges and yields a false "no flow".
+    e = Engine(CrossCallableFlowProvider())
+    class Src: id = "c@src"
+    class Snk: id = "d@sink"
+    r = e.flows_to(Src(), Snk())
+    assert len(r.paths) >= 1                   # a real cross-callable flow, not empty
+    p = r.paths[0]
+    assert [h["from"] for h in p.hops] == ["c@src", "c@call", "d@in"]
+    assert [h["to"] for h in p.hops] == ["c@call", "d@in", "d@sink"]
+
+
 def test_family_scoped_slice_has_no_sdg_overlay_at_l4():
     # C3: the sdg (dataflow: param_in/param_out/summary) overlay must be gated on the
     # ddg family being REQUESTED, not just on level/interprocedural intent. A cfg-only
