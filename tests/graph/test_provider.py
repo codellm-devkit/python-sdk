@@ -33,3 +33,13 @@ def test_resolve_rejects_garbage():
     p = FakeProvider()
     with pytest.raises(ValueError):
         resolve_vertex(p, 12345)
+
+
+def test_resolve_location_with_no_vertex_raises():
+    # I1: resolve_location legitimately returns [] when no vertex sits at that line.
+    # Every engine verb indexes resolve_vertex(...)[0], so [] must surface as a clean
+    # ValueError here — not an IndexError at the call site.
+    class EmptyProvider(FakeProvider):
+        def resolve_location(self, file, line, col=None): return []
+    with pytest.raises(ValueError, match="no vertex at location"):
+        resolve_vertex(EmptyProvider(), "m.py:99")

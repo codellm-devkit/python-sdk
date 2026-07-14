@@ -36,6 +36,11 @@ def resolve_vertex(provider: ProgramGraphProvider, seed: Any) -> List[str]:
         m = _LOC.match(seed)
         if m:
             col = int(m["col"]) if m["col"] is not None else None
-            return provider.resolve_location(m["file"], int(m["line"]), col)
+            found = provider.resolve_location(m["file"], int(m["line"]), col)
+            if not found:
+                # An ordinary user miss (no vertex at that line) must surface as a clean
+                # ValueError here — every verb indexes the result, and [] would IndexError.
+                raise ValueError(f"no vertex at location {seed!r}")
+            return found
     raise ValueError(f"cannot resolve seed to a vertex: {seed!r} "
                      f"(expected 'file:line[:col]', a can:// id, or a body node)")
