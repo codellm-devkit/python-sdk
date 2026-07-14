@@ -28,7 +28,6 @@ classifiers = [
 dependencies = [
     "pydantic>=2.10.6,<3",
     "networkx>=3.4.2,<4",
-    "pyarrow==20.0.0",
     "tree-sitter==0.24.0",
     "rich==14.0.0",
     "wget==3.2",
