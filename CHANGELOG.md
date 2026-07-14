@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.4.2] - 2026-07-14
+
+### Fixed
+- **Intra-class method calls resolve to the method again.** Upgraded `codeanalyzer-python`
+  0.3.0 → 0.3.1, which fixes callee resolution for `self._method(...)` calls: the call graph
+  previously pointed such edges at the *class* node (truncating call chains at their deepest
+  hop) and could omit receiver-method edges entirely. Call-site `callee_signature` now names
+  the method, and `PyCallsite` gains an additive `arguments` field.
+  (codellm-devkit/codeanalyzer-python#94, #260)
+
 ## [v1.4.1] - 2026-07-14
 
 ### Fixed
