@@ -17,6 +17,18 @@ def _filter_edges(g: nx.MultiDiGraph, families: Iterable[str]) -> nx.MultiDiGrap
     return out
 
 
+_TIER_RANK = {"unresolved": 0, "structural": 1, "resolved": 2}
+_RANK_TIER = {v: k for k, v in _TIER_RANK.items()}
+
+
+def _ddg_tier(prov) -> str:
+    if prov == ["points-to"]:
+        return "resolved"
+    if prov == ["ssa"]:
+        return "structural"
+    return "unresolved"
+
+
 class Engine:
     def __init__(self, provider: ProgramGraphProvider):
         self.p = provider
@@ -63,3 +75,55 @@ class Engine:
 
     def control_deps(self, seed, *, strict: bool = False) -> SliceResult:
         return self._intra(seed, ("cdg",), backward=True, strict=strict, what="control_deps")
+
+    def _dataflow_graph(self, callable_uri) -> nx.DiGraph:
+        # ddg (intra) plus summary/param_* (inter) at L4; here L3 uses ddg only
+        g = _filter_edges(self.p.program_graph(callable_uri), ("ddg",))
+        if self.p.max_level() >= 4:
+            for e in self.p.sdg_edges():
+                g.add_edge(e.src, e.dst, family="sdg", var=getattr(e, "var", None),
+                           prov=getattr(e, "prov", []))
+        return g
+
+    def flows_to(self, source_seed, sink_seed, *, strict: bool = False) -> FlowResult:
+        note = require(3, self.p, strict=strict, what="flows_to")
+        src = resolve_vertex(self.p, source_seed)[0]
+        dst = resolve_vertex(self.p, sink_seed)[0]
+        g = self._dataflow_graph(self.p.callable_of(src))
+        paths: List[FlowPath] = []
+        reached = set()
+        if src in g and dst in g:
+            for path in nx.all_simple_paths(g, src, dst, cutoff=64):
+                hops, tiers = [], []
+                for a, b in zip(path, path[1:]):
+                    # MultiDiGraph: get_edge_data returns {key: attrdict} over parallel edges.
+                    # Pick the strongest-confidence parallel edge as the hop's evidence (the step
+                    # is as strong as its best evidence; the path is as weak as its weakest step).
+                    parallels = g.get_edge_data(a, b)
+                    best = max(parallels.values(),
+                               key=lambda d: _TIER_RANK[_ddg_tier(d.get("prov", []))])
+                    t = _ddg_tier(best.get("prov", []))
+                    tiers.append(t)
+                    hops.append({"from": a, "to": b, "kind": best.get("family"),
+                                 "var": best.get("var"), "confidence": t})
+                conf = _RANK_TIER[min(_TIER_RANK[t] for t in tiers)] if tiers else "unresolved"
+                paths.append(FlowPath(source=src, sink=dst, hops=hops, confidence=conf))
+                reached.update(path)
+        explain = {"source": src, "sink": dst, "level": self.p.max_level(),
+                   "paths": len(paths)}
+        if note:
+            explain["degraded"] = note
+        return FlowResult(subgraph=g.subgraph(reached).copy(),
+                          evidence=self._evidence(reached, {src, dst}), _explain=explain,
+                          paths=paths)
+
+    def def_use(self, seed, *, strict: bool = False) -> FlowResult:
+        note = require(3, self.p, strict=strict, what="def_use")
+        s = resolve_vertex(self.p, seed)[0]
+        g = self._dataflow_graph(self.p.callable_of(s))
+        reached = {s} | (nx.descendants(g, s) if s in g else set())
+        explain = {"seed": s, "level": self.p.max_level(), "vertices": len(reached)}
+        if note:
+            explain["degraded"] = note
+        return FlowResult(subgraph=g.subgraph(reached).copy(),
+                          evidence=self._evidence(reached, {s}), _explain=explain, paths=[])
