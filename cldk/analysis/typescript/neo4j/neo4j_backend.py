@@ -622,6 +622,34 @@ class TSNeo4jBackend(TSAnalysisBackend):
             sig=qualified_class_name,
             name=qualified_method_name,
         )
+        if rows:
+            return self._callable_full(rows[0]["p"])
+        # Class lookup missed (or the scope isn't a class at all): fall back to module/namespace
+        # -level functions via DECLARES, mirroring get_all_functions.
+        return self._resolve_function(qualified_class_name, qualified_method_name)
+
+    def _resolve_function(self, scope: str, name: str) -> TSCallable | None:
+        """Resolve a module/namespace-level function: an exact signature match first (``name`` is
+        already a full signature, ``scope`` ignored), then a short-name match scoped under
+        ``scope`` (handles functions nested in a namespace the caller doesn't know the full path
+        of)."""
+        rows = self._run(
+            "MATCH (parent)-[:DECLARES]->(c:Callable {signature: $sig}) "
+            "WHERE (parent:Module OR parent:Namespace) AND c._module IN $mods "
+            "RETURN properties(c) AS p LIMIT 1",
+            sig=name,
+            mods=self._modules,
+        )
+        if rows:
+            return self._callable_full(rows[0]["p"])
+        rows = self._run(
+            "MATCH (parent)-[:DECLARES]->(c:Callable {name: $name}) "
+            "WHERE (parent:Module OR parent:Namespace) AND c._module IN $mods AND c.signature STARTS WITH $prefix "
+            "RETURN properties(c) AS p LIMIT 1",
+            name=name,
+            mods=self._modules,
+            prefix=f"{scope}.",
+        )
         return self._callable_full(rows[0]["p"]) if rows else None
 
     def get_method_parameters(self, qualified_class_name: str, qualified_method_name: str) -> List[str]:

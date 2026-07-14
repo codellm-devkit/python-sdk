@@ -175,6 +175,23 @@ def test_fields_and_parameters(ts_neo4j):
     assert isinstance(params, list)
 
 
+def test_get_method_resolves_module_level_function(ts_neo4j):
+    # regression for #247: get_method used to be class-scope only, so "src/index.main" (a
+    # module-level function that participates in a call edge, see test_callers_and_callees) was
+    # unreachable through it.
+    method = ts_neo4j.get_method("src/index", "main")
+    assert method is not None
+    assert method.signature == "src/index.main"
+
+
+def test_get_method_parameters_module_level_function(ts_neo4j):
+    # "main" is declared as `function main(): void` (see index.ts), so it takes no parameters —
+    # this exercises the module-level fallback path in get_method_parameters/get_method, not just
+    # that some list comes back.
+    params = ts_neo4j.get_method_parameters("src/index", "main")
+    assert params == []
+
+
 def test_structured_decorators(ts_neo4j):
     decorated = ts_neo4j.get_methods_with_decorators(["Controller", "Get"])
     assert any(sig.endswith("UserController.show") for sig in decorated["Get"])
