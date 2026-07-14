@@ -17,7 +17,7 @@ class FlowPath:
 
 @dataclass
 class GraphResult:
-    subgraph: nx.DiGraph
+    subgraph: nx.MultiDiGraph
     evidence: List[Dict]
     _explain: Dict
 

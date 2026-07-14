@@ -9,10 +9,16 @@ _LOC = re.compile(r"^(?P<file>.+?):(?P<line>\d+)(?::(?P<col>\d+))?$")
 
 class ProgramGraphProvider(ABC):
     """The per-backend data seam the shared engine consumes. Implemented by local backends
-    (from cpg models) and Neo4j backends (from Cypher). Traversal lives in the engine, not here."""
+    (from cpg models) and Neo4j backends (from Cypher). Traversal lives in the engine, not here.
+
+    Below the level a verb requires, the engine gates via require(...); providers should
+    still answer program_graph/resolve_location/callable_of structurally — none of these
+    ever need L3+ data to do so."""
 
     @abstractmethod
-    def program_graph(self, callable_uri: str) -> nx.DiGraph: ...
+    def program_graph(self, callable_uri: str) -> nx.MultiDiGraph:
+        """Parallel cfg/cdg/ddg edges between the same vertex pair must stay distinct
+        edges, each carrying its own family/var/prov/kind."""
     @abstractmethod
     def sdg_edges(self) -> Iterable[Any]: ...
     @abstractmethod
