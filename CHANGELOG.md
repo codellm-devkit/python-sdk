@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.4.1] - 2026-07-14
+
+### Fixed
+- **Module-level functions are now resolvable through `get_method` (Python and TypeScript, both
+  backends).** Previously `get_method` searched class scope only, so module-level functions were
+  unreachable and `get_all_callers`/`get_all_callees` returned a silent empty result for them even
+  when the call graph contained the edges. The scope argument now accepts a module name as well as
+  a qualified class name; callers/callees, `get_method_parameters`, and comment lookups inherit the
+  fix. (#250, #251)
+- **Java lookups no longer crash on a miss.** `get_method`/`get_class`/`get_java_file` are honestly
+  annotated `... | None` (ABC, both backends, and the public facade), `get_method_parameters`
+  returns an empty list instead of raising `AttributeError` for an unknown class or signature, and
+  all internal call-graph/comment lookups are guarded. No behavior change on successful lookups.
+  (#252)
+
 ## [v1.4.0] - 2026-06-27
 
 ### Changed
