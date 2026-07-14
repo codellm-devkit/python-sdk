@@ -468,21 +468,29 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         return dict(cls.methods) if cls else {}
 
     def get_method(self, qualified_class_name: str, qualified_method_name: str) -> PyCallable | None:
-        """Return a specific method by class and method name.
+        """Return a specific method or module-level function by scope and name.
 
-        Supports both fully qualified method names and simple method names.
-        When a simple name is provided, falls back to matching by the
-        method's ``name`` attribute.
+        ``qualified_class_name`` is looked up the same way as
+        :meth:`get_all_methods_in_application`'s outer keys: a class signature resolves to that
+        class's methods, and a module name (``PyModule.module_name``) resolves to that module's
+        top-level functions. Supports both fully qualified method names and simple method names;
+        when a simple name is provided, falls back to matching by the callable's ``name``
+        attribute.
+
+        Note:
+            Callables nested inside another callable (``inner_callables``) are not reachable via
+            this lookup — only top-level class methods and top-level module functions are.
 
         Args:
-            qualified_class_name: The fully qualified class name.
+            qualified_class_name: The fully qualified class name, or a module name for
+                module-level functions.
             qualified_method_name: The method name or signature to find.
 
         Returns:
             The :class:`~cldk.models.python.PyCallable` object,
             or ``None`` if not found.
         """
-        methods = self.get_all_methods_in_class(qualified_class_name)
+        methods = self.get_all_methods_in_application().get(qualified_class_name, {})
         if qualified_method_name in methods:
             return methods[qualified_method_name]
         # Fallback: match by short name when only the simple name is given.

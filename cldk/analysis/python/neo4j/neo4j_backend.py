@@ -436,8 +436,29 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         cls = self.get_class(qualified_class_name)
         return dict(cls.methods) if cls else {}
 
+    def _get_module_functions(self, module_name: str) -> Dict[str, PyCallable]:
+        """Fetch a module's top-level functions by ``module_name`` (not ``file_key``) — the scope
+        key ``get_method`` accepts for module-level lookups, mirroring
+        ``get_all_methods_in_application``'s module outer key. A single scoped query, so it stays
+        as cheap as the class path instead of paying the whole-symbol-table fan-out.
+        """
+        rows = self._run(
+            "MATCH (m:PyModule {module_name: $name})-[:PY_DECLARES]->(f:PyCallable) "
+            "WHERE m.file_key IN $mods RETURN properties(f) AS p",
+            name=module_name,
+            mods=self._modules,
+        )
+        return {fn.name: fn for fn in (self._callable_full(r["p"]) for r in rows)}
+
     def get_method(self, qualified_class_name: str, qualified_method_name: str) -> PyCallable | None:
-        methods = self.get_all_methods_in_class(qualified_class_name)
+        """Return a specific method or module-level function by scope and name (see
+        :meth:`PythonAnalysisBackend.get_method`).
+
+        ``qualified_class_name`` resolves as a class signature first; if no such class exists it
+        is treated as a module name and resolved against that module's top-level functions.
+        """
+        cls = self.get_class(qualified_class_name)
+        methods = dict(cls.methods) if cls is not None else self._get_module_functions(qualified_class_name)
         if qualified_method_name in methods:
             return methods[qualified_method_name]
         for sig, callable_ in methods.items():
