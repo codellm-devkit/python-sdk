@@ -41,3 +41,27 @@ def test_explicit_interproc_on_l3_strict_raises():
         def max_level(self): return 3
     with pytest.raises(CapabilityError):
         Engine(L3()).slice_forward("c@call", interprocedural=True, strict=True)
+
+
+def test_control_deps_stays_intraprocedural_at_l4():
+    # Control dependence has NO interprocedural notion in this model — only dataflow
+    # (param_in/param_out/summary) crosses callable boundaries. control_deps must force
+    # interprocedural=False; otherwise, on an L4 backend, _intra defaults to want_inter=True and
+    # merges the sdg dataflow overlay into a pure CDG slice, and the backward walk pulls in
+    # dataflow-reachable vertices from other callables with no control-dependence relation.
+    #
+    # control_deps is a BACKWARD slice, so a leaking sdg edge must be a forward-ANCESTOR edge of
+    # the seed: d@in -> c@body means d@in reaches c@body, so a backward slice from c@body WOULD
+    # pull in d@in if the overlay were applied (verified: it leaks against the unfixed code).
+    class CDGProvider(TwoCallableProvider):
+        def program_graph(self, callable_uri):
+            g = nx.MultiDiGraph()                          # only a control-dependence edge
+            g.add_edge("c@guard", "c@body", key="cdg", family="cdg")
+            return g
+        def sdg_edges(self): return [_Edge("d@in", "c@body")]   # cross-callable DATAFLOW
+    e = Engine(CDGProvider())
+    class Seed: id = "c@body"
+    r = e.control_deps(Seed())
+    assert set(r.uris()) == {"c@guard", "c@body"}   # only intra cdg reachability, no d@in
+    assert "d@in" not in set(r.uris())              # sdg dataflow did NOT cross the boundary
+    assert r.explain()["interprocedural"] is False  # control_deps is always intraprocedural

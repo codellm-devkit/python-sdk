@@ -85,7 +85,11 @@ class Engine:
         return self._intra(seed, edges, False, strict, "slice_forward", interprocedural)
 
     def control_deps(self, seed, *, strict: bool = False) -> SliceResult:
-        return self._intra(seed, ("cdg",), backward=True, strict=strict, what="control_deps")
+        # Control dependence is intraprocedural in this model — only dataflow (param/summary)
+        # crosses boundaries. Force interprocedural=False so the sdg overlay is never merged
+        # into a pure CDG slice, even on an L4 backend.
+        return self._intra(seed, ("cdg",), backward=True, strict=strict,
+                           what="control_deps", interprocedural=False)
 
     def _dataflow_graph(self, callable_uri) -> nx.DiGraph:
         # ddg (intra) plus summary/param_* (inter) at L4; here L3 uses ddg only
