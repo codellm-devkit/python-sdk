@@ -1,7 +1,9 @@
 # tests/graph/test_engine_flows.py
 import networkx as nx
+import pytest
 from cldk.graph.engine import Engine
 from cldk.graph.provider import ProgramGraphProvider
+from cldk.graph.capability import CapabilityError
 from tests.graph.test_engine_slice import OneCallableProvider
 
 
@@ -58,6 +60,24 @@ def test_flows_to_dedups_parallel_edge_routes():
     # beats ssa), s2->s3 structural. Path confidence is the min over hops.
     assert [h["confidence"] for h in p.hops] == ["resolved", "structural"]
     assert p.confidence == "structural"
+
+
+def test_flows_to_on_l3_degrades_but_still_returns_intra_paths():
+    # C1: full flows_to semantics are interprocedural (ddg + param_in/param_out/summary),
+    # which is L4. On an L3 backend the non-strict call must attach a degraded note AND
+    # still return the intraprocedural ddg witnesses it can compute — honest degrade,
+    # not silent completeness and not a refusal.
+    e = Engine(OneCallableProvider())          # L3 backend
+    r = e.flows_to("m:1", "m:3")
+    assert "degraded" in r.explain()
+    assert r.explain()["degraded"]["requested"] == 4
+    assert len(r.paths) == 1                   # intra ddg witness still computed
+
+
+def test_flows_to_strict_on_l3_raises():
+    e = Engine(OneCallableProvider())          # L3 backend
+    with pytest.raises(CapabilityError):
+        e.flows_to("m:1", "m:3", strict=True)
 
 
 def test_def_use_returns_downstream_uses():

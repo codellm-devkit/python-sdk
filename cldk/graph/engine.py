@@ -106,7 +106,10 @@ class Engine:
         return g
 
     def flows_to(self, source_seed, sink_seed, *, strict: bool = False) -> FlowResult:
-        note = require(3, self.p, strict=strict, what="flows_to")
+        # Full flows_to semantics are interprocedural (ddg + param_in/param_out/summary),
+        # which is L4. Below that, non-strict degrades honestly: the note is attached and
+        # the intra-only ddg witnesses that CAN be computed are still returned.
+        note = require(4, self.p, strict=strict, what="flows_to")
         src = resolve_vertex(self.p, source_seed)[0]
         dst = resolve_vertex(self.p, sink_seed)[0]
         g = self._dataflow_graph(self.p.callable_of(src))
