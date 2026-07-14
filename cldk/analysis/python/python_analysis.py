@@ -612,21 +612,27 @@ class PythonAnalysis:
     def get_method(
         self, qualified_class_name: str, qualified_method_name: str
     ) -> PyCallable | None:
-        """Return a specific method by class and method name.
+        """Return a specific method or module-level function by scope and name.
 
         Retrieves detailed information about a single method, including
         its signature, parameters, return type, decorators, and body.
 
+        ``qualified_class_name`` is looked up the same way as
+        :meth:`get_all_methods_in_application`'s outer keys: a class signature resolves to that
+        class's methods, and a module name (``PyModule.module_name``) resolves to that module's
+        top-level functions.
+
         Args:
             qualified_class_name: The fully qualified name of the class
-                containing the method (e.g., ``"mypackage.models.User"``).
+                containing the method (e.g., ``"mypackage.models.User"``), or a module name for
+                module-level functions.
             qualified_method_name: The name of the method to retrieve
                 (e.g., ``"save"`` or ``"__init__"``).
 
         Returns:
             A :class:`~cldk.models.python.PyCallable` object containing
             all analyzed information about the method, or ``None`` if
-            the method is not found.
+            neither a matching class nor a matching module resolves.
 
         See Also:
             :meth:`get_methods_in_class`: For all methods of a class.

@@ -481,6 +481,12 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             Callables nested inside another callable (``inner_callables``) are not reachable via
             this lookup — only top-level class methods and top-level module functions are.
 
+        Note:
+            If a class signature ever equals a module's name (pathological but constructible,
+            e.g. class ``pkg.User`` vs file ``pkg/User.py``), this backend merges both under one
+            key in :meth:`get_all_methods_in_application`, while the Neo4j backend resolves
+            class-first — a resolution-order asymmetry between the two backends.
+
         Args:
             qualified_class_name: The fully qualified class name, or a module name for
                 module-level functions.
