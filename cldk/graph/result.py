@@ -1,6 +1,6 @@
 from __future__ import annotations
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Literal
 import networkx as nx
 
@@ -46,3 +46,8 @@ class SliceResult(GraphResult):
 @dataclass
 class FlowResult(GraphResult):
     paths: List[FlowPath] = field(default_factory=list)
+
+    def to_json(self) -> str:
+        base = json.loads(super().to_json())
+        base["paths"] = [asdict(p) for p in self.paths]
+        return json.dumps(base, sort_keys=True)

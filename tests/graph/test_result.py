@@ -32,3 +32,14 @@ def test_flowresult_carries_paths_and_serializes():
                    _explain={"level": 4}, paths=[p])
     assert r.paths[0].confidence == "structural"
     assert '"file_line": "m.py:1"' in r.to_json()
+
+
+def test_flowresult_to_json_includes_paths():
+    p = FlowPath(source="a", sink="c",
+                 hops=[{"from": "a", "to": "b", "kind": "ddg", "var": "x", "confidence": "structural"}],
+                 confidence="structural")
+    r = FlowResult(subgraph=_graph("a", "b", "c"),
+                   evidence=[{"uri": "a"}], _explain={"level": 4}, paths=[p])
+    dumped = r.to_json()
+    assert '"confidence": "structural"' in dumped
+    assert '"var": "x"' in dumped
