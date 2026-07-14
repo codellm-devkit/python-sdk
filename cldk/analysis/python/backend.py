@@ -128,7 +128,9 @@ class PythonAnalysisBackend(ABC):
 
     @abstractmethod
     def get_method(self, qualified_class_name: str, qualified_method_name: str) -> PyCallable | None:
-        """A single method of a class."""
+        """A single method or module-level function. ``qualified_class_name`` accepts either a
+        class signature (resolving to that class's methods) or a module name (resolving to that
+        module's top-level functions); returns ``None`` if neither resolves."""
 
     @abstractmethod
     def get_method_parameters(self, qualified_class_name: str, qualified_method_name: str) -> List[str]:

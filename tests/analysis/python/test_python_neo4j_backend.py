@@ -79,6 +79,14 @@ def greet(who: str) -> str:
         return s.upper()
 
     return _decorate(f"hi {who}")
+
+
+def helper(x: str) -> str:
+    return x.upper()
+
+
+def entry(x: str) -> str:
+    return helper(x)
 '''
 
 SERVICE_PY = '''\
@@ -250,3 +258,13 @@ def test_call_graph_parity(backends):
     assert ref.get_all_callers("pkg.models.User", "describe") == neo.get_all_callers("pkg.models.User", "describe")
     assert ref.get_all_callees("pkg.models.User", "describe") == neo.get_all_callees("pkg.models.User", "describe")
     assert set(map(tuple, ref.get_class_call_graph("pkg.models.User"))) == set(map(tuple, neo.get_class_call_graph("pkg.models.User")))
+
+    # Regression (#246): get_method / get_all_callers / get_all_callees must resolve module-level
+    # functions too, scoped by module name rather than class name — "pkg.models.entry" calls
+    # "pkg.models.helper".
+    assert ref.get_method("pkg.models", "helper").signature == neo.get_method("pkg.models", "helper").signature == "pkg.models.helper"
+    callers_ref = ref.get_all_callers("pkg.models", "helper")
+    callers_neo = neo.get_all_callers("pkg.models", "helper")
+    assert callers_ref == callers_neo
+    assert [c["caller_signature"] for c in callers_ref["caller_details"]] == ["pkg.models.entry"]
+    assert ref.get_all_callees("pkg.models", "entry") == neo.get_all_callees("pkg.models", "entry")
