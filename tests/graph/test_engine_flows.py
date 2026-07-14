@@ -1,10 +1,20 @@
 # tests/graph/test_engine_flows.py
 import networkx as nx
 import pytest
-from cldk.graph.engine import Engine
+from cldk.graph.engine import Engine, _ddg_tier
 from cldk.graph.provider import ProgramGraphProvider
 from cldk.graph.capability import CapabilityError
 from tests.graph.test_engine_slice import OneCallableProvider
+
+
+def test_ddg_tier_uses_membership_not_exact_list():
+    # I8: prov is a provenance SET in list form. ["ssa", "points-to"] carries strictly
+    # MORE evidence than ["points-to"] alone and must rank "resolved" — an exact-list
+    # comparison would let the stronger provenance fall through to "unresolved".
+    assert _ddg_tier(["ssa", "points-to"]) == "resolved"
+    assert _ddg_tier(["points-to"]) == "resolved"
+    assert _ddg_tier(["ssa"]) == "structural"
+    assert _ddg_tier([]) == "unresolved"
 
 
 class ParallelEdgeProvider(ProgramGraphProvider):

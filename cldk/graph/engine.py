@@ -30,9 +30,12 @@ _PATH_CUTOFF = 64
 
 
 def _ddg_tier(prov) -> str:
-    if prov == ["points-to"]:
+    # Membership, not exact-list: prov is a provenance set in list form, and
+    # ["ssa", "points-to"] is STRONGER evidence than ["points-to"] alone.
+    prov = prov or []
+    if "points-to" in prov:
         return "resolved"
-    if prov == ["ssa"]:
+    if "ssa" in prov:
         return "structural"
     return "unresolved"
 
