@@ -45,10 +45,12 @@ Identity model (graph schema 2.0.0 — must match the in-memory backend):
 * call *sites* are body nodes — ``(:TSBodyNode {kind: "call"})`` reached via
   ``TS_HAS_BODY_NODE`` and resolved through ``TS_RESOLVES_TO`` — not standalone
   call-site nodes;
-* every project-owned node carries a ``_module`` provenance property (the
-  project-relative path), so a single database may hold several applications —
-  all queries here are scoped to this backend's application by the set of its
-  module ``_module`` keys.
+* module nodes carry a ``_module`` property (the project-relative path); this
+  backend further *assumes* — to-verify against a live 1.0.0 graph, see the
+  ``VERIFY(2.0.0-e2e)`` markers — that every project-owned node carries the same
+  ``_module`` provenance property, so a single database may hold several
+  applications and all queries here can be scoped to this backend's application
+  by the set of its module ``_module`` keys.
 
 Parity caveats (inherent to what schema 2.0.0 projects, not bugs):
 
@@ -91,7 +93,7 @@ from cldk.models.typescript import (
     TSTypeAlias,
     TSVariableDeclaration,
 )
-from cldk.utils.exceptions.exceptions import CldkSchemaMismatchException, CodeanalyzerExecutionException
+from cldk.utils.exceptions.exceptions import CldkSchemaMismatchException, CodeanalyzerExecutionException, CodeanalyzerUsageException
 
 logger = logging.getLogger(__name__)
 
@@ -139,8 +141,15 @@ class TSNeo4jBackend(TSAnalysisBackend):
         self._database = neo4j_database
         self._driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_username, neo4j_password))
 
-        # Fail fast if the persisted graph isn't the schema this SDK speaks.
+        # Fail fast if the persisted graph isn't the schema this SDK speaks. This runs *before*
+        # the application-id resolution on purpose: a pre-2.0.0 graph has no `can://` ids, so
+        # resolving first would report "no application found" instead of the (more actionable)
+        # schema mismatch.
         self._check_schema_version()
+
+        # Resolve `application_name` to exactly one Application `id` (guards against a shared
+        # database where several apps' ids share the same trailing path segment).
+        self._app_id: str = self._resolve_application_id()
 
         # The application's module `_module` keys, used to scope every query to this app.
         self._modules: List[str] = self._load_module_keys()
@@ -177,11 +186,38 @@ class TSNeo4jBackend(TSAnalysisBackend):
                 f"graph schema {found!r} in database, this SDK speaks {expected!r} — re-analyze with codeanalyzer-typescript>=1.0.0"
             )
 
-    def _load_module_keys(self) -> List[str]:
+    def _resolve_application_id(self) -> str:
+        """Resolve ``application_name`` to exactly one ``:Application`` node's ``can://`` id.
+
+        The suffix match (``a.id ENDS WITH "/" + $app``) can bind multiple applications in a
+        shared database — e.g. two repos whose ids both end in ``/frontend`` — which would
+        silently merge their module scopes. Raise :class:`CodeanalyzerUsageException` unless the
+        match is unique; the caller disambiguates by passing a longer trailing path (any suffix
+        of the ``can://`` id starting at a ``/`` boundary works as ``application_name``).
+        """
         rows = self._run(
-            'MATCH (a:Application) WHERE a.id ENDS WITH "/" + $app '
-            "MATCH (a)-[:TS_HAS_MODULE]->(m:TSModule) RETURN m._module AS k",
+            'MATCH (a:Application) WHERE a.id ENDS WITH "/" + $app RETURN a.id AS id ORDER BY id',
             app=self.application_name,
+        )
+        if not rows:
+            raise CodeanalyzerUsageException(
+                f"no :Application found whose id ends with '/{self.application_name}' — check application_name (the --app-name the graph was loaded with)."
+            )
+        if len(rows) > 1:
+            candidates = ", ".join(r["id"] for r in rows)
+            raise CodeanalyzerUsageException(
+                f"application_name '{self.application_name}' is ambiguous: it matches {len(rows)} applications in this database ({candidates}). "
+                "Pass a longer trailing path of the intended application's id to disambiguate."
+            )
+        return rows[0]["id"]
+
+    def _load_module_keys(self) -> List[str]:
+        # VERIFY(2.0.0-e2e): every project-owned node is assumed to carry a `_module` provenance
+        # property (as in the pre-2.0.0 projection); all the `x._module IN $mods` scoping below
+        # depends on it — validate against a live 1.0.0 graph (Task 9).
+        rows = self._run(
+            "MATCH (a:Application {id: $app_id})-[:TS_HAS_MODULE]->(m:TSModule) RETURN m._module AS k",
+            app_id=self._app_id,
         )
         return [r["k"] for r in rows]
 
@@ -195,7 +231,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
 
     def _callable_full(self, props: Dict[str, Any]) -> TSCallable:
         sig = props["signature"]
-        # Symbol-keyed containers are keyed by signature (matching the analyzer's dict keys).
+        # Nested-declaration containers are keyed by signature (matching the analyzer's dict keys).
         inner_callables = {p["signature"]: self._callable_full(p) for p in self._children(sig, "TS_DECLARES", "TSCallable")}
         inner_classes = {p["signature"]: self._class_full(p) for p in self._children(sig, "TS_DECLARES", "TSClass")}
         return R.callable_(
@@ -309,7 +345,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
         if not rows:
             return None
         props = rows[0]["p"]
-        # All symbol containers are keyed by signature (matching the analyzer's dict keys).
+        # All declaration containers are keyed by signature (matching the analyzer's dict keys).
         classes = {p["signature"]: self._class_full(p) for p in self._module_decls(file_path, "TSClass")}
         interfaces = {p["signature"]: self._interface_full(p) for p in self._module_decls(file_path, "TSInterface")}
         enums = {p["signature"]: R.enum(p) for p in self._module_decls(file_path, "TSEnum")}
@@ -488,6 +524,10 @@ class TSNeo4jBackend(TSAnalysisBackend):
 
     def get_class_hierarchy(self) -> nx.DiGraph:
         """Inheritance/implementation graph: an edge child → base for every base_class."""
+        # VERIFY(2.0.0-e2e): hierarchy is read from the `base_classes` / `implements_types` array
+        # properties (as pre-2.0.0), not the TS_EXTENDS / TS_IMPLEMENTS edges — validate against a
+        # live 1.0.0 graph (Task 9); this also covers get_extended_classes,
+        # get_implemented_interfaces and get_all_sub_classes.
         graph = nx.DiGraph()
         rows = self._run(
             "MATCH (n:CanNode) WHERE (n:TSClass OR n:TSInterface) AND n._module IN $mods " "RETURN n.signature AS sig, n.base_classes AS bases",
@@ -513,6 +553,9 @@ class TSNeo4jBackend(TSAnalysisBackend):
         return [r["line"] for r in rows]
 
     def get_call_targets(self, source_signature: str) -> Set[str]:
+        # VERIFY(2.0.0-e2e): falls back to `cs.method_name` when a call body node has no resolved
+        # `callee`; whether TSBodyNode carries `method_name` is unconfirmed — validate against a
+        # live 1.0.0 graph (Task 9).
         rows = self._run(
             "MATCH (c:TSCallable {signature: $sig})-[:TS_HAS_BODY_NODE]->(cs:TSBodyNode {kind: 'call'}) " "RETURN cs.callee AS cosig, cs.method_name AS mn",
             sig=source_signature,

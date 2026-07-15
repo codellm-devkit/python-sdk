@@ -373,6 +373,8 @@ def module(props: Props, **children: Any) -> TSModule:
     return TSModule(
         # schema 2.0.0 modules carry the project-relative path as ``_module``.
         file_path=props.get("_module", props.get("file_path", "")),
+        # VERIFY(2.0.0-e2e): assumes the 2.0.0 module node names the module via `name` (falling
+        # back from the pre-2.0.0 `module_name`) — validate against a live 1.0.0 graph (Task 9).
         module_name=props.get("module_name", props.get("name", "")),
         is_tsx=props.get("is_tsx", False),
         is_declaration_file=props.get("is_declaration_file", False),

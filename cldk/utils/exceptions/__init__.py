@@ -20,10 +20,12 @@ Exceptions package
 
 from .exceptions import (
     CldkInitializationException,
+    CldkSchemaMismatchException,
     CodeanalyzerExecutionException,
 )
 
 __all__ = [
     "CodeanalyzerExecutionException",
     "CldkInitializationException",
+    "CldkSchemaMismatchException",
 ]
