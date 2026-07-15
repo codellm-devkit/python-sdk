@@ -1,5 +1,6 @@
 from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
+from pydantic import model_validator
 from cldk.models.cpg.base import _NullSafeBase
 
 
@@ -26,7 +27,10 @@ class Import(_NullSafeBase):
 
 
 class Node(_NullSafeBase):
-    id: Optional[str] = None        # absent on body-node facets (keyed by position/tag instead)
+    # Optional because sub-callable body nodes are keyed by local position and omit id; durable
+    # nodes (types/callables/functions/fields) are required to carry it — enforced positionally by
+    # the container validators.
+    id: Optional[str] = None
     kind: str
     span: Optional[Span] = None
     parent: Optional[str] = None
@@ -57,6 +61,14 @@ class Node(_NullSafeBase):
     # open vocab
     tags: Dict[str, str] = {}
 
+    @model_validator(mode="after")
+    def _durable_children_require_id(self):
+        for container in (self.callables, self.fields):
+            for key, node in container.items():
+                if node.id is None:
+                    raise ValueError(f"durable node {key!r} under {self.id or '<body>'!r} is missing required id")
+        return self
+
 
 class Module(_NullSafeBase):
     id: str
@@ -67,6 +79,14 @@ class Module(_NullSafeBase):
     types: Dict[str, Node] = {}
     functions: Dict[str, Node] = {}
     content_hash: Optional[str] = None
+
+    @model_validator(mode="after")
+    def _durable_children_require_id(self):
+        for container in (self.types, self.functions):
+            for key, node in container.items():
+                if node.id is None:
+                    raise ValueError(f"durable node {key!r} in module {self.id!r} is missing required id")
+        return self
 
 
 class Application(_NullSafeBase):

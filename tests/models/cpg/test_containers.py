@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from cldk.models.cpg import AnalysisPayload, Application, Module, Node, Edge, Span, Import, Analyzer
 
 
@@ -18,6 +21,12 @@ def test_module_holds_source_and_containment():
                   "functions": {"f()": {"id": "can://python/app/m.py/f()", "kind": "function"}}})
     assert m.source == "x = 1\n"
     assert m.types["C"].kind == "class" and m.functions["f()"].kind == "function"
+
+
+def test_module_durable_node_missing_id_raises():
+    # a type reached through the durable-containment dict MUST carry the join key id
+    with pytest.raises(ValidationError):
+        Module(**{"id": "m", "types": {"C": {"kind": "class"}}})   # no id on the type
 
 
 def test_application_edge_lists():
