@@ -12,6 +12,11 @@ def test_ddg_edge_carries_var_and_prov():
     assert e.var == "x" and e.prov == ["ssa"] and e.weight == 1
 
 
+def test_edge_empty_prov_and_weight_defaults():
+    e = Edge(src="a", dst="b")
+    assert e.prov == [] and e.weight == 1
+
+
 def test_import_optional_fields():
     i = Import(**{"name": "os"})
-    assert i.name == "os" and i.path is None and i.alias is None
+    assert i.name == "os" and i.path is None and i.alias is None and i.span is None
