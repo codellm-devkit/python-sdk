@@ -56,3 +56,37 @@ class Node(_NullSafeBase):
     of: Optional[str] = None
     # open vocab
     tags: Dict[str, str] = {}
+
+
+class Module(_NullSafeBase):
+    id: str
+    kind: str = "module"
+    package: Optional[str] = None
+    source: str = ""
+    imports: List[Import] = []
+    types: Dict[str, Node] = {}
+    functions: Dict[str, Node] = {}
+    content_hash: Optional[str] = None
+
+
+class Application(_NullSafeBase):
+    id: str
+    kind: str = "application"
+    symbol_table: Dict[str, Module] = {}
+    call_graph: List[Edge] = []
+    param_in: List[Edge] = []
+    param_out: List[Edge] = []
+
+
+class Analyzer(_NullSafeBase):
+    name: str
+    version: Optional[str] = None
+
+
+class AnalysisPayload(_NullSafeBase):
+    schema_version: str
+    language: str
+    max_level: int
+    k_limit: Optional[int] = None
+    analyzer: Optional[Analyzer] = None
+    application: Application
