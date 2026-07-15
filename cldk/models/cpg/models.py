@@ -73,6 +73,7 @@ class Node(_NullSafeBase):
 class Module(_NullSafeBase):
     id: str
     kind: str = "module"
+    span: Optional[Span] = None
     package: Optional[str] = None
     source: str = ""
     imports: List[Import] = []
