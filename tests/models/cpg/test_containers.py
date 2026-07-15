@@ -25,3 +25,26 @@ def test_application_edge_lists():
                        "call_graph": [{"src": "a", "dst": "b", "prov": ["jedi"], "weight": 1}],
                        "param_in": [{"src": "c@in", "dst": "d@in"}]})
     assert a.call_graph[0].dst == "b" and a.param_in[0].src == "c@in" and a.param_out == []
+
+
+def test_symbol_table_deep_composition():
+    from cldk.models.cpg import Application, Module, Node
+    a = Application(**{
+        "id": "can://python/app", "kind": "application",
+        "symbol_table": {
+            "pkg/m.py": {
+                "id": "can://python/app/pkg/m.py", "kind": "module", "source": "x = 1\n",
+                "types": {"C": {"id": "can://python/app/pkg/m.py/C", "kind": "class",
+                                "callables": {"C.f()": {"id": "can://python/app/pkg/m.py/C/f()",
+                                                        "kind": "method", "signature": "f"}}}},
+                "functions": {"g()": {"id": "can://python/app/pkg/m.py/g()", "kind": "function"}},
+            }
+        },
+    })
+    mod = a.symbol_table["pkg/m.py"]
+    assert isinstance(mod, Module) and mod.source == "x = 1\n"
+    cls = mod.types["C"]
+    assert isinstance(cls, Node) and cls.kind == "class"
+    method = cls.callables["C.f()"]
+    assert isinstance(method, Node) and method.kind == "method" and method.signature == "f"
+    assert isinstance(mod.functions["g()"], Node)
