@@ -14,7 +14,8 @@ def test_symbol_table_module_source_and_containment():
     app = _app("py-a4.json")
     mod = app.symbol_table["pkg/mod.py"]
     assert isinstance(mod.source, str) and mod.source          # module.source (byte-slice base)
-    assert mod.types or mod.functions                          # types{} / functions{}
+    assert isinstance(mod.types, dict) and isinstance(mod.functions, dict)   # both accessors pinned
+    assert mod.types or mod.functions                          # at least one populated
 
 
 def test_callable_body_and_dataflow_edges_present_at_l4():
@@ -41,7 +42,7 @@ def test_application_interprocedural_edges_at_l4():
 def test_typescript_sample_same_accessors():
     app = _app("ts-a4.json")
     mod = next(iter(app.symbol_table.values()))
-    assert isinstance(mod.source, str)
+    assert isinstance(mod.source, str) and mod.source
     # a TS type node with callables
     typ = next((t for t in mod.types.values() if t.callables), None)
     assert typ is not None and next(iter(typ.callables.values())).signature is not None
