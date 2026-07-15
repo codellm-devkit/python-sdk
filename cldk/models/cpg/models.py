@@ -26,7 +26,7 @@ class Import(_NullSafeBase):
 
 
 class Node(_NullSafeBase):
-    id: str
+    id: Optional[str] = None        # absent on body-node facets (keyed by position/tag instead)
     kind: str
     span: Optional[Span] = None
     parent: Optional[str] = None
