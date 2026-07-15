@@ -87,6 +87,32 @@ class CodeanalyzerExecutionException(Exception):
         super().__init__(self.message)
 
 
+class CldkSchemaMismatchException(Exception):
+    """Exception raised when a persisted graph's schema version is not the one this SDK speaks.
+
+    The Neo4j-backed TypeScript backend reads ``(:Application).schema_version`` on first use and
+    raises this if it differs from the graph schema the SDK was written against. Re-analyze the
+    project with a ``codeanalyzer-typescript`` whose Neo4j projection emits the expected schema.
+
+    Attributes:
+        message (str): A descriptive error message naming the found and expected schema versions.
+
+    See Also:
+        :class:`~cldk.analysis.typescript.neo4j.neo4j_backend.TSNeo4jBackend`: raises this on a
+            version mismatch.
+    """
+
+    def __init__(self, message: str) -> None:
+        """Initialize the exception with a descriptive message.
+
+        Args:
+            message: A descriptive error message naming the found vs. expected schema versions
+                and how to resolve the mismatch.
+        """
+        self.message = message
+        super().__init__(self.message)
+
+
 class CodeanalyzerUsageException(Exception):
     """Exception raised for incorrect CodeAnalyzer usage.
 

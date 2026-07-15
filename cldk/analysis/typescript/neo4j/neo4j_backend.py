@@ -28,25 +28,37 @@ assumes the database is already populated and just polls it — the shape a clou
 deployment wants, where a third-party job (e.g. inside Kubernetes) loads the
 graph out of band and the SDK only reads it.
 
-The graph is the one ``codeanalyzer-typescript`` emits with ``--emit neo4j``
-(schema: ``codeanalyzer-ts/schema.neo4j.json``). Populating it always happens out
-of band — never from this backend.
+The graph is the one ``codeanalyzer-typescript>=1.0.0`` emits with ``--emit
+neo4j`` (**graph schema 2.0.0**). Populating it always happens out of band —
+never from this backend. On first use the backend reads
+``(:Application).schema_version`` and fails fast if it is not the schema this SDK
+speaks (see :meth:`_check_schema_version`).
 
-Identity model (must match the in-memory backend):
+Identity model (graph schema 2.0.0 — must match the in-memory backend):
 
-* a callable/class/interface/enum/type-alias is a ``:Symbol`` keyed by ``signature``;
-* call-graph edges are ``(:Symbol)-[:CALLS]->(:Symbol|:External)``;
-* every project-owned node carries a ``_module`` provenance property, so a single
-  database may hold several applications — all queries here are scoped to this
-  backend's application by the set of its module ``file_key``s.
+* every projected node is a ``:CanNode`` carrying a canonical ``id`` (a ``can://``
+  URI) as its merge key; TypeScript nodes wear a twin ``:TS*`` label
+  (``:CanNode:TSClass``, ``:CanNode:TSCallable``, ...);
+* a callable/class/interface/enum/type-alias still carries a ``signature``
+  *property*, which is what the SDK's public accessors key on;
+* call-graph edges are ``(:TSCallable)-[:TS_CALLS]->(:TSCallable|:TSExternal)``;
+* call *sites* are body nodes — ``(:TSBodyNode {kind: "call"})`` reached via
+  ``TS_HAS_BODY_NODE`` and resolved through ``TS_RESOLVES_TO`` — not standalone
+  call-site nodes;
+* every project-owned node carries a ``_module`` provenance property (the
+  project-relative path), so a single database may hold several applications —
+  all queries here are scoped to this backend's application by the set of its
+  module ``_module`` keys.
 
-Parity caveats (inherent to what the projection stores, not bugs):
+Parity caveats (inherent to what schema 2.0.0 projects, not bugs):
 
-* ``CALLS`` edge ``tags`` only round-trip the three keys the projection keeps
+* ``TS_CALLS`` edge ``tags`` only round-trip the three keys the projection keeps
   (``ts.dispatch`` / ``ts.external`` / ``ts.module``);
-* ``get_imports`` / ``get_all_exports`` are reconstructed from the *aggregated*
-  ``IMPORTS`` / ``RE_EXPORTS`` edges (individual bindings, aliases and positions
-  are not stored);
+* decorators, class/interface attributes, module imports/exports and variable
+  declarations are **not projected** into graph schema 2.0.0 — the accessors for
+  them raise :class:`NotImplementedError` (there is no in-memory/JSON backend to
+  fall back to from a read-only Cypher client), and the reconstructed
+  ``TSClass`` / ``TSModule`` objects carry empty collections for those fields;
 * comments collapse to a single docstring, type-parameters keep only their names.
 """
 
@@ -79,9 +91,14 @@ from cldk.models.typescript import (
     TSTypeAlias,
     TSVariableDeclaration,
 )
-from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
+from cldk.utils.exceptions.exceptions import CldkSchemaMismatchException, CodeanalyzerExecutionException
 
 logger = logging.getLogger(__name__)
+
+
+def _unprojected(feature: str) -> NotImplementedError:
+    """The uniform error for an accessor whose vocabulary graph schema 2.0.0 does not project."""
+    return NotImplementedError(f"{feature} is not projected in graph schema {TSNeo4jBackend.SUPPORTED_GRAPH_SCHEMA} — use the in-memory (JSON) backend")
 
 
 class TSNeo4jBackend(TSAnalysisBackend):
@@ -95,9 +112,13 @@ class TSNeo4jBackend(TSAnalysisBackend):
         neo4j_uri: Bolt URI of the Neo4j server (e.g. ``bolt://localhost:7687``).
         neo4j_username / neo4j_password: Credentials (read-only is sufficient).
         neo4j_database: Database name (None ⇒ server default).
-        application_name: The ``:Application`` anchor name to scope every query to. Matches the
-            ``--app-name`` the graph was loaded with (defaults to the project directory name).
+        application_name: The ``:Application`` anchor to scope every query to. Matched against the
+            tail of the application's ``can://`` ``id`` (the ``--app-name`` the graph was loaded
+            with; defaults to the project directory name).
     """
+
+    #: The graph schema version this backend speaks; enforced on first use.
+    SUPPORTED_GRAPH_SCHEMA = "2.0.0"
 
     def __init__(
         self,
@@ -118,7 +139,10 @@ class TSNeo4jBackend(TSAnalysisBackend):
         self._database = neo4j_database
         self._driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_username, neo4j_password))
 
-        # The application's module file_keys, used to scope every query to this app.
+        # Fail fast if the persisted graph isn't the schema this SDK speaks.
+        self._check_schema_version()
+
+        # The application's module `_module` keys, used to scope every query to this app.
         self._modules: List[str] = self._load_module_keys()
 
     # -----[ lifecycle ]-----
@@ -137,31 +161,34 @@ class TSNeo4jBackend(TSAnalysisBackend):
         with self._driver.session(database=self._database) as session:
             return [record.data() for record in session.run(query, **params)]
 
+    def _check_schema_version(self, expected: str | None = None, found: str | None = None) -> None:
+        """Fail fast unless the persisted graph's ``schema_version`` is the one this SDK speaks.
+
+        Reads ``(:Application).schema_version`` once (unless ``found`` is supplied, as the tests
+        do) and raises :class:`CldkSchemaMismatchException` on any mismatch — including a graph
+        with no ``:Application`` node at all.
+        """
+        expected = expected or self.SUPPORTED_GRAPH_SCHEMA
+        if found is None:
+            rows = self._run("MATCH (a:Application) RETURN a.schema_version AS v LIMIT 1")
+            found = rows[0]["v"] if rows else None
+        if found != expected:
+            raise CldkSchemaMismatchException(
+                f"graph schema {found!r} in database, this SDK speaks {expected!r} — re-analyze with codeanalyzer-typescript>=1.0.0"
+            )
+
     def _load_module_keys(self) -> List[str]:
         rows = self._run(
-            "MATCH (:Application {name: $app})-[:HAS_MODULE]->(m:Module) RETURN m.file_key AS k",
+            'MATCH (a:Application) WHERE a.id ENDS WITH "/" + $app '
+            "MATCH (a)-[:TS_HAS_MODULE]->(m:TSModule) RETURN m._module AS k",
             app=self.application_name,
         )
         return [r["k"] for r in rows]
 
     # -----[ child-fetch helpers (reconstruction) ]-----
-    def _decorators_of(self, signature: str) -> List[TSDecorator]:
-        rows = self._run(
-            "MATCH (s:Symbol {signature: $sig})-[r:DECORATED_BY]->(d:Decorator) " "RETURN properties(d) AS node, properties(r) AS edge ORDER BY r.start_line",
-            sig=signature,
-        )
-        return [R.decorator(r["node"], r["edge"]) for r in rows]
-
-    def _attribute_decorators(self, attr_id: str) -> List[TSDecorator]:
-        rows = self._run(
-            "MATCH (a:Attribute {id: $id})-[r:DECORATED_BY]->(d:Decorator) " "RETURN properties(d) AS node, properties(r) AS edge ORDER BY r.start_line",
-            id=attr_id,
-        )
-        return [R.decorator(r["node"], r["edge"]) for r in rows]
-
     def _callsites_of(self, signature: str) -> List[TSCallsite]:
         rows = self._run(
-            "MATCH (c:Callable {signature: $sig})-[:HAS_CALLSITE]->(cs:CallSite) " "RETURN properties(cs) AS p ORDER BY cs.start_line, cs.start_column",
+            "MATCH (c:TSCallable {signature: $sig})-[:TS_HAS_BODY_NODE]->(cs:TSBodyNode {kind: 'call'}) " "RETURN properties(cs) AS p ORDER BY cs.start_line, cs.start_column",
             sig=signature,
         )
         return [R.callsite(r["p"]) for r in rows]
@@ -169,11 +196,11 @@ class TSNeo4jBackend(TSAnalysisBackend):
     def _callable_full(self, props: Dict[str, Any]) -> TSCallable:
         sig = props["signature"]
         # Symbol-keyed containers are keyed by signature (matching the analyzer's dict keys).
-        inner_callables = {p["signature"]: self._callable_full(p) for p in self._children(sig, "DECLARES", "Callable")}
-        inner_classes = {p["signature"]: self._class_full(p) for p in self._children(sig, "DECLARES", "Class")}
+        inner_callables = {p["signature"]: self._callable_full(p) for p in self._children(sig, "TS_DECLARES", "TSCallable")}
+        inner_classes = {p["signature"]: self._class_full(p) for p in self._children(sig, "TS_DECLARES", "TSClass")}
         return R.callable_(
             props,
-            decorators=self._decorators_of(sig),
+            decorators=[],  # decorators are not projected in graph schema 2.0.0
             call_sites=self._callsites_of(sig),
             inner_callables=inner_callables,
             inner_classes=inner_classes,
@@ -193,41 +220,37 @@ class TSNeo4jBackend(TSAnalysisBackend):
 
     def _class_full(self, props: Dict[str, Any]) -> TSClass:
         sig = props["signature"]
-        # methods keyed by the analyzer's method-key; inner_classes by signature; attributes by name.
-        methods = {self._method_key(p): self._callable_full(p) for p in self._members(sig, "HAS_METHOD", "Callable")}
-        attributes: Dict[str, TSClassAttribute] = {}
-        for p in self._members(sig, "HAS_ATTRIBUTE", "Attribute"):
-            attributes[p["name"]] = R.attribute(p, self._attribute_decorators(p.get("id", "")))
-        inner_classes = {p["signature"]: self._class_full(p) for p in self._children(sig, "DECLARES", "Class")}
+        # methods keyed by the analyzer's method-key; inner_classes by signature. Attributes and
+        # decorators are not projected in graph schema 2.0.0, so those collections stay empty.
+        methods = {self._method_key(p): self._callable_full(p) for p in self._members(sig, "TS_HAS_METHOD", "TSCallable")}
+        inner_classes = {p["signature"]: self._class_full(p) for p in self._children(sig, "TS_DECLARES", "TSClass")}
         return R.class_(
             props,
-            decorators=self._decorators_of(sig),
+            decorators=[],
             methods=methods,
-            attributes=attributes,
+            attributes={},
             inner_classes=inner_classes,
         )
 
     def _interface_full(self, props: Dict[str, Any]) -> TSInterface:
         sig = props["signature"]
-        methods = {self._method_key(p): self._callable_full(p) for p in self._members(sig, "HAS_METHOD", "Callable")}
-        properties: Dict[str, TSClassAttribute] = {}
-        for p in self._members(sig, "HAS_ATTRIBUTE", "Attribute"):
-            properties[p["name"]] = R.attribute(p, self._attribute_decorators(p.get("id", "")))
-        return R.interface(props, methods=methods, properties=properties)
+        methods = {self._method_key(p): self._callable_full(p) for p in self._members(sig, "TS_HAS_METHOD", "TSCallable")}
+        # interface properties are attributes — not projected in graph schema 2.0.0.
+        return R.interface(props, methods=methods, properties={})
 
     def _children(self, signature: str, rel: str, label: str) -> List[Dict[str, Any]]:
         """Property maps of ``label`` nodes reached from a symbol via ``rel`` (one hop), in
         declaration (source) order."""
         rows = self._run(
-            f"MATCH (s:Symbol {{signature: $sig}})-[:{rel}]->(n:{label}) " "RETURN properties(n) AS p ORDER BY n.start_line, n.name",
+            f"MATCH (s:CanNode {{signature: $sig}})-[:{rel}]->(n:{label}) " "RETURN properties(n) AS p ORDER BY n.start_line, n.name",
             sig=signature,
         )
         return [r["p"] for r in rows]
 
     def _members(self, signature: str, rel: str, label: str) -> List[Dict[str, Any]]:
-        """Property maps of member ``label`` nodes (methods/attributes), in declaration order."""
+        """Property maps of member ``label`` nodes (methods), in declaration order."""
         rows = self._run(
-            f"MATCH (s:Symbol {{signature: $sig}})-[:{rel}]->(n:{label}) " "RETURN properties(n) AS p ORDER BY n.start_line, n.name",
+            f"MATCH (s:CanNode {{signature: $sig}})-[:{rel}]->(n:{label}) " "RETURN properties(n) AS p ORDER BY n.start_line, n.name",
             sig=signature,
         )
         return [r["p"] for r in rows]
@@ -255,47 +278,45 @@ class TSNeo4jBackend(TSAnalysisBackend):
 
     def get_external_symbols(self) -> Dict[str, TSExternalSymbol]:
         rows = self._run(
-            "MATCH (s:Symbol)-[:CALLS]->(e:External) WHERE s._module IN $mods "
+            "MATCH (s:CanNode)-[:TS_CALLS]->(e:TSExternal) WHERE s._module IN $mods "
             "RETURN DISTINCT properties(e) AS p "
             "UNION "
-            "MATCH (cs:CallSite)-[:RESOLVES_TO]->(e:External) WHERE cs._module IN $mods "
+            "MATCH (cs:TSBodyNode {kind: 'call'})-[:TS_RESOLVES_TO]->(e:TSExternal) WHERE cs._module IN $mods "
             "RETURN DISTINCT properties(e) AS p",
             mods=self._modules,
         )
         return {r["p"]["signature"]: R.external(r["p"]) for r in rows}
 
     def get_synthesized_callables(self) -> Dict[str, TSSynthesizedCallable]:
-        """Anonymous-callback endpoints minted as ``:AnonymousCallable`` nodes (keyed by signature),
-        scoped to this application's modules."""
+        """Anonymous-callback endpoints minted as ``:TSAnonymousCallable`` nodes (keyed by
+        signature), scoped to this application's modules."""
         rows = self._run(
-            "MATCH (a:AnonymousCallable) WHERE a._module IN $mods RETURN DISTINCT properties(a) AS p",
+            "MATCH (a:TSAnonymousCallable) WHERE a._module IN $mods RETURN DISTINCT properties(a) AS p",
             mods=self._modules,
         )
         return {r["p"]["signature"]: R.synthesized(r["p"]) for r in rows}
 
     def get_typescript_file(self, qualified_name: str) -> str | None:
         rows = self._run(
-            "MATCH (s:Symbol {signature: $sig}) WHERE s._module IN $mods RETURN s._module AS m LIMIT 1",
+            "MATCH (s:CanNode {signature: $sig}) WHERE s._module IN $mods RETURN s._module AS m LIMIT 1",
             sig=qualified_name,
             mods=self._modules,
         )
         return rows[0]["m"] if rows else None
 
     def get_typescript_module(self, file_path: str) -> TSModule | None:
-        rows = self._run("MATCH (m:Module {file_key: $key}) RETURN properties(m) AS p", key=file_path)
+        rows = self._run("MATCH (m:TSModule {_module: $key}) RETURN properties(m) AS p", key=file_path)
         if not rows:
             return None
         props = rows[0]["p"]
         # All symbol containers are keyed by signature (matching the analyzer's dict keys).
-        classes = {p["signature"]: self._class_full(p) for p in self._module_decls(file_path, "Class")}
-        interfaces = {p["signature"]: self._interface_full(p) for p in self._module_decls(file_path, "Interface")}
-        enums = {p["signature"]: R.enum(p) for p in self._module_decls(file_path, "Enum")}
-        type_aliases = {p["signature"]: R.type_alias(p) for p in self._module_decls(file_path, "TypeAlias")}
-        functions = {p["signature"]: self._callable_full(p) for p in self._module_decls(file_path, "Callable")}
-        namespaces = {p["signature"]: self._namespace_full(p) for p in self._module_decls(file_path, "Namespace")}
-        variables = self._module_variables(file_path)
-        imports = self._module_imports(file_path)
-        exports = self._module_exports(file_path)
+        classes = {p["signature"]: self._class_full(p) for p in self._module_decls(file_path, "TSClass")}
+        interfaces = {p["signature"]: self._interface_full(p) for p in self._module_decls(file_path, "TSInterface")}
+        enums = {p["signature"]: R.enum(p) for p in self._module_decls(file_path, "TSEnum")}
+        type_aliases = {p["signature"]: R.type_alias(p) for p in self._module_decls(file_path, "TSTypeAlias")}
+        functions = {p["signature"]: self._callable_full(p) for p in self._module_decls(file_path, "TSCallable")}
+        namespaces = {p["signature"]: self._namespace_full(p) for p in self._module_decls(file_path, "TSNamespace")}
+        # variables / imports / exports are not projected in graph schema 2.0.0.
         return R.module(
             props,
             classes=classes,
@@ -304,31 +325,27 @@ class TSNeo4jBackend(TSAnalysisBackend):
             type_aliases=type_aliases,
             functions=functions,
             namespaces=namespaces,
-            variables=variables,
-            imports=imports,
-            exports=exports,
+            variables=[],
+            imports=[],
+            exports=[],
         )
 
-    def _module_decls(self, file_key: str, label: str) -> List[Dict[str, Any]]:
+    def _module_decls(self, module_key: str, label: str) -> List[Dict[str, Any]]:
         rows = self._run(
-            f"MATCH (m:Module {{file_key: $key}})-[:DECLARES]->(n:{label}) " "RETURN properties(n) AS p ORDER BY n.start_line, n.name",
-            key=file_key,
+            f"MATCH (m:TSModule {{_module: $key}})-[:TS_DECLARES]->(n:{label}) " "RETURN properties(n) AS p ORDER BY n.start_line, n.name",
+            key=module_key,
         )
         return [r["p"] for r in rows]
 
     def _namespace_full(self, props: Dict[str, Any]):
         sig = props["signature"]
-        classes = {p["signature"]: self._class_full(p) for p in self._children(sig, "DECLARES", "Class")}
-        interfaces = {p["signature"]: self._interface_full(p) for p in self._children(sig, "DECLARES", "Interface")}
-        enums = {p["signature"]: R.enum(p) for p in self._children(sig, "DECLARES", "Enum")}
-        type_aliases = {p["signature"]: R.type_alias(p) for p in self._children(sig, "DECLARES", "TypeAlias")}
-        functions = {p["signature"]: self._callable_full(p) for p in self._children(sig, "DECLARES", "Callable")}
-        namespaces = {p["signature"]: self._namespace_full(p) for p in self._children(sig, "DECLARES", "Namespace")}
-        rows = self._run(
-            "MATCH (s:Symbol {signature: $sig})-[:DECLARES_VAR]->(v:Variable) RETURN properties(v) AS p",
-            sig=sig,
-        )
-        variables = [R.variable(r["p"]) for r in rows]
+        classes = {p["signature"]: self._class_full(p) for p in self._children(sig, "TS_DECLARES", "TSClass")}
+        interfaces = {p["signature"]: self._interface_full(p) for p in self._children(sig, "TS_DECLARES", "TSInterface")}
+        enums = {p["signature"]: R.enum(p) for p in self._children(sig, "TS_DECLARES", "TSEnum")}
+        type_aliases = {p["signature"]: R.type_alias(p) for p in self._children(sig, "TS_DECLARES", "TSTypeAlias")}
+        functions = {p["signature"]: self._callable_full(p) for p in self._children(sig, "TS_DECLARES", "TSCallable")}
+        namespaces = {p["signature"]: self._namespace_full(p) for p in self._children(sig, "TS_DECLARES", "TSNamespace")}
+        # namespace-level variables are not projected in graph schema 2.0.0.
         return R.namespace(
             props,
             classes=classes,
@@ -337,52 +354,13 @@ class TSNeo4jBackend(TSAnalysisBackend):
             type_aliases=type_aliases,
             functions=functions,
             namespaces=namespaces,
-            variables=variables,
+            variables=[],
         )
-
-    def _module_variables(self, file_key: str) -> List[TSVariableDeclaration]:
-        rows = self._run(
-            "MATCH (m:Module {file_key: $key})-[:DECLARES_VAR]->(v:Variable) RETURN properties(v) AS p",
-            key=file_key,
-        )
-        return [R.variable(r["p"]) for r in rows]
-
-    def _module_imports(self, file_key: str) -> List[TSImport]:
-        """Best-effort: synthesize one TSImport per imported name on each aggregated IMPORTS edge.
-
-        The projection collapses every binding to a module-pair into a single edge carrying
-        ``imported_names`` / ``import_kinds`` / ``is_type_only``, so per-binding aliases, kinds
-        and positions are not recoverable.
-        """
-        rows = self._run(
-            "MATCH (m:Module {file_key: $key})-[r:IMPORTS]->(t) " "RETURN coalesce(t.file_key, t.name) AS target, properties(r) AS edge",
-            key=file_key,
-        )
-        out: List[TSImport] = []
-        for r in rows:
-            edge = r["edge"]
-            kinds = edge.get("import_kinds", []) or []
-            kind = kinds[0] if len(kinds) == 1 else "named"
-            type_only = edge.get("is_type_only", False)
-            names = edge.get("imported_names", []) or []
-            if not names:
-                out.append(TSImport(module=r["target"], name="", import_kind=kind, is_type_only=type_only))
-            for name in names:
-                out.append(TSImport(module=r["target"], name=name, import_kind=kind, is_type_only=type_only))
-        return out
-
-    def _module_exports(self, file_key: str) -> List[TSExport]:
-        """Best-effort: only re-exports survive as edges (local exports become ``is_exported`` props)."""
-        rows = self._run(
-            "MATCH (m:Module {file_key: $key})-[:RE_EXPORTS]->(t) " "RETURN coalesce(t.file_key, t.name) AS target",
-            key=file_key,
-        )
-        return [TSExport(module=r["target"], name="*", export_kind="re_export") for r in rows]
 
     # -----[ call graph ]-----
     def _call_edges(self) -> List[TSCallEdge]:
         rows = self._run(
-            "MATCH (s:Symbol)-[r:CALLS]->(t:Symbol) WHERE s._module IN $mods " "RETURN s.signature AS src, t.signature AS tgt, properties(r) AS edge",
+            "MATCH (s:CanNode)-[r:TS_CALLS]->(t:CanNode) WHERE s._module IN $mods " "RETURN s.signature AS src, t.signature AS tgt, properties(r) AS edge",
             mods=self._modules,
         )
         return [
@@ -398,7 +376,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
 
     @staticmethod
     def _edge_tags(edge: Dict[str, Any]) -> Dict[str, str]:
-        """Invert the flattened CALLS-edge tag props back into the ``ts.*`` tag dict."""
+        """Invert the flattened TS_CALLS-edge tag props back into the ``ts.*`` tag dict."""
         tags: Dict[str, str] = {}
         if edge.get("dispatch") is not None:
             tags["ts.dispatch"] = edge["dispatch"]
@@ -409,7 +387,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
         return tags
 
     def get_call_graph(self) -> nx.DiGraph:
-        """NetworkX DiGraph of callable signatures (+ phantom external symbols) and CALLS edges."""
+        """NetworkX DiGraph of callable signatures (+ phantom external symbols) and TS_CALLS edges."""
         graph = nx.DiGraph()
         # Internal callable nodes (with the reconstructed callable, matching the in-memory backend).
         for props in self._all_callable_props():
@@ -419,7 +397,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
             graph.add_node(sig, external=True, module=ext.module, name=ext.name)
         # Edges (auto-create any endpoint not added above, matching nx.add_edge semantics).
         for r in self._run(
-            "MATCH (s:Symbol)-[r:CALLS]->(t:Symbol) WHERE s._module IN $mods " "RETURN s.signature AS src, t.signature AS tgt, properties(r) AS edge",
+            "MATCH (s:CanNode)-[r:TS_CALLS]->(t:CanNode) WHERE s._module IN $mods " "RETURN s.signature AS src, t.signature AS tgt, properties(r) AS edge",
             mods=self._modules,
         ):
             edge = r["edge"]
@@ -437,7 +415,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
         return self.get_application().model_dump_json()
 
     def _all_callable_props(self) -> List[Dict[str, Any]]:
-        rows = self._run("MATCH (c:Callable) WHERE c._module IN $mods RETURN properties(c) AS p", mods=self._modules)
+        rows = self._run("MATCH (c:TSCallable) WHERE c._module IN $mods RETURN properties(c) AS p", mods=self._modules)
         return [r["p"] for r in rows]
 
     def _resolve_signature(self, class_or_sig: str, member: str | None = None) -> str:
@@ -445,20 +423,20 @@ class TSNeo4jBackend(TSAnalysisBackend):
         if member is None:
             return class_or_sig
         rows = self._run(
-            "MATCH (o:Symbol {signature: $owner})-[:HAS_METHOD]->(m:Callable {name: $name}) " "RETURN m.signature AS sig LIMIT 1",
+            "MATCH (o:CanNode {signature: $owner})-[:TS_HAS_METHOD]->(m:TSCallable {name: $name}) " "RETURN m.signature AS sig LIMIT 1",
             owner=class_or_sig,
             name=member,
         )
         if rows:
             return rows[0]["sig"]
         composed = f"{class_or_sig}.{member}"
-        rows = self._run("MATCH (c:Callable {signature: $sig}) RETURN c.signature AS sig LIMIT 1", sig=composed)
+        rows = self._run("MATCH (c:TSCallable {signature: $sig}) RETURN c.signature AS sig LIMIT 1", sig=composed)
         return rows[0]["sig"] if rows else composed
 
     def get_all_callers(self, target_class_name: str, target_method_declaration: str | None = None) -> Dict:
         target = self._resolve_signature(target_class_name, target_method_declaration)
         rows = self._run(
-            "MATCH (src:Symbol)-[r:CALLS]->(t:Symbol {signature: $target}) WHERE src._module IN $mods " "RETURN src.signature AS caller, properties(r) AS edge",
+            "MATCH (src:CanNode)-[r:TS_CALLS]->(t:CanNode {signature: $target}) WHERE src._module IN $mods " "RETURN src.signature AS caller, properties(r) AS edge",
             target=target,
             mods=self._modules,
         )
@@ -468,7 +446,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
     def get_all_callees(self, source_class_name: str, source_method_declaration: str | None = None) -> Dict:
         source = self._resolve_signature(source_class_name, source_method_declaration)
         rows = self._run(
-            "MATCH (s:Symbol {signature: $source})-[r:CALLS]->(tgt:Symbol) " "RETURN tgt.signature AS callee, properties(r) AS edge",
+            "MATCH (s:CanNode {signature: $source})-[r:TS_CALLS]->(tgt:CanNode) " "RETURN tgt.signature AS callee, properties(r) AS edge",
             source=source,
         )
         callee_details = [{"callee_signature": r["callee"], "edge": self._edge_dict(r["edge"])} for r in rows]
@@ -487,7 +465,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
         """Call-graph edges reachable (BFS) from a class (or one of its methods)."""
         adjacency: Dict[str, List[str]] = {}
         for r in self._run(
-            "MATCH (s:Symbol)-[:CALLS]->(t:Symbol) WHERE s._module IN $mods " "RETURN s.signature AS src, t.signature AS tgt ORDER BY src, tgt",
+            "MATCH (s:CanNode)-[:TS_CALLS]->(t:CanNode) WHERE s._module IN $mods " "RETURN s.signature AS src, t.signature AS tgt ORDER BY src, tgt",
             mods=self._modules,
         ):
             adjacency.setdefault(r["src"], []).append(r["tgt"])
@@ -495,7 +473,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
         if method_signature is not None:
             seeds = [method_signature]
         else:
-            seeds = [p["signature"] for p in self._members(qualified_class_name, "HAS_METHOD", "Callable")]
+            seeds = [p["signature"] for p in self._members(qualified_class_name, "TS_HAS_METHOD", "TSCallable")]
         edges: List[Tuple[str, str]] = []
         seen = set(seeds)
         queue = deque(seeds)
@@ -512,7 +490,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
         """Inheritance/implementation graph: an edge child → base for every base_class."""
         graph = nx.DiGraph()
         rows = self._run(
-            "MATCH (n:Symbol) WHERE (n:Class OR n:Interface) AND n._module IN $mods " "RETURN n.signature AS sig, n.base_classes AS bases",
+            "MATCH (n:CanNode) WHERE (n:TSClass OR n:TSInterface) AND n._module IN $mods " "RETURN n.signature AS sig, n.base_classes AS bases",
             mods=self._modules,
         )
         for r in rows:
@@ -528,7 +506,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
 
     def get_calling_lines(self, target_signature: str) -> List[int]:
         rows = self._run(
-            "MATCH (cs:CallSite) WHERE cs._module IN $mods AND cs.callee_signature = $sig " "AND cs.start_line >= 0 RETURN DISTINCT cs.start_line AS line ORDER BY line",
+            "MATCH (cs:TSBodyNode {kind: 'call'}) WHERE cs._module IN $mods AND cs.callee = $sig " "AND cs.start_line >= 0 RETURN DISTINCT cs.start_line AS line ORDER BY line",
             mods=self._modules,
             sig=target_signature,
         )
@@ -536,46 +514,46 @@ class TSNeo4jBackend(TSAnalysisBackend):
 
     def get_call_targets(self, source_signature: str) -> Set[str]:
         rows = self._run(
-            "MATCH (c:Callable {signature: $sig})-[:HAS_CALLSITE]->(cs:CallSite) " "RETURN cs.callee_signature AS cosig, cs.method_name AS mn",
+            "MATCH (c:TSCallable {signature: $sig})-[:TS_HAS_BODY_NODE]->(cs:TSBodyNode {kind: 'call'}) " "RETURN cs.callee AS cosig, cs.method_name AS mn",
             sig=source_signature,
         )
         return {(r["cosig"] or r["mn"]) for r in rows}
 
     # -----[ classes / interfaces / enums / type-aliases ]-----
     def get_all_classes(self) -> Dict[str, TSClass]:
-        rows = self._run("MATCH (c:Class) WHERE c._module IN $mods RETURN properties(c) AS p", mods=self._modules)
+        rows = self._run("MATCH (c:TSClass) WHERE c._module IN $mods RETURN properties(c) AS p", mods=self._modules)
         return {r["p"]["signature"]: self._class_full(r["p"]) for r in rows}
 
     def get_class(self, qualified_class_name: str) -> TSClass | None:
         rows = self._run(
-            "MATCH (c:Class {signature: $sig}) WHERE c._module IN $mods RETURN properties(c) AS p",
+            "MATCH (c:TSClass {signature: $sig}) WHERE c._module IN $mods RETURN properties(c) AS p",
             sig=qualified_class_name,
             mods=self._modules,
         )
         return self._class_full(rows[0]["p"]) if rows else None
 
     def get_all_interfaces(self) -> Dict[str, TSInterface]:
-        rows = self._run("MATCH (i:Interface) WHERE i._module IN $mods RETURN properties(i) AS p", mods=self._modules)
+        rows = self._run("MATCH (i:TSInterface) WHERE i._module IN $mods RETURN properties(i) AS p", mods=self._modules)
         return {r["p"]["signature"]: self._interface_full(r["p"]) for r in rows}
 
     def get_all_enums(self) -> Dict[str, TSEnum]:
-        rows = self._run("MATCH (e:Enum) WHERE e._module IN $mods RETURN properties(e) AS p", mods=self._modules)
+        rows = self._run("MATCH (e:TSEnum) WHERE e._module IN $mods RETURN properties(e) AS p", mods=self._modules)
         return {r["p"]["signature"]: R.enum(r["p"]) for r in rows}
 
     def get_enum_members(self, qualified_enum_name: str) -> List[TSEnumMember]:
-        rows = self._run("MATCH (e:Enum {signature: $sig}) RETURN properties(e) AS p", sig=qualified_enum_name)
+        rows = self._run("MATCH (e:TSEnum {signature: $sig}) RETURN properties(e) AS p", sig=qualified_enum_name)
         return R.enum(rows[0]["p"]).members if rows else []
 
     def get_all_type_aliases(self) -> Dict[str, TSTypeAlias]:
-        rows = self._run("MATCH (t:TypeAlias) WHERE t._module IN $mods RETURN properties(t) AS p", mods=self._modules)
+        rows = self._run("MATCH (t:TSTypeAlias) WHERE t._module IN $mods RETURN properties(t) AS p", mods=self._modules)
         return {r["p"]["signature"]: R.type_alias(r["p"]) for r in rows}
 
     def get_all_nested_classes(self, qualified_class_name: str) -> List[TSClass]:
-        return [self._class_full(p) for p in self._children(qualified_class_name, "DECLARES", "Class")]
+        return [self._class_full(p) for p in self._children(qualified_class_name, "TS_DECLARES", "TSClass")]
 
     def get_all_sub_classes(self, qualified_class_name: str) -> Dict[str, TSClass]:
         rows = self._run(
-            "MATCH (c:Class) WHERE c._module IN $mods AND $sig IN c.base_classes " "RETURN properties(c) AS p",
+            "MATCH (c:TSClass) WHERE c._module IN $mods AND $sig IN c.base_classes " "RETURN properties(c) AS p",
             sig=qualified_class_name,
             mods=self._modules,
         )
@@ -583,7 +561,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
 
     def get_extended_classes(self, qualified_class_name: str) -> List[str]:
         rows = self._run(
-            "MATCH (c:Class {signature: $sig}) RETURN c.base_classes AS bases, c.implements_types AS impl",
+            "MATCH (c:TSClass {signature: $sig}) RETURN c.base_classes AS bases, c.implements_types AS impl",
             sig=qualified_class_name,
         )
         if not rows:
@@ -593,7 +571,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
         return [b for b in bases if b not in impl]
 
     def get_implemented_interfaces(self, qualified_class_name: str) -> List[str]:
-        rows = self._run("MATCH (c:Class {signature: $sig}) RETURN c.implements_types AS impl", sig=qualified_class_name)
+        rows = self._run("MATCH (c:TSClass {signature: $sig}) RETURN c.implements_types AS impl", sig=qualified_class_name)
         return list(rows[0]["impl"] or []) if rows else []
 
     # -----[ methods / functions / fields ]-----
@@ -602,30 +580,30 @@ class TSNeo4jBackend(TSAnalysisBackend):
         # (even those with no methods), each keyed by the method's short name.
         out: Dict[str, Dict[str, TSCallable]] = {}
         for r in self._run(
-            "MATCH (n:Symbol) WHERE (n:Class OR n:Interface) AND n._module IN $mods " "RETURN n.signature AS sig",
+            "MATCH (n:CanNode) WHERE (n:TSClass OR n:TSInterface) AND n._module IN $mods " "RETURN n.signature AS sig",
             mods=self._modules,
         ):
             out[r["sig"]] = {}
         for r in self._run(
-            "MATCH (owner:Symbol)-[:HAS_METHOD]->(m:Callable) WHERE owner._module IN $mods " "RETURN owner.signature AS owner, properties(m) AS p",
+            "MATCH (owner:CanNode)-[:TS_HAS_METHOD]->(m:TSCallable) WHERE owner._module IN $mods " "RETURN owner.signature AS owner, properties(m) AS p",
             mods=self._modules,
         ):
             out.setdefault(r["owner"], {})[r["p"]["name"]] = self._callable_full(r["p"])
         return out
 
     def get_all_methods_in_class(self, qualified_class_name: str) -> Dict[str, TSCallable]:
-        return {p["name"]: self._callable_full(p) for p in self._members(qualified_class_name, "HAS_METHOD", "Callable")}
+        return {p["name"]: self._callable_full(p) for p in self._members(qualified_class_name, "TS_HAS_METHOD", "TSCallable")}
 
     def get_method(self, qualified_class_name: str, qualified_method_name: str) -> TSCallable | None:
         rows = self._run(
-            "MATCH (o:Symbol {signature: $sig})-[:HAS_METHOD]->(m:Callable {name: $name}) " "RETURN properties(m) AS p LIMIT 1",
+            "MATCH (o:CanNode {signature: $sig})-[:TS_HAS_METHOD]->(m:TSCallable {name: $name}) " "RETURN properties(m) AS p LIMIT 1",
             sig=qualified_class_name,
             name=qualified_method_name,
         )
         if rows:
             return self._callable_full(rows[0]["p"])
         # Class lookup missed (or the scope isn't a class at all): fall back to module/namespace
-        # -level functions via DECLARES, mirroring get_all_functions.
+        # -level functions via TS_DECLARES, mirroring get_all_functions.
         return self._resolve_function(qualified_class_name, qualified_method_name)
 
     def _resolve_function(self, scope: str, name: str) -> TSCallable | None:
@@ -634,8 +612,8 @@ class TSNeo4jBackend(TSAnalysisBackend):
         ``scope`` (handles functions nested in a namespace the caller doesn't know the full path
         of)."""
         rows = self._run(
-            "MATCH (parent)-[:DECLARES]->(c:Callable {signature: $sig}) "
-            "WHERE (parent:Module OR parent:Namespace) AND c._module IN $mods "
+            "MATCH (parent)-[:TS_DECLARES]->(c:TSCallable {signature: $sig}) "
+            "WHERE (parent:TSModule OR parent:TSNamespace) AND c._module IN $mods "
             "RETURN properties(c) AS p LIMIT 1",
             sig=name,
             mods=self._modules,
@@ -643,8 +621,8 @@ class TSNeo4jBackend(TSAnalysisBackend):
         if rows:
             return self._callable_full(rows[0]["p"])
         rows = self._run(
-            "MATCH (parent)-[:DECLARES]->(c:Callable {name: $name}) "
-            "WHERE (parent:Module OR parent:Namespace) AND c._module IN $mods AND c.signature STARTS WITH $prefix "
+            "MATCH (parent)-[:TS_DECLARES]->(c:TSCallable {name: $name}) "
+            "WHERE (parent:TSModule OR parent:TSNamespace) AND c._module IN $mods AND c.signature STARTS WITH $prefix "
             "RETURN properties(c) AS p LIMIT 1",
             name=name,
             mods=self._modules,
@@ -657,56 +635,49 @@ class TSNeo4jBackend(TSAnalysisBackend):
         return [p.name for p in method.parameters] if method else []
 
     def get_all_constructors(self, qualified_class_name: str) -> Dict[str, TSCallable]:
-        return {p["name"]: self._callable_full(p) for p in self._members(qualified_class_name, "HAS_METHOD", "Callable") if p.get("kind") == "constructor"}
+        return {p["name"]: self._callable_full(p) for p in self._members(qualified_class_name, "TS_HAS_METHOD", "TSCallable") if p.get("kind") == "constructor"}
 
     def get_all_functions(self) -> Dict[str, TSCallable]:
         rows = self._run(
-            "MATCH (parent)-[:DECLARES]->(c:Callable) " "WHERE (parent:Module OR parent:Namespace) AND c._module IN $mods " "RETURN properties(c) AS p",
+            "MATCH (parent)-[:TS_DECLARES]->(c:TSCallable) " "WHERE (parent:TSModule OR parent:TSNamespace) AND c._module IN $mods " "RETURN properties(c) AS p",
             mods=self._modules,
         )
         return {r["p"]["signature"]: self._callable_full(r["p"]) for r in rows}
 
     def get_all_fields(self, qualified_class_name: str) -> List[TSClassAttribute]:
-        return [R.attribute(p, self._attribute_decorators(p.get("id", ""))) for p in self._members(qualified_class_name, "HAS_ATTRIBUTE", "Attribute")]
+        # Class attributes are not projected as nodes in graph schema 2.0.0.
+        raise _unprojected("get_all_fields")
 
     def get_interface_properties(self, qualified_interface_name: str) -> List[TSClassAttribute]:
-        return [R.attribute(p, self._attribute_decorators(p.get("id", ""))) for p in self._members(qualified_interface_name, "HAS_ATTRIBUTE", "Attribute")]
+        # Interface properties are attributes — not projected in graph schema 2.0.0.
+        raise _unprojected("get_interface_properties")
 
     # -----[ imports / exports / variables ]-----
     def get_imports(self) -> Dict[str, List[TSImport]]:
-        return {key: self._module_imports(key) for key in self._modules}
+        # Module imports are not projected in graph schema 2.0.0.
+        raise _unprojected("get_imports")
 
     def get_all_exports(self) -> Dict[str, List[TSExport]]:
-        return {key: self._module_exports(key) for key in self._modules}
+        # Module (re-)exports are not projected in graph schema 2.0.0.
+        raise _unprojected("get_all_exports")
 
     def get_all_variables(self) -> Dict[str, List[TSVariableDeclaration]]:
-        return {key: self._module_variables(key) for key in self._modules}
+        # Variable declarations are not projected in graph schema 2.0.0.
+        raise _unprojected("get_all_variables")
 
     # -----[ decorators ]-----
     def get_decorators(self, qualified_callable_name: str) -> List[TSDecorator]:
-        return self._decorators_of(qualified_callable_name)
+        # Decorators are not projected in graph schema 2.0.0.
+        raise _unprojected("get_decorators")
 
     def get_class_decorators(self, qualified_class_name: str) -> List[TSDecorator]:
-        return self._decorators_of(qualified_class_name)
+        # Decorators are not projected in graph schema 2.0.0.
+        raise _unprojected("get_class_decorators")
 
     def get_methods_with_decorators(self, decorators: List[str]) -> Dict[str, List[str]]:
-        result: Dict[str, List[str]] = {d: [] for d in decorators}
-        rows = self._run(
-            "MATCH (c:Callable)-[:DECORATED_BY]->(d:Decorator) " "WHERE c._module IN $mods AND d.name IN $names " "RETURN d.name AS dn, c.signature AS sig",
-            mods=self._modules,
-            names=decorators,
-        )
-        for r in rows:
-            result[r["dn"]].append(r["sig"])
-        return result
+        # Decorators are not projected in graph schema 2.0.0.
+        raise _unprojected("get_methods_with_decorators")
 
     def get_classes_with_decorators(self, decorators: List[str]) -> Dict[str, List[str]]:
-        result: Dict[str, List[str]] = {d: [] for d in decorators}
-        rows = self._run(
-            "MATCH (c:Class)-[:DECORATED_BY]->(d:Decorator) " "WHERE c._module IN $mods AND d.name IN $names " "RETURN d.name AS dn, c.signature AS sig",
-            mods=self._modules,
-            names=decorators,
-        )
-        for r in rows:
-            result[r["dn"]].append(r["sig"])
-        return result
+        # Decorators are not projected in graph schema 2.0.0.
+        raise _unprojected("get_classes_with_decorators")

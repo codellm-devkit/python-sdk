@@ -218,15 +218,15 @@ def stub_neo4j_backend():
     baz_props = _callable_props(_baz())
     qux_props = _callable_props(_qux())
 
-    has_method_query = "MATCH (o:Symbol {signature: $sig})-[:HAS_METHOD]->(m:Callable {name: $name}) RETURN properties(m) AS p LIMIT 1"
+    has_method_query = "MATCH (o:CanNode {signature: $sig})-[:TS_HAS_METHOD]->(m:TSCallable {name: $name}) RETURN properties(m) AS p LIMIT 1"
     exact_sig_query = (
-        "MATCH (parent)-[:DECLARES]->(c:Callable {signature: $sig}) "
-        "WHERE (parent:Module OR parent:Namespace) AND c._module IN $mods "
+        "MATCH (parent)-[:TS_DECLARES]->(c:TSCallable {signature: $sig}) "
+        "WHERE (parent:TSModule OR parent:TSNamespace) AND c._module IN $mods "
         "RETURN properties(c) AS p LIMIT 1"
     )
     short_name_query = (
-        "MATCH (parent)-[:DECLARES]->(c:Callable {name: $name}) "
-        "WHERE (parent:Module OR parent:Namespace) AND c._module IN $mods AND c.signature STARTS WITH $prefix "
+        "MATCH (parent)-[:TS_DECLARES]->(c:TSCallable {name: $name}) "
+        "WHERE (parent:TSModule OR parent:TSNamespace) AND c._module IN $mods AND c.signature STARTS WITH $prefix "
         "RETURN properties(c) AS p LIMIT 1"
     )
 

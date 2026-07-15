@@ -106,7 +106,8 @@ def callsite(props: Props) -> TSCallsite:
         argument_types=list(props.get("argument_types", []) or []),
         type_arguments=list(props.get("type_arguments", []) or []),
         return_type=props.get("return_type"),
-        callee_signature=props.get("callee_signature"),
+        # schema 2.0.0 call-site body nodes key the resolved target as ``callee``.
+        callee_signature=props.get("callee_signature", props.get("callee")),
         is_constructor_call=props.get("is_constructor_call", False),
         is_optional_chain=props.get("is_optional_chain", False),
         start_line=props.get("start_line", -1),
@@ -370,8 +371,9 @@ def namespace(
 
 def module(props: Props, **children: Any) -> TSModule:
     return TSModule(
-        file_path=props.get("file_key", props.get("file_path", "")),
-        module_name=props.get("module_name", ""),
+        # schema 2.0.0 modules carry the project-relative path as ``_module``.
+        file_path=props.get("_module", props.get("file_path", "")),
+        module_name=props.get("module_name", props.get("name", "")),
         is_tsx=props.get("is_tsx", False),
         is_declaration_file=props.get("is_declaration_file", False),
         content_hash=props.get("content_hash"),
