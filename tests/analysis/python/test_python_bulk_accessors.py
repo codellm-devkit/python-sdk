@@ -23,63 +23,82 @@ Neo4j backend is checked for byte-for-byte parity against this same logic in
 ``test_python_neo4j_backend.py`` when a server is available.
 """
 
-from codeanalyzer.schema.py_schema import PyApplication, PyCallable, PyCallsite, PyClass, PyModule
+from codeanalyzer.schema.py_schema import PyApplication, PyCallable, PyCallsite, PyClass, PyModule, Span
 
 from cldk.analysis.python.codeanalyzer.codeanalyzer import PyCodeanalyzer
 
 
-def _callable(name, signature, *, code="", decorators=None, inner_callables=None, inner_classes=None, call_sites=None):
+def _callable(name, signature, *, decorators=None, callables=None, types=None, call_sites=None):
     return PyCallable(
         name=name,
         path="pkg/models.py",
         signature=signature,
-        code=code,
         decorators=decorators or [],
-        inner_callables=inner_callables or {},
-        inner_classes=inner_classes or {},
+        callables=callables or {},
+        types=types or {},
         call_sites=call_sites or [],
     )
 
 
-def _class(name, signature, *, methods=None, inner_classes=None):
-    return PyClass(name=name, signature=signature, methods=methods or {}, inner_classes=inner_classes or {})
+def _class(name, signature, *, callables=None, types=None):
+    return PyClass(name=name, signature=signature, callables=callables or {}, types=types or {})
+
+
+def _stamp_source(module, snippets):
+    """Assemble ``module.source`` from per-callable code snippets and stamp byte-offset spans.
+
+    Schema 2.0.0 stores source once on the module; each callable carries a ``Span`` whose
+    ``bytes`` slice into it (the analyzer's shape — see ``_code_of`` in the backend). One
+    snippet per line keeps the offsets trivial.
+    """
+    offset = 0
+    lines = []
+    for lineno, (c, code) in enumerate(snippets, start=1):
+        c.span = Span(start=(lineno, 0), end=(lineno, len(code)), bytes=(offset, offset + len(code.encode("utf-8"))))
+        lines.append(code)
+        offset += len(code.encode("utf-8")) + 1  # + newline
+    module.source = "\n".join(lines) + "\n"
 
 
 def _backend():
     """A PyCodeanalyzer wired to a hand-built application, bypassing the analyzer run."""
-    decorate = _callable("_decorate", "pkg.models.greet.<locals>._decorate", code="return s.upper()")
+    decorate = _callable("_decorate", "pkg.models.greet.<locals>._decorate")
     greet = _callable(
         "greet",
         "pkg.models.greet",
-        code="def greet(who): ...",
         decorators=["app.route"],
-        inner_callables={"_decorate": decorate},
+        callables={"_decorate": decorate},
     )
-    meta = _class(
-        "Meta",
-        "pkg.models.Entity.Meta",
-        methods={"m": _callable("m", "pkg.models.Entity.Meta.m", code="return 1")},
+    meta_m = _callable("m", "pkg.models.Entity.Meta.m")
+    meta = _class("Meta", "pkg.models.Entity.Meta", callables={"m": meta_m})
+    init = _callable("__init__", "pkg.models.Entity.__init__")
+    describe = _callable(
+        "describe",
+        "pkg.models.Entity.describe",
+        decorators=["property"],
+        call_sites=[PyCallsite(method_name="greet", start_line=7, start_column=4)],
     )
     entity = _class(
         "Entity",
         "pkg.models.Entity",
-        methods={
-            "__init__": _callable("__init__", "pkg.models.Entity.__init__", code="self.x = 1"),
-            "describe": _callable(
-                "describe",
-                "pkg.models.Entity.describe",
-                code="return self.x",
-                decorators=["property"],
-                call_sites=[PyCallsite(method_name="greet", start_line=7, start_column=4)],
-            ),
-        },
-        inner_classes={"pkg.models.Entity.Meta": meta},
+        callables={"__init__": init, "describe": describe},
+        types={"pkg.models.Entity.Meta": meta},
     )
     module = PyModule(
         file_path="pkg/models.py",
         module_name="pkg.models",
-        classes={"pkg.models.Entity": entity},
+        types={"pkg.models.Entity": entity},
         functions={"greet": greet},
+    )
+    _stamp_source(
+        module,
+        [
+            (decorate, "return s.upper()"),
+            (greet, "def greet(who): ..."),
+            (meta_m, "return 1"),
+            (init, "self.x = 1"),
+            (describe, "return self.x"),
+        ],
     )
     app = PyApplication(symbol_table={"pkg/models.py": module})
 

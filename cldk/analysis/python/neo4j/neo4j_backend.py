@@ -37,7 +37,7 @@ Identity model (must match the in-memory backend; see ``codeanalyzer/neo4j/proje
   (also carrying its specific label ``:PyClass`` / ``:PyCallable`` / ``:PyExternal``);
 * a module is a ``:PyModule`` keyed by ``file_key`` (which equals the original ``PyModule.file_path``
   and the symbol-table key);
-* call-graph edges are ``(:PyCallable|:PyExternal)-[:PY_CALLS {weight, provenance}]->(...)`` with a
+* call-graph edges are ``(:PyCallable|:PyExternal)-[:PY_CALLS {weight, prov}]->(...)`` with a
   constant ``CALL_DEP`` type;
 * class inheritance is ``(:PyClass)-[:PY_EXTENDS]->(:PyClass)`` (plus a ``base_classes`` property);
 * every project-owned node carries a ``_module`` provenance property, so a single database may hold
@@ -45,8 +45,8 @@ Identity model (must match the in-memory backend; see ``codeanalyzer/neo4j/proje
   ``(:PyApplication {name})-[:PY_HAS_MODULE]->(:PyModule)``.
 
 In-memory dict keys this backend reproduces exactly (the projection stores nodes by ``signature``
-only, so the keys are rebuilt from node properties): ``module.classes`` / ``inner_classes`` →
-``signature``; ``module.functions`` / ``methods`` / ``inner_callables`` → short ``name``;
+only, so the keys are rebuilt from node properties): ``module.types`` / nested ``types`` →
+``signature``; ``module.functions`` / class ``callables`` / nested ``callables`` → short ``name``;
 ``attributes`` → ``name``. ``get_all_classes`` / ``get_class`` return **top-level** classes only
 (``PyModule-[:PY_DECLARES]->PyClass``), matching the in-memory backend.
 
@@ -88,7 +88,7 @@ from cldk.models.python import (
     PyClassAttribute,
     PyModule,
 )
-from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
+from cldk.utils.exceptions.exceptions import CldkSchemaMismatchException, CodeanalyzerExecutionException
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +107,11 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         application_name: The ``:PyApplication`` anchor name to scope every query to. Matches the
             ``--app-name`` the graph was loaded with (defaults to the project directory name).
     """
+
+    #: The Neo4j graph schema this backend speaks — ``codeanalyzer-python`` stamps its
+    #: ``SCHEMA_VERSION`` onto every emitted ``:PyApplication`` node; construction fails fast on
+    #: any mismatch (see :meth:`_check_schema_version`), mirroring :class:`TSNeo4jBackend`.
+    SUPPORTED_GRAPH_SCHEMA = "2.0.0"
 
     def __init__(
         self,
@@ -133,6 +138,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         # fan-out, so reopening a session per query added real per-call overhead. Created lazily.
         self._session_obj: Any | None = None
 
+        self._check_schema_version()
         # The application's module file_keys, used to scope every query to this app.
         self._modules: List[str] = self._load_module_keys()
         # Lazily-built call graph cache (mirrors PyCodeanalyzer.call_graph).
@@ -175,6 +181,25 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         except Exception:
             self._close_session()
             raise
+
+    def _check_schema_version(self, expected: str | None = None, found: str | None = None) -> None:
+        """Fail fast unless the persisted graph's ``schema_version`` is the one this SDK speaks.
+
+        Reads the scoped ``(:PyApplication).schema_version`` once (unless ``found`` is supplied,
+        as the tests do) and raises :class:`CldkSchemaMismatchException` on any mismatch —
+        including a graph whose application node carries no version at all (pre-2.0 emitters).
+        """
+        expected = expected or self.SUPPORTED_GRAPH_SCHEMA
+        if found is None:
+            rows = self._run(
+                "MATCH (a:PyApplication {name: $app}) RETURN a.schema_version AS v LIMIT 1",
+                app=self.application_name,
+            )
+            found = rows[0]["v"] if rows else None
+        if found != expected:
+            raise CldkSchemaMismatchException(
+                f"graph schema {found!r} in database, this SDK speaks {expected!r} — re-emit with codeanalyzer-python>=1.0.1"
+            )
 
     def _load_module_keys(self) -> List[str]:
         """The application's module ``file_key``s — the scope key for every other query."""
@@ -239,7 +264,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         classes: Dict[str, PyClass] = {}
         for r in self._run("MATCH (:PyModule {file_key: $fk})-[:PY_DECLARES]->(c:PyClass) RETURN properties(c) AS p", fk=file_key):
             c = self._class_full(r["p"])
-            classes[c.signature] = c  # module.classes keyed by signature
+            classes[c.signature] = c  # module.types keyed by signature
         functions: Dict[str, PyCallable] = {}
         for r in self._run("MATCH (:PyModule {file_key: $fk})-[:PY_DECLARES]->(f:PyCallable) RETURN properties(f) AS p", fk=file_key):
             fn = self._callable_full(r["p"])
@@ -305,7 +330,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         return self._module_full(rows[0]["p"]) if rows else None
 
     def get_python_file(self, qualified_class_name: str) -> str | None:
-        # Only top-level classes are in the in-memory _class_to_file map (module.classes).
+        # Only top-level classes are in the in-memory _class_to_file map (module.types).
         rows = self._run(
             "MATCH (:PyModule)-[:PY_DECLARES]->(c:PyClass {signature: $sig}) WHERE c._module IN $mods RETURN c._module AS fk LIMIT 1",
             sig=qualified_class_name,
@@ -320,10 +345,10 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         """The application's call edges as ``PyCallEdge`` records (``PyApplication.call_graph``)."""
         return [
             PyCallEdge(
-                source=r["src"],
-                target=r["tgt"],
+                src=r["src"],
+                dst=r["tgt"],
                 weight=r["p"].get("weight", 1),
-                provenance=list(r["p"].get("provenance", []) or []),
+                prov=list(r["p"].get("prov", []) or []),
             )
             for r in self._call_rows()
         ]
@@ -332,7 +357,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         graph = nx.DiGraph()
         for r in self._call_rows():
             p = r["p"]
-            graph.add_edge(r["src"], r["tgt"], type="CALL_DEP", weight=p.get("weight", 1), provenance=tuple(p.get("provenance", []) or []))
+            graph.add_edge(r["src"], r["tgt"], type="CALL_DEP", weight=p.get("weight", 1), provenance=tuple(p.get("prov", []) or []))
         return graph
 
     def get_call_graph(self) -> nx.DiGraph:
@@ -370,7 +395,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
                 return []
             return list(nx.edge_dfs(graph, source=method.signature))
         edges: List[Tuple[str, str]] = []
-        for method in cls.methods.values():
+        for method in cls.callables.values():
             if method.signature in graph:
                 edges.extend(nx.edge_dfs(graph, source=method.signature))
         return edges
@@ -399,7 +424,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
 
     def get_all_nested_classes(self, qualified_class_name: str) -> List[PyClass]:
         cls = self.get_class(qualified_class_name)
-        return list(cls.inner_classes.values()) if cls else []
+        return list(cls.types.values()) if cls else []
 
     def get_all_sub_classes(self, qualified_class_name: str) -> Dict[str, PyClass]:
         cls = self.get_class(qualified_class_name)
@@ -426,15 +451,15 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     def get_all_methods_in_application(self) -> Dict[str, Dict[str, PyCallable]]:
         result: Dict[str, Dict[str, PyCallable]] = {}
         for module in self.get_symbol_table().values():
-            for class_sig, cls in module.classes.items():
-                result[class_sig] = dict(cls.methods)
+            for class_sig, cls in module.types.items():
+                result[class_sig] = dict(cls.callables)
             if module.functions:
                 result.setdefault(module.module_name, {}).update(module.functions)
         return result
 
     def get_all_methods_in_class(self, qualified_class_name: str) -> Dict[str, PyCallable]:
         cls = self.get_class(qualified_class_name)
-        return dict(cls.methods) if cls else {}
+        return dict(cls.callables) if cls else {}
 
     def _get_module_functions(self, module_name: str) -> Dict[str, PyCallable]:
         """Fetch a module's top-level functions by ``module_name`` (not ``file_key``) — the scope
@@ -458,7 +483,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         is treated as a module name and resolved against that module's top-level functions.
         """
         cls = self.get_class(qualified_class_name)
-        methods = dict(cls.methods) if cls is not None else self._get_module_functions(qualified_class_name)
+        methods = dict(cls.callables) if cls is not None else self._get_module_functions(qualified_class_name)
         if qualified_method_name in methods:
             return methods[qualified_method_name]
         for sig, callable_ in methods.items():

@@ -162,7 +162,11 @@ def callable_(
     inner_classes: Dict[str, PyClass] | None = None,
     local_variables: List[PyVariableDeclaration] | None = None,
 ) -> PyCallable:
-    """Rebuild a :class:`PyCallable` from a ``:PyCallable`` node plus its fetched children."""
+    """Rebuild a :class:`PyCallable` from a ``:PyCallable`` node plus its fetched children.
+
+    The node's ``code`` property (source text) has no schema-2.0.0 model field — source lives
+    once on the module, sliced by ``span`` — so it is not reconstructed here.
+    """
     return PyCallable(
         name=props.get("name", ""),
         path=props.get("path", ""),
@@ -171,14 +175,13 @@ def callable_(
         decorators=list(props.get("decorators", []) or []),
         parameters=parameters(props),
         return_type=props.get("return_type"),
-        code=props.get("code"),
         start_line=props.get("start_line", -1),
         end_line=props.get("end_line", -1),
         code_start_line=props.get("code_start_line", -1),
         accessed_symbols=accessed_symbols(props),
         call_sites=call_sites or [],
-        inner_callables=inner_callables or {},
-        inner_classes=inner_classes or {},
+        callables=inner_callables or {},
+        types=inner_classes or {},
         local_variables=local_variables or [],
         cyclomatic_complexity=props.get("cyclomatic_complexity", 0),
     )
@@ -196,11 +199,10 @@ def class_(
         name=props.get("name", ""),
         signature=props.get("signature", ""),
         comments=comments(props),
-        code=props.get("code"),
         base_classes=list(props.get("base_classes", []) or []),
-        methods=methods or {},
+        callables=methods or {},
         attributes=attributes or {},
-        inner_classes=inner_classes or {},
+        types=inner_classes or {},
         start_line=props.get("start_line", -1),
         end_line=props.get("end_line", -1),
     )
@@ -225,7 +227,7 @@ def module(
         module_name=props.get("module_name", ""),
         imports=imports or [],
         comments=[],
-        classes=classes or {},
+        types=classes or {},
         functions=functions or {},
         variables=variables or [],
         content_hash=props.get("content_hash"),

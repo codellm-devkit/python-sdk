@@ -48,8 +48,8 @@ HELPER_SIG = "pkg.mod.helper"
 
 def _local_backend():
     """A PyCodeanalyzer wired to a hand-built application, bypassing the analyzer run."""
-    entry = PyCallable(name="entry", path="pkg/mod.py", signature=ENTRY_SIG, code="helper()")
-    helper = PyCallable(name="helper", path="pkg/mod.py", signature=HELPER_SIG, code="return 1")
+    entry = PyCallable(name="entry", path="pkg/mod.py", signature=ENTRY_SIG)
+    helper = PyCallable(name="helper", path="pkg/mod.py", signature=HELPER_SIG)
     module = PyModule(
         file_path="pkg/mod.py",
         module_name=MODULE_NAME,
@@ -57,7 +57,7 @@ def _local_backend():
     )
     app = PyApplication(
         symbol_table={"pkg/mod.py": module},
-        call_graph=[PyCallEdge(source=ENTRY_SIG, target=HELPER_SIG)],
+        call_graph=[PyCallEdge(src=ENTRY_SIG, dst=HELPER_SIG)],
     )
 
     backend = object.__new__(PyCodeanalyzer)
@@ -87,7 +87,7 @@ def _fake_cypher(classes, methods, modules, call_edges):
             mod = modules.get(params["name"])
             return [{"p": p} for p in mod["functions"]] if mod else []
         if "PY_CALLS" in query:
-            return [{"src": e[0], "tgt": e[1], "p": {"weight": 1, "provenance": []}} for e in call_edges]
+            return [{"src": e[0], "tgt": e[1], "p": {"weight": 1, "prov": []}} for e in call_edges]
         return []  # attributes / inner classes / inner callables / call sites / local vars: none in this fixture
 
     return run
@@ -193,9 +193,9 @@ def test_backend_parity_for_module_level_lookup():
 # regression: class-scoped lookup keeps working (get_method must not become module-only)
 # ----------------------------------------------------------------------------------------------
 def test_get_method_still_resolves_class_methods_local():
-    greet = PyCallable(name="greet", path="pkg/models.py", signature="pkg.models.Entity.greet", code="...")
-    entity = PyClass(name="Entity", signature="pkg.models.Entity", methods={"greet": greet})
-    module = PyModule(file_path="pkg/models.py", module_name="pkg.models", classes={"pkg.models.Entity": entity})
+    greet = PyCallable(name="greet", path="pkg/models.py", signature="pkg.models.Entity.greet")
+    entity = PyClass(name="Entity", signature="pkg.models.Entity", callables={"greet": greet})
+    module = PyModule(file_path="pkg/models.py", module_name="pkg.models", types={"pkg.models.Entity": entity})
     app = PyApplication(symbol_table={"pkg/models.py": module})
 
     backend = object.__new__(PyCodeanalyzer)
