@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v2.0.0-rc.1] - 2026-07-16
+
+First release candidate for 2.0.0 — the schema-v2 release. Both the TypeScript and Python
+facades now speak the analyzers' **schema 2.0.0** end to end and fail fast on any other version.
+
+### Changed
+- **BREAKING (Python): the SDK speaks analysis schema 2.0.0 and requires `codeanalyzer-python>=1.0.2`.**
+  The re-exported Python models follow the schema-v2 renames: `PyModule.classes` → `types`,
+  `PyClass.methods`/`inner_classes` → `callables`/`types`, `PyCallable.inner_callables`/`inner_classes`
+  → `callables`/`types`, and `PyCallEdge` is now `src`/`dst`/`prov`. A callable's source text no
+  longer lives on a `code` field — the SDK recovers it by slicing `PyModule.source` with the
+  callable's byte-offset `span` (accessor behavior such as `get_method_bodies` is unchanged).
+  Call-graph node keys remain dotted signatures: schema v2's CanNode (`can://`) edge endpoints are
+  translated back to signatures; unresolved externals keep their raw `can://` ids. Both Python
+  backends fail fast on a schema mismatch: the in-process backend checks the `Analysis` envelope's
+  `schema_version`, and the Neo4j backend checks the stamp on the scoped `:PyApplication` node —
+  re-analyze / re-emit with `codeanalyzer-python>=1.0.2` if you hit `CldkSchemaMismatchException`.
+- **BREAKING (TypeScript): the SDK speaks graph schema 2.0.0 and requires `codeanalyzer-typescript 1.0.0`.**
+  TS-prefixed graph vocabulary, CanNode keys, and a fail-fast `schema_version` check on the
+  `:Application` node. Accessors whose vocabulary is not projected into graph schema 2.0.0
+  (decorators, fields, imports/exports, variables) raise `NotImplementedError` on the Neo4j
+  backend instead of silently returning wrong data. (#268)
+
+### Added
+- **Canonical schema-v2 CPG models** (`cldk.models.cpg`): the shared, language-neutral
+  `Application` model tree for schema-2.0.0 analyzer output, modeled once and validated against
+  real L1–L4 samples from multiple analyzers. (#240, #274)
+- **L3/L4 program-slice engine core** (`cldk.graph`): forward/backward slicing over schema-v2
+  CFG/CDG/DDG program graphs. (#270, #271)
+
+### Fixed
+- **TypeScript Neo4j backend guards ambiguous application matches** instead of silently merging
+  two applications' module scopes. (#268)
+
+### Dependencies
+- `codeanalyzer-python` 0.3.1 → **1.0.2** (schema 2.0.0; includes the emitter fix for null `code`
+  node properties, codellm-devkit/codeanalyzer-python#104)
+- `codeanalyzer-typescript` 0.4.3 → **1.0.0** (graph schema 2.0.0)
+
 ## [v1.4.3] - 2026-07-14
 
 ### Fixed
