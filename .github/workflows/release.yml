@@ -95,28 +95,36 @@ jobs:
           fi
           echo "codeanalyzer JAR present in wheel and sdist ✓"
 
-      - name: Read Changelog Entry
-        id: changelog_reader
-        uses: mindsers/changelog-reader-action@v2
-        with:
-          validation_level: warn
-          version: ${{ steps.tag_name.outputs.current_version }}
-          path: ./CHANGELOG.md
-
-      - name: Build Changelog
-        id: gen_changelog
-        uses: mikepenz/release-changelog-builder-action@v5
-        with:
-          failOnError: "true"
-          configuration: .github/workflows/release_config.json
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Extract release notes from CHANGELOG.md
+        id: notes
+        # Source the release body from the hand-written CHANGELOG.md section for this tag —
+        # deterministic and independent of PR labels — and refuse to publish/announce a blank
+        # body. The previous label-based changelog scraper emitted nothing for unlabeled PRs,
+        # which blanked the release and crashed the org announcement. See issue #289.
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF#refs/tags/}"   # e.g. v1.4.4 — matches the "## [v1.4.4]" heading
+          notes=$(awk -v h="## [$version]" '
+            !seen && index($0, h) == 1 { seen = 1; next }
+            seen && index($0, "## [") == 1 { exit }
+            seen { print }
+          ' CHANGELOG.md | sed '/./,$!d' | tac | sed '/./,$!d' | tac)   # strip blank edges
+          if [ -z "$notes" ]; then
+            echo "::error::No CHANGELOG.md entry for $version — refusing to publish a blank release."
+            exit 1
+          fi
+          {
+            echo "notes<<__CHANGELOG_EOF__"
+            echo "$notes"
+            echo "__CHANGELOG_EOF__"
+          } >> "$GITHUB_OUTPUT"
+          echo "Release notes for $version:"; echo "$notes"
 
       - name: Publish Release on GitHub
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          body: ${{ steps.gen_changelog.outputs.changelog }}
+          body: ${{ steps.notes.outputs.notes }}
           # Auto-open a repo-level Discussion linked to this release, seeded with
           # the same notes. Requires Discussions enabled and this category to exist.
           discussion_category_name: Announcements
@@ -126,13 +134,13 @@ jobs:
       # Mirror the release announcement into the ORG-level discussions, which are
       # backed by codellm-devkit/.github. GITHUB_TOKEN can't write cross-repo, so
       # this uses a PAT (ORG_DISCUSSIONS_TOKEN) with repo scope, and posts via the
-      # createDiscussion GraphQL mutation. The body (the generated changelog) is
+      # createDiscussion GraphQL mutation. The body (the CHANGELOG.md notes) is
       # passed via env to avoid shell-injection, matching the repo-level post.
       - name: Announce in org-level discussions (codellm-devkit/.github)
         continue-on-error: true   # a failed org post must not fail an otherwise-good release
         env:
           GH_TOKEN: ${{ secrets.ORG_DISCUSSIONS_TOKEN }}
-          BODY: ${{ steps.gen_changelog.outputs.changelog }}
+          BODY: ${{ steps.notes.outputs.notes }}
         run: |
           set -uo pipefail
           VERSION="${GITHUB_REF#refs/tags/v}"
