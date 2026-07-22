@@ -69,17 +69,28 @@ jobs:
         # Guard against the hatchling/.gitignore regression (issue #284): a jarless wheel
         # installs fine but fails at runtime with "codeanalyzer jar not found". Fail the
         # release here rather than publish a broken artifact to PyPI.
+        #
+        # The listing is captured before grepping: piping `tar tzf` (which decompresses the
+        # whole 32MB sdist) straight into `grep -q` lets grep close the pipe on first match,
+        # SIGPIPE-killing tar and — under `pipefail` — reporting a false "missing JAR".
         run: |
           set -euo pipefail
           jar_re='codeanalyzer/jar/codeanalyzer-[0-9][^/]*\.jar$'
-          ok=1
-          for f in dist/*.whl; do
-            unzip -l "$f" | grep -qE "$jar_re" || { echo "::error::$f is missing the codeanalyzer JAR"; ok=0; }
+          fail=0
+          for f in dist/*.whl dist/*.tar.gz; do
+            case "$f" in
+              *.whl)    listing=$(unzip -l "$f") ;;
+              *.tar.gz) listing=$(tar tzf "$f") ;;
+            esac
+            if grep -qE "$jar_re" <<<"$listing"; then
+              echo "  ✓ $f"
+            else
+              echo "::error::$f is missing the codeanalyzer JAR"
+              grep -i '\.jar' <<<"$listing" || echo "  (no .jar entries at all)"
+              fail=1
+            fi
           done
-          for f in dist/*.tar.gz; do
-            tar tzf "$f" | grep -qE "$jar_re" || { echo "::error::$f is missing the codeanalyzer JAR"; ok=0; }
-          done
-          if [ "$ok" -ne 1 ]; then
+          if [ "$fail" -ne 0 ]; then
             echo "Refusing to publish a jarless release."; exit 1
           fi
           echo "codeanalyzer JAR present in wheel and sdist ✓"
