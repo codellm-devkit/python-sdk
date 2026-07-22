@@ -74,3 +74,8 @@ poetry.lock
 !CLAUDE.md
 !AGENTS.md
 !GEMINI.md
+
+# Track the design decision log (overrides the global .claude ignore; everything else in .claude/ stays ignored)
+!.claude/
+.claude/*
+!.claude/FACADE_DECISIONS.md
