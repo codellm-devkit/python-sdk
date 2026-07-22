@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Published wheels bundle the `codeanalyzer-java` JAR again.** `2.0.0-rc.1` (like the 1.2.0–1.4.3
+  line) shipped without the bundled JAR, so `CLDK.java(...)` after a plain `pip install` raised
+  `CodeanalyzerExecutionException: codeanalyzer jar not found`. Hatchling applied the root
+  `.gitignore` `*.jar` rule at build time but not the nested `!codeanalyzer-*.jar` negation that
+  keeps the JAR tracked in git; a `[tool.hatch.build] artifacts` rule force-includes it, and the
+  release workflow now fails fast if a built artifact is missing the JAR. (#284)
+
 ## [v2.0.0-rc.1] - 2026-07-16
 
 First release candidate for 2.0.0 — the schema-v2 release. Both the TypeScript and Python
