@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.4.4] - 2026-07-22
+
 ### Fixed
 - **Published wheels bundle the `codeanalyzer-java` JAR again.** Every hatchling-built wheel/sdist
   since v1.2.0 shipped without the JAR, so `pip install cldk` + `CLDK.java(...)` raised
