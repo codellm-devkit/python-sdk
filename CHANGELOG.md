@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Published wheels bundle the `codeanalyzer-java` JAR again.** Every hatchling-built wheel/sdist
+  since v1.2.0 shipped without the JAR, so `pip install cldk` + `CLDK.java(...)` raised
+  `CodeanalyzerExecutionException: codeanalyzer jar not found`. The root `.gitignore` `*.jar` rule
+  was applied at build time while the nested `!codeanalyzer-*.jar` negation (which keeps the JAR in
+  git) was not honored, silently dropping the JAR from any build run inside a git repo — i.e. CI. A
+  `[tool.hatch.build] artifacts` rule force-includes it, and the release workflow now fails if a
+  built artifact is missing the JAR. (#284)
+
 ## [v1.4.3] - 2026-07-14
 
 ### Fixed

@@ -74,6 +74,13 @@ test = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+# The codeanalyzer-java JAR is force-included here: it lives under a `*.jar` .gitignore
+# (re-included for git via a nested `!codeanalyzer-*.jar`), but hatchling honors the root
+# ignore and not the nested negation, so without this it is silently dropped from every
+# wheel/sdist built inside a git repo (i.e. in CI). See issue #284.
+[tool.hatch.build]
+artifacts = ["cldk/analysis/java/codeanalyzer/jar/*.jar"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["cldk"]
 
