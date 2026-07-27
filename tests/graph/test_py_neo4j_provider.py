@@ -13,6 +13,8 @@ from cldk.graph.provider import ProgramGraphProvider
 
 SIG2 = "pkg.mod.ResUsers.reset_password"
 C2 = "can://python/pyfix/pkg/mod.py/ResUsers/reset_password(self,login)"
+SIG3 = "pkg.mod.ResUsers._action_reset_password"
+C3 = "can://python/pyfix/pkg/mod.py/ResUsers/_action_reset_password(self,ids)"
 
 
 @pytest.fixture
@@ -25,7 +27,10 @@ def backend(monkeypatch):
         if "PY_PARAM_IN|PY_PARAM_OUT|PY_SUMMARY" in q and "LIMIT 1" in q:
             return [{"one": 1}]
         if "MATCH (c:PyCallable)" in q and "RETURN c.signature" in q:
-            return [{"sig": SIG2, "id": C2}]
+            # Both endpoints resolved — a param_in/out edge's dst (a @formal_in/@formal_out
+            # vertex on the CALLEE) must not silently fall through the sig_is_None guard in
+            # source_slice/callable_of; that would mask a parse bug on the synthetic-key path.
+            return [{"sig": SIG2, "id": C2}, {"sig": SIG3, "id": C3}]
         if "PY_HAS_CFG_NODE" in q and "RETURN n.id" in q:
             return [{"id": f"{SIG2}#@entry", "kind": "entry", "sl": None, "el": None},
                     {"id": f"{SIG2}#3:8", "kind": "return", "sl": 3, "el": 3}]
@@ -36,7 +41,7 @@ def backend(monkeypatch):
             return []
         if "PY_PARAM_IN" in q:
             return [{"src": f"{SIG2}#3:8/actual_in:1",
-                     "dst": "pkg.mod.ResUsers._action_reset_password#@formal_in:1", "var": None}]
+                     "dst": f"{SIG3}#@formal_in:1", "var": None}]
         if "PY_PARAM_OUT" in q or "PY_SUMMARY" in q:
             return []
         if "n.start_line = $line" in q:
@@ -75,6 +80,13 @@ def test_resolve_location_orders_by_parsed_col(backend):
 def test_source_slice_lossy_code_none(backend):
     fl, code = backend.source_slice(f"{C2}@3:8")
     assert fl == "pkg/mod.py:3" and code is None
+
+
+def test_source_slice_degrades_on_synthetic_formal_in_vertex(backend):
+    # A resolved callable (sig_is_None guard doesn't hide it) whose vertex is a synthetic
+    # @formal_in:N body node — no start_line of its own, so this must degrade to (None, None)
+    # rather than crash trying to int()-parse "formal_in" as a line number (#270 review fix).
+    assert backend.source_slice(f"{C3}@formal_in:1") == (None, None)
 
 
 def test_callable_of_partitions_at_first_at(backend):

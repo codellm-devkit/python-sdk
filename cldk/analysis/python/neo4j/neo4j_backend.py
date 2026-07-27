@@ -359,9 +359,14 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             return (None, None)
         key = vertex_uri.partition("@")[2]
         head = key.split("/")[0].removeprefix("@")
-        if ":" not in head:
+        line_str, sep, _ = head.partition(":")
+        if not sep or not line_str.isdigit():
+            # Synthetic body node (@entry/@exit/@formal_in:N/@formal_out — no source line of its
+            # own), not a "line:col" statement/call key — degrade rather than misparse the
+            # non-numeric head (e.g. int("formal_in") would raise), matching the local backend's
+            # index-miss degrade for these same vertex shapes.
             return (None, None)
-        line = int(head.split(":")[0])
+        line = int(line_str)
         scope = self._MODULES_CTE
         rows = self._run(
             scope + "MATCH (c:PyCallable {signature:$sig})-[:PY_HAS_CFG_NODE]->(n:PyCFGNode) "
