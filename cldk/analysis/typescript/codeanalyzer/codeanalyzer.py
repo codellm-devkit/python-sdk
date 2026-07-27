@@ -33,7 +33,7 @@ import subprocess
 from collections import deque
 from pathlib import Path
 from subprocess import CompletedProcess
-from typing import Dict, List, Set, Tuple, Union
+from typing import Dict, Iterator, List, Set, Tuple, Union
 
 import networkx as nx
 
@@ -42,6 +42,7 @@ from cldk.analysis.typescript.backend import TSAnalysisBackend
 from cldk.models.typescript import (
     TSApplication,
     TSCallable,
+    TSCallableOverview,
     TSCallsite,
     TSClass,
     TSClassAttribute,
@@ -553,4 +554,58 @@ class TSCodeanalyzer(TSAnalysisBackend):
             for dec in cls.decorators:
                 if dec.name in wanted:
                     result[dec.name].append(sig)
+        return result
+
+    # -----[ bulk / projected accessors ]-----
+    def _iter_callables(self) -> Iterator[Tuple[TSCallable, str | None, str | None]]:
+        """Yield ``(callable, owner_signature, owner_kind)`` for every callable in the
+        application, including inner/nested callables. The owner map is built only from
+        ``_methods_by_class`` keyed against ``_classes``/``_interfaces``: namespace-owned
+        functions and module-level/nested callables are never in that map, so they correctly come
+        out owner-less (None, None), per the closed "class"|"interface" owner_kind set."""
+        owner_of: Dict[str, Tuple[str, str]] = {}
+        for owner_sig, methods in self._methods_by_class.items():
+            if owner_sig in self._classes:
+                owner_kind = "class"
+            elif owner_sig in self._interfaces:
+                owner_kind = "interface"
+            else:
+                continue
+            for m in methods.values():
+                owner_of[m.signature] = (owner_sig, owner_kind)
+        for sig, c in self._callables.items():
+            owner_sig, owner_kind = owner_of.get(sig, (None, None))
+            yield c, owner_sig, owner_kind
+
+    def get_callables_overview(self) -> List[TSCallableOverview]:
+        """Return a lightweight overview of every callable in the application (see
+        :meth:`TSAnalysisBackend.get_callables_overview`)."""
+        return [TSCallableOverview.from_callable(c, owner_sig, owner_kind) for c, owner_sig, owner_kind in self._iter_callables()]
+
+    def get_method_bodies(self, signatures: List[str]) -> Dict[str, str]:
+        """Return ``{signature: code}`` for the requested signatures that exist and have a body
+        (omits callables whose ``code`` is ``None``, e.g. implicit constructors)."""
+        result: Dict[str, str] = {}
+        for sig in signatures:
+            c = self._callables.get(sig)
+            if c is not None and c.code is not None:
+                result[sig] = c.code
+        return result
+
+    def get_decorated_callables(self, markers: List[str]) -> List[TSCallableOverview]:
+        """Return overviews of callables decorated with any of ``markers``."""
+        marker_set = set(markers)
+        return [
+            TSCallableOverview.from_callable(c, owner_sig, owner_kind)
+            for c, owner_sig, owner_kind in self._iter_callables()
+            if marker_set.intersection(d.name for d in c.decorators)
+        ]
+
+    def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[TSCallsite]]:
+        """Return ``{signature: call_sites}`` for the requested signatures that exist."""
+        result: Dict[str, List[TSCallsite]] = {}
+        for sig in signatures:
+            c = self._callables.get(sig)
+            if c is not None:
+                result[sig] = list(c.call_sites)
         return result

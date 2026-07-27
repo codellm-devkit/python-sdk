@@ -1,0 +1,3769 @@
+{
+  "symbol_table": {
+    "src/controllers.ts": {
+      "file_path": "src/controllers.ts",
+      "module_name": "src/controllers",
+      "imports": [
+        {
+          "module": "./services",
+          "name": "UserService",
+          "alias": null,
+          "is_type_only": false,
+          "import_kind": "named",
+          "start_line": 1,
+          "end_line": 1,
+          "start_column": 1,
+          "end_column": 42
+        }
+      ],
+      "exports": [],
+      "comments": [
+        {
+          "content": "// Minimal decorator factories (NestJS/Angular-flavored) to exercise structured TSDecorator capture.",
+          "is_docstring": false,
+          "start_line": 3,
+          "end_line": 3,
+          "start_column": 1,
+          "end_column": 101
+        }
+      ],
+      "classes": {
+        "src/controllers.UserController": {
+          "name": "UserController",
+          "signature": "src/controllers.UserController",
+          "comments": [],
+          "code": "@Controller(\"/users\")\nexport class UserController {\n  constructor(private readonly service: UserService) {}\n\n  @Get(\"/:id\")\n  show(@Param(\"id\") id: string): string {\n    const user = this.service.create(id);\n    return user.describe();\n  }\n\n  @Get(\"/\")\n  list(): string[] {\n    return this.service.describeAll();\n  }\n}",
+          "decorators": [
+            {
+              "name": "Controller",
+              "qualified_name": "Controller",
+              "positional_arguments": [
+                "\"/users\""
+              ],
+              "keyword_arguments": {},
+              "start_line": 14,
+              "end_line": 14,
+              "start_column": 1,
+              "end_column": 22
+            }
+          ],
+          "base_classes": [],
+          "implements_types": [],
+          "type_parameters": [],
+          "methods": {
+            "src/controllers.UserController.show": {
+              "name": "show",
+              "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/controllers.ts",
+              "signature": "src/controllers.UserController.show",
+              "comments": [],
+              "decorators": [
+                {
+                  "name": "Get",
+                  "qualified_name": "Get",
+                  "positional_arguments": [
+                    "\"/:id\""
+                  ],
+                  "keyword_arguments": {},
+                  "start_line": 18,
+                  "end_line": 18,
+                  "start_column": 3,
+                  "end_column": 15
+                }
+              ],
+              "parameters": [
+                {
+                  "name": "id",
+                  "type": "string",
+                  "default_value": null,
+                  "is_optional": false,
+                  "is_rest": false,
+                  "is_readonly": false,
+                  "accessibility": null,
+                  "decorators": [
+                    {
+                      "name": "Param",
+                      "qualified_name": "Param",
+                      "positional_arguments": [
+                        "\"id\""
+                      ],
+                      "keyword_arguments": {},
+                      "start_line": 19,
+                      "end_line": 19,
+                      "start_column": 8,
+                      "end_column": 20
+                    }
+                  ],
+                  "start_line": 19,
+                  "end_line": 19,
+                  "start_column": 8,
+                  "end_column": 31
+                }
+              ],
+              "type_parameters": [],
+              "return_type": "string",
+              "code": "@Get(\"/:id\")\n  show(@Param(\"id\") id: string): string {\n    const user = this.service.create(id);\n    return user.describe();\n  }",
+              "start_line": 18,
+              "end_line": 22,
+              "code_start_line": 18,
+              "accessed_symbols": [],
+              "call_sites": [
+                {
+                  "method_name": "create",
+                  "receiver_expr": "this.service",
+                  "receiver_type": "UserService",
+                  "argument_types": [
+                    "string"
+                  ],
+                  "type_arguments": [],
+                  "return_type": "import(\"./models\").User",
+                  "callee_signature": "src/services.UserService.create",
+                  "is_constructor_call": false,
+                  "is_optional_chain": false,
+                  "start_line": 20,
+                  "end_line": 20,
+                  "start_column": 18,
+                  "end_column": 41
+                },
+                {
+                  "method_name": "describe",
+                  "receiver_expr": "user",
+                  "receiver_type": "import(\"./models\").User",
+                  "argument_types": [],
+                  "type_arguments": [],
+                  "return_type": "string",
+                  "callee_signature": "src/models.User.describe",
+                  "is_constructor_call": false,
+                  "is_optional_chain": false,
+                  "start_line": 21,
+                  "end_line": 21,
+                  "start_column": 12,
+                  "end_column": 27
+                }
+              ],
+              "inner_callables": {},
+              "inner_classes": {},
+              "local_variables": [
+                {
+                  "name": "user",
+                  "type": "import(\"./models\").User",
+                  "initializer": "this.service.create(id)",
+                  "value": null,
+                  "scope": "function",
+                  "declaration_kind": "const",
+                  "is_readonly": true,
+                  "is_exported": false,
+                  "start_line": 20,
+                  "end_line": 20,
+                  "start_column": 11,
+                  "end_column": 41
+                }
+              ],
+              "cyclomatic_complexity": 1,
+              "kind": "method",
+              "accessibility": null,
+              "is_static": false,
+              "is_abstract": false,
+              "is_async": false,
+              "is_generator": false,
+              "is_optional": false,
+              "is_readonly": false,
+              "is_exported": false,
+              "is_ambient": false,
+              "is_implicit": false,
+              "accessor_kind": null,
+              "overload_signatures": [],
+              "entrypoints": []
+            },
+            "src/controllers.UserController.list": {
+              "name": "list",
+              "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/controllers.ts",
+              "signature": "src/controllers.UserController.list",
+              "comments": [],
+              "decorators": [
+                {
+                  "name": "Get",
+                  "qualified_name": "Get",
+                  "positional_arguments": [
+                    "\"/\""
+                  ],
+                  "keyword_arguments": {},
+                  "start_line": 24,
+                  "end_line": 24,
+                  "start_column": 3,
+                  "end_column": 12
+                }
+              ],
+              "parameters": [],
+              "type_parameters": [],
+              "return_type": "string[]",
+              "code": "@Get(\"/\")\n  list(): string[] {\n    return this.service.describeAll();\n  }",
+              "start_line": 24,
+              "end_line": 27,
+              "code_start_line": 24,
+              "accessed_symbols": [],
+              "call_sites": [
+                {
+                  "method_name": "describeAll",
+                  "receiver_expr": "this.service",
+                  "receiver_type": "UserService",
+                  "argument_types": [],
+                  "type_arguments": [],
+                  "return_type": "string[]",
+                  "callee_signature": "src/services.UserService.describeAll",
+                  "is_constructor_call": false,
+                  "is_optional_chain": false,
+                  "start_line": 26,
+                  "end_line": 26,
+                  "start_column": 12,
+                  "end_column": 38
+                }
+              ],
+              "inner_callables": {},
+              "inner_classes": {},
+              "local_variables": [],
+              "cyclomatic_complexity": 1,
+              "kind": "method",
+              "accessibility": null,
+              "is_static": false,
+              "is_abstract": false,
+              "is_async": false,
+              "is_generator": false,
+              "is_optional": false,
+              "is_readonly": false,
+              "is_exported": false,
+              "is_ambient": false,
+              "is_implicit": false,
+              "accessor_kind": null,
+              "overload_signatures": [],
+              "entrypoints": []
+            },
+            "src/controllers.UserController.constructor": {
+              "name": "constructor",
+              "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/controllers.ts",
+              "signature": "src/controllers.UserController.constructor",
+              "comments": [],
+              "decorators": [],
+              "parameters": [
+                {
+                  "name": "service",
+                  "type": "UserService",
+                  "default_value": null,
+                  "is_optional": false,
+                  "is_rest": false,
+                  "is_readonly": true,
+                  "accessibility": "private",
+                  "decorators": [],
+                  "start_line": 16,
+                  "end_line": 16,
+                  "start_column": 15,
+                  "end_column": 52
+                }
+              ],
+              "type_parameters": [],
+              "return_type": null,
+              "code": "constructor(private readonly service: UserService) {}",
+              "start_line": 16,
+              "end_line": 16,
+              "code_start_line": 16,
+              "accessed_symbols": [],
+              "call_sites": [],
+              "inner_callables": {},
+              "inner_classes": {},
+              "local_variables": [],
+              "cyclomatic_complexity": 1,
+              "kind": "constructor",
+              "accessibility": null,
+              "is_static": false,
+              "is_abstract": false,
+              "is_async": false,
+              "is_generator": false,
+              "is_optional": false,
+              "is_readonly": false,
+              "is_exported": false,
+              "is_ambient": false,
+              "is_implicit": false,
+              "accessor_kind": null,
+              "overload_signatures": [],
+              "entrypoints": []
+            }
+          },
+          "attributes": {
+            "service": {
+              "name": "service",
+              "type": "UserService",
+              "comments": [],
+              "decorators": [],
+              "initializer": null,
+              "accessibility": "private",
+              "is_static": false,
+              "is_readonly": true,
+              "is_optional": false,
+              "is_abstract": false,
+              "start_line": 16,
+              "end_line": 16
+            }
+          },
+          "inner_classes": {},
+          "is_abstract": false,
+          "is_exported": true,
+          "is_ambient": false,
+          "start_line": 14,
+          "end_line": 28,
+          "entrypoints": []
+        }
+      },
+      "interfaces": {},
+      "enums": {},
+      "type_aliases": {},
+      "functions": {
+        "src/controllers.Controller": {
+          "name": "Controller",
+          "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/controllers.ts",
+          "signature": "src/controllers.Controller",
+          "comments": [],
+          "decorators": [],
+          "parameters": [
+            {
+              "name": "prefix",
+              "type": "string",
+              "default_value": null,
+              "is_optional": false,
+              "is_rest": false,
+              "is_readonly": false,
+              "accessibility": null,
+              "decorators": [],
+              "start_line": 4,
+              "end_line": 4,
+              "start_column": 21,
+              "end_column": 35
+            }
+          ],
+          "type_parameters": [],
+          "return_type": "ClassDecorator",
+          "code": "function Controller(prefix: string): ClassDecorator {\n  return () => undefined;\n}",
+          "start_line": 4,
+          "end_line": 6,
+          "code_start_line": 4,
+          "accessed_symbols": [],
+          "call_sites": [],
+          "inner_callables": {},
+          "inner_classes": {},
+          "local_variables": [],
+          "cyclomatic_complexity": 1,
+          "kind": "function",
+          "accessibility": null,
+          "is_static": false,
+          "is_abstract": false,
+          "is_async": false,
+          "is_generator": false,
+          "is_optional": false,
+          "is_readonly": false,
+          "is_exported": false,
+          "is_ambient": false,
+          "is_implicit": false,
+          "accessor_kind": null,
+          "overload_signatures": [],
+          "entrypoints": []
+        },
+        "src/controllers.Get": {
+          "name": "Get",
+          "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/controllers.ts",
+          "signature": "src/controllers.Get",
+          "comments": [],
+          "decorators": [],
+          "parameters": [
+            {
+              "name": "path",
+              "type": "string",
+              "default_value": null,
+              "is_optional": false,
+              "is_rest": false,
+              "is_readonly": false,
+              "accessibility": null,
+              "decorators": [],
+              "start_line": 7,
+              "end_line": 7,
+              "start_column": 14,
+              "end_column": 26
+            }
+          ],
+          "type_parameters": [],
+          "return_type": "MethodDecorator",
+          "code": "function Get(path: string): MethodDecorator {\n  return () => undefined;\n}",
+          "start_line": 7,
+          "end_line": 9,
+          "code_start_line": 7,
+          "accessed_symbols": [],
+          "call_sites": [],
+          "inner_callables": {},
+          "inner_classes": {},
+          "local_variables": [],
+          "cyclomatic_complexity": 1,
+          "kind": "function",
+          "accessibility": null,
+          "is_static": false,
+          "is_abstract": false,
+          "is_async": false,
+          "is_generator": false,
+          "is_optional": false,
+          "is_readonly": false,
+          "is_exported": false,
+          "is_ambient": false,
+          "is_implicit": false,
+          "accessor_kind": null,
+          "overload_signatures": [],
+          "entrypoints": []
+        },
+        "src/controllers.Param": {
+          "name": "Param",
+          "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/controllers.ts",
+          "signature": "src/controllers.Param",
+          "comments": [],
+          "decorators": [],
+          "parameters": [
+            {
+              "name": "name",
+              "type": "string",
+              "default_value": null,
+              "is_optional": false,
+              "is_rest": false,
+              "is_readonly": false,
+              "accessibility": null,
+              "decorators": [],
+              "start_line": 10,
+              "end_line": 10,
+              "start_column": 16,
+              "end_column": 28
+            }
+          ],
+          "type_parameters": [],
+          "return_type": "ParameterDecorator",
+          "code": "function Param(name: string): ParameterDecorator {\n  return () => undefined;\n}",
+          "start_line": 10,
+          "end_line": 12,
+          "code_start_line": 10,
+          "accessed_symbols": [],
+          "call_sites": [],
+          "inner_callables": {},
+          "inner_classes": {},
+          "local_variables": [],
+          "cyclomatic_complexity": 1,
+          "kind": "function",
+          "accessibility": null,
+          "is_static": false,
+          "is_abstract": false,
+          "is_async": false,
+          "is_generator": false,
+          "is_optional": false,
+          "is_readonly": false,
+          "is_exported": false,
+          "is_ambient": false,
+          "is_implicit": false,
+          "accessor_kind": null,
+          "overload_signatures": [],
+          "entrypoints": []
+        }
+      },
+      "namespaces": {},
+      "variables": [],
+      "is_tsx": false,
+      "is_declaration_file": false,
+      "content_hash": "d42b8f615d51575e3436409b9fce70862182b6071da40471b4be9b95f7c9ee4c",
+      "last_modified": 1780493392399.7122,
+      "file_size": 699
+    },
+    "src/external.ts": {
+      "file_path": "src/external.ts",
+      "module_name": "src/external",
+      "imports": [
+        {
+          "module": "node:crypto",
+          "name": "createHash",
+          "alias": null,
+          "is_type_only": false,
+          "import_kind": "named",
+          "start_line": 2,
+          "end_line": 2,
+          "start_column": 1,
+          "end_column": 54
+        },
+        {
+          "module": "node:crypto",
+          "name": "randomUUID",
+          "alias": null,
+          "is_type_only": false,
+          "import_kind": "named",
+          "start_line": 2,
+          "end_line": 2,
+          "start_column": 1,
+          "end_column": 54
+        },
+        {
+          "module": "node:path",
+          "name": "*",
+          "alias": "path",
+          "is_type_only": false,
+          "import_kind": "namespace",
+          "start_line": 3,
+          "end_line": 3,
+          "start_column": 1,
+          "end_column": 35
+        }
+      ],
+      "exports": [],
+      "comments": [
+        {
+          "content": "// Exercises phantom (external) nodes: calls into Node builtins via named + namespace imports.",
+          "is_docstring": false,
+          "start_line": 1,
+          "end_line": 1,
+          "start_column": 1,
+          "end_column": 95
+        },
+        {
+          "content": "/** Bare named-import calls \u2192 phantom node:crypto.randomUUID / node:crypto.createHash. */",
+          "is_docstring": true,
+          "start_line": 5,
+          "end_line": 5,
+          "start_column": 1,
+          "end_column": 90
+        },
+        {
+          "content": "/** Namespace-import member call \u2192 phantom node:path.extname. */",
+          "is_docstring": true,
+          "start_line": 13,
+          "end_line": 13,
+          "start_column": 1,
+          "end_column": 65
+        }
+      ],
+      "classes": {},
+      "interfaces": {},
+      "enums": {},
+      "type_aliases": {},
+      "functions": {
+        "src/external.fingerprint": {
+          "name": "fingerprint",
+          "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/external.ts",
+          "signature": "src/external.fingerprint",
+          "comments": [
+            {
+              "content": "Bare named-import calls \u2192 phantom node:crypto.randomUUID / node:crypto.createHash.",
+              "is_docstring": true,
+              "start_line": 5,
+              "end_line": 5,
+              "start_column": 1,
+              "end_column": 90
+            }
+          ],
+          "decorators": [],
+          "parameters": [
+            {
+              "name": "name",
+              "type": "string",
+              "default_value": null,
+              "is_optional": false,
+              "is_rest": false,
+              "is_readonly": false,
+              "accessibility": null,
+              "decorators": [],
+              "start_line": 6,
+              "end_line": 6,
+              "start_column": 29,
+              "end_column": 41
+            }
+          ],
+          "type_parameters": [],
+          "return_type": "string",
+          "code": "export function fingerprint(name: string): string {\n  const id = randomUUID();\n  return createHash(\"sha256\")\n    .update(name + id)\n    .digest(\"hex\");\n}",
+          "start_line": 5,
+          "end_line": 11,
+          "code_start_line": 6,
+          "accessed_symbols": [],
+          "call_sites": [
+            {
+              "method_name": "randomUUID",
+              "receiver_expr": null,
+              "receiver_type": null,
+              "argument_types": [],
+              "type_arguments": [],
+              "return_type": "any",
+              "callee_signature": "node:crypto.randomUUID",
+              "is_constructor_call": false,
+              "is_optional_chain": false,
+              "start_line": 7,
+              "end_line": 7,
+              "start_column": 14,
+              "end_column": 26
+            },
+            {
+              "method_name": "digest",
+              "receiver_expr": "createHash(\"sha256\")\n    .update(name + id)",
+              "receiver_type": "any",
+              "argument_types": [
+                "\"hex\""
+              ],
+              "type_arguments": [],
+              "return_type": "any",
+              "callee_signature": null,
+              "is_constructor_call": false,
+              "is_optional_chain": false,
+              "start_line": 8,
+              "end_line": 10,
+              "start_column": 10,
+              "end_column": 19
+            },
+            {
+              "method_name": "update",
+              "receiver_expr": "createHash(\"sha256\")",
+              "receiver_type": "any",
+              "argument_types": [
+                "string"
+              ],
+              "type_arguments": [],
+              "return_type": "any",
+              "callee_signature": null,
+              "is_constructor_call": false,
+              "is_optional_chain": false,
+              "start_line": 8,
+              "end_line": 9,
+              "start_column": 10,
+              "end_column": 23
+            },
+            {
+              "method_name": "createHash",
+              "receiver_expr": null,
+              "receiver_type": null,
+              "argument_types": [
+                "\"sha256\""
+              ],
+              "type_arguments": [],
+              "return_type": "any",
+              "callee_signature": "node:crypto.createHash",
+              "is_constructor_call": false,
+              "is_optional_chain": false,
+              "start_line": 8,
+              "end_line": 8,
+              "start_column": 10,
+              "end_column": 30
+            }
+          ],
+          "inner_callables": {},
+          "inner_classes": {},
+          "local_variables": [
+            {
+              "name": "id",
+              "type": "any",
+              "initializer": "randomUUID()",
+              "value": null,
+              "scope": "function",
+              "declaration_kind": "const",
+              "is_readonly": true,
+              "is_exported": false,
+              "start_line": 7,
+              "end_line": 7,
+              "start_column": 9,
+              "end_column": 26
+            }
+          ],
+          "cyclomatic_complexity": 1,
+          "kind": "function",
+          "accessibility": null,
+          "is_static": false,
+          "is_abstract": false,
+          "is_async": false,
+          "is_generator": false,
+          "is_optional": false,
+          "is_readonly": false,
+          "is_exported": true,
+          "is_ambient": false,
+          "is_implicit": false,
+          "accessor_kind": null,
+          "overload_signatures": [],
+          "entrypoints": []
+        },
+        "src/external.extensionOf": {
+          "name": "extensionOf",
+          "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/external.ts",
+          "signature": "src/external.extensionOf",
+          "comments": [
+            {
+              "content": "Namespace-import member call \u2192 phantom node:path.extname.",
+              "is_docstring": true,
+              "start_line": 13,
+              "end_line": 13,
+              "start_column": 1,
+              "end_column": 65
+            }
+          ],
+          "decorators": [],
+          "parameters": [
+            {
+              "name": "file",
+              "type": "string",
+              "default_value": null,
+              "is_optional": false,
+              "is_rest": false,
+              "is_readonly": false,
+              "accessibility": null,
+              "decorators": [],
+              "start_line": 14,
+              "end_line": 14,
+              "start_column": 29,
+              "end_column": 41
+            }
+          ],
+          "type_parameters": [],
+          "return_type": "string",
+          "code": "export function extensionOf(file: string): string {\n  return path.extname(file);\n}",
+          "start_line": 13,
+          "end_line": 16,
+          "code_start_line": 14,
+          "accessed_symbols": [],
+          "call_sites": [
+            {
+              "method_name": "extname",
+              "receiver_expr": "path",
+              "receiver_type": "any",
+              "argument_types": [
+                "string"
+              ],
+              "type_arguments": [],
+              "return_type": "any",
+              "callee_signature": "node:path.extname",
+              "is_constructor_call": false,
+              "is_optional_chain": false,
+              "start_line": 15,
+              "end_line": 15,
+              "start_column": 10,
+              "end_column": 28
+            }
+          ],
+          "inner_callables": {},
+          "inner_classes": {},
+          "local_variables": [],
+          "cyclomatic_complexity": 1,
+          "kind": "function",
+          "accessibility": null,
+          "is_static": false,
+          "is_abstract": false,
+          "is_async": false,
+          "is_generator": false,
+          "is_optional": false,
+          "is_readonly": false,
+          "is_exported": true,
+          "is_ambient": false,
+          "is_implicit": false,
+          "accessor_kind": null,
+          "overload_signatures": [],
+          "entrypoints": []
+        }
+      },
+      "namespaces": {},
+      "variables": [],
+      "is_tsx": false,
+      "is_declaration_file": false,
+      "content_hash": "049a7393ffc7647fcab8ddeadb0eb82f74c57a385195aec4a4f0700ebf9c88c0",
+      "last_modified": 1780591453016.1892,
+      "file_size": 582
+    },
+    "src/index.ts": {
+      "file_path": "src/index.ts",
+      "module_name": "src/index",
+      "imports": [
+        {
+          "module": "./controllers",
+          "name": "UserController",
+          "alias": null,
+          "is_type_only": false,
+          "import_kind": "named",
+          "start_line": 1,
+          "end_line": 1,
+          "start_column": 1,
+          "end_column": 48
+        },
+        {
+          "module": "./models",
+          "name": "Robot",
+          "alias": null,
+          "is_type_only": false,
+          "import_kind": "named",
+          "start_line": 2,
+          "end_line": 2,
+          "start_column": 1,
+          "end_column": 46
+        },
+        {
+          "module": "./models",
+          "name": "Role",
+          "alias": null,
+          "is_type_only": false,
+          "import_kind": "named",
+          "start_line": 2,
+          "end_line": 2,
+          "start_column": 1,
+          "end_column": 46
+        },
+        {
+          "module": "./models",
+          "name": "User",
+          "alias": null,
+          "is_type_only": false,
+          "import_kind": "named",
+          "start_line": 2,
+          "end_line": 2,
+          "start_column": 1,
+          "end_column": 46
+        },
+        {
+          "module": "./services",
+          "name": "UserService",
+          "alias": null,
+          "is_type_only": false,
+          "import_kind": "named",
+          "start_line": 3,
+          "end_line": 3,
+          "start_column": 1,
+          "end_column": 52
+        },
+        {
+          "module": "./services",
+          "name": "announce",
+          "alias": null,
+          "is_type_only": false,
+          "import_kind": "named",
+          "start_line": 3,
+          "end_line": 3,
+          "start_column": 1,
+          "end_column": 52
+        },
+        {
+          "module": "./util",
+          "name": "StringUtil",
+          "alias": null,
+          "is_type_only": false,
+          "import_kind": "named",
+          "start_line": 4,
+          "end_line": 4,
+          "start_column": 1,
+          "end_column": 37
+        }
+      ],
+      "exports": [],
+      "comments": [],
+      "classes": {},
+      "interfaces": {},
+      "enums": {},
+      "type_aliases": {},
+      "functions": {
+        "src/index.main": {
+          "name": "main",
+          "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/index.ts",
+          "signature": "src/index.main",
+          "comments": [],
+          "decorators": [],
+          "parameters": [],
+          "type_parameters": [],
+          "return_type": "void",
+          "code": "export function main(): void {\n  const service = new UserService(100);\n  service.create(\"Ada\", Role.Admin);\n  service.createGuest();\n\n  const controller = new UserController(service);\n  controller.list();\n  controller.show(\"42\");\n\n  // interface-typed dispatch \u2014 RTA should expand announce -> {User,Robot}.describe\n  announce(new User(1, \"Ada\", Role.Admin));\n  announce(new Robot(\"r2d2\"));\n\n  const slug = StringUtil.repeat(\"hello world\", 2);\n  const builder = new StringUtil.Builder();\n  builder.add(\"a\").add(\"b\").build();\n  console.log(slug);\n}",
+          "start_line": 6,
+          "end_line": 23,
+          "code_start_line": 6,
+          "accessed_symbols": [],
+          "call_sites": [
+            {
+              "method_name": "UserService",
+              "receiver_expr": null,
+              "receiver_type": null,
+              "argument_types": [
+                "100"
+              ],
+              "type_arguments": [],
+              "return_type": "UserService",
+              "callee_signature": "src/services.UserService.constructor",
+              "is_constructor_call": true,
+              "is_optional_chain": false,
+              "start_line": 7,
+              "end_line": 7,
+              "start_column": 19,
+              "end_column": 39
+            },
+            {
+              "method_name": "create",
+              "receiver_expr": "service",
+              "receiver_type": "UserService",
+              "argument_types": [
+                "\"Ada\"",
+                "Role.Admin"
+              ],
+              "type_arguments": [],
+              "return_type": "User",
+              "callee_signature": "src/services.UserService.create",
+              "is_constructor_call": false,
+              "is_optional_chain": false,
+              "start_line": 8,
+              "end_line": 8,
+              "start_column": 3,
+              "end_column": 36
+            },
+            {
+              "method_name": "createGuest",
+              "receiver_expr": "service",
+              "receiver_type": "UserService",
+              "argument_types": [],
+              "type_arguments": [],
+              "return_type": "User",
+              "callee_signature": "src/services.UserService.createGuest",
+              "is_constructor_call": false,
+              "is_optional_chain": false,
+              "start_line": 9,
+              "end_line": 9,
+              "start_column": 3,
+              "end_column": 24
+            },
+            {
+              "method_name": "UserController",
+              "receiver_expr": null,
+              "receiver_type": null,
+              "argument_types": [
+                "UserService"
+              ],
+              "type_arguments": [],
+              "return_type": "UserController",
+              "callee_signature": "src/controllers.UserController.constructor",
+              "is_constructor_call": true,
+              "is_optional_chain": false,
+              "start_line": 11,
+              "end_line": 11,
+              "start_column": 22,
+              "end_column": 49
+            },
+            {
+              "method_name": "list",
+              "receiver_expr": "controller",
+              "receiver_type": "UserController",
+              "argument_types": [],
+              "type_arguments": [],
+              "return_type": "string[]",
+              "callee_signature": "src/controllers.UserController.list",
+              "is_constructor_call": false,
+              "is_optional_chain": false,
+              "start_line": 12,
+              "end_line": 12,
+              "start_column": 3,
+              "end_column": 20
+            },
+            {
+              "method_name": "show",
+              "receiver_expr": "controller",
+              "receiver_type": "UserController",
+              "argument_types": [
+                "\"42\""
+              ],
+              "type_arguments": [],
+              "return_type": "string",
+              "callee_signature": "src/controllers.UserController.show",
+              "is_constructor_call": false,
+              "is_optional_chain": false,
+              "start_line": 13,
+              "end_line": 13,
+              "start_column": 3,
+              "end_column": 24
+            },
+            {
+              "method_name": "announce",
+              "receiver_expr": null,
+              "receiver_type": null,
+              "argument_types": [
+                "User"
+              ],
+              "type_arguments": [],
+              "return_type": "string",
+              "callee_signature": "src/services.announce",
+              "is_constructor_call": false,
+              "is_optional_chain": false,
+              "start_line": 16,
+              "end_line": 16,
+              "start_column": 3,
+              "end_column": 43
+            },
+            {
+              "method_name": "User",
+              "receiver_expr": null,
+              "receiver_type": null,
+              "argument_types": [
+                "1",
+                "\"Ada\"",
+                "Role.Admin"
+              ],
+              "type_arguments": [],
+              "return_type": "User",
+              "callee_signature": "src/models.User.constructor",
+              "is_constructor_call": true,
+              "is_optional_chain": false,
+              "start_line": 16,
+              "end_line": 16,
+              "start_column": 12,
+              "end_column": 42
+            },
+            {
+              "method_name": "announce",
+              "receiver_expr": null,
+              "receiver_type": null,
+              "argument_types": [
+                "Robot"
+              ],
+              "type_arguments": [],
+              "return_type": "string",
+              "callee_signature": "src/services.announce",
+              "is_constructor_call": false,
+              "is_optional_chain": false,
+              "start_line": 17,
+              "end_line": 17,
+              "start_column": 3,
+              "end_column": 30
+            },
+            {
+              "method_name": "Robot",
+              "receiver_expr": null,
+              "receiver_type": null,
+              "argument_types": [
+                "\"r2d2\""
+              ],
+              "type_arguments": [],
+              "return_type": "Robot",
+              "callee_signature": "src/models.Robot.constructor",
+              "is_constructor_call": true,
+              "is_optional_chain": false,
+              "start_line": 17,
+              "end_line": 17,
+              "start_column": 12,
+              "end_column": 29
+            },
+            {
+              "method_name": "repeat",
+              "receiver_expr": "StringUtil",
+              "receiver_type": "typeof StringUtil",
+              "argument_types": [
+                "\"hello world\"",
+                "2"
+              ],
+              "type_arguments": [],
+              "return_type": "string",
+              "callee_signature": "src/util.StringUtil.repeat",
+              "is_constructor_call": false,
+              "is_optional_chain": false,
+              "start_line": 19,
+              "end_line": 19,
+              "start_column": 16,
+              "end_column": 51
+            },
+            {
+              "method_name": "Builder",
+              "receiver_expr": "StringUtil",
+              "receiver_type": "typeof StringUtil",
+              "argument_types": [],
+              "type_arguments": [],
+              "return_type": "StringUtil.Builder",
+              "callee_signature": "src/util.StringUtil.Builder.constructor",
+              "is_constructor_call": true,
+              "is_optional_chain": false,
+              "start_line": 20,
+              "end_line": 20,
+              "start_column": 19,
+              "end_column": 43
+            },
+            {
+              "method_name": "build",
+              "receiver_expr": "builder.add(\"a\").add(\"b\")",
+              "receiver_type": "StringUtil.Builder",
+              "argument_types": [],
+              "type_arguments": [],
+              "return_type": "string",
+              "callee_signature": "src/util.StringUtil.Builder.build",
+              "is_constructor_call": false,
+              "is_optional_chain": false,
+              "start_line": 21,
+              "end_line": 21,
+              "start_column": 3,
+              "end_column": 36
+            },
+            {
+              "method_name": "add",
+              "receiver_expr": "builder.add(\"a\")",
+              "receiver_type": "StringUtil.Builder",
+              "argument_types": [
+                "\"b\""
+              ],
+              "type_arguments": [],
+              "return_type": "StringUtil.Builder",
+              "callee_signature": "src/util.StringUtil.Builder.add",
+              "is_constructor_call": false,
+              "is_optional_chain": false,
+              "start_line": 21,
+              "end_line": 21,
+              "start_column": 3,
+              "end_column": 28
+            },
+            {
+              "method_name": "add",
+              "receiver_expr": "builder",
+              "receiver_type": "StringUtil.Builder",
+              "argument_types": [
+                "\"a\""
+              ],
+              "type_arguments": [],
+              "return_type": "StringUtil.Builder",
+              "callee_signature": "src/util.StringUtil.Builder.add",
+              "is_constructor_call": false,
+              "is_optional_chain": false,
+              "start_line": 21,
+              "end_line": 21,
+              "start_column": 3,
+              "end_column": 19
+            },
+            {
+              "method_name": "log",
+              "receiver_expr": "console",
+              "receiver_type": "Console",
+              "argument_types": [
+                "string"
+              ],
+              "type_arguments": [],
+              "return_type": "void",
+              "callee_signature": null,
+              "is_constructor_call": false,
+              "is_optional_chain": false,
+              "start_line": 22,
+              "end_line": 22,
+              "start_column": 3,
+              "end_column": 20
+            }
+          ],
+          "inner_callables": {},
+          "inner_classes": {},
+          "local_variables": [
+            {
+              "name": "service",
+              "type": "UserService",
+              "initializer": "new UserService(100)",
+              "value": null,
+              "scope": "function",
+              "declaration_kind": "const",
+              "is_readonly": true,
+              "is_exported": false,
+              "start_line": 7,
+              "end_line": 7,
+              "start_column": 9,
+              "end_column": 39
+            },
+            {
+              "name": "controller",
+              "type": "UserController",
+              "initializer": "new UserController(service)",
+              "value": null,
+              "scope": "function",
+              "declaration_kind": "const",
+              "is_readonly": true,
+              "is_exported": false,
+              "start_line": 11,
+              "end_line": 11,
+              "start_column": 9,
+              "end_column": 49
+            },
+            {
+              "name": "slug",
+              "type": "string",
+              "initializer": "StringUtil.repeat(\"hello world\", 2)",
+              "value": null,
+              "scope": "function",
+              "declaration_kind": "const",
+              "is_readonly": true,
+              "is_exported": false,
+              "start_line": 19,
+              "end_line": 19,
+              "start_column": 9,
+              "end_column": 51
+            },
+            {
+              "name": "builder",
+              "type": "StringUtil.Builder",
+              "initializer": "new StringUtil.Builder()",
+              "value": null,
+              "scope": "function",
+              "declaration_kind": "const",
+              "is_readonly": true,
+              "is_exported": false,
+              "start_line": 20,
+              "end_line": 20,
+              "start_column": 9,
+              "end_column": 43
+            }
+          ],
+          "cyclomatic_complexity": 1,
+          "kind": "function",
+          "accessibility": null,
+          "is_static": false,
+          "is_abstract": false,
+          "is_async": false,
+          "is_generator": false,
+          "is_optional": false,
+          "is_readonly": false,
+          "is_exported": true,
+          "is_ambient": false,
+          "is_implicit": false,
+          "accessor_kind": null,
+          "overload_signatures": [],
+          "entrypoints": []
+        }
+      },
+      "namespaces": {},
+      "variables": [],
+      "is_tsx": false,
+      "is_declaration_file": false,
+      "content_hash": "6de6f6ff5a01a5c7c750a93d5e10bae7b15817f386421f45c7527cfb7259d9b3",
+      "last_modified": 1780497690533.4756,
+      "file_size": 742
+    },
+    "src/models.ts": {
+      "file_path": "src/models.ts",
+      "module_name": "src/models",
+      "imports": [],
+      "exports": [],
+      "comments": [
+        {
+          "content": "/** Domain models for the sample app. */",
+          "is_docstring": true,
+          "start_line": 1,
+          "end_line": 1,
+          "start_column": 1,
+          "end_column": 41
+        },
+        {
+          "content": "/** A user of the system. */",
+          "is_docstring": true,
+          "start_line": 25,
+          "end_line": 25,
+          "start_column": 1,
+          "end_column": 29
+        },
+        {
+          "content": "/** A second, unrelated implementer of Named \u2014 drives RTA subtype expansion. */",
+          "is_docstring": true,
+          "start_line": 58,
+          "end_line": 58,
+          "start_column": 1,
+          "end_column": 80
+        }
+      ],
+      "classes": {
+        "src/models.Entity": {
+          "name": "Entity",
+          "signature": "src/models.Entity",
+          "comments": [
+            {
+              "content": "A user of the system.",
+              "is_docstring": true,
+              "start_line": 25,
+              "end_line": 25,
+              "start_column": 1,
+              "end_column": 29
+            }
+          ],
+          "code": "export abstract class Entity<ID = string> implements Identifiable<ID> {\n  constructor(public readonly id: ID) {}\n  abstract describe(): string;\n}",
+          "decorators": [],
+          "base_classes": [
+            "src/models.Identifiable"
+          ],
+          "implements_types": [
+            "src/models.Identifiable"
+          ],
+          "type_parameters": [
+            {
+              "name": "ID",
+              "constraint": null,
+              "default": "string"
+            }
+          ],
+          "methods": {
+            "src/models.Entity.describe": {
+              "name": "describe",
+              "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/models.ts",
+              "signature": "src/models.Entity.describe",
+              "comments": [],
+              "decorators": [],
+              "parameters": [],
+              "type_parameters": [],
+              "return_type": "string",
+              "code": "abstract describe(): string;",
+              "start_line": 28,
+              "end_line": 28,
+              "code_start_line": 28,
+              "accessed_symbols": [],
+              "call_sites": [],
+              "inner_callables": {},
+              "inner_classes": {},
+              "local_variables": [],
+              "cyclomatic_complexity": 0,
+              "kind": "method",
+              "accessibility": null,
+              "is_static": false,
+              "is_abstract": true,
+              "is_async": false,
+              "is_generator": false,
+              "is_optional": false,
+              "is_readonly": false,
+              "is_exported": false,
+              "is_ambient": false,
+              "is_implicit": false,
+              "accessor_kind": null,
+              "overload_signatures": [
+                {
+                  "parameters": [],
+                  "return_type": "string",
+                  "type_parameters": [],
+                  "start_line": 28,
+                  "end_line": 28
+                }
+              ],
+              "entrypoints": []
+            },
+            "src/models.Entity.constructor": {
+              "name": "constructor",
+              "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/models.ts",
+              "signature": "src/models.Entity.constructor",
+              "comments": [],
+              "decorators": [],
+              "parameters": [
+                {
+                  "name": "id",
+                  "type": "ID",
+                  "default_value": null,
+                  "is_optional": false,
+                  "is_rest": false,
+                  "is_readonly": true,
+                  "accessibility": "public",
+                  "decorators": [],
+                  "start_line": 27,
+                  "end_line": 27,
+                  "start_column": 15,
+                  "end_column": 37
+                }
+              ],
+              "type_parameters": [],
+              "return_type": null,
+              "code": "constructor(public readonly id: ID) {}",
+              "start_line": 27,
+              "end_line": 27,
+              "code_start_line": 27,
+              "accessed_symbols": [],
+              "call_sites": [],
+              "inner_callables": {},
+              "inner_classes": {},
+              "local_variables": [],
+              "cyclomatic_complexity": 1,
+              "kind": "constructor",
+              "accessibility": null,
+              "is_static": false,
+              "is_abstract": false,
+              "is_async": false,
+              "is_generator": false,
+              "is_optional": false,
+              "is_readonly": false,
+              "is_exported": false,
+              "is_ambient": false,
+              "is_implicit": false,
+              "accessor_kind": null,
+              "overload_signatures": [],
+              "entrypoints": []
+            }
+          },
+          "attributes": {
+            "id": {
+              "name": "id",
+              "type": "ID",
+              "comments": [],
+              "decorators": [],
+              "initializer": null,
+              "accessibility": "public",
+              "is_static": false,
+              "is_readonly": true,
+              "is_optional": false,
+              "is_abstract": false,
+              "start_line": 27,
+              "end_line": 27
+            }
+          },
+          "inner_classes": {},
+          "is_abstract": true,
+          "is_exported": true,
+          "is_ambient": false,
+          "start_line": 25,
+          "end_line": 29,
+          "entrypoints": []
+        },
+        "src/models.User": {
+          "name": "User",
+          "signature": "src/models.User",
+          "comments": [],
+          "code": "export class User extends Entity<UserId> implements Named {\n  private loginCount = 0;\n  static instances = 0;\n\n  constructor(\n    id: UserId,\n    public name: string,\n    private role: Role = Role.Member,\n  ) {\n    super(id);\n    User.instances++;\n  }\n\n  get isAdmin(): boolean {\n    return this.role === Role.Admin;\n  }\n\n  describe(): string {\n    return `${this.name} (${this.role})`;\n  }\n\n  async recordLogin(): Promise<number> {\n    this.loginCount += 1;\n    return this.loginCount;\n  }\n}",
+          "decorators": [],
+          "base_classes": [
+            "src/models.Entity",
+            "src/models.Named"
+          ],
+          "implements_types": [
+            "src/models.Named"
+          ],
+          "type_parameters": [],
+          "methods": {
+            "src/models.User.describe": {
+              "name": "describe",
+              "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/models.ts",
+              "signature": "src/models.User.describe",
+              "comments": [],
+              "decorators": [],
+              "parameters": [],
+              "type_parameters": [],
+              "return_type": "string",
+              "code": "describe(): string {\n    return `${this.name} (${this.role})`;\n  }",
+              "start_line": 48,
+              "end_line": 50,
+              "code_start_line": 48,
+              "accessed_symbols": [],
+              "call_sites": [],
+              "inner_callables": {},
+              "inner_classes": {},
+              "local_variables": [],
+              "cyclomatic_complexity": 1,
+              "kind": "method",
+              "accessibility": null,
+              "is_static": false,
+              "is_abstract": false,
+              "is_async": false,
+              "is_generator": false,
+              "is_optional": false,
+              "is_readonly": false,
+              "is_exported": false,
+              "is_ambient": false,
+              "is_implicit": false,
+              "accessor_kind": null,
+              "overload_signatures": [],
+              "entrypoints": []
+            },
+            "src/models.User.recordLogin": {
+              "name": "recordLogin",
+              "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/models.ts",
+              "signature": "src/models.User.recordLogin",
+              "comments": [],
+              "decorators": [],
+              "parameters": [],
+              "type_parameters": [],
+              "return_type": "Promise<number>",
+              "code": "async recordLogin(): Promise<number> {\n    this.loginCount += 1;\n    return this.loginCount;\n  }",
+              "start_line": 52,
+              "end_line": 55,
+              "code_start_line": 52,
+              "accessed_symbols": [],
+              "call_sites": [],
+              "inner_callables": {},
+              "inner_classes": {},
+              "local_variables": [],
+              "cyclomatic_complexity": 1,
+              "kind": "method",
+              "accessibility": null,
+              "is_static": false,
+              "is_abstract": false,
+              "is_async": true,
+              "is_generator": false,
+              "is_optional": false,
+              "is_readonly": false,
+              "is_exported": false,
+              "is_ambient": false,
+              "is_implicit": false,
+              "accessor_kind": null,
+              "overload_signatures": [],
+              "entrypoints": []
+            },
+            "src/models.User.constructor": {
+              "name": "constructor",
+              "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/models.ts",
+              "signature": "src/models.User.constructor",
+              "comments": [],
+              "decorators": [],
+              "parameters": [
+                {
+                  "name": "id",
+                  "type": "UserId",
+                  "default_value": null,
+                  "is_optional": false,
+                  "is_rest": false,
+                  "is_readonly": false,
+                  "accessibility": null,
+                  "decorators": [],
+                  "start_line": 36,
+                  "end_line": 36,
+                  "start_column": 5,
+                  "end_column": 15
+                },
+                {
+                  "name": "name",
+                  "type": "string",
+                  "default_value": null,
+                  "is_optional": false,
+                  "is_rest": false,
+                  "is_readonly": false,
+                  "accessibility": "public",
+                  "decorators": [],
+                  "start_line": 37,
+                  "end_line": 37,
+                  "start_column": 5,
+                  "end_column": 24
+                },
+                {
+                  "name": "role",
+                  "type": "Role",
+                  "default_value": "Role.Member",
+                  "is_optional": true,
+                  "is_rest": false,
+                  "is_readonly": false,
+                  "accessibility": "private",
+                  "decorators": [],
+                  "start_line": 38,
+                  "end_line": 38,
+                  "start_column": 5,
+                  "end_column": 37
+                }
+              ],
+              "type_parameters": [],
+              "return_type": null,
+              "code": "constructor(\n    id: UserId,\n    public name: string,\n    private role: Role = Role.Member,\n  ) {\n    super(id);\n    User.instances++;\n  }",
+              "start_line": 35,
+              "end_line": 42,
+              "code_start_line": 35,
+              "accessed_symbols": [],
+              "call_sites": [
+                {
+                  "method_name": "super",
+                  "receiver_expr": null,
+                  "receiver_type": null,
+                  "argument_types": [
+                    "UserId"
+                  ],
+                  "type_arguments": [],
+                  "return_type": "void",
+                  "callee_signature": "src/models.Entity.constructor",
+                  "is_constructor_call": false,
+                  "is_optional_chain": false,
+                  "start_line": 40,
+                  "end_line": 40,
+                  "start_column": 5,
+                  "end_column": 14
+                }
+              ],
+              "inner_callables": {},
+              "inner_classes": {},
+              "local_variables": [],
+              "cyclomatic_complexity": 1,
+              "kind": "constructor",
+              "accessibility": null,
+              "is_static": false,
+              "is_abstract": false,
+              "is_async": false,
+              "is_generator": false,
+              "is_optional": false,
+              "is_readonly": false,
+              "is_exported": false,
+              "is_ambient": false,
+              "is_implicit": false,
+              "accessor_kind": null,
+              "overload_signatures": [],
+              "entrypoints": []
+            },
+            "src/models.User.isAdmin#get": {
+              "name": "isAdmin",
+              "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/models.ts",
+              "signature": "src/models.User.isAdmin",
+              "comments": [],
+              "decorators": [],
+              "parameters": [],
+              "type_parameters": [],
+              "return_type": "boolean",
+              "code": "get isAdmin(): boolean {\n    return this.role === Role.Admin;\n  }",
+              "start_line": 44,
+              "end_line": 46,
+              "code_start_line": 44,
+              "accessed_symbols": [],
+              "call_sites": [],
+              "inner_callables": {},
+              "inner_classes": {},
+              "local_variables": [],
+              "cyclomatic_complexity": 1,
+              "kind": "getter",
+              "accessibility": null,
+              "is_static": false,
+              "is_abstract": false,
+              "is_async": false,
+              "is_generator": false,
+              "is_optional": false,
+              "is_readonly": false,
+              "is_exported": false,
+              "is_ambient": false,
+              "is_implicit": false,
+              "accessor_kind": "getter",
+              "overload_signatures": [],
+              "entrypoints": []
+            }
+          },
+          "attributes": {
+            "loginCount": {
+              "name": "loginCount",
+              "type": "number",
+              "comments": [],
+              "decorators": [],
+              "initializer": "0",
+              "accessibility": "private",
+              "is_static": false,
+              "is_readonly": false,
+              "is_optional": false,
+              "is_abstract": false,
+              "start_line": 32,
+              "end_line": 32
+            },
+            "instances": {
+              "name": "instances",
+              "type": "number",
+              "comments": [],
+              "decorators": [],
+              "initializer": "0",
+              "accessibility": null,
+              "is_static": true,
+              "is_readonly": false,
+              "is_optional": false,
+              "is_abstract": false,
+              "start_line": 33,
+              "end_line": 33
+            },
+            "name": {
+              "name": "name",
+              "type": "string",
+              "comments": [],
+              "decorators": [],
+              "initializer": null,
+              "accessibility": "public",
+              "is_static": false,
+              "is_readonly": false,
+              "is_optional": false,
+              "is_abstract": false,
+              "start_line": 37,
+              "end_line": 37
+            },
+            "role": {
+              "name": "role",
+              "type": "Role",
+              "comments": [],
+              "decorators": [],
+              "initializer": null,
+              "accessibility": "private",
+              "is_static": false,
+              "is_readonly": false,
+              "is_optional": true,
+              "is_abstract": false,
+              "start_line": 38,
+              "end_line": 38
+            }
+          },
+          "inner_classes": {},
+          "is_abstract": false,
+          "is_exported": true,
+          "is_ambient": false,
+          "start_line": 31,
+          "end_line": 56,
+          "entrypoints": []
+        },
+        "src/models.Robot": {
+          "name": "Robot",
+          "signature": "src/models.Robot",
+          "comments": [
+            {
+              "content": "A second, unrelated implementer of Named \u2014 drives RTA subtype expansion.",
+              "is_docstring": true,
+              "start_line": 58,
+              "end_line": 58,
+              "start_column": 1,
+              "end_column": 80
+            }
+          ],
+          "code": "export class Robot implements Named {\n  constructor(public name: string) {}\n  describe(): string {\n    return `robot:${this.name}`;\n  }\n}",
+          "decorators": [],
+          "base_classes": [
+            "src/models.Named"
+          ],
+          "implements_types": [
+            "src/models.Named"
+          ],
+          "type_parameters": [],
+          "methods": {
+            "src/models.Robot.describe": {
+              "name": "describe",
+              "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/models.ts",
+              "signature": "src/models.Robot.describe",
+              "comments": [],
+              "decorators": [],
+              "parameters": [],
+              "type_parameters": [],
+              "return_type": "string",
+              "code": "describe(): string {\n    return `robot:${this.name}`;\n  }",
+              "start_line": 61,
+              "end_line": 63,
+              "code_start_line": 61,
+              "accessed_symbols": [],
+              "call_sites": [],
+              "inner_callables": {},
+              "inner_classes": {},
+              "local_variables": [],
+              "cyclomatic_complexity": 1,
+              "kind": "method",
+              "accessibility": null,
+              "is_static": false,
+              "is_abstract": false,
+              "is_async": false,
+              "is_generator": false,
+              "is_optional": false,
+              "is_readonly": false,
+              "is_exported": false,
+              "is_ambient": false,
+              "is_implicit": false,
+              "accessor_kind": null,
+              "overload_signatures": [],
+              "entrypoints": []
+            },
+            "src/models.Robot.constructor": {
+              "name": "constructor",
+              "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/models.ts",
+              "signature": "src/models.Robot.constructor",
+              "comments": [],
+              "decorators": [],
+              "parameters": [
+                {
+                  "name": "name",
+                  "type": "string",
+                  "default_value": null,
+                  "is_optional": false,
+                  "is_rest": false,
+                  "is_readonly": false,
+                  "accessibility": "public",
+                  "decorators": [],
+                  "start_line": 60,
+                  "end_line": 60,
+                  "start_column": 15,
+                  "end_column": 34
+                }
+              ],
+              "type_parameters": [],
+              "return_type": null,
+              "code": "constructor(public name: string) {}",
+              "start_line": 60,
+              "end_line": 60,
+              "code_start_line": 60,
+              "accessed_symbols": [],
+              "call_sites": [],
+              "inner_callables": {},
+              "inner_classes": {},
+              "local_variables": [],
+              "cyclomatic_complexity": 1,
+              "kind": "constructor",
+              "accessibility": null,
+              "is_static": false,
+              "is_abstract": false,
+              "is_async": false,
+              "is_generator": false,
+              "is_optional": false,
+              "is_readonly": false,
+              "is_exported": false,
+              "is_ambient": false,
+              "is_implicit": false,
+              "accessor_kind": null,
+              "overload_signatures": [],
+              "entrypoints": []
+            }
+          },
+          "attributes": {
+            "name": {
+              "name": "name",
+              "type": "string",
+              "comments": [],
+              "decorators": [],
+              "initializer": null,
+              "accessibility": "public",
+              "is_static": false,
+              "is_readonly": false,
+              "is_optional": false,
+              "is_abstract": false,
+              "start_line": 60,
+              "end_line": 60
+            }
+          },
+          "inner_classes": {},
+          "is_abstract": false,
+          "is_exported": true,
+          "is_ambient": false,
+          "start_line": 58,
+          "end_line": 64,
+          "entrypoints": []
+        }
+      },
+      "interfaces": {
+        "src/models.Identifiable": {
+          "name": "Identifiable",
+          "signature": "src/models.Identifiable",
+          "comments": [
+            {
+              "content": "Domain models for the sample app.",
+              "is_docstring": true,
+              "start_line": 1,
+              "end_line": 1,
+              "start_column": 1,
+              "end_column": 41
+            }
+          ],
+          "code": "export interface Identifiable<T = string> {\n  readonly id: T;\n}",
+          "base_classes": [],
+          "type_parameters": [
+            {
+              "name": "T",
+              "constraint": null,
+              "default": "string"
+            }
+          ],
+          "methods": {},
+          "properties": {
+            "id": {
+              "name": "id",
+              "type": "T",
+              "comments": [],
+              "decorators": [],
+              "initializer": null,
+              "accessibility": null,
+              "is_static": false,
+              "is_readonly": true,
+              "is_optional": false,
+              "is_abstract": false,
+              "start_line": 4,
+              "end_line": 4
+            }
+          },
+          "call_signatures": [],
+          "index_signatures": [],
+          "is_exported": true,
+          "is_ambient": false,
+          "start_line": 1,
+          "end_line": 5
+        },
+        "src/models.Named": {
+          "name": "Named",
+          "signature": "src/models.Named",
+          "comments": [],
+          "code": "export interface Named {\n  name: string;\n  describe(): string;\n}",
+          "base_classes": [],
+          "type_parameters": [],
+          "methods": {
+            "src/models.Named.describe": {
+              "name": "describe",
+              "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/models.ts",
+              "signature": "src/models.Named.describe",
+              "comments": [],
+              "decorators": [],
+              "parameters": [],
+              "type_parameters": [],
+              "return_type": "string",
+              "code": "describe(): string;",
+              "start_line": 9,
+              "end_line": 9,
+              "code_start_line": 9,
+              "accessed_symbols": [],
+              "call_sites": [],
+              "inner_callables": {},
+              "inner_classes": {},
+              "local_variables": [],
+              "cyclomatic_complexity": 0,
+              "kind": "method",
+              "accessibility": null,
+              "is_static": false,
+              "is_abstract": false,
+              "is_async": false,
+              "is_generator": false,
+              "is_optional": false,
+              "is_readonly": false,
+              "is_exported": false,
+              "is_ambient": false,
+              "is_implicit": false,
+              "accessor_kind": null,
+              "overload_signatures": [],
+              "entrypoints": []
+            }
+          },
+          "properties": {
+            "name": {
+              "name": "name",
+              "type": "string",
+              "comments": [],
+              "decorators": [],
+              "initializer": null,
+              "accessibility": null,
+              "is_static": false,
+              "is_readonly": false,
+              "is_optional": false,
+              "is_abstract": false,
+              "start_line": 8,
+              "end_line": 8
+            }
+          },
+          "call_signatures": [],
+          "index_signatures": [],
+          "is_exported": true,
+          "is_ambient": false,
+          "start_line": 7,
+          "end_line": 10
+        }
+      },
+      "enums": {
+        "src/models.Role": {
+          "name": "Role",
+          "signature": "src/models.Role",
+          "comments": [],
+          "code": "export enum Role {\n  Admin = \"admin\",\n  Member = \"member\",\n  Guest = \"guest\",\n}",
+          "members": [
+            {
+              "name": "Admin",
+              "value": "admin",
+              "start_line": 15,
+              "end_line": 15
+            },
+            {
+              "name": "Member",
+              "value": "member",
+              "start_line": 16,
+              "end_line": 16
+            },
+            {
+              "name": "Guest",
+              "value": "guest",
+              "start_line": 17,
+              "end_line": 17
+            }
+          ],
+          "is_const": false,
+          "is_exported": true,
+          "is_ambient": false,
+          "start_line": 14,
+          "end_line": 18
+        },
+        "src/models.Flag": {
+          "name": "Flag",
+          "signature": "src/models.Flag",
+          "comments": [],
+          "code": "export const enum Flag {\n  None = 0,\n  Active = 1,\n}",
+          "members": [
+            {
+              "name": "None",
+              "value": "0",
+              "start_line": 21,
+              "end_line": 21
+            },
+            {
+              "name": "Active",
+              "value": "1",
+              "start_line": 22,
+              "end_line": 22
+            }
+          ],
+          "is_const": true,
+          "is_exported": true,
+          "is_ambient": false,
+          "start_line": 20,
+          "end_line": 23
+        }
+      },
+      "type_aliases": {
+        "src/models.UserId": {
+          "name": "UserId",
+          "signature": "src/models.UserId",
+          "comments": [],
+          "code": "export type UserId = string | number;",
+          "aliased_type": "string | number",
+          "type_parameters": [],
+          "is_exported": true,
+          "is_ambient": false,
+          "start_line": 12,
+          "end_line": 12
+        }
+      },
+      "functions": {},
+      "namespaces": {},
+      "variables": [],
+      "is_tsx": false,
+      "is_declaration_file": false,
+      "content_hash": "d39ff571ccfda4b7c46923586b6b94d0e818a51be966f1ba40305650fd0ffc91",
+      "last_modified": 1780497676166.356,
+      "file_size": 1237
+    },
+    "src/services.ts": {
+      "file_path": "src/services.ts",
+      "module_name": "src/services",
+      "imports": [
+        {
+          "module": "./models",
+          "name": "Named",
+          "alias": null,
+          "is_type_only": true,
+          "import_kind": "named",
+          "start_line": 1,
+          "end_line": 1,
+          "start_column": 1,
+          "end_column": 64
+        },
+        {
+          "module": "./models",
+          "name": "Role",
+          "alias": null,
+          "is_type_only": false,
+          "import_kind": "named",
+          "start_line": 1,
+          "end_line": 1,
+          "start_column": 1,
+          "end_column": 64
+        },
+        {
+          "module": "./models",
+          "name": "User",
+          "alias": null,
+          "is_type_only": false,
+          "import_kind": "named",
+          "start_line": 1,
+          "end_line": 1,
+          "start_column": 1,
+          "end_column": 64
+        },
+        {
+          "module": "./models",
+          "name": "UserId",
+          "alias": null,
+          "is_type_only": true,
+          "import_kind": "named",
+          "start_line": 1,
+          "end_line": 1,
+          "start_column": 1,
+          "end_column": 64
+        }
+      ],
+      "exports": [],
+      "comments": [
+        {
+          "content": "/** Pure helper \u2014 top-level function. */",
+          "is_docstring": true,
+          "start_line": 3,
+          "end_line": 3,
+          "start_column": 1,
+          "end_column": 41
+        },
+        {
+          "content": "/**\n * Calls describe() on an interface-typed receiver. Under RTA this expands to every instantiated\n * concrete implementer of Named (User, Robot, ...).\n */",
+          "is_docstring": true,
+          "start_line": 8,
+          "end_line": 11,
+          "start_column": 1,
+          "end_column": 4
+        },
+        {
+          "content": "/** Arrow function bound to a const (function_expression-style callable). */",
+          "is_docstring": true,
+          "start_line": 16,
+          "end_line": 16,
+          "start_column": 1,
+          "end_column": 77
+        }
+      ],
+      "classes": {
+        "src/services.UserService": {
+          "name": "UserService",
+          "signature": "src/services.UserService",
+          "comments": [],
+          "code": "export class UserService {\n  private users: User[] = [];\n\n  constructor(private readonly startId: number = 0) {}\n\n  create(name: string, role: Role = Role.Member): User {\n    const id = nextId(this.users.length + this.startId);\n    const user = new User(id, name, role);\n    this.users.push(user);\n    return user;\n  }\n\n  createGuest(): User {\n    const name = makeGuestName(this.users.length);\n    return this.create(name, Role.Guest);\n  }\n\n  describeAll(): string[] {\n    return this.users.map((u) => u.describe());\n  }\n\n  async loginAll(): Promise<number> {\n    let total = 0;\n    for (const u of this.users) {\n      total += await u.recordLogin();\n    }\n    return total;\n  }\n}",
+          "decorators": [],
+          "base_classes": [],
+          "implements_types": [],
+          "type_parameters": [],
+          "methods": {
+            "src/services.UserService.create": {
+              "name": "create",
+              "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/services.ts",
+              "signature": "src/services.UserService.create",
+              "comments": [],
+              "decorators": [],
+              "parameters": [
+                {
+                  "name": "name",
+                  "type": "string",
+                  "default_value": null,
+                  "is_optional": false,
+                  "is_rest": false,
+                  "is_readonly": false,
+                  "accessibility": null,
+                  "decorators": [],
+                  "start_line": 24,
+                  "end_line": 24,
+                  "start_column": 10,
+                  "end_column": 22
+                },
+                {
+                  "name": "role",
+                  "type": "Role",
+                  "default_value": "Role.Member",
+                  "is_optional": true,
+                  "is_rest": false,
+                  "is_readonly": false,
+                  "accessibility": null,
+                  "decorators": [],
+                  "start_line": 24,
+                  "end_line": 24,
+                  "start_column": 24,
+                  "end_column": 48
+                }
+              ],
+              "type_parameters": [],
+              "return_type": "User",
+              "code": "create(name: string, role: Role = Role.Member): User {\n    const id = nextId(this.users.length + this.startId);\n    const user = new User(id, name, role);\n    this.users.push(user);\n    return user;\n  }",
+              "start_line": 24,
+              "end_line": 29,
+              "code_start_line": 24,
+              "accessed_symbols": [],
+              "call_sites": [
+                {
+                  "method_name": "nextId",
+                  "receiver_expr": null,
+                  "receiver_type": null,
+                  "argument_types": [
+                    "number"
+                  ],
+                  "type_arguments": [],
+                  "return_type": "UserId",
+                  "callee_signature": "src/services.nextId",
+                  "is_constructor_call": false,
+                  "is_optional_chain": false,
+                  "start_line": 25,
+                  "end_line": 25,
+                  "start_column": 16,
+                  "end_column": 56
+                },
+                {
+                  "method_name": "User",
+                  "receiver_expr": null,
+                  "receiver_type": null,
+                  "argument_types": [
+                    "UserId",
+                    "string",
+                    "Role"
+                  ],
+                  "type_arguments": [],
+                  "return_type": "User",
+                  "callee_signature": "src/models.User.constructor",
+                  "is_constructor_call": true,
+                  "is_optional_chain": false,
+                  "start_line": 26,
+                  "end_line": 26,
+                  "start_column": 18,
+                  "end_column": 42
+                },
+                {
+                  "method_name": "push",
+                  "receiver_expr": "this.users",
+                  "receiver_type": "User[]",
+                  "argument_types": [
+                    "User"
+                  ],
+                  "type_arguments": [],
+                  "return_type": "number",
+                  "callee_signature": null,
+                  "is_constructor_call": false,
+                  "is_optional_chain": false,
+                  "start_line": 27,
+                  "end_line": 27,
+                  "start_column": 5,
+                  "end_column": 26
+                }
+              ],
+              "inner_callables": {},
+              "inner_classes": {},
+              "local_variables": [
+                {
+                  "name": "id",
+                  "type": "UserId",
+                  "initializer": "nextId(this.users.length + this.startId)",
+                  "value": null,
+                  "scope": "function",
+                  "declaration_kind": "const",
+                  "is_readonly": true,
+                  "is_exported": false,
+                  "start_line": 25,
+                  "end_line": 25,
+                  "start_column": 11,
+                  "end_column": 56
+                },
+                {
+                  "name": "user",
+                  "type": "User",
+                  "initializer": "new User(id, name, role)",
+                  "value": null,
+                  "scope": "function",
+                  "declaration_kind": "const",
+                  "is_readonly": true,
+                  "is_exported": false,
+                  "start_line": 26,
+                  "end_line": 26,
+                  "start_column": 11,
+                  "end_column": 42
+                }
+              ],
+              "cyclomatic_complexity": 1,
+              "kind": "method",
+              "accessibility": null,
+              "is_static": false,
+              "is_abstract": false,
+              "is_async": false,
+              "is_generator": false,
+              "is_optional": false,
+              "is_readonly": false,
+              "is_exported": false,
+              "is_ambient": false,
+              "is_implicit": false,
+              "accessor_kind": null,
+              "overload_signatures": [],
+              "entrypoints": []
+            },
+            "src/services.UserService.createGuest": {
+              "name": "createGuest",
+              "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/services.ts",
+              "signature": "src/services.UserService.createGuest",
+              "comments": [],
+              "decorators": [],
+              "parameters": [],
+              "type_parameters": [],
+              "return_type": "User",
+              "code": "createGuest(): User {\n    const name = makeGuestName(this.users.length);\n    return this.create(name, Role.Guest);\n  }",
+              "start_line": 31,
+              "end_line": 34,
+              "code_start_line": 31,
+              "accessed_symbols": [],
+              "call_sites": [
+                {
+                  "method_name": "makeGuestName",
+                  "receiver_expr": null,
+                  "receiver_type": null,
+                  "argument_types": [
+                    "number"
+                  ],
+                  "type_arguments": [],
+                  "return_type": "string",
+                  "callee_signature": "src/services.makeGuestName",
+                  "is_constructor_call": false,
+                  "is_optional_chain": false,
+                  "start_line": 32,
+                  "end_line": 32,
+                  "start_column": 18,
+                  "end_column": 50
+                },
+                {
+                  "method_name": "create",
+                  "receiver_expr": "this",
+                  "receiver_type": "this",
+                  "argument_types": [
+                    "string",
+                    "Role.Guest"
+                  ],
+                  "type_arguments": [],
+                  "return_type": "User",
+                  "callee_signature": "src/services.UserService.create",
+                  "is_constructor_call": false,
+                  "is_optional_chain": false,
+                  "start_line": 33,
+                  "end_line": 33,
+                  "start_column": 12,
+                  "end_column": 41
+                }
+              ],
+              "inner_callables": {},
+              "inner_classes": {},
+              "local_variables": [
+                {
+                  "name": "name",
+                  "type": "string",
+                  "initializer": "makeGuestName(this.users.length)",
+                  "value": null,
+                  "scope": "function",
+                  "declaration_kind": "const",
+                  "is_readonly": true,
+                  "is_exported": false,
+                  "start_line": 32,
+                  "end_line": 32,
+                  "start_column": 11,
+                  "end_column": 50
+                }
+              ],
+              "cyclomatic_complexity": 1,
+              "kind": "method",
+              "accessibility": null,
+              "is_static": false,
+              "is_abstract": false,
+              "is_async": false,
+              "is_generator": false,
+              "is_optional": false,
+              "is_readonly": false,
+              "is_exported": false,
+              "is_ambient": false,
+              "is_implicit": false,
+              "accessor_kind": null,
+              "overload_signatures": [],
+              "entrypoints": []
+            },
+            "src/services.UserService.describeAll": {
+              "name": "describeAll",
+              "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/services.ts",
+              "signature": "src/services.UserService.describeAll",
+              "comments": [],
+              "decorators": [],
+              "parameters": [],
+              "type_parameters": [],
+              "return_type": "string[]",
+              "code": "describeAll(): string[] {\n    return this.users.map((u) => u.describe());\n  }",
+              "start_line": 36,
+              "end_line": 38,
+              "code_start_line": 36,
+              "accessed_symbols": [],
+              "call_sites": [
+                {
+                  "method_name": "map",
+                  "receiver_expr": "this.users",
+                  "receiver_type": "User[]",
+                  "argument_types": [
+                    "(u: User) => string"
+                  ],
+                  "type_arguments": [],
+                  "return_type": "string[]",
+                  "callee_signature": null,
+                  "is_constructor_call": false,
+                  "is_optional_chain": false,
+                  "start_line": 37,
+                  "end_line": 37,
+                  "start_column": 12,
+                  "end_column": 47
+                },
+                {
+                  "method_name": "describe",
+                  "receiver_expr": "u",
+                  "receiver_type": "User",
+                  "argument_types": [],
+                  "type_arguments": [],
+                  "return_type": "string",
+                  "callee_signature": "src/models.User.describe",
+                  "is_constructor_call": false,
+                  "is_optional_chain": false,
+                  "start_line": 37,
+                  "end_line": 37,
+                  "start_column": 34,
+                  "end_column": 46
+                }
+              ],
+              "inner_callables": {},
+              "inner_classes": {},
+              "local_variables": [],
+              "cyclomatic_complexity": 1,
+              "kind": "method",
+              "accessibility": null,
+              "is_static": false,
+              "is_abstract": false,
+              "is_async": false,
+              "is_generator": false,
+              "is_optional": false,
+              "is_readonly": false,
+              "is_exported": false,
+              "is_ambient": false,
+              "is_implicit": false,
+              "accessor_kind": null,
+              "overload_signatures": [],
+              "entrypoints": []
+            },
+            "src/services.UserService.loginAll": {
+              "name": "loginAll",
+              "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/services.ts",
+              "signature": "src/services.UserService.loginAll",
+              "comments": [],
+              "decorators": [],
+              "parameters": [],
+              "type_parameters": [],
+              "return_type": "Promise<number>",
+              "code": "async loginAll(): Promise<number> {\n    let total = 0;\n    for (const u of this.users) {\n      total += await u.recordLogin();\n    }\n    return total;\n  }",
+              "start_line": 40,
+              "end_line": 46,
+              "code_start_line": 40,
+              "accessed_symbols": [],
+              "call_sites": [
+                {
+                  "method_name": "recordLogin",
+                  "receiver_expr": "u",
+                  "receiver_type": "User",
+                  "argument_types": [],
+                  "type_arguments": [],
+                  "return_type": "Promise<number>",
+                  "callee_signature": "src/models.User.recordLogin",
+                  "is_constructor_call": false,
+                  "is_optional_chain": false,
+                  "start_line": 43,
+                  "end_line": 43,
+                  "start_column": 22,
+                  "end_column": 37
+                }
+              ],
+              "inner_callables": {},
+              "inner_classes": {},
+              "local_variables": [
+                {
+                  "name": "total",
+                  "type": "number",
+                  "initializer": "0",
+                  "value": null,
+                  "scope": "function",
+                  "declaration_kind": "let",
+                  "is_readonly": false,
+                  "is_exported": false,
+                  "start_line": 41,
+                  "end_line": 41,
+                  "start_column": 9,
+                  "end_column": 18
+                },
+                {
+                  "name": "u",
+                  "type": "User",
+                  "initializer": null,
+                  "value": null,
+                  "scope": "function",
+                  "declaration_kind": "unknown",
+                  "is_readonly": false,
+                  "is_exported": false,
+                  "start_line": 42,
+                  "end_line": 42,
+                  "start_column": 16,
+                  "end_column": 17
+                }
+              ],
+              "cyclomatic_complexity": 2,
+              "kind": "method",
+              "accessibility": null,
+              "is_static": false,
+              "is_abstract": false,
+              "is_async": true,
+              "is_generator": false,
+              "is_optional": false,
+              "is_readonly": false,
+              "is_exported": false,
+              "is_ambient": false,
+              "is_implicit": false,
+              "accessor_kind": null,
+              "overload_signatures": [],
+              "entrypoints": []
+            },
+            "src/services.UserService.constructor": {
+              "name": "constructor",
+              "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/services.ts",
+              "signature": "src/services.UserService.constructor",
+              "comments": [],
+              "decorators": [],
+              "parameters": [
+                {
+                  "name": "startId",
+                  "type": "number",
+                  "default_value": "0",
+                  "is_optional": true,
+                  "is_rest": false,
+                  "is_readonly": true,
+                  "accessibility": "private",
+                  "decorators": [],
+                  "start_line": 22,
+                  "end_line": 22,
+                  "start_column": 15,
+                  "end_column": 51
+                }
+              ],
+              "type_parameters": [],
+              "return_type": null,
+              "code": "constructor(private readonly startId: number = 0) {}",
+              "start_line": 22,
+              "end_line": 22,
+              "code_start_line": 22,
+              "accessed_symbols": [],
+              "call_sites": [],
+              "inner_callables": {},
+              "inner_classes": {},
+              "local_variables": [],
+              "cyclomatic_complexity": 1,
+              "kind": "constructor",
+              "accessibility": null,
+              "is_static": false,
+              "is_abstract": false,
+              "is_async": false,
+              "is_generator": false,
+              "is_optional": false,
+              "is_readonly": false,
+              "is_exported": false,
+              "is_ambient": false,
+              "is_implicit": false,
+              "accessor_kind": null,
+              "overload_signatures": [],
+              "entrypoints": []
+            }
+          },
+          "attributes": {
+            "users": {
+              "name": "users",
+              "type": "User[]",
+              "comments": [],
+              "decorators": [],
+              "initializer": "[]",
+              "accessibility": "private",
+              "is_static": false,
+              "is_readonly": false,
+              "is_optional": false,
+              "is_abstract": false,
+              "start_line": 20,
+              "end_line": 20
+            },
+            "startId": {
+              "name": "startId",
+              "type": "number",
+              "comments": [],
+              "decorators": [],
+              "initializer": null,
+              "accessibility": "private",
+              "is_static": false,
+              "is_readonly": true,
+              "is_optional": true,
+              "is_abstract": false,
+              "start_line": 22,
+              "end_line": 22
+            }
+          },
+          "inner_classes": {},
+          "is_abstract": false,
+          "is_exported": true,
+          "is_ambient": false,
+          "start_line": 19,
+          "end_line": 47,
+          "entrypoints": []
+        }
+      },
+      "interfaces": {},
+      "enums": {},
+      "type_aliases": {},
+      "functions": {
+        "src/services.makeGuestName": {
+          "name": "makeGuestName",
+          "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/services.ts",
+          "signature": "src/services.makeGuestName",
+          "comments": [
+            {
+              "content": "Pure helper \u2014 top-level function.",
+              "is_docstring": true,
+              "start_line": 3,
+              "end_line": 3,
+              "start_column": 1,
+              "end_column": 41
+            }
+          ],
+          "decorators": [],
+          "parameters": [
+            {
+              "name": "seed",
+              "type": "number",
+              "default_value": null,
+              "is_optional": false,
+              "is_rest": false,
+              "is_readonly": false,
+              "accessibility": null,
+              "decorators": [],
+              "start_line": 4,
+              "end_line": 4,
+              "start_column": 31,
+              "end_column": 43
+            }
+          ],
+          "type_parameters": [],
+          "return_type": "string",
+          "code": "export function makeGuestName(seed: number): string {\n  return `guest-${seed}`;\n}",
+          "start_line": 3,
+          "end_line": 6,
+          "code_start_line": 4,
+          "accessed_symbols": [],
+          "call_sites": [],
+          "inner_callables": {},
+          "inner_classes": {},
+          "local_variables": [],
+          "cyclomatic_complexity": 1,
+          "kind": "function",
+          "accessibility": null,
+          "is_static": false,
+          "is_abstract": false,
+          "is_async": false,
+          "is_generator": false,
+          "is_optional": false,
+          "is_readonly": false,
+          "is_exported": true,
+          "is_ambient": false,
+          "is_implicit": false,
+          "accessor_kind": null,
+          "overload_signatures": [],
+          "entrypoints": []
+        },
+        "src/services.announce": {
+          "name": "announce",
+          "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/services.ts",
+          "signature": "src/services.announce",
+          "comments": [
+            {
+              "content": "Calls describe() on an interface-typed receiver. Under RTA this expands to every instantiated\nconcrete implementer of Named (User, Robot, ...).",
+              "is_docstring": true,
+              "start_line": 8,
+              "end_line": 11,
+              "start_column": 1,
+              "end_column": 4
+            }
+          ],
+          "decorators": [],
+          "parameters": [
+            {
+              "name": "thing",
+              "type": "Named",
+              "default_value": null,
+              "is_optional": false,
+              "is_rest": false,
+              "is_readonly": false,
+              "accessibility": null,
+              "decorators": [],
+              "start_line": 12,
+              "end_line": 12,
+              "start_column": 26,
+              "end_column": 38
+            }
+          ],
+          "type_parameters": [],
+          "return_type": "string",
+          "code": "export function announce(thing: Named): string {\n  return thing.describe();\n}",
+          "start_line": 8,
+          "end_line": 14,
+          "code_start_line": 12,
+          "accessed_symbols": [],
+          "call_sites": [
+            {
+              "method_name": "describe",
+              "receiver_expr": "thing",
+              "receiver_type": "Named",
+              "argument_types": [],
+              "type_arguments": [],
+              "return_type": "string",
+              "callee_signature": "src/models.Named.describe",
+              "is_constructor_call": false,
+              "is_optional_chain": false,
+              "start_line": 13,
+              "end_line": 13,
+              "start_column": 10,
+              "end_column": 26
+            }
+          ],
+          "inner_callables": {},
+          "inner_classes": {},
+          "local_variables": [],
+          "cyclomatic_complexity": 1,
+          "kind": "function",
+          "accessibility": null,
+          "is_static": false,
+          "is_abstract": false,
+          "is_async": false,
+          "is_generator": false,
+          "is_optional": false,
+          "is_readonly": false,
+          "is_exported": true,
+          "is_ambient": false,
+          "is_implicit": false,
+          "accessor_kind": null,
+          "overload_signatures": [],
+          "entrypoints": []
+        },
+        "src/services.nextId": {
+          "name": "nextId",
+          "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/services.ts",
+          "signature": "src/services.nextId",
+          "comments": [],
+          "decorators": [],
+          "parameters": [
+            {
+              "name": "n",
+              "type": "number",
+              "default_value": null,
+              "is_optional": false,
+              "is_rest": false,
+              "is_readonly": false,
+              "accessibility": null,
+              "decorators": [],
+              "start_line": 17,
+              "end_line": 17,
+              "start_column": 24,
+              "end_column": 33
+            }
+          ],
+          "type_parameters": [],
+          "return_type": "UserId",
+          "code": "nextId = (n: number): UserId => n + 1",
+          "start_line": 17,
+          "end_line": 17,
+          "code_start_line": 17,
+          "accessed_symbols": [],
+          "call_sites": [],
+          "inner_callables": {},
+          "inner_classes": {},
+          "local_variables": [],
+          "cyclomatic_complexity": 1,
+          "kind": "arrow",
+          "accessibility": null,
+          "is_static": false,
+          "is_abstract": false,
+          "is_async": false,
+          "is_generator": false,
+          "is_optional": false,
+          "is_readonly": false,
+          "is_exported": true,
+          "is_ambient": false,
+          "is_implicit": false,
+          "accessor_kind": null,
+          "overload_signatures": [],
+          "entrypoints": []
+        }
+      },
+      "namespaces": {},
+      "variables": [],
+      "is_tsx": false,
+      "is_declaration_file": false,
+      "content_hash": "1bda3666dab48f8e686fb8ffc2143f2e422af62be46698053cfeea4184b55617",
+      "last_modified": 1780497684064.8262,
+      "file_size": 1240
+    },
+    "src/util.ts": {
+      "file_path": "src/util.ts",
+      "module_name": "src/util",
+      "imports": [],
+      "exports": [],
+      "comments": [
+        {
+          "content": "/** A namespace with nested declarations, to exercise the namespaces{} collection + nested signatures. */",
+          "is_docstring": true,
+          "start_line": 1,
+          "end_line": 1,
+          "start_column": 1,
+          "end_column": 106
+        },
+        {
+          "content": "/** Generic top-level function with a nested helper, to exercise inner_callables + generics. */",
+          "is_docstring": true,
+          "start_line": 23,
+          "end_line": 23,
+          "start_column": 1,
+          "end_column": 96
+        }
+      ],
+      "classes": {},
+      "interfaces": {},
+      "enums": {},
+      "type_aliases": {},
+      "functions": {
+        "src/util.classify": {
+          "name": "classify",
+          "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/util.ts",
+          "signature": "src/util.classify",
+          "comments": [
+            {
+              "content": "Generic top-level function with a nested helper, to exercise inner_callables + generics.",
+              "is_docstring": true,
+              "start_line": 23,
+              "end_line": 23,
+              "start_column": 1,
+              "end_column": 96
+            }
+          ],
+          "decorators": [],
+          "parameters": [
+            {
+              "name": "items",
+              "type": "T[]",
+              "default_value": null,
+              "is_optional": false,
+              "is_rest": false,
+              "is_readonly": false,
+              "accessibility": null,
+              "decorators": [],
+              "start_line": 24,
+              "end_line": 24,
+              "start_column": 54,
+              "end_column": 64
+            }
+          ],
+          "type_parameters": [
+            {
+              "name": "T",
+              "constraint": "{ name: string }",
+              "default": null
+            }
+          ],
+          "return_type": "Record<string, T[]>",
+          "code": "export function classify<T extends { name: string }>(items: T[]): Record<string, T[]> {\n  function keyOf(item: T): string {\n    return item.name.charAt(0);\n  }\n  const out: Record<string, T[]> = {};\n  for (const item of items) {\n    const k = keyOf(item);\n    (out[k] ??= []).push(item);\n  }\n  return out;\n}",
+          "start_line": 23,
+          "end_line": 34,
+          "code_start_line": 24,
+          "accessed_symbols": [],
+          "call_sites": [
+            {
+              "method_name": "keyOf",
+              "receiver_expr": null,
+              "receiver_type": null,
+              "argument_types": [
+                "T"
+              ],
+              "type_arguments": [],
+              "return_type": "string",
+              "callee_signature": "src/util.classify.keyOf",
+              "is_constructor_call": false,
+              "is_optional_chain": false,
+              "start_line": 30,
+              "end_line": 30,
+              "start_column": 15,
+              "end_column": 26
+            },
+            {
+              "method_name": "push",
+              "receiver_expr": "(out[k] ??= [])",
+              "receiver_type": "T[]",
+              "argument_types": [
+                "T"
+              ],
+              "type_arguments": [],
+              "return_type": "number",
+              "callee_signature": null,
+              "is_constructor_call": false,
+              "is_optional_chain": false,
+              "start_line": 31,
+              "end_line": 31,
+              "start_column": 5,
+              "end_column": 31
+            }
+          ],
+          "inner_callables": {
+            "src/util.classify.keyOf": {
+              "name": "keyOf",
+              "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/util.ts",
+              "signature": "src/util.classify.keyOf",
+              "comments": [],
+              "decorators": [],
+              "parameters": [
+                {
+                  "name": "item",
+                  "type": "T",
+                  "default_value": null,
+                  "is_optional": false,
+                  "is_rest": false,
+                  "is_readonly": false,
+                  "accessibility": null,
+                  "decorators": [],
+                  "start_line": 25,
+                  "end_line": 25,
+                  "start_column": 18,
+                  "end_column": 25
+                }
+              ],
+              "type_parameters": [],
+              "return_type": "string",
+              "code": "function keyOf(item: T): string {\n    return item.name.charAt(0);\n  }",
+              "start_line": 25,
+              "end_line": 27,
+              "code_start_line": 25,
+              "accessed_symbols": [],
+              "call_sites": [
+                {
+                  "method_name": "charAt",
+                  "receiver_expr": "item.name",
+                  "receiver_type": "string",
+                  "argument_types": [
+                    "0"
+                  ],
+                  "type_arguments": [],
+                  "return_type": "string",
+                  "callee_signature": null,
+                  "is_constructor_call": false,
+                  "is_optional_chain": false,
+                  "start_line": 26,
+                  "end_line": 26,
+                  "start_column": 12,
+                  "end_column": 31
+                }
+              ],
+              "inner_callables": {},
+              "inner_classes": {},
+              "local_variables": [],
+              "cyclomatic_complexity": 1,
+              "kind": "function",
+              "accessibility": null,
+              "is_static": false,
+              "is_abstract": false,
+              "is_async": false,
+              "is_generator": false,
+              "is_optional": false,
+              "is_readonly": false,
+              "is_exported": false,
+              "is_ambient": false,
+              "is_implicit": false,
+              "accessor_kind": null,
+              "overload_signatures": [],
+              "entrypoints": []
+            }
+          },
+          "inner_classes": {},
+          "local_variables": [
+            {
+              "name": "out",
+              "type": "Record<string, T[]>",
+              "initializer": "{}",
+              "value": null,
+              "scope": "function",
+              "declaration_kind": "const",
+              "is_readonly": true,
+              "is_exported": false,
+              "start_line": 28,
+              "end_line": 28,
+              "start_column": 9,
+              "end_column": 38
+            },
+            {
+              "name": "item",
+              "type": "T",
+              "initializer": null,
+              "value": null,
+              "scope": "function",
+              "declaration_kind": "unknown",
+              "is_readonly": false,
+              "is_exported": false,
+              "start_line": 29,
+              "end_line": 29,
+              "start_column": 14,
+              "end_column": 18
+            },
+            {
+              "name": "k",
+              "type": "string",
+              "initializer": "keyOf(item)",
+              "value": null,
+              "scope": "function",
+              "declaration_kind": "const",
+              "is_readonly": true,
+              "is_exported": false,
+              "start_line": 30,
+              "end_line": 30,
+              "start_column": 11,
+              "end_column": 26
+            }
+          ],
+          "cyclomatic_complexity": 2,
+          "kind": "function",
+          "accessibility": null,
+          "is_static": false,
+          "is_abstract": false,
+          "is_async": false,
+          "is_generator": false,
+          "is_optional": false,
+          "is_readonly": false,
+          "is_exported": true,
+          "is_ambient": false,
+          "is_implicit": false,
+          "accessor_kind": null,
+          "overload_signatures": [],
+          "entrypoints": []
+        }
+      },
+      "namespaces": {
+        "src/util.StringUtil": {
+          "name": "StringUtil",
+          "signature": "src/util.StringUtil",
+          "comments": [
+            {
+              "content": "A namespace with nested declarations, to exercise the namespaces{} collection + nested signatures.",
+              "is_docstring": true,
+              "start_line": 1,
+              "end_line": 1,
+              "start_column": 1,
+              "end_column": 106
+            }
+          ],
+          "classes": {
+            "src/util.StringUtil.Builder": {
+              "name": "Builder",
+              "signature": "src/util.StringUtil.Builder",
+              "comments": [],
+              "code": "export class Builder {\n    private parts: string[] = [];\n    add(part: string): this {\n      this.parts.push(slug(part));\n      return this;\n    }\n    build(): string {\n      return this.parts.join(\"/\");\n    }\n  }",
+              "decorators": [],
+              "base_classes": [],
+              "implements_types": [],
+              "type_parameters": [],
+              "methods": {
+                "src/util.StringUtil.Builder.add": {
+                  "name": "add",
+                  "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/util.ts",
+                  "signature": "src/util.StringUtil.Builder.add",
+                  "comments": [],
+                  "decorators": [],
+                  "parameters": [
+                    {
+                      "name": "part",
+                      "type": "string",
+                      "default_value": null,
+                      "is_optional": false,
+                      "is_rest": false,
+                      "is_readonly": false,
+                      "accessibility": null,
+                      "decorators": [],
+                      "start_line": 13,
+                      "end_line": 13,
+                      "start_column": 9,
+                      "end_column": 21
+                    }
+                  ],
+                  "type_parameters": [],
+                  "return_type": "this",
+                  "code": "add(part: string): this {\n      this.parts.push(slug(part));\n      return this;\n    }",
+                  "start_line": 13,
+                  "end_line": 16,
+                  "code_start_line": 13,
+                  "accessed_symbols": [],
+                  "call_sites": [
+                    {
+                      "method_name": "push",
+                      "receiver_expr": "this.parts",
+                      "receiver_type": "string[]",
+                      "argument_types": [
+                        "string"
+                      ],
+                      "type_arguments": [],
+                      "return_type": "number",
+                      "callee_signature": null,
+                      "is_constructor_call": false,
+                      "is_optional_chain": false,
+                      "start_line": 14,
+                      "end_line": 14,
+                      "start_column": 7,
+                      "end_column": 34
+                    },
+                    {
+                      "method_name": "slug",
+                      "receiver_expr": null,
+                      "receiver_type": null,
+                      "argument_types": [
+                        "string"
+                      ],
+                      "type_arguments": [],
+                      "return_type": "string",
+                      "callee_signature": "src/util.StringUtil.slug",
+                      "is_constructor_call": false,
+                      "is_optional_chain": false,
+                      "start_line": 14,
+                      "end_line": 14,
+                      "start_column": 23,
+                      "end_column": 33
+                    }
+                  ],
+                  "inner_callables": {},
+                  "inner_classes": {},
+                  "local_variables": [],
+                  "cyclomatic_complexity": 1,
+                  "kind": "method",
+                  "accessibility": null,
+                  "is_static": false,
+                  "is_abstract": false,
+                  "is_async": false,
+                  "is_generator": false,
+                  "is_optional": false,
+                  "is_readonly": false,
+                  "is_exported": false,
+                  "is_ambient": false,
+                  "is_implicit": false,
+                  "accessor_kind": null,
+                  "overload_signatures": [],
+                  "entrypoints": []
+                },
+                "src/util.StringUtil.Builder.build": {
+                  "name": "build",
+                  "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/util.ts",
+                  "signature": "src/util.StringUtil.Builder.build",
+                  "comments": [],
+                  "decorators": [],
+                  "parameters": [],
+                  "type_parameters": [],
+                  "return_type": "string",
+                  "code": "build(): string {\n      return this.parts.join(\"/\");\n    }",
+                  "start_line": 17,
+                  "end_line": 19,
+                  "code_start_line": 17,
+                  "accessed_symbols": [],
+                  "call_sites": [
+                    {
+                      "method_name": "join",
+                      "receiver_expr": "this.parts",
+                      "receiver_type": "string[]",
+                      "argument_types": [
+                        "\"/\""
+                      ],
+                      "type_arguments": [],
+                      "return_type": "string",
+                      "callee_signature": null,
+                      "is_constructor_call": false,
+                      "is_optional_chain": false,
+                      "start_line": 18,
+                      "end_line": 18,
+                      "start_column": 14,
+                      "end_column": 34
+                    }
+                  ],
+                  "inner_callables": {},
+                  "inner_classes": {},
+                  "local_variables": [],
+                  "cyclomatic_complexity": 1,
+                  "kind": "method",
+                  "accessibility": null,
+                  "is_static": false,
+                  "is_abstract": false,
+                  "is_async": false,
+                  "is_generator": false,
+                  "is_optional": false,
+                  "is_readonly": false,
+                  "is_exported": false,
+                  "is_ambient": false,
+                  "is_implicit": false,
+                  "accessor_kind": null,
+                  "overload_signatures": [],
+                  "entrypoints": []
+                },
+                "src/util.StringUtil.Builder.constructor": {
+                  "name": "constructor",
+                  "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/util.ts",
+                  "signature": "src/util.StringUtil.Builder.constructor",
+                  "comments": [],
+                  "decorators": [],
+                  "parameters": [],
+                  "type_parameters": [],
+                  "return_type": null,
+                  "code": null,
+                  "start_line": -1,
+                  "end_line": -1,
+                  "code_start_line": -1,
+                  "accessed_symbols": [],
+                  "call_sites": [],
+                  "inner_callables": {},
+                  "inner_classes": {},
+                  "local_variables": [],
+                  "cyclomatic_complexity": 0,
+                  "kind": "constructor",
+                  "accessibility": null,
+                  "is_static": false,
+                  "is_abstract": false,
+                  "is_async": false,
+                  "is_generator": false,
+                  "is_optional": false,
+                  "is_readonly": false,
+                  "is_exported": false,
+                  "is_ambient": false,
+                  "is_implicit": true,
+                  "accessor_kind": null,
+                  "overload_signatures": [],
+                  "entrypoints": []
+                }
+              },
+              "attributes": {
+                "parts": {
+                  "name": "parts",
+                  "type": "string[]",
+                  "comments": [],
+                  "decorators": [],
+                  "initializer": "[]",
+                  "accessibility": "private",
+                  "is_static": false,
+                  "is_readonly": false,
+                  "is_optional": false,
+                  "is_abstract": false,
+                  "start_line": 12,
+                  "end_line": 12
+                }
+              },
+              "inner_classes": {},
+              "is_abstract": false,
+              "is_exported": true,
+              "is_ambient": false,
+              "start_line": 11,
+              "end_line": 20,
+              "entrypoints": []
+            }
+          },
+          "interfaces": {},
+          "enums": {},
+          "type_aliases": {},
+          "functions": {
+            "src/util.StringUtil.repeat": {
+              "name": "repeat",
+              "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/util.ts",
+              "signature": "src/util.StringUtil.repeat",
+              "comments": [],
+              "decorators": [],
+              "parameters": [
+                {
+                  "name": "s",
+                  "type": "string",
+                  "default_value": null,
+                  "is_optional": false,
+                  "is_rest": false,
+                  "is_readonly": false,
+                  "accessibility": null,
+                  "decorators": [],
+                  "start_line": 3,
+                  "end_line": 3,
+                  "start_column": 26,
+                  "end_column": 35
+                },
+                {
+                  "name": "n",
+                  "type": "number",
+                  "default_value": null,
+                  "is_optional": false,
+                  "is_rest": false,
+                  "is_readonly": false,
+                  "accessibility": null,
+                  "decorators": [],
+                  "start_line": 3,
+                  "end_line": 3,
+                  "start_column": 37,
+                  "end_column": 46
+                }
+              ],
+              "type_parameters": [],
+              "return_type": "string",
+              "code": "export function repeat(s: string, n: number): string {\n    return slug(s).repeat(n);\n  }",
+              "start_line": 3,
+              "end_line": 5,
+              "code_start_line": 3,
+              "accessed_symbols": [],
+              "call_sites": [
+                {
+                  "method_name": "repeat",
+                  "receiver_expr": "slug(s)",
+                  "receiver_type": "string",
+                  "argument_types": [
+                    "number"
+                  ],
+                  "type_arguments": [],
+                  "return_type": "string",
+                  "callee_signature": null,
+                  "is_constructor_call": false,
+                  "is_optional_chain": false,
+                  "start_line": 4,
+                  "end_line": 4,
+                  "start_column": 12,
+                  "end_column": 29
+                },
+                {
+                  "method_name": "slug",
+                  "receiver_expr": null,
+                  "receiver_type": null,
+                  "argument_types": [
+                    "string"
+                  ],
+                  "type_arguments": [],
+                  "return_type": "string",
+                  "callee_signature": "src/util.StringUtil.slug",
+                  "is_constructor_call": false,
+                  "is_optional_chain": false,
+                  "start_line": 4,
+                  "end_line": 4,
+                  "start_column": 12,
+                  "end_column": 19
+                }
+              ],
+              "inner_callables": {},
+              "inner_classes": {},
+              "local_variables": [],
+              "cyclomatic_complexity": 1,
+              "kind": "function",
+              "accessibility": null,
+              "is_static": false,
+              "is_abstract": false,
+              "is_async": false,
+              "is_generator": false,
+              "is_optional": false,
+              "is_readonly": false,
+              "is_exported": true,
+              "is_ambient": false,
+              "is_implicit": false,
+              "accessor_kind": null,
+              "overload_signatures": [],
+              "entrypoints": []
+            },
+            "src/util.StringUtil.slug": {
+              "name": "slug",
+              "path": "/Users/rkrsn/workspace/codellm-devkit/codeanalyzer-ts/test/fixtures/sample-app/src/util.ts",
+              "signature": "src/util.StringUtil.slug",
+              "comments": [],
+              "decorators": [],
+              "parameters": [
+                {
+                  "name": "s",
+                  "type": "string",
+                  "default_value": null,
+                  "is_optional": false,
+                  "is_rest": false,
+                  "is_readonly": false,
+                  "accessibility": null,
+                  "decorators": [],
+                  "start_line": 7,
+                  "end_line": 7,
+                  "start_column": 24,
+                  "end_column": 33
+                }
+              ],
+              "type_parameters": [],
+              "return_type": "string",
+              "code": "export function slug(s: string): string {\n    return s.toLowerCase().replace(/\\s+/g, \"-\");\n  }",
+              "start_line": 7,
+              "end_line": 9,
+              "code_start_line": 7,
+              "accessed_symbols": [],
+              "call_sites": [
+                {
+                  "method_name": "replace",
+                  "receiver_expr": "s.toLowerCase()",
+                  "receiver_type": "string",
+                  "argument_types": [
+                    "RegExp",
+                    "\"-\""
+                  ],
+                  "type_arguments": [],
+                  "return_type": "string",
+                  "callee_signature": null,
+                  "is_constructor_call": false,
+                  "is_optional_chain": false,
+                  "start_line": 8,
+                  "end_line": 8,
+                  "start_column": 12,
+                  "end_column": 48
+                },
+                {
+                  "method_name": "toLowerCase",
+                  "receiver_expr": "s",
+                  "receiver_type": "string",
+                  "argument_types": [],
+                  "type_arguments": [],
+                  "return_type": "string",
+                  "callee_signature": null,
+                  "is_constructor_call": false,
+                  "is_optional_chain": false,
+                  "start_line": 8,
+                  "end_line": 8,
+                  "start_column": 12,
+                  "end_column": 27
+                }
+              ],
+              "inner_callables": {},
+              "inner_classes": {},
+              "local_variables": [],
+              "cyclomatic_complexity": 1,
+              "kind": "function",
+              "accessibility": null,
+              "is_static": false,
+              "is_abstract": false,
+              "is_async": false,
+              "is_generator": false,
+              "is_optional": false,
+              "is_readonly": false,
+              "is_exported": true,
+              "is_ambient": false,
+              "is_implicit": false,
+              "accessor_kind": null,
+              "overload_signatures": [],
+              "entrypoints": []
+            }
+          },
+          "namespaces": {},
+          "variables": [],
+          "is_exported": true,
+          "is_ambient": false,
+          "start_line": 1,
+          "end_line": 21
+        }
+      },
+      "variables": [],
+      "is_tsx": false,
+      "is_declaration_file": false,
+      "content_hash": "54886cff7e11ccadc987571f508b2aef2f324b14e63d8ad52100499851d130fa",
+      "last_modified": 1780493397133.355,
+      "file_size": 949
+    }
+  },
+  "call_graph": [
+    {
+      "source": "src/controllers.UserController.show",
+      "target": "src/services.UserService.create",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/controllers.UserController.show",
+      "target": "src/models.User.describe",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/controllers.UserController.list",
+      "target": "src/services.UserService.describeAll",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/external.fingerprint",
+      "target": "node:crypto.randomUUID",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "import"
+      ],
+      "tags": {
+        "ts.external": "true",
+        "ts.module": "node:crypto"
+      }
+    },
+    {
+      "source": "src/external.fingerprint",
+      "target": "node:crypto.createHash",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "import"
+      ],
+      "tags": {
+        "ts.external": "true",
+        "ts.module": "node:crypto"
+      }
+    },
+    {
+      "source": "src/external.extensionOf",
+      "target": "node:path.extname",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "import"
+      ],
+      "tags": {
+        "ts.external": "true",
+        "ts.module": "node:path"
+      }
+    },
+    {
+      "source": "src/index.main",
+      "target": "src/services.UserService.constructor",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/index.main",
+      "target": "src/services.UserService.create",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/index.main",
+      "target": "src/services.UserService.createGuest",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/index.main",
+      "target": "src/controllers.UserController.constructor",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/index.main",
+      "target": "src/controllers.UserController.list",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/index.main",
+      "target": "src/controllers.UserController.show",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/index.main",
+      "target": "src/services.announce",
+      "type": "CALL_DEP",
+      "weight": 2,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/index.main",
+      "target": "src/models.User.constructor",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/index.main",
+      "target": "src/models.Robot.constructor",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/index.main",
+      "target": "src/util.StringUtil.repeat",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/index.main",
+      "target": "src/util.StringUtil.Builder.constructor",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/index.main",
+      "target": "src/util.StringUtil.Builder.build",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/index.main",
+      "target": "src/util.StringUtil.Builder.add",
+      "type": "CALL_DEP",
+      "weight": 2,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/models.User.constructor",
+      "target": "src/models.Entity.constructor",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/services.announce",
+      "target": "src/models.Named.describe",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/services.announce",
+      "target": "src/models.User.describe",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {
+        "ts.dispatch": "rta"
+      }
+    },
+    {
+      "source": "src/services.announce",
+      "target": "src/models.Robot.describe",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {
+        "ts.dispatch": "rta"
+      }
+    },
+    {
+      "source": "src/services.UserService.create",
+      "target": "src/services.nextId",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/services.UserService.create",
+      "target": "src/models.User.constructor",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/services.UserService.createGuest",
+      "target": "src/services.makeGuestName",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/services.UserService.createGuest",
+      "target": "src/services.UserService.create",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/services.UserService.describeAll",
+      "target": "src/models.User.describe",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/services.UserService.loginAll",
+      "target": "src/models.User.recordLogin",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/util.classify",
+      "target": "src/util.classify.keyOf",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/util.StringUtil.repeat",
+      "target": "src/util.StringUtil.slug",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    },
+    {
+      "source": "src/util.StringUtil.Builder.add",
+      "target": "src/util.StringUtil.slug",
+      "type": "CALL_DEP",
+      "weight": 1,
+      "provenance": [
+        "tsc"
+      ],
+      "tags": {}
+    }
+  ],
+  "external_symbols": {
+    "node:crypto.randomUUID": {
+      "name": "randomUUID",
+      "module": "node:crypto"
+    },
+    "node:crypto.createHash": {
+      "name": "createHash",
+      "module": "node:crypto"
+    },
+    "node:path.extname": {
+      "name": "extname",
+      "module": "node:path"
+    }
+  }
+}

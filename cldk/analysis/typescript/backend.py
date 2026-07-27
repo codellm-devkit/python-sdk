@@ -44,6 +44,7 @@ import networkx as nx
 from cldk.models.typescript import (
     TSApplication,
     TSCallable,
+    TSCallableOverview,
     TSCallsite,
     TSClass,
     TSClassAttribute,
@@ -244,3 +245,35 @@ class TSAnalysisBackend(ABC):
     @abstractmethod
     def get_classes_with_decorators(self, decorators: List[str]) -> Dict[str, List[str]]:
         """Map each requested decorator name to the signatures of classes carrying it."""
+
+    # -----[ bulk / projected accessors ]-----
+    # Set-at-a-time, field-projected reads — one round-trip on the Neo4j backend, one symbol-table
+    # walk in-process — for callers that enumerate the whole application and would otherwise pay the
+    # per-entity reconstruction of get_all_methods_in_application.
+    @abstractmethod
+    def get_callables_overview(self) -> List[TSCallableOverview]:
+        """A lightweight projection of every callable in the application (methods, module-level,
+        namespace-level, and nested/inner functions), without the full :class:`TSCallable`
+        reconstruction.
+
+        Known limitation: a ``get x()``/``set x()`` accessor pair shares one ``signature``, so
+        this (and the other bulk accessors) can diverge between backends on a paired accessor —
+        see `#300 <https://github.com/codellm-devkit/python-sdk/issues/300>`_."""
+
+    @abstractmethod
+    def get_method_bodies(self, signatures: List[str]) -> Dict[str, str]:
+        """Source bodies for the given callable signatures, keyed by signature. Signatures with no
+        matching callable are omitted, as are callables whose ``code`` is ``None`` (e.g. implicit
+        constructors the analyzer synthesizes with no source text) — every returned value is a
+        real ``str``."""
+
+    @abstractmethod
+    def get_decorated_callables(self, markers: List[str]) -> List[TSCallableOverview]:
+        """Overviews of callables decorated with any of ``markers`` (matched against the decorator
+        names)."""
+
+    @abstractmethod
+    def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[TSCallsite]]:
+        """Call sites of the given callable signatures, keyed by owning signature. Each existing
+        signature gets an entry (an empty list if it has no call sites); signatures with no matching
+        callable are omitted."""

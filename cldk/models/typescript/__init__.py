@@ -42,11 +42,13 @@ from .models import (
     TSTypeParameter,
     TSVariableDeclaration,
 )
+from .projections import TSCallableOverview
 
 __all__ = [
     "TSApplication",
     "TSCallEdge",
     "TSCallable",
+    "TSCallableOverview",
     "TSCallableParameter",
     "TSCallsite",
     "TSClass",
