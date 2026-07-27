@@ -62,6 +62,7 @@ from codeanalyzer.schema import model_dump_json
 
 from cldk.analysis import ANALYSIS_LEVEL_TO_INT, AnalysisLevel, to_analysis_level
 from cldk.analysis.python.backend import PythonAnalysisBackend
+from cldk.graph._cpg_local import CpgLocalProviderMixin
 from cldk.utils.exceptions import CldkSchemaMismatchException
 from cldk.models.python import (
     PyApplication,
@@ -104,7 +105,7 @@ def _overview(c: PyCallable, class_signature: str | None, kind: str) -> PyCallab
     )
 
 
-class PyCodeanalyzer(PythonAnalysisBackend):
+class PyCodeanalyzer(CpgLocalProviderMixin, PythonAnalysisBackend):
     """In-process driver for the ``codeanalyzer-python`` analysis backend.
 
     This class serves as the primary interface to the codeanalyzer-python

@@ -2,6 +2,7 @@
 from __future__ import annotations
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 import networkx as nx
+from cldk.models.cpg import Edge as CpgEdge
 
 
 def _qualify(callable_id: str, local_key: str) -> str:
@@ -39,7 +40,10 @@ class CpgLocalProviderMixin:
         nodes: Dict[str, Any] = {}                  # canonical vertex id -> (body Node, Module, path)
 
         def _add(c, mod, path):
-            canon = {k: (bn.id if bn.id is not None else _qualify(c.id, k))
+            # bn.id: only durable body nodes (rare) carry an explicit id; the upstream
+            # codeanalyzer-python BodyNode has no `.id` attribute at all, so probe with
+            # getattr first — `bn.id` below is only ever reached once that's confirmed present.
+            canon = {k: (bn.id if getattr(bn, "id", None) is not None else _qualify(c.id, k))
                      for k, bn in c.body.items()}
             canon_of[c.id] = canon
             callables[c.id] = (c, mod, path)
@@ -60,9 +64,15 @@ class CpgLocalProviderMixin:
         return idx
 
     def program_graph(self, callable_uri: str) -> nx.MultiDiGraph:
-        c, _, _ = self._index()["callables"][callable_uri]
-        canon = self._index()["canon"][callable_uri]
         g = nx.MultiDiGraph()
+        entry = self._index()["callables"].get(callable_uri)
+        if entry is None:
+            # An unknown callable (e.g. the engine's callable_of() passed an id straight
+            # through because it wasn't a body vertex) is a structural non-match, not an
+            # error — return the empty graph rather than raising KeyError.
+            return g
+        c, _, _ = entry
+        canon = self._index()["canon"][callable_uri]
         for k, bn in c.body.items():
             g.add_node(canon[k], kind=bn.kind, span=bn.span)
         # No explicit edge key: 'family' alone does not identify a parallel edge uniquely (e.g. a
@@ -70,10 +80,14 @@ class CpgLocalProviderMixin:
         # edges to the same successor with different kinds). provider.py's ABC docstring requires
         # such edges to stay distinct, so let MultiDiGraph auto-assign a fresh key per edge
         # instead of colliding same-family parallels onto one.
+        # kind/var/prov are duck-typed via getattr: the upstream codeanalyzer-python edge models
+        # are slimmer than the cldk cpg Edge (e.g. CdgEdge has no .kind, CfgEdge has no .var/.prov)
+        # — absent attributes surface as None/[] rather than raising AttributeError.
         for fam, edges in (("cfg", c.cfg), ("cdg", c.cdg), ("ddg", c.ddg)):
             for e in edges:
                 g.add_edge(canon.get(e.src, e.src), canon.get(e.dst, e.dst),
-                           family=fam, kind=e.kind, var=e.var, prov=e.prov)
+                           family=fam, kind=getattr(e, "kind", None), var=getattr(e, "var", None),
+                           prov=list(getattr(e, "prov", None) or []))
         return g
 
     def sdg_edges(self) -> Iterable[Any]:
@@ -83,14 +97,22 @@ class CpgLocalProviderMixin:
         # ("param_in"/"param_out"/"summary"): real edges carry kind=None in the raw analysis, and
         # Engine.flows_to reports a boundary hop's bare family ("sdg") whenever kind is unset, so
         # leaving these untagged would surface every interprocedural hop as opaque "sdg".
+        #
+        # Built as fresh cldk.models.cpg.Edge objects rather than model_copy: the upstream
+        # ParamEdge/SummaryEdge models don't declare `kind`/`var`/`prov` at all, so
+        # model_copy(update={...}) on them would set undeclared fields (undefined behavior).
         idx = self._index()
-        out = [e.model_copy(update={"kind": "param_in"}) for e in self.application.param_in]
-        out += [e.model_copy(update={"kind": "param_out"}) for e in self.application.param_out]
+        out = [CpgEdge(src=e.src, dst=e.dst, kind="param_in",
+                       var=getattr(e, "var", None), prov=list(getattr(e, "prov", None) or []))
+               for e in self.application.param_in]
+        out += [CpgEdge(src=e.src, dst=e.dst, kind="param_out",
+                        var=getattr(e, "var", None), prov=list(getattr(e, "prov", None) or []))
+                for e in self.application.param_out]
         for c, _, _ in idx["callables"].values():
             canon = idx["canon"][c.id]
-            out += [e.model_copy(update={"src": canon.get(e.src, e.src),
-                                          "dst": canon.get(e.dst, e.dst),
-                                          "kind": "summary"})
+            out += [CpgEdge(src=canon.get(e.src, e.src), dst=canon.get(e.dst, e.dst),
+                            kind="summary", var=getattr(e, "var", None),
+                            prov=list(getattr(e, "prov", None) or []))
                     for e in c.summary]
         return out
 
@@ -103,8 +125,10 @@ class CpgLocalProviderMixin:
                 continue
             if col is not None and bn.span.start[1] != col:
                 continue
-            hits.append(vid)
-        return hits
+            hits.append((bn.span.start, vid))
+        # Deterministic order — a backend-agnostic tie-break the Neo4j provider must
+        # reproduce too — rather than whatever order the body dict happens to iterate in.
+        return [vid for _, vid in sorted(hits)]
 
     def source_slice(self, vertex_uri: str) -> Tuple[Optional[str], Optional[str]]:
         node = self._index()["nodes"].get(vertex_uri)

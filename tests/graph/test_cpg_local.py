@@ -8,6 +8,7 @@ from cldk.graph._cpg_local import CpgLocalProviderMixin
 from cldk.graph.engine import Engine
 from cldk.models.cpg.models import Application, Module, Node, Edge, Span
 from cldk.models.cpg import AnalysisPayload
+from cldk.models.cpg import Edge as CpgEdge
 
 
 def _app():
@@ -191,3 +192,160 @@ def test_golden_engine_flows_to_crosses_callable_boundary():
     # this param_in edge carries no ssa/points-to provenance in the raw sample, so the honest
     # confidence is 'unresolved' rather than a stronger tier it can't back up.
     assert r.paths[0].confidence == "unresolved"
+
+
+# --- Slim-model hardening: the mixin must duck-type BOTH the cldk cpg models AND the slimmer
+# upstream codeanalyzer-python 1.0.2 models. These stand-ins carry ONLY the fields the upstream
+# BodyNode/CfgEdge/CdgEdge/DdgEdge/ParamEdge/SummaryEdge models declare (verified against
+# codeanalyzer.schema.py_schema): no .id on body nodes, no .var/.prov on cfg edges, no .kind at
+# all on cdg/param/summary edges. Accessing a field the real upstream model lacks must raise
+# AttributeError here too, or this test would validate nothing.
+class _SlimSpan:
+    def __init__(self, start):
+        self.start = start
+
+
+class _SlimBodyNode:
+    """Mirrors upstream BodyNode: {kind, span, callee, of, parent} — no `.id`."""
+
+    def __init__(self, kind, span=None, callee=None, of=None, parent=None):
+        self.kind = kind
+        self.span = span
+        self.callee = callee
+        self.of = of
+        self.parent = parent
+
+
+class _SlimCfgEdge:
+    """Mirrors upstream CfgEdge: {src, dst, kind} — no `.var`/`.prov`."""
+
+    def __init__(self, src, dst, kind="fallthrough"):
+        self.src = src
+        self.dst = dst
+        self.kind = kind
+
+
+class _SlimCdgEdge:
+    """Mirrors upstream CdgEdge: {src, dst} — no `.kind`/`.var`/`.prov`."""
+
+    def __init__(self, src, dst):
+        self.src = src
+        self.dst = dst
+
+
+class _SlimDdgEdge:
+    """Mirrors upstream DdgEdge: {src, dst, var, prov} — no `.kind`."""
+
+    def __init__(self, src, dst, var=None, prov=None):
+        self.src = src
+        self.dst = dst
+        self.var = var
+        self.prov = prov or []
+
+
+class _SlimParamEdge:
+    """Mirrors upstream ParamEdge: {src, dst} only."""
+
+    def __init__(self, src, dst):
+        self.src = src
+        self.dst = dst
+
+
+class _SlimSummaryEdge:
+    """Mirrors upstream SummaryEdge: {src, dst} only."""
+
+    def __init__(self, src, dst):
+        self.src = src
+        self.dst = dst
+
+
+class _SlimCallable:
+    def __init__(self, id, body, cfg=None, cdg=None, ddg=None, summary=None):
+        self.id = id
+        self.body = body
+        self.cfg = cfg or []
+        self.cdg = cdg or []
+        self.ddg = ddg or []
+        self.summary = summary or []
+
+
+class _SlimModule:
+    def __init__(self, functions):
+        self.types = {}
+        self.functions = functions
+
+
+class _SlimApplication:
+    def __init__(self, symbol_table, param_in=None, param_out=None):
+        self.symbol_table = symbol_table
+        self.param_in = param_in or []
+        self.param_out = param_out or []
+
+
+SLIM_CID = "can://slim/m.py/f"
+
+
+def _slim_app():
+    # Body dict deliberately inserts the col-15 key BEFORE the col-8 key, so a resolve_location
+    # that merely preserved dict insertion order would return them in the wrong order.
+    body = {
+        "3:15": _SlimBodyNode(kind="call", span=_SlimSpan(start=(3, 15))),
+        "3:8": _SlimBodyNode(kind="statement", span=_SlimSpan(start=(3, 8))),
+        "@entry": _SlimBodyNode(kind="entry", span=None),
+    }
+    f = _SlimCallable(
+        id=SLIM_CID,
+        body=body,
+        cfg=[_SlimCfgEdge(src="@entry", dst="3:8", kind="fallthrough")],
+        cdg=[_SlimCdgEdge(src="@entry", dst="3:15")],
+        ddg=[_SlimDdgEdge(src="@entry", dst="3:8", var="x", prov=["ssa"])],
+        summary=[_SlimSummaryEdge(src="3:8", dst="3:15")],
+    )
+    mod = _SlimModule(functions={"f": f})
+    return _SlimApplication(
+        symbol_table={"m.py": mod},
+        param_in=[_SlimParamEdge(src="can://slim/other@formal_in:0", dst=f"{SLIM_CID}@3:8")],
+        param_out=[_SlimParamEdge(src=f"{SLIM_CID}@3:8", dst="can://slim/other@formal_out:0")],
+    )
+
+
+class SlimBackend(CpgLocalProviderMixin):
+    application = _slim_app()
+
+    def max_level(self):
+        return 4
+
+
+def test_slim_program_graph_duck_types_absent_fields_to_none_or_empty():
+    g = SlimBackend().program_graph(SLIM_CID)
+    assert isinstance(g, nx.MultiDiGraph)
+    by_family = {d["family"]: d for _, _, d in g.edges(data=True)}
+    # every edge datum has family/kind/var/prov regardless of what the source model declared
+    assert by_family["cfg"]["kind"] == "fallthrough"
+    assert by_family["cfg"]["var"] is None and by_family["cfg"]["prov"] == []
+    assert by_family["cdg"]["kind"] is None            # CdgEdge has no .kind at all
+    assert by_family["cdg"]["var"] is None and by_family["cdg"]["prov"] == []
+    assert by_family["ddg"]["kind"] is None            # DdgEdge has no .kind at all
+    assert by_family["ddg"]["var"] == "x" and by_family["ddg"]["prov"] == ["ssa"]
+
+
+def test_slim_sdg_edges_are_cpg_edge_instances_with_stamped_kind():
+    edges = SlimBackend().sdg_edges()
+    got = {(e.src, e.dst, e.kind) for e in edges}
+    assert got == {
+        ("can://slim/other@formal_in:0", f"{SLIM_CID}@3:8", "param_in"),
+        (f"{SLIM_CID}@3:8", "can://slim/other@formal_out:0", "param_out"),
+        (f"{SLIM_CID}@3:8", f"{SLIM_CID}@3:15", "summary"),   # summary re-qualified like cfg/cdg/ddg
+    }
+    assert all(isinstance(e, CpgEdge) for e in edges)
+
+
+def test_slim_resolve_location_orders_by_start_line_and_col_not_insertion():
+    hits = SlimBackend().resolve_location("m.py", 3)
+    assert hits == [f"{SLIM_CID}@3:8", f"{SLIM_CID}@3:15"]   # col 8 first, despite 3:15 inserted first
+
+
+def test_slim_program_graph_unknown_callable_returns_empty_graph_not_keyerror():
+    g = SlimBackend().program_graph("can://nowhere")
+    assert isinstance(g, nx.MultiDiGraph)
+    assert g.number_of_nodes() == 0 and g.number_of_edges() == 0
