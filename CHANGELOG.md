@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v1.5.0] - 2026-07-27
+
+### Added
+- **TypeScript bulk/projected accessors** — parity with the Python surface from #180/#181, on
+  both backends (in-process and Neo4j), verified by a live dual-backend parity suite (#298, #302):
+  - `get_callables_overview() -> List[TSCallableOverview]` — a lightweight projection of every
+    callable (methods, functions, arrows, accessors, namespace and nested functions) with
+    TS-native facets: the analyzer's 7-value `kind`, `is_exported` / `is_async` / `is_static`,
+    `accessibility`, decorator names, and an `owner_signature`/`owner_kind` pair
+    (`"class" | "interface"`; namespace-owned, nested, and module-level callables are ownerless —
+    the dotted signature carries the namespace path). The overview deliberately excludes source
+    text; drill in via `get_method_bodies`.
+  - `get_method_bodies(signatures) -> Dict[str, str]` — source bodies keyed by signature;
+    unknown signatures and code-less callables (implicit constructors) are omitted, so every
+    returned value is a real `str`.
+  - `get_decorated_callables(markers) -> List[TSCallableOverview]` — overviews of callables
+    decorated with any of the given marker names.
+  - `get_callsites_for(signatures) -> Dict[str, List[TSCallsite]]` — call sites per callable;
+    every existing signature gets an entry (empty list when it has no call sites).
+- The blessed TypeScript test fixture (`tests/resources/typescript/analysis_json/slim/analysis.json`)
+  is now tracked, so the test suite runs from a clean clone.
+
+### Known limitations
+- Getter/setter pairs share one signature in the analyzer's output; the two backends currently
+  collapse such pairs differently (#300 — documented on `get_callables_overview`).
+
 ## [v1.4.3] - 2026-07-14
 
 ### Fixed
