@@ -37,6 +37,15 @@ def backend(monkeypatch):
             # vertex on the CALLEE) must not silently fall through the sig_is_None guard in
             # source_slice/callable_of; that would mask a parse bug on the synthetic-key path.
             return [{"sig": SIG2, "id": C2}, {"sig": SIG3, "id": C3}]
+        if "PY_HAS_CFG_NODE" in q and "n._module AS mod" in q:
+            # source_slice's per-callable node scan (checked BEFORE the generic
+            # program_graph node query below, since both match "PY_HAS_CFG_NODE"/"RETURN n.id").
+            if params.get("sig") == SIG2:
+                return [{"id": f"{C2}@entry", "sl": None, "mod": "pkg/mod.py"},
+                        {"id": f"{C2}@3:8", "sl": 3, "mod": "pkg/mod.py"}]
+            if params.get("sig") == SIG3:
+                return [{"id": f"{C3}@formal_in:1", "sl": None, "mod": "pkg/mod.py"}]
+            return []
         if "PY_HAS_CFG_NODE" in q and "RETURN n.id" in q:
             # Real emitter form: n.id is already the minted can:// URI, no "#".
             return [{"id": f"{C2}@entry", "kind": "entry", "sl": None, "el": None},
@@ -84,16 +93,30 @@ def test_resolve_location_orders_by_parsed_col(backend):
     assert backend.resolve_location("pkg/mod.py", 3) == [f"{C2}@3:8"]
 
 
+def test_resolve_location_basename_suffix_match(backend):
+    # A basename/suffix seed must behave identically to the fully-qualified module path — the
+    # same latitude the local backend's mixin already gives (#270 final review Finding 2).
+    assert backend.resolve_location("mod.py", 3) == [f"{C2}@3:8"]
+
+
 def test_source_slice_lossy_code_none(backend):
     fl, code = backend.source_slice(f"{C2}@3:8")
     assert fl == "pkg/mod.py:3" and code is None
 
 
-def test_source_slice_degrades_on_synthetic_formal_in_vertex(backend):
+def test_source_slice_degrades_to_module_path_on_synthetic_formal_in_vertex(backend):
     # A resolved callable (sig_is_None guard doesn't hide it) whose vertex is a synthetic
-    # @formal_in:N body node — no start_line of its own, so this must degrade to (None, None)
-    # rather than crash trying to int()-parse "formal_in" as a line number (#270 review fix).
-    assert backend.source_slice(f"{C3}@formal_in:1") == (None, None)
+    # @formal_in:N body node — it EXISTS but carries no start_line of its own, so per the
+    # adjudicated contract (#270 final review Finding 3) this degrades to (module_path, None),
+    # matching the local backend's mixin exactly — never (None, None) and never a fabricated
+    # line parsed out of the "formal_in" key shape.
+    assert backend.source_slice(f"{C3}@formal_in:1") == ("pkg/mod.py", None)
+
+
+def test_source_slice_unknown_vertex_is_none_none(backend):
+    # A vertex whose callable can't be resolved at all (not a can:// id this app knows about)
+    # is a structural non-match, not a synthetic-vertex degrade — (None, None), never fabricated.
+    assert backend.source_slice("can://nonexistent@0:0") == (None, None)
 
 
 def test_callable_of_partitions_at_first_at(backend):

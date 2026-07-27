@@ -334,7 +334,8 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         out: List[CpgEdge] = []
         for kind, rel in (("param_in", "PY_PARAM_IN"), ("param_out", "PY_PARAM_OUT"), ("summary", "PY_SUMMARY")):
             rows = self._run(
-                scope + f"MATCH (a:PyCFGNode)-[r:{rel}]->(b:PyCFGNode) WHERE a._module IN mods "
+                scope + f"MATCH (a:PyCFGNode)-[r:{rel}]->(b:PyCFGNode) "
+                "WHERE a._module IN mods AND b._module IN mods "
                 "RETURN a.id AS src, b.id AS dst, r.var AS var "
                 "ORDER BY a.id, b.id",
                 app=app,
@@ -353,13 +354,19 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         ``#``), not the raw ``r["id"]`` — the real emitter's raw ``PyCFGNode.id`` already *is*
         that translated form (see ``_to_uri``), so partitioning the raw id on ``#`` (as a first
         version of this method did) would never find a separator and always parse an empty key.
+
+        Accepts ``file`` as either the full stored ``_module`` key or just its basename/suffix
+        (``"mod.py"`` matching ``"pkg/mod.py"``) — the same latitude the local backend's mixin
+        gives a caller, so an identical seed string behaves identically on both backends.
         """
         scope = self._MODULES_CTE
         rows = self._run(
-            scope + "MATCH (n:PyCFGNode) WHERE n._module IN mods AND n._module = $file AND n.start_line = $line "
+            scope + "MATCH (n:PyCFGNode) WHERE n._module IN mods "
+            "AND (n._module = $file OR n._module ENDS WITH $suffix) AND n.start_line = $line "
             "RETURN n.id AS id",
             app=self.application_name,
             file=file,
+            suffix="/" + file,
             line=line,
         )
         hits = []
@@ -374,36 +381,40 @@ class PyNeo4jBackend(PythonAnalysisBackend):
 
     def source_slice(self, vertex_uri: str) -> Tuple[Optional[str], Optional[str]]:
         """Lossy by contract: ``PyCFGNode`` carries no byte offsets and modules carry no source
-        in the graph, so only a ``"<module>:<line>"`` location is recoverable — ``code`` is
-        always ``None`` (Task 6's parity harness treats this as the documented exception)."""
+        in the graph, so ``code`` is always ``None`` (Task 6's parity harness treats this as the
+        documented exception). The location half follows the same three-way contract as the
+        local backend's mixin — never fabricated by parsing the vertex key's shape:
+
+        * the vertex doesn't exist (unknown callable, or no matching ``PyCFGNode``) → ``(None, None)``;
+        * it exists but carries no ``start_line`` (a synthetic ``@entry``/``@exit``/
+          ``@formal_in:N``/``@actual_*`` port) → ``(module_path, None)``;
+        * it exists with a ``start_line`` → ``(f"{module_path}:{start_line}", None)``.
+
+        Matches the EXACT vertex by comparing ``_to_uri(n.id)`` (which bridges both the real
+        emitter's already-minted can:// ``PyCFGNode.id`` and the defensive dotted-sig ``#`` form)
+        against ``vertex_uri`` — scoped to the owning callable so this stays a single, cheap
+        round trip rather than a whole-application node scan.
+        """
         self._sig_to_can()
         cid = self.callable_of(vertex_uri)
         sig = self._can_sig_map.get(cid)
         if sig is None:
             return (None, None)
-        key = vertex_uri.partition("@")[2]
-        head = key.split("/")[0].removeprefix("@")
-        line_str, sep, _ = head.partition(":")
-        if not sep or not line_str.isdigit():
-            # Synthetic body node (@entry/@exit/@formal_in:N/@formal_out — no source line of its
-            # own), not a "line:col" statement/call key — degrade rather than misparse the
-            # non-numeric head (e.g. int("formal_in") would raise), matching the local backend's
-            # index-miss degrade for these same vertex shapes.
-            return (None, None)
-        line = int(line_str)
         scope = self._MODULES_CTE
         rows = self._run(
             scope + "MATCH (c:PyCallable {signature:$sig})-[:PY_HAS_CFG_NODE]->(n:PyCFGNode) "
-            "WHERE c._module IN mods AND n.start_line = $line "
-            "RETURN n._module AS mod, n.start_line AS sl "
-            "ORDER BY n.id",
+            "WHERE c._module IN mods "
+            "RETURN n.id AS id, n.start_line AS sl, n._module AS mod",
             app=self.application_name,
             sig=sig,
-            line=line,
         )
-        if not rows or rows[0].get("sl") is None:
-            return (None, None)
-        return (f"{rows[0]['mod']}:{rows[0]['sl']}", None)
+        for r in rows:
+            if self._to_uri(r["id"]) != vertex_uri:
+                continue
+            if r.get("sl") is None:
+                return (r["mod"], None)
+            return (f"{r['mod']}:{r['sl']}", None)
+        return (None, None)
 
     def callable_of(self, vertex_uri: str) -> Optional[str]:
         """The owning callable's can:// id — vertex ids are ``"<can_id>@<local_key>"``, so this
