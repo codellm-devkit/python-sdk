@@ -32,6 +32,7 @@ import pytest
 from cldk import CLDK
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.backend_config import CodeAnalyzerConfig
+from cldk.analysis.typescript.typescript_analysis import TypeScriptAnalysis
 from cldk.models.typescript import TSCallableOverview
 
 
@@ -101,8 +102,10 @@ def test_overview_enumerates_every_callable_including_inner(ts_analysis):
     assert "src/util.classify.keyOf" in signatures  # inner callable is enumerated
 
 
-def test_overview_owner_pair_is_none_for_owned_less_callables(ts_analysis):
-    rows = by_signature(ts_analysis.get_callables_overview())
+def test_overview_owner_pair_is_none_for_ownerless_callables(ts_analysis):
+    overview = ts_analysis.get_callables_overview()
+    assert {o.signature for o in overview if o.owner_signature is None} == OWNERLESS_SIGNATURES
+    rows = by_signature(overview)
     for sig in OWNERLESS_SIGNATURES:
         assert rows[sig].owner_signature is None, sig
         assert rows[sig].owner_kind is None, sig
@@ -225,12 +228,28 @@ def test_callsites_for_exact_per_signature_lists_and_empty_entry(ts_analysis):
 # -----[ facade delegates to the same backend objects ]-----
 
 
-def test_facade_delegates_return_backend_objects(ts_analysis):
-    assert ts_analysis.get_callables_overview() == ts_analysis.backend.get_callables_overview()
-    assert ts_analysis.get_method_bodies(["src/services.UserService.create"]) == ts_analysis.backend.get_method_bodies(
-        ["src/services.UserService.create"]
-    )
-    assert ts_analysis.get_decorated_callables(["Get"]) == ts_analysis.backend.get_decorated_callables(["Get"])
-    assert ts_analysis.get_callsites_for(["src/services.UserService.create"]) == ts_analysis.backend.get_callsites_for(
-        ["src/services.UserService.create"]
-    )
+def test_facade_delegates_to_backend():
+    """The facade is a thin pass-through: each bulk accessor must call the identical backend
+    method with the identical arguments and return its exact object, unmodified."""
+    facade = object.__new__(TypeScriptAnalysis)
+    facade.backend = MagicMock()
+
+    overview_sentinel = object()
+    facade.backend.get_callables_overview.return_value = overview_sentinel
+    assert facade.get_callables_overview() is overview_sentinel
+    facade.backend.get_callables_overview.assert_called_once_with()
+
+    bodies_sentinel = object()
+    facade.backend.get_method_bodies.return_value = bodies_sentinel
+    assert facade.get_method_bodies(["src/services.UserService.create"]) is bodies_sentinel
+    facade.backend.get_method_bodies.assert_called_once_with(["src/services.UserService.create"])
+
+    decorated_sentinel = object()
+    facade.backend.get_decorated_callables.return_value = decorated_sentinel
+    assert facade.get_decorated_callables(["Get"]) is decorated_sentinel
+    facade.backend.get_decorated_callables.assert_called_once_with(["Get"])
+
+    callsites_sentinel = object()
+    facade.backend.get_callsites_for.return_value = callsites_sentinel
+    assert facade.get_callsites_for(["src/services.UserService.create"]) is callsites_sentinel
+    facade.backend.get_callsites_for.assert_called_once_with(["src/services.UserService.create"])
