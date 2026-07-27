@@ -34,6 +34,7 @@ from typing import Dict, List, Tuple
 
 import networkx as nx
 
+from cldk.graph.provider import ProgramGraphProvider
 from cldk.models.python import (
     PyApplication,
     PyCallable,
@@ -45,7 +46,7 @@ from cldk.models.python import (
 )
 
 
-class PythonAnalysisBackend(ABC):
+class PythonAnalysisBackend(ProgramGraphProvider, ABC):
     """Abstract base every Python analysis backend implements.
 
     A backend owns all indexing and query logic for a Python application; the

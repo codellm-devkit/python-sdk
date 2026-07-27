@@ -17,9 +17,12 @@
 """Neo4j-backed Python analysis backend (read-only Cypher client).
 
 A drop-in alternative to :class:`~cldk.analysis.python.codeanalyzer.PyCodeanalyzer`: it exposes the
-**same query method surface** (the 21 methods of :class:`PythonAnalysisBackend`) so the
-:class:`~cldk.analysis.python.PythonAnalysis` facade can delegate to either one, but every method
-answers by running **Cypher over a live Neo4j graph** instead of walking the in-memory
+**same query method surface** — the 21 :class:`PythonAnalysisBackend` accessors plus the six
+:class:`~cldk.graph.provider.ProgramGraphProvider` primitives (``program_graph``, ``sdg_edges``,
+``resolve_location``, ``source_slice``, ``callable_of``, ``max_level``) that ABC now also requires
+(#270) — so the :class:`~cldk.analysis.python.PythonAnalysis` facade and the slice/flow
+:class:`~cldk.graph.engine.Engine` can both delegate to either backend interchangeably. Every
+method answers by running **Cypher over a live Neo4j graph** instead of walking the in-memory
 pydantic / NetworkX structures. Mirrors :class:`~cldk.analysis.typescript.neo4j.TSNeo4jBackend`.
 
 This class is purely a **query client**: it never builds the graph and has no dependency on the
@@ -71,13 +74,14 @@ Everything else round-trips identically to ``PyCodeanalyzer``.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import networkx as nx
 from codeanalyzer.schema import model_dump_json
 
 from cldk.analysis.python.backend import PythonAnalysisBackend
 from cldk.analysis.python.neo4j import reconstruct as R
+from cldk.models.cpg import Edge as CpgEdge
 from cldk.models.python import (
     PyApplication,
     PyCallEdge,
@@ -208,6 +212,175 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             app=self.application_name,
         )
         return [r["k"] for r in rows]
+
+    # =====================================================================================
+    # ProgramGraphProvider primitives (#270) — same app-scoping idiom as every other accessor
+    # in this file: anchor on (:PyApplication {name: $app})-[:PY_HAS_MODULE]->(:PyModule) and
+    # filter node-carrying queries by that module set. Folded into a single ``WITH ... AS mods``
+    # prelude per query (rather than reusing the cached ``self._modules`` list other accessors
+    # build in ``__init__``) so every primitive stays a single round trip.
+    # =====================================================================================
+    _MODULES_CTE = "MATCH (:PyApplication {name: $app})-[:PY_HAS_MODULE]->(m:PyModule) WITH collect(m.file_key) AS mods "
+
+    def _sig_to_can(self) -> Dict[str, str]:
+        """Lazy, cached dotted-signature -> can:// id map, built from this app's ``PyCallable``
+        nodes (each carries its minted ``can://...`` id in ``.id``). Powers the identity
+        translation every other primitive here needs: the graph's own node ids are dotted
+        signatures (``PyCFGNode.id`` = ``"<dotted_sig>#<local_key>"``), not can:// ids.
+        """
+        m = getattr(self, "_sig_can_map", None)
+        if m is None:
+            rows = self._run(
+                self._MODULES_CTE + "MATCH (c:PyCallable) WHERE c._module IN mods RETURN c.signature AS sig, c.id AS id",
+                app=self.application_name,
+            )
+            m = {r["sig"]: r["id"] for r in rows if r.get("id")}
+            self._sig_can_map = m
+            self._can_sig_map = {v: k for k, v in m.items()}
+        return m
+
+    def _to_uri(self, cfg_node_id: str) -> str:
+        """Translate one dotted ``PyCFGNode.id`` (``"<dotted_sig>#<local_key>"``) into the
+        minted ``can://...@<local_key>`` vertex id the local backend's mixin would produce."""
+        sig, _, key = cfg_node_id.partition("#")
+        can = self._sig_to_can().get(sig, sig)
+        return f"{can}@{key.removeprefix('@')}"
+
+    def max_level(self) -> int:
+        """The deepest overlay actually present in the graph for this application (see the
+        module docstring's :class:`PyNeo4jBackend` — persisted ``max_level`` is upstream gap
+        codellm-devkit/codeanalyzer-python, filed in #270's Task 5)."""
+        scope = self._MODULES_CTE
+        app = self.application_name
+        if self._run(
+            scope + "MATCH (a)-[r:PY_PARAM_IN|PY_PARAM_OUT|PY_SUMMARY]->() WHERE a._module IN mods RETURN 1 AS one LIMIT 1",
+            app=app,
+        ):
+            return 4
+        if self._run(scope + "MATCH (n:PyCFGNode) WHERE n._module IN mods RETURN 1 AS one LIMIT 1", app=app):
+            return 3
+        if self._run(scope + "MATCH (s:PySymbol)-[r:PY_CALLS]->() WHERE s._module IN mods RETURN 1 AS one LIMIT 1", app=app):
+            return 2
+        return 1
+
+    def program_graph(self, callable_uri: str) -> nx.MultiDiGraph:
+        """The per-callable CFG/CDG/DDG overlay, translated to can:// vertex ids. Parallel
+        cfg/cdg/ddg edges between the same vertex pair stay distinct (MultiDiGraph auto-keys
+        each ``add_edge``), matching :class:`~cldk.graph.provider.ProgramGraphProvider`'s
+        contract and the local backend's mixin.
+        """
+        self._sig_to_can()
+        sig = self._can_sig_map.get(callable_uri)
+        g = nx.MultiDiGraph()
+        if sig is None:
+            return g
+        scope = self._MODULES_CTE
+        app = self.application_name
+        rows = self._run(
+            scope + "MATCH (c:PyCallable {signature:$sig})-[:PY_HAS_CFG_NODE]->(n:PyCFGNode) "
+            "WHERE c._module IN mods "
+            "RETURN n.id AS id, n.kind AS kind, n.start_line AS sl, n.end_line AS el "
+            "ORDER BY n.id",
+            app=app,
+            sig=sig,
+        )
+        for r in rows:
+            g.add_node(self._to_uri(r["id"]), kind=r["kind"], span=(r["sl"], r["el"]))
+        for fam, rel in (("cfg", "PY_CFG_NEXT"), ("cdg", "PY_CDG"), ("ddg", "PY_DDG")):
+            edge_rows = self._run(
+                scope + f"MATCH (c:PyCallable {{signature:$sig}})-[:PY_HAS_CFG_NODE]->(a)-[r:{rel}]->(b) "
+                "WHERE c._module IN mods AND (c)-[:PY_HAS_CFG_NODE]->(b) "
+                "RETURN a.id AS src, b.id AS dst, r.kind AS kind, r.var AS var, r.prov AS prov "
+                "ORDER BY a.id, b.id",
+                app=app,
+                sig=sig,
+            )
+            for r in edge_rows:
+                g.add_edge(
+                    self._to_uri(r["src"]),
+                    self._to_uri(r["dst"]),
+                    family=fam,
+                    kind=r.get("kind"),
+                    var=r.get("var"),
+                    prov=list(r.get("prov") or []),
+                )
+        return g
+
+    def sdg_edges(self) -> Iterable[CpgEdge]:
+        """Every application-level interprocedural edge (``PY_PARAM_IN``/``PY_PARAM_OUT``/
+        ``PY_SUMMARY``), translated to can:// vertex ids and kinded (real graph edges carry no
+        ``kind`` of their own — the family name doubles as the kind, mirroring the local
+        backend's mixin so a boundary hop never surfaces as opaque "sdg")."""
+        self._sig_to_can()
+        scope = self._MODULES_CTE
+        app = self.application_name
+        out: List[CpgEdge] = []
+        for kind, rel in (("param_in", "PY_PARAM_IN"), ("param_out", "PY_PARAM_OUT"), ("summary", "PY_SUMMARY")):
+            rows = self._run(
+                scope + f"MATCH (a:PyCFGNode)-[r:{rel}]->(b:PyCFGNode) WHERE a._module IN mods "
+                "RETURN a.id AS src, b.id AS dst, r.var AS var "
+                "ORDER BY a.id, b.id",
+                app=app,
+            )
+            out.extend(
+                CpgEdge(src=self._to_uri(r["src"]), dst=self._to_uri(r["dst"]), kind=kind, var=r.get("var"), prov=[]) for r in rows
+            )
+        return out
+
+    def resolve_location(self, file: str, line: int, col: Optional[int] = None) -> List[str]:
+        """Vertex ids at a source location, ordered by parsed column — the ``PyCFGNode`` local
+        key encodes ``line:col`` (e.g. ``"3:8"``), so column is recovered by parsing the key
+        rather than from a stored property, matching the local backend's ordering exactly."""
+        scope = self._MODULES_CTE
+        rows = self._run(
+            scope + "MATCH (n:PyCFGNode) WHERE n._module IN mods AND n._module = $file AND n.start_line = $line "
+            "RETURN n.id AS id",
+            app=self.application_name,
+            file=file,
+            line=line,
+        )
+        hits = []
+        for r in rows:
+            key = r["id"].partition("#")[2].removeprefix("@")
+            head = key.split("/")[0]
+            c = int(head.split(":")[1]) if ":" in head else -1
+            if col is None or c == col:
+                hits.append(((line, c), self._to_uri(r["id"])))
+        return [u for _, u in sorted(hits)]
+
+    def source_slice(self, vertex_uri: str) -> Tuple[Optional[str], Optional[str]]:
+        """Lossy by contract: ``PyCFGNode`` carries no byte offsets and modules carry no source
+        in the graph, so only a ``"<module>:<line>"`` location is recoverable — ``code`` is
+        always ``None`` (Task 6's parity harness treats this as the documented exception)."""
+        self._sig_to_can()
+        cid = self.callable_of(vertex_uri)
+        sig = self._can_sig_map.get(cid)
+        if sig is None:
+            return (None, None)
+        key = vertex_uri.partition("@")[2]
+        head = key.split("/")[0].removeprefix("@")
+        if ":" not in head:
+            return (None, None)
+        line = int(head.split(":")[0])
+        scope = self._MODULES_CTE
+        rows = self._run(
+            scope + "MATCH (c:PyCallable {signature:$sig})-[:PY_HAS_CFG_NODE]->(n:PyCFGNode) "
+            "WHERE c._module IN mods AND n.start_line = $line "
+            "RETURN n._module AS mod, n.start_line AS sl "
+            "ORDER BY n.id",
+            app=self.application_name,
+            sig=sig,
+            line=line,
+        )
+        if not rows or rows[0].get("sl") is None:
+            return (None, None)
+        return (f"{rows[0]['mod']}:{rows[0]['sl']}", None)
+
+    def callable_of(self, vertex_uri: str) -> Optional[str]:
+        """The owning callable's can:// id — vertex ids are ``"<can_id>@<local_key>"``, so this
+        is a partition at the first ``@`` (can:// ids never contain one themselves)."""
+        head, sep, _ = vertex_uri.partition("@")
+        return head if sep else vertex_uri
 
     # =====================================================================================
     # Reconstruction helpers — fetch a node's children over Cypher, then assemble via R.
