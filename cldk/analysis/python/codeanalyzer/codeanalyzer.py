@@ -60,7 +60,7 @@ from codeanalyzer.core import Codeanalyzer
 from codeanalyzer.options import AnalysisOptions
 from codeanalyzer.schema import model_dump_json
 
-from cldk.analysis import AnalysisLevel
+from cldk.analysis import ANALYSIS_LEVEL_TO_INT, AnalysisLevel
 from cldk.analysis.python.backend import PythonAnalysisBackend
 from cldk.utils.exceptions import CldkSchemaMismatchException
 from cldk.models.python import (
@@ -194,6 +194,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         if not self.project_dir.is_dir():
             raise ValueError(f"project_dir does not exist or is not a directory: {self.project_dir}")
         self.analysis_level = analysis_level
+        self._level_int = ANALYSIS_LEVEL_TO_INT[AnalysisLevel(analysis_level)]
         self.eager_analysis = eager_analysis
         self.target_files = target_files
         self.use_ray = use_ray
@@ -211,7 +212,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             for class_sig in module.types:
                 self._class_to_file[class_sig] = file_path
 
-        if analysis_level == AnalysisLevel.call_graph:
+        if self._level_int >= 2:
             self.call_graph: nx.DiGraph | None = self._build_call_graph(self.application.call_graph, self._id_to_signature())
         else:
             self.call_graph = None
@@ -246,18 +247,23 @@ class PyCodeanalyzer(PythonAnalysisBackend):
                 logger.warning("codeanalyzer-python supports only a single target file; using the first.")
             target_file = Path(self.target_files[0])
 
-        options = AnalysisOptions(
-            input=self.project_dir,
-            output=self.analysis_json_path,
-            format=OutputFormat.JSON,
-            using_ray=self.use_ray,
-            rebuild_analysis=self.eager_analysis,
-            skip_tests=True,
-            file_name=target_file,
-            cache_dir=self.cache_dir,
-            clear_cache=False,
-            verbosity=0,
-        )
+        opts = {
+            "input": self.project_dir,
+            "output": self.analysis_json_path,
+            "format": OutputFormat.JSON,
+            "using_ray": self.use_ray,
+            "rebuild_analysis": self.eager_analysis,
+            "skip_tests": True,
+            "file_name": target_file,
+            "cache_dir": self.cache_dir,
+            "clear_cache": False,
+            "verbosity": 0,
+        }
+        # Add analysis_level if _level_int is available (set in __init__)
+        if hasattr(self, "_level_int"):
+            opts["analysis_level"] = self._level_int
+
+        options = AnalysisOptions(**opts)
 
         with Codeanalyzer(options) as analyzer:
             analysis = analyzer.analyze()
@@ -266,7 +272,16 @@ class PyCodeanalyzer(PythonAnalysisBackend):
                 f"analysis schema {analysis.schema_version!r} from codeanalyzer-python, this SDK speaks "
                 f"{self.SUPPORTED_ANALYSIS_SCHEMA!r} — align the pinned codeanalyzer-python with the SDK"
             )
+        # The envelope reports what the analyzer actually computed; the capability gate
+        # (cldk/graph/capability.py) reads it via max_level() — recorded, never sniffed.
+        # (Only record if available; schema 2.0.0+ always provides it)
+        if hasattr(analysis, "max_level"):
+            self._max_level: int = analysis.max_level
         return analysis.application
+
+    def max_level(self) -> int:
+        """The analysis level of the underlying run (1-4), as reported by the analyzer."""
+        return getattr(self, "_max_level", 1)
 
     def _id_to_signature(self) -> Dict[str, str]:
         """Map every symbol-table callable's ``can://`` id to its dotted signature.

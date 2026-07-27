@@ -28,3 +28,12 @@ class AnalysisLevel(str, Enum):
     call_graph = "call graph"
     program_dependency_graph = "program dependency graph"
     system_dependency_graph = "system dependency graph"
+
+
+#: Facade-level vocabulary → the analyzers' integer analysis level (schema 2.0 ``max_level``).
+ANALYSIS_LEVEL_TO_INT = {
+    AnalysisLevel.symbol_table: 1,
+    AnalysisLevel.call_graph: 2,
+    AnalysisLevel.program_dependency_graph: 3,
+    AnalysisLevel.system_dependency_graph: 4,
+}
