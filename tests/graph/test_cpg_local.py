@@ -33,7 +33,6 @@ class Backend(CpgLocalProviderMixin):
 def test_program_graph_has_body_and_edges():
     g = Backend().program_graph("can://x/m.py/f")
     assert set(g.nodes) == {"can://x/m.py/f@1:0", "can://x/m.py/f@2:0"}
-    assert g.get_edge_data("can://x/m.py/f@1:0", "can://x/m.py/f@2:0", key=None) is None or True
     fams = {d["family"] for _, _, d in g.edges(data=True)}
     assert fams == {"cfg", "ddg"}
 
@@ -44,7 +43,7 @@ def test_resolve_location_hits_line():
 
 def test_source_slice_reads_module_source():
     fl, code = Backend().source_slice("can://x/m.py/f@1:0")
-    assert fl == "m.py:1" and code == "a = 1\nb "[:8][0:8].split("\n")[0] or code is not None
+    assert fl == "m.py:1" and code == "a = 1\nb "
 
 
 # --- Golden fixture: a REAL, conformant L4 codeanalyzer-python sample ------------------------
@@ -260,18 +259,32 @@ class _SlimSummaryEdge:
 
 
 class _SlimCallable:
-    def __init__(self, id, body, cfg=None, cdg=None, ddg=None, summary=None):
+    def __init__(self, id, body, cfg=None, cdg=None, ddg=None, summary=None, callables=None, types=None):
         self.id = id
         self.body = body
         self.cfg = cfg or []
         self.cdg = cdg or []
         self.ddg = ddg or []
         self.summary = summary or []
+        # A callable can declare further nested callables (closures) and/or locally-defined
+        # classes — both absent by default (upstream PyCallable.callables/.types, empty dicts).
+        self.callables = callables or {}
+        self.types = types or {}
+
+
+class _SlimClass:
+    """Mirrors upstream PyClass's type-facet containers: {callables, types} — methods and any
+    classes nested inside this one. No `.body`/`.cfg`/etc — a class contributes no body of its
+    own, only its members do."""
+
+    def __init__(self, callables=None, types=None):
+        self.callables = callables or {}
+        self.types = types or {}
 
 
 class _SlimModule:
-    def __init__(self, functions):
-        self.types = {}
+    def __init__(self, functions, types=None):
+        self.types = types or {}
         self.functions = functions
 
 
@@ -285,6 +298,16 @@ class _SlimApplication:
 SLIM_CID = "can://slim/m.py/f"
 
 
+# Ids for the nested-recursion fixture (#270 final review Finding 1): a closure declared
+# inside the top-level function `f`, and a method reachable only through a class nested inside
+# another class — both must be discoverable by _index()'s recursive walk, mirroring
+# codeanalyzer-python's own _walk_callable/_walk_class_callables and the Neo4j emitter's
+# _project_callable/_project_class.
+CLOSURE_CID = f"{SLIM_CID}/g"
+OUTER_METHOD_CID = "can://slim/m.py/Outer.m"
+INNER_METHOD_CID = "can://slim/m.py/Outer.Inner.n"
+
+
 def _slim_app():
     # Body dict deliberately inserts the col-15 key BEFORE the col-8 key, so a resolve_location
     # that merely preserved dict insertion order would return them in the wrong order.
@@ -293,6 +316,9 @@ def _slim_app():
         "3:8": _SlimBodyNode(kind="statement", span=_SlimSpan(start=(3, 8))),
         "@entry": _SlimBodyNode(kind="entry", span=None),
     }
+    # A closure nested inside `f` — its own callable, with its own body, reachable only via
+    # f.callables (never listed at module/class top level).
+    g = _SlimCallable(id=CLOSURE_CID, body={"5:0": _SlimBodyNode(kind="statement", span=_SlimSpan(start=(5, 0)))})
     f = _SlimCallable(
         id=SLIM_CID,
         body=body,
@@ -300,8 +326,18 @@ def _slim_app():
         cdg=[_SlimCdgEdge(src="@entry", dst="3:15")],
         ddg=[_SlimDdgEdge(src="@entry", dst="3:8", var="x", prov=["ssa"])],
         summary=[_SlimSummaryEdge(src="3:8", dst="3:15")],
+        callables={"g": g},
     )
-    mod = _SlimModule(functions={"f": f})
+    # Outer.m is an ordinary method; Outer.Inner.n is a method on a class nested TWO levels deep
+    # (a class inside a class) — both must surface through mod.types' recursive walk, not just
+    # a single top-level pass over each class's own .callables.
+    inner_method = _SlimCallable(id=INNER_METHOD_CID,
+                                 body={"30:0": _SlimBodyNode(kind="statement", span=_SlimSpan(start=(30, 0)))})
+    inner_cls = _SlimClass(callables={"n": inner_method})
+    outer_method = _SlimCallable(id=OUTER_METHOD_CID,
+                                 body={"20:0": _SlimBodyNode(kind="statement", span=_SlimSpan(start=(20, 0)))})
+    outer_cls = _SlimClass(callables={"m": outer_method}, types={"Inner": inner_cls})
+    mod = _SlimModule(functions={"f": f}, types={"Outer": outer_cls})
     return _SlimApplication(
         symbol_table={"m.py": mod},
         param_in=[_SlimParamEdge(src="can://slim/other@formal_in:0", dst=f"{SLIM_CID}@3:8")],
@@ -349,3 +385,28 @@ def test_slim_program_graph_unknown_callable_returns_empty_graph_not_keyerror():
     g = SlimBackend().program_graph("can://nowhere")
     assert isinstance(g, nx.MultiDiGraph)
     assert g.number_of_nodes() == 0 and g.number_of_edges() == 0
+
+
+def test_index_recurses_into_closures_and_doubly_nested_class_methods():
+    # #270 final review Finding 1 (Critical): _index() used to walk only mod.functions and
+    # mod.types[*].callables, one level — a closure declared inside a function, or a method on a
+    # class nested inside another class, was silently invisible (empty program_graph, no owning
+    # callable, no resolve_location hit) even though the Neo4j emitter walks these recursively.
+    b = SlimBackend()
+
+    g = b.program_graph(CLOSURE_CID)
+    assert set(g.nodes) == {f"{CLOSURE_CID}@5:0"}
+
+    m = b.program_graph(OUTER_METHOD_CID)
+    assert set(m.nodes) == {f"{OUTER_METHOD_CID}@20:0"}
+
+    n = b.program_graph(INNER_METHOD_CID)
+    assert set(n.nodes) == {f"{INNER_METHOD_CID}@30:0"}
+
+    assert b.callable_of(f"{CLOSURE_CID}@5:0") == CLOSURE_CID
+    assert b.callable_of(f"{OUTER_METHOD_CID}@20:0") == OUTER_METHOD_CID
+    assert b.callable_of(f"{INNER_METHOD_CID}@30:0") == INNER_METHOD_CID
+
+    assert b.resolve_location("m.py", 5) == [f"{CLOSURE_CID}@5:0"]
+    assert b.resolve_location("m.py", 20) == [f"{OUTER_METHOD_CID}@20:0"]
+    assert b.resolve_location("m.py", 30) == [f"{INNER_METHOD_CID}@30:0"]

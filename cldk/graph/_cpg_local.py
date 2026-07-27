@@ -51,11 +51,30 @@ class CpgLocalProviderMixin:
                 vid = canon[k]
                 n2c[vid] = c.id
                 nodes[vid] = (bn, mod, path)
+            # Recurse into this callable's own closures (a function/method can declare further
+            # nested callables, e.g. a factory's inner helper) and any classes it declares
+            # locally (e.g. a function defining a small helper class) — getattr-defensive since
+            # the slimmer upstream models may omit these containers entirely. This mirrors
+            # codeanalyzer-python's own recursive walk (semantic_analysis/call_graph.py's
+            # _walk_callable/_walk_class_callables) that the Neo4j emitter also follows
+            # (neo4j/project.py's _project_callable/_project_class), so every callable that owns
+            # a body — however deeply nested — ends up indexed here too.
+            for inner_c in (getattr(c, "callables", None) or {}).values():
+                _add(inner_c, mod, path)
+            for inner_t in (getattr(c, "types", None) or {}).values():
+                _add_type(inner_t, mod, path)
+
+        def _add_type(t, mod, path):
+            # A class contributes no body of its own — only its methods and any nested classes
+            # (which may themselves nest further, arbitrarily deep) do.
+            for c in (getattr(t, "callables", None) or {}).values():
+                _add(c, mod, path)
+            for inner_t in (getattr(t, "types", None) or {}).values():
+                _add_type(inner_t, mod, path)
 
         for path, mod in self.application.symbol_table.items():
             for t in mod.types.values():
-                for c in t.callables.values():
-                    _add(c, mod, path)
+                _add_type(t, mod, path)
             for f in mod.functions.values():
                 _add(f, mod, path)
 
