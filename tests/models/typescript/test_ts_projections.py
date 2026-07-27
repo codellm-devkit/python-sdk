@@ -77,5 +77,27 @@ def test_from_callable_arrow_case_has_none_owner_pair():
     assert overview.accessibility is None
 
 
+def test_from_callable_namespace_owned_function_has_none_owner_pair():
+    """Namespace-owned functions (TSNamespace.functions) are ownerless: TS namespaces are
+    module-like scoping, not a class/interface owner, and the dotted signature already encodes
+    the namespace path — so the owner pair stays None/None, same as module-level and nested
+    callables."""
+    c = TSCallable(
+        name="parse",
+        path="src/util.ts",
+        signature="src/util.Parsing.Inner.parse",
+        start_line=5,
+        end_line=8,
+        kind="function",
+        is_exported=True,
+    )
+
+    overview = TSCallableOverview.from_callable(c, owner_signature=None, owner_kind=None)
+
+    assert overview.owner_signature is None
+    assert overview.owner_kind is None
+    assert overview.signature == "src/util.Parsing.Inner.parse"
+
+
 def test_no_code_field():
     assert "code" not in TSCallableOverview.model_fields

@@ -44,11 +44,12 @@ class TSCallableOverview(BaseModel):
     Attributes:
         signature: The callable's unique signature (the key the call graph references).
         name: The callable's short name.
-        owner_signature: Signature of the class/interface/namespace that declares this callable,
-            or ``None`` for a module-level function or arrow.
-        owner_kind: The owner's node kind (e.g. ``"class"``, ``"interface"``, ``"namespace"``), or
-            ``None`` when there is no owner. ``owner_kind`` is ``None`` iff ``owner_signature`` is
-            ``None``.
+        owner_signature: Signature of the class/interface that declares this callable, or ``None``
+            for a module-level function, arrow, or namespace-owned function.
+        owner_kind: The owner's node kind — a closed two-value set, ``"class"`` or ``"interface"``
+            — or ``None`` when there is no owner. ``owner_kind`` is ``None`` iff
+            ``owner_signature`` is ``None``. Namespace-owned functions (``TSNamespace.functions``)
+            carry no owner pair; their dotted signature already encodes the namespace path.
         kind: The callable's native TS kind, passed through verbatim — one of ``function``,
             ``method``, ``constructor``, ``getter``, ``setter``, ``arrow``,
             ``function_expression``. Never derived; always ``TSCallable.kind`` as reported by the
@@ -72,9 +73,9 @@ class TSCallableOverview(BaseModel):
     start_line: int
     end_line: int
     decorators: List[str] = []
-    is_exported: bool = False
-    is_async: bool = False
-    is_static: bool = False
+    is_exported: bool
+    is_async: bool
+    is_static: bool
     accessibility: Optional[str] = None
 
     @classmethod
@@ -89,9 +90,10 @@ class TSCallableOverview(BaseModel):
 
         Args:
             c: The callable to project.
-            owner_signature: Signature of the declaring class/interface/namespace, or ``None`` for
-                a module-level function or arrow.
-            owner_kind: The owner's node kind, or ``None`` when ``owner_signature`` is ``None``.
+            owner_signature: Signature of the declaring class/interface, or ``None`` for a
+                module-level function, arrow, or namespace-owned function.
+            owner_kind: The owner's node kind (``"class"`` or ``"interface"``), or ``None`` when
+                ``owner_signature`` is ``None``.
 
         Returns:
             The projected overview.
