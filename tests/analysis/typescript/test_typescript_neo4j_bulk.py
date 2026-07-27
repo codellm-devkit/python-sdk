@@ -171,6 +171,26 @@ def test_overview_scopes_query_to_this_backends_modules():
     assert captured["mods"] == ["a.ts", "b.ts"]
 
 
+def test_overview_query_shape_has_owner_leg_and_module_scoping():
+    """Pins the Cypher shape itself: a `labels(c)`-for-`labels(o)` typo, or a silently dropped
+    HAS_METHOD/DECORATED_BY OPTIONAL MATCH leg, would still pass the row-construction tests above
+    (they hand `owner_labels` straight to the reconstructor) -- only asserting on the actual query
+    text catches that class of bug."""
+    captured = {}
+
+    def _run(query, **params):
+        captured["query"] = query
+        return []
+
+    backend = _backend()
+    with patch.object(TSNeo4jBackend, "_run", side_effect=_run):
+        assert backend.get_callables_overview() == []
+    assert "c._module IN $mods" in captured["query"]
+    assert "HAS_METHOD" in captured["query"]
+    assert "labels(o)" in captured["query"]
+    assert "DECORATED_BY" in captured["query"]
+
+
 # -----[ get_method_bodies ]-----
 
 
@@ -262,6 +282,28 @@ def test_decorated_callables_passes_markers_param():
     with patch.object(TSNeo4jBackend, "_run", side_effect=_run):
         backend.get_decorated_callables(["Get", "Post"])
     assert captured["markers"] == ["Get", "Post"]
+
+
+def test_decorated_callables_query_shape_has_marker_leg_owner_leg_and_module_scoping():
+    """Same pinning concern as the overview query-shape test above: the marker-match leg
+    (`DECORATED_BY]->(marker:Decorator)` + `marker.name IN $markers`) and the reused overview
+    projection (owner leg via `labels(o)`, the separate `d:Decorator` collection leg) must both
+    actually be in the Cypher, not just implied by the canned rows."""
+    captured = {}
+
+    def _run(query, **params):
+        captured["query"] = query
+        return []
+
+    backend = _backend()
+    with patch.object(TSNeo4jBackend, "_run", side_effect=_run):
+        assert backend.get_decorated_callables(["Get"]) == []
+    assert "c._module IN $mods" in captured["query"]
+    assert "DECORATED_BY]->(marker:Decorator)" in captured["query"]
+    assert "marker.name IN $markers" in captured["query"]
+    assert "HAS_METHOD" in captured["query"]
+    assert "labels(o)" in captured["query"]
+    assert "DECORATED_BY]->(d:Decorator)" in captured["query"]
 
 
 # -----[ get_callsites_for ]-----
