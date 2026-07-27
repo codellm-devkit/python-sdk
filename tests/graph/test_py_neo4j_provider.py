@@ -1,9 +1,15 @@
 """ProgramGraphProvider conformance for the read-only Neo4j Python backend (#270).
 
 Stub-based: fakes ``_run`` so no live Neo4j server is required. Verifies the identity
-translation (dotted ``PyCFGNode.id`` -> minted ``can://...@key`` URI, via the app-scoped
-``PyCallable`` signature -> can:// id map) and that every query stays scoped to
-``application_name`` the same way the file's existing accessors do.
+translation and that every query stays scoped to ``application_name`` the same way the file's
+existing accessors do.
+
+``PyCFGNode.id`` rows below mirror the REAL codeanalyzer-python 1.0.2 emitter, confirmed against
+a live Neo4j instance in #270 Task 6: ``n.id`` is already the fully-qualified ``can://...@key``
+vertex id, with no ``#`` separator anywhere (see issue #295, which this stub previously masked by
+hard-coding the dotted-sig ``"#"``-separated form the analyzer repo's ``schema.py`` comment
+describes but that has never actually been observed on the wire). ``test_to_uri_...hash_form``
+below is the one deliberately-kept case exercising ``_to_uri``'s defensive ``#`` fallback branch.
 """
 
 import pytest
@@ -32,20 +38,21 @@ def backend(monkeypatch):
             # source_slice/callable_of; that would mask a parse bug on the synthetic-key path.
             return [{"sig": SIG2, "id": C2}, {"sig": SIG3, "id": C3}]
         if "PY_HAS_CFG_NODE" in q and "RETURN n.id" in q:
-            return [{"id": f"{SIG2}#@entry", "kind": "entry", "sl": None, "el": None},
-                    {"id": f"{SIG2}#3:8", "kind": "return", "sl": 3, "el": 3}]
+            # Real emitter form: n.id is already the minted can:// URI, no "#".
+            return [{"id": f"{C2}@entry", "kind": "entry", "sl": None, "el": None},
+                    {"id": f"{C2}@3:8", "kind": "return", "sl": 3, "el": 3}]
         if "r:PY_CFG_NEXT" in q:
-            return [{"src": f"{SIG2}#@entry", "dst": f"{SIG2}#3:8", "kind": "fallthrough",
+            return [{"src": f"{C2}@entry", "dst": f"{C2}@3:8", "kind": "fallthrough",
                      "var": None, "prov": None}]
         if "r:PY_CDG" in q or "r:PY_DDG" in q:
             return []
         if "PY_PARAM_IN" in q:
-            return [{"src": f"{SIG2}#3:8/actual_in:1",
-                     "dst": f"{SIG3}#@formal_in:1", "var": None}]
+            return [{"src": f"{C2}@3:8/actual_in:1",
+                     "dst": f"{C3}@formal_in:1", "var": None}]
         if "PY_PARAM_OUT" in q or "PY_SUMMARY" in q:
             return []
         if "n.start_line = $line" in q:
-            return [{"id": f"{SIG2}#3:8", "mod": "pkg/mod.py", "sl": 3}]
+            return [{"id": f"{C2}@3:8", "mod": "pkg/mod.py", "sl": 3}]
         raise AssertionError(f"unstubbed query: {q}")
 
     monkeypatch.setattr(b, "_run", fake_run)
@@ -91,3 +98,13 @@ def test_source_slice_degrades_on_synthetic_formal_in_vertex(backend):
 
 def test_callable_of_partitions_at_first_at(backend):
     assert backend.callable_of(f"{C2}@3:8/actual_in:1") == C2
+
+
+def test_to_uri_translates_dotted_sig_hash_form_defensively(backend):
+    # The analyzer repo's schema.py comment (and this file's original brief) documents a
+    # "#"-separated dotted-sig PyCFGNode.id form; never observed on a real graph (issue #295 —
+    # the real emitter stores the can:// id directly, exercised by every other test above), but
+    # _to_uri keeps translating it correctly as a defensive fallback should some emitter version
+    # ever actually produce it.
+    assert backend._to_uri(f"{SIG2}#3:8") == f"{C2}@3:8"
+    assert backend._to_uri(f"{SIG2}#@entry") == f"{C2}@entry"

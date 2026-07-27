@@ -224,9 +224,11 @@ class PyNeo4jBackend(PythonAnalysisBackend):
 
     def _sig_to_can(self) -> Dict[str, str]:
         """Lazy, cached dotted-signature -> can:// id map, built from this app's ``PyCallable``
-        nodes (each carries its minted ``can://...`` id in ``.id``). Powers the identity
-        translation every other primitive here needs: the graph's own node ids are dotted
-        signatures (``PyCFGNode.id`` = ``"<dotted_sig>#<local_key>"``), not can:// ids.
+        nodes (each carries its minted ``can://...`` id in ``.id``). Only feeds ``_to_uri``'s
+        defensive ``#``-form fallback (see its docstring) — the real emitter's ``PyCFGNode.id``
+        needs no such translation, but ``PyCallable.signature`` (dotted) -> ``PyCallable.id``
+        (can://) is also how ``program_graph``/``source_slice`` resolve a caller-supplied can://
+        callable id back to the ``signature`` a Cypher ``MATCH`` needs.
         """
         m = getattr(self, "_sig_can_map", None)
         if m is None:
@@ -240,8 +242,23 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         return m
 
     def _to_uri(self, cfg_node_id: str) -> str:
-        """Translate one dotted ``PyCFGNode.id`` (``"<dotted_sig>#<local_key>"``) into the
-        minted ``can://...@<local_key>`` vertex id the local backend's mixin would produce."""
+        """Translate a raw ``PyCFGNode.id`` into the minted ``can://...@<local_key>`` vertex id
+        the local backend's mixin would produce.
+
+        Handles two shapes defensively:
+
+        * The **real** codeanalyzer-python 1.0.2 emitter (verified against a live Neo4j
+          instance populated by the real analyzer+emitter — see #295) stores ``PyCFGNode.id``
+          as the already-minted ``can://...@<local_key>`` URI directly, with no ``#`` anywhere
+          in it. That id *is* the answer; no translation is needed or possible (a dotted-sig
+          lookup would only ever miss).
+        * The dotted ``"<dotted_sig>#<local_key>"`` form documented in the analyzer repo's
+          ``schema.py`` comment (and this file's original brief) has not been observed on any
+          real graph. Kept as a defensive fallback in case a future/older emitter version
+          actually produces it.
+        """
+        if "#" not in cfg_node_id:
+            return cfg_node_id
         sig, _, key = cfg_node_id.partition("#")
         can = self._sig_to_can().get(sig, sig)
         return f"{can}@{key.removeprefix('@')}"
@@ -328,9 +345,15 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         return out
 
     def resolve_location(self, file: str, line: int, col: Optional[int] = None) -> List[str]:
-        """Vertex ids at a source location, ordered by parsed column — the ``PyCFGNode`` local
-        key encodes ``line:col`` (e.g. ``"3:8"``), so column is recovered by parsing the key
-        rather than from a stored property, matching the local backend's ordering exactly."""
+        """Vertex ids at a source location, ordered by parsed column — the local key encodes
+        ``line:col`` (e.g. ``"3:8"``), so column is recovered by parsing the key rather than
+        from a stored property, matching the local backend's ordering exactly.
+
+        Parses the key out of ``_to_uri``'s *output* (always ``"<can_id>@<local_key>"``, no
+        ``#``), not the raw ``r["id"]`` — the real emitter's raw ``PyCFGNode.id`` already *is*
+        that translated form (see ``_to_uri``), so partitioning the raw id on ``#`` (as a first
+        version of this method did) would never find a separator and always parse an empty key.
+        """
         scope = self._MODULES_CTE
         rows = self._run(
             scope + "MATCH (n:PyCFGNode) WHERE n._module IN mods AND n._module = $file AND n.start_line = $line "
@@ -341,11 +364,12 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         )
         hits = []
         for r in rows:
-            key = r["id"].partition("#")[2].removeprefix("@")
+            uri = self._to_uri(r["id"])
+            key = uri.partition("@")[2]
             head = key.split("/")[0]
             c = int(head.split(":")[1]) if ":" in head else -1
             if col is None or c == col:
-                hits.append(((line, c), self._to_uri(r["id"])))
+                hits.append(((line, c), uri))
         return [u for _, u in sorted(hits)]
 
     def source_slice(self, vertex_uri: str) -> Tuple[Optional[str], Optional[str]]:
