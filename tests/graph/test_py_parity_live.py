@@ -28,8 +28,10 @@ The whole module is skipped unless CLDK_TEST_NEO4J_URI is set. Point it at a ser
     uv run pytest tests/graph/test_py_parity_live.py -v
 
 (e.g. `podman run -d -p 7687:7687 -e NEO4J_AUTH=neo4j/testpassword neo4j:5` — a DEDICATED
-container, never a shared one: the analyzer's bolt writer prunes other applications globally
-per emit.)
+container is still advised, even though the analyzer's bolt writer scopes its orphan-module
+prune to THIS application's own app_name (codeanalyzer/neo4j/bolt.py's full-run prune reads
+`WHERE ... app=app_name`, never touching other applications' data) — a fresh container just
+keeps this suite free of any stale state left over from a previous run.)
 """
 
 import json
@@ -130,8 +132,13 @@ def test_program_graph_parity_per_callable(both_backends):
     for cid in local._index()["callables"]:
         lg, rg = local.program_graph(cid), remote.program_graph(cid)
         assert set(lg.nodes) == set(rg.nodes), cid
-        lset = {(u, v, d["family"], d.get("kind"), d.get("var")) for u, v, d in lg.edges(data=True)}
-        rset = {(u, v, d["family"], d.get("kind"), d.get("var")) for u, v, d in rg.edges(data=True)}
+        # prov included (as a tuple, so it hashes into the set key) — #270 final review
+        # Finding 4(a): a backend that dropped/mismatched ddg provenance would previously pass
+        # this parity check silently since prov wasn't compared at all.
+        lset = {(u, v, d["family"], d.get("kind"), d.get("var"), tuple(d.get("prov") or []))
+                for u, v, d in lg.edges(data=True)}
+        rset = {(u, v, d["family"], d.get("kind"), d.get("var"), tuple(d.get("prov") or []))
+                for u, v, d in rg.edges(data=True)}
         assert lset == rset, cid
 
 
@@ -141,14 +148,55 @@ def test_sdg_parity(both_backends):
     assert key(local.sdg_edges()) == key(remote.sdg_edges())
 
 
+def test_source_slice_and_callable_of_parity_per_vertex(both_backends):
+    # #270 final review Finding 4(b): every vertex of every callable must agree on callable_of
+    # (both backends), and on source_slice's location half (Neo4j's `code` is documented-lossy —
+    # always None there — so only the (module[:line] | None) half is compared).
+    local, remote = both_backends
+    checked = 0
+    for cid in local._index()["callables"]:
+        for v in local.program_graph(cid).nodes():
+            assert local.callable_of(v) == remote.callable_of(v), v
+            l_fl, _ = local.source_slice(v)
+            r_fl, r_code = remote.source_slice(v)
+            assert l_fl == r_fl, v
+            assert r_code is None
+            checked += 1
+    assert checked > 0  # sanity: the fixture actually has vertices to compare
+
+
+def test_resolve_location_parity_for_every_spanned_vertex(both_backends):
+    # #270 final review Finding 4(b): every (file, line) that owns at least one real vertex must
+    # return the SAME full hit-list on both backends, not just agree on a single hand-picked
+    # location (the existing verb-parity tests only ever probe one seed per verb).
+    local, remote = both_backends
+    locations = set()
+    for cid in local._index()["callables"]:
+        for v in local.program_graph(cid).nodes():
+            fl, _ = local.source_slice(v)
+            if not fl or ":" not in fl:
+                continue  # synthetic vertex (@entry/@exit/formal_*/actual_*) — no line to probe
+            file, _, line = fl.rpartition(":")
+            locations.add((file, int(line)))
+    assert locations  # sanity: the fixture actually has spanned (real source line) vertices
+    for file, line in locations:
+        assert set(local.resolve_location(file, line)) == set(remote.resolve_location(file, line)), (file, line)
+
+
 def test_verb_parity(both_backends):
     from cldk.graph import Engine
 
     local, remote = both_backends
+    # A real param_in pair, discovered from the live application rather than hardcoded ids: the
+    # fixture's app_name is a random tmp-dir name (see both_backends), so can:// ids aren't
+    # stable across runs and can't be pinned as string literals here.
+    param_in_edge = next(e for e in local.sdg_edges() if e.kind == "param_in")
     for verb, args in (
         ("slice_backward", ("pkg/mod.py:5",)),
+        ("slice_forward", ("pkg/mod.py:3",)),
         ("def_use", ("pkg/mod.py:3",)),
         ("control_deps", ("pkg/mod.py:3",)),
+        ("flows_to", (param_in_edge.src, param_in_edge.dst)),
     ):
         l = getattr(Engine(local), verb)(*args)  # noqa: E741
         r = getattr(Engine(remote), verb)(*args)
