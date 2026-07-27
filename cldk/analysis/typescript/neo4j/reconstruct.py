@@ -40,6 +40,7 @@ from typing import Any, Dict, List, Mapping
 
 from cldk.models.typescript import (
     TSCallable,
+    TSCallableOverview,
     TSCallableParameter,
     TSCallsite,
     TSClass,
@@ -188,6 +189,45 @@ def synthesized(props: Props) -> TSSynthesizedCallable:
         path=props.get("path", ""),
         start_line=props.get("start_line", -1),
         start_column=props.get("start_column", -1),
+    )
+
+
+def overview(row: Props) -> TSCallableOverview:
+    """Build a :class:`TSCallableOverview` from a projected callable row (a flat ``RETURN``
+    projection, not a node's ``properties()``): ``signature``/``name``/``kind``/``path``/
+    ``start_line``/``end_line``/``is_exported``/``is_async``/``is_static``/``accessibility`` plus
+    ``owner_signature``/``owner_labels`` (the ``HAS_METHOD`` owner leg — absent, i.e. both null,
+    for module-level/namespace-owned/nested callables) and ``decorators`` (collected decorator
+    names).
+
+    ``owner_kind`` is derived from ``owner_labels`` rather than stored directly: ``"class"`` if the
+    owner node carries the ``Class`` label, ``"interface"`` if it carries ``Interface``, else
+    ``None`` — matching the closed two-value ``owner_kind`` set the in-memory backend produces.
+    """
+    owner_signature = row.get("owner_signature")
+    owner_labels = row.get("owner_labels") or []
+    if owner_signature is None:
+        owner_kind = None
+    elif "Class" in owner_labels:
+        owner_kind = "class"
+    elif "Interface" in owner_labels:
+        owner_kind = "interface"
+    else:
+        owner_kind = None
+    return TSCallableOverview(
+        signature=row.get("signature", ""),
+        name=row.get("name", ""),
+        owner_signature=owner_signature,
+        owner_kind=owner_kind,
+        kind=row.get("kind", "function"),
+        path=row.get("path", ""),
+        start_line=row.get("start_line", -1),
+        end_line=row.get("end_line", -1),
+        decorators=[d for d in (row.get("decorators") or []) if d is not None],
+        is_exported=bool(row.get("is_exported", False)),
+        is_async=bool(row.get("is_async", False)),
+        is_static=bool(row.get("is_static", False)),
+        accessibility=row.get("accessibility"),
     )
 
 

@@ -63,6 +63,7 @@ from cldk.analysis.typescript.neo4j import reconstruct as R
 from cldk.models.typescript import (
     TSApplication,
     TSCallable,
+    TSCallableOverview,
     TSCallEdge,
     TSCallsite,
     TSClass,
@@ -710,3 +711,66 @@ class TSNeo4jBackend(TSAnalysisBackend):
         for r in rows:
             result[r["dn"]].append(r["sig"])
         return result
+
+    # -----[ bulk / projected accessors ]-----
+    # Field-projected RETURNs that sidestep the per-entity reconstruction fan-out: each is a single
+    # Cypher statement (one round trip), not the child-fetch walk _callable_full pays.
+    #
+    # Owner leg: (o:Symbol)-[:HAS_METHOD]->(c) only ever connects a Class/Interface owner to one of
+    # its methods, so it naturally has no match for module-level, namespace-owned, or nested
+    # callables -- they fall out owner-less (None/None) with no separate namespace leg needed.
+    _OVERVIEW_RETURN = (
+        "OPTIONAL MATCH (o:Symbol)-[:HAS_METHOD]->(c) "
+        "OPTIONAL MATCH (c)-[:DECORATED_BY]->(d:Decorator) "
+        "RETURN c.signature AS signature, c.name AS name, c.kind AS kind, c.path AS path, "
+        "c.start_line AS start_line, c.end_line AS end_line, "
+        "c.is_exported AS is_exported, c.is_async AS is_async, c.is_static AS is_static, "
+        "c.accessibility AS accessibility, "
+        "o.signature AS owner_signature, labels(o) AS owner_labels, "
+        "collect(DISTINCT d.name) AS decorators"
+    )
+
+    def get_callables_overview(self) -> List[TSCallableOverview]:
+        rows = self._run(
+            "MATCH (c:Callable) WHERE c._module IN $mods " + self._OVERVIEW_RETURN,
+            mods=self._modules,
+        )
+        return [R.overview(r) for r in rows]
+
+    def get_method_bodies(self, signatures: List[str]) -> Dict[str, str]:
+        rows = self._run(
+            "MATCH (c:Callable) WHERE c._module IN $mods AND c.signature IN $sigs AND c.code IS NOT NULL "
+            "RETURN c.signature AS signature, c.code AS code",
+            mods=self._modules,
+            sigs=list(signatures),
+        )
+        return {r["signature"]: r["code"] for r in rows}
+
+    def get_decorated_callables(self, markers: List[str]) -> List[TSCallableOverview]:
+        rows = self._run(
+            "MATCH (c:Callable)-[:DECORATED_BY]->(marker:Decorator) "
+            "WHERE c._module IN $mods AND marker.name IN $markers "
+            "WITH DISTINCT c " + self._OVERVIEW_RETURN,
+            mods=self._modules,
+            markers=list(markers),
+        )
+        return [R.overview(r) for r in rows]
+
+    def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[TSCallsite]]:
+        # OPTIONAL MATCH so a requested callable with no call sites still yields a row (p is null),
+        # giving it an empty-list entry -- parity with the in-process backend, which keys every
+        # existing signature. ORDER mirrors _callsites_of's call-site ordering.
+        rows = self._run(
+            "MATCH (c:Callable) WHERE c._module IN $mods AND c.signature IN $sigs "
+            "OPTIONAL MATCH (c)-[:HAS_CALLSITE]->(cs:CallSite) "
+            "RETURN c.signature AS owner, properties(cs) AS p "
+            "ORDER BY cs.start_line, cs.start_column",
+            mods=self._modules,
+            sigs=list(signatures),
+        )
+        out: Dict[str, List[TSCallsite]] = {}
+        for r in rows:
+            sites = out.setdefault(r["owner"], [])
+            if r["p"] is not None:
+                sites.append(R.callsite(r["p"]))
+        return out
