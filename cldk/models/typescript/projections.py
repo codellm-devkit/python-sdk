@@ -56,7 +56,10 @@ class TSCallableOverview(BaseModel):
             analyzer.
         path: Project-relative path of the declaring module.
         start_line / end_line: The callable's line span.
-        decorators: The decorator names applied to the callable (``TSDecorator.name`` only).
+        decorators: The decorator names applied to the callable (``TSDecorator.name`` only). Order
+            is not part of the cross-backend contract — the in-memory backend preserves source
+            order, the Neo4j backend aggregates with ``collect(DISTINCT ...)``, which does not
+            guarantee order (and also dedupes duplicate names; see #300).
         is_exported: Whether the callable (or its enclosing declaration) is exported.
         is_async: Whether the callable is declared ``async``.
         is_static: Whether the callable is a static class member.

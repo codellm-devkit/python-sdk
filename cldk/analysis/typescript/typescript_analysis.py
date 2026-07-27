@@ -318,6 +318,11 @@ class TypeScriptAnalysis:
         See Also:
             :meth:`get_decorated_callables`: The same projection filtered by decorator.
             :meth:`get_method_bodies`: Bulk source-body fetch for chosen signatures.
+
+        Note:
+            A ``get x()``/``set x()`` accessor pair shares one ``signature``, so this projection
+            (and the other bulk accessors) can diverge between the local and Neo4j backends on a
+            paired accessor — see `#300 <https://github.com/codellm-devkit/python-sdk/issues/300>`_.
         """
         return self.backend.get_callables_overview()
 

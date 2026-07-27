@@ -254,7 +254,11 @@ class TSAnalysisBackend(ABC):
     def get_callables_overview(self) -> List[TSCallableOverview]:
         """A lightweight projection of every callable in the application (methods, module-level,
         namespace-level, and nested/inner functions), without the full :class:`TSCallable`
-        reconstruction."""
+        reconstruction.
+
+        Known limitation: a ``get x()``/``set x()`` accessor pair shares one ``signature``, so
+        this (and the other bulk accessors) can diverge between backends on a paired accessor —
+        see `#300 <https://github.com/codellm-devkit/python-sdk/issues/300>`_."""
 
     @abstractmethod
     def get_method_bodies(self, signatures: List[str]) -> Dict[str, str]:
