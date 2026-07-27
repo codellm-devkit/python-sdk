@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from cldk.analysis import AnalysisLevel
+from cldk.graph import CapabilityError
 from cldk.graph._cpg_local import CpgLocalProviderMixin
 from cldk.graph.engine import Engine
 from cldk.models.cpg import AnalysisPayload
@@ -58,6 +59,18 @@ def test_flows_to_via_summary(eng):
 def test_flows_to_no_route_is_empty_not_error(eng):
     r = eng.flows_to(f"{C3}@5:8", f"{ENTRY}@7:4")
     assert len(r.paths) == 0 and not r
+
+
+def test_capability_degrade_below_l4(eng):
+    # A level-2 provider over the SAME application object as `eng` (no re-analysis, no
+    # subclassing): flows_to needs L4 for its sdg (param_in/param_out/summary) overlay, so a
+    # cross-callable flow degrades to "no route" rather than crashing or silently completing.
+    low = Engine(_Local(eng.p.application, level=2))
+    r = low.flows_to(f"{ENTRY}@7:4/actual_in:0", f"{C2}@formal_in:1")
+    assert len(r.paths) == 0                       # no sdg overlay below L4
+    assert r.explain()["degraded"]["requested"] == 4
+    with pytest.raises(CapabilityError):
+        low.flows_to(f"{ENTRY}@7:4/actual_in:0", f"{C2}@formal_in:1", strict=True)
 
 
 def test_real_backend_is_a_provider_end_to_end(monkeypatch, tmp_path):
