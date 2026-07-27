@@ -36,6 +36,7 @@ from cldk.analysis.typescript.neo4j import TSNeo4jBackend
 from cldk.models.typescript import (
     TSApplication,
     TSCallable,
+    TSCallableOverview,
     TSCallsite,
     TSClass,
     TSClassAttribute,
@@ -297,3 +298,69 @@ class TypeScriptAnalysis:
     def get_classes_with_decorators(self, decorators: List[str]) -> Dict[str, List[str]]:
         """Map each requested decorator name to the signatures of classes carrying it."""
         return self.backend.get_classes_with_decorators(decorators)
+
+    # -----[ bulk / projected accessors ]-----
+    def get_callables_overview(self) -> List[TSCallableOverview]:
+        """Return a lightweight overview of every callable in the project, in one bulk read.
+
+        A field-projected alternative to :meth:`get_methods` for enumeration: each
+        :class:`~cldk.models.typescript.TSCallableOverview` carries the callable's signature,
+        owning class/interface (if any), native kind, location, and decorators — but not the full
+        reconstruction (call sites, inner callables, locals). On the Neo4j backend this is a single
+        Cypher query instead of the per-entity fan-out :meth:`get_methods` pays. Body-inspect the
+        few you need afterwards via :meth:`get_method` or :meth:`get_method_bodies`.
+
+        Returns:
+            A flat list of :class:`~cldk.models.typescript.TSCallableOverview`, one per callable
+            (class/interface methods, module- and namespace-level functions, and nested/inner
+            callables).
+
+        See Also:
+            :meth:`get_decorated_callables`: The same projection filtered by decorator.
+            :meth:`get_method_bodies`: Bulk source-body fetch for chosen signatures.
+        """
+        return self.backend.get_callables_overview()
+
+    def get_method_bodies(self, signatures: List[str]) -> Dict[str, str]:
+        """Return source bodies for the given callable signatures, in one bulk read.
+
+        Args:
+            signatures: Callable signatures to fetch bodies for (e.g. from
+                :meth:`get_callables_overview`).
+
+        Returns:
+            A dict mapping each signature to its source body. Signatures with no matching callable
+            are omitted.
+        """
+        return self.backend.get_method_bodies(signatures)
+
+    def get_decorated_callables(self, markers: List[str]) -> List[TSCallableOverview]:
+        """Return overviews of callables decorated with any of the given markers, in one bulk read.
+
+        Args:
+            markers: Decorator names to match (e.g. ``["Get", "Controller"]``).
+
+        Returns:
+            A list of :class:`~cldk.models.typescript.TSCallableOverview` for every callable
+            carrying at least one of ``markers`` as a decorator.
+
+        See Also:
+            :meth:`get_callables_overview`: The unfiltered projection.
+        """
+        return self.backend.get_decorated_callables(markers)
+
+    def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[TSCallsite]]:
+        """Return the call sites of the given callables, keyed by signature, in one bulk read.
+
+        Avoids the per-callable reconstruction fan-out when you need call sites for a specific
+        frontier (e.g. dispatch-edge synthesis or external-reader detection).
+
+        Args:
+            signatures: Callable signatures to fetch call sites for.
+
+        Returns:
+            A dict mapping each existing signature to its list of
+            :class:`~cldk.models.typescript.TSCallsite` (empty if the callable has no call sites).
+            Signatures with no matching callable are omitted.
+        """
+        return self.backend.get_callsites_for(signatures)
