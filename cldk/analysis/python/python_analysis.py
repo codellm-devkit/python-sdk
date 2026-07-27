@@ -57,6 +57,7 @@ from cldk.analysis.commons.treesitter import TreesitterPython
 from cldk.analysis.python.backend import PythonAnalysisBackend
 from cldk.analysis.python.codeanalyzer import PyCodeanalyzer
 from cldk.analysis.python.neo4j import PyNeo4jBackend
+from cldk.graph import Engine
 from cldk.models.python import (
     PyApplication,
     PyCallable,
@@ -233,6 +234,31 @@ class PythonAnalysis:
             :meth:`is_parsable`: To validate syntax before parsing.
         """
         return self.treesitter_python.get_raw_ast(source_code)
+
+    # -----[ L3/L4 slice & flow verbs (#270) ]-----
+    def slice_backward(self, seed, *, edges=("cfg", "cdg", "ddg"),
+                       interprocedural=None, strict=False):
+        """Backward program slice from ``seed`` ('file:line[:col]', can:// URI, or body node)."""
+        return Engine(self.backend).slice_backward(
+            seed, edges=edges, interprocedural=interprocedural, strict=strict)
+
+    def slice_forward(self, seed, *, edges=("cfg", "cdg", "ddg"),
+                      interprocedural=None, strict=False):
+        """Forward program slice from ``seed``."""
+        return Engine(self.backend).slice_forward(
+            seed, edges=edges, interprocedural=interprocedural, strict=strict)
+
+    def flows_to(self, source_seed, sink_seed, *, strict=False):
+        """Dataflow reachability with witness paths (interprocedural at L4)."""
+        return Engine(self.backend).flows_to(source_seed, sink_seed, strict=strict)
+
+    def def_use(self, seed, *, strict=False):
+        """Definitions/uses reachable from ``seed`` over the dataflow graph."""
+        return Engine(self.backend).def_use(seed, strict=strict)
+
+    def control_deps(self, seed, *, strict=False):
+        """The control-dependence ancestors of ``seed`` (intraprocedural by design)."""
+        return Engine(self.backend).control_deps(seed, strict=strict)
 
     # -----[ application view ]-----
     def get_application_view(self) -> PyApplication:
