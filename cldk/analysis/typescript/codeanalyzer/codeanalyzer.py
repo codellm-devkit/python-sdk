@@ -583,9 +583,12 @@ class TSCodeanalyzer(TSAnalysisBackend):
         return [TSCallableOverview.from_callable(c, owner_sig, owner_kind) for c, owner_sig, owner_kind in self._iter_callables()]
 
     def get_method_bodies(self, signatures: List[str]) -> Dict[str, str]:
-        """Return ``{signature: code}`` for the requested signatures that exist."""
+        """Return ``{signature: code}`` for the requested signatures that exist and have a body
+        (omits callables whose ``code`` is ``None``, e.g. implicit constructors)."""
         wanted = set(signatures)
-        return {c.signature: c.code for c, _, _ in self._iter_callables() if c.signature in wanted}
+        return {
+            c.signature: c.code for c, _, _ in self._iter_callables() if c.signature in wanted and c.code is not None
+        }
 
     def get_decorated_callables(self, markers: List[str]) -> List[TSCallableOverview]:
         """Return overviews of callables decorated with any of ``markers``."""

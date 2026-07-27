@@ -330,7 +330,8 @@ class TypeScriptAnalysis:
 
         Returns:
             A dict mapping each signature to its source body. Signatures with no matching callable
-            are omitted.
+            are omitted, as are callables whose ``code`` is ``None`` (e.g. implicit constructors
+            the analyzer synthesizes with no source text) — every returned value is a real ``str``.
         """
         return self.backend.get_method_bodies(signatures)
 

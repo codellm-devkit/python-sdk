@@ -259,7 +259,9 @@ class TSAnalysisBackend(ABC):
     @abstractmethod
     def get_method_bodies(self, signatures: List[str]) -> Dict[str, str]:
         """Source bodies for the given callable signatures, keyed by signature. Signatures with no
-        matching callable are omitted."""
+        matching callable are omitted, as are callables whose ``code`` is ``None`` (e.g. implicit
+        constructors the analyzer synthesizes with no source text) — every returned value is a
+        real ``str``."""
 
     @abstractmethod
     def get_decorated_callables(self, markers: List[str]) -> List[TSCallableOverview]:

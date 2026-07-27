@@ -174,6 +174,22 @@ def test_method_bodies_empty_for_no_matches(ts_analysis):
     assert ts_analysis.get_method_bodies(["nope"]) == {}
 
 
+def test_method_bodies_omits_code_less_callables(ts_analysis):
+    """The implicit ``Builder`` constructor exists (it's a real callable in the symbol table) but
+    the analyzer never synthesized source text for it -- ``code`` is ``None``. It must be omitted
+    from the result, not surfaced as ``{sig: None}``, so every returned value is a real ``str``."""
+    bodies = ts_analysis.get_method_bodies(
+        [
+            "src/services.UserService.create",
+            "src/util.StringUtil.Builder.constructor",
+            "src/does/not.exist",
+        ]
+    )
+    assert set(bodies) == {"src/services.UserService.create"}
+    assert "src/util.StringUtil.Builder.constructor" not in bodies
+    assert all(isinstance(v, str) for v in bodies.values())
+
+
 # -----[ get_decorated_callables ]-----
 
 
