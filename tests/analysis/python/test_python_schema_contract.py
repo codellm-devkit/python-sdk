@@ -72,9 +72,12 @@ def test_neo4j_schema_version_absent_fails_fast(monkeypatch):
 
 # -----[ in-process envelope gate ]-----
 class _StubAnalysis:
-    def __init__(self, schema_version, application=None):
+    def __init__(self, schema_version, application=None, max_level=1):
         self.schema_version = schema_version
         self.application = application
+        # Real schema 2.0.0+ envelopes always carry max_level (pydantic default 1) —
+        # _run_analyzer now captures it unconditionally, so the stub must too.
+        self.max_level = max_level
 
 
 class _StubCodeanalyzer:

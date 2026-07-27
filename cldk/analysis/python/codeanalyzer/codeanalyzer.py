@@ -260,7 +260,11 @@ class PyCodeanalyzer(CpgLocalProviderMixin, PythonAnalysisBackend):
             "clear_cache": False,
             "verbosity": 0,
         }
-        # Add analysis_level if _level_int is available (set in __init__)
+        # Add analysis_level if _level_int is available (set in __init__). The guard IS
+        # load-bearing, not dead defensiveness: tests/analysis/python/test_python_schema_contract.py
+        # exercises this method on a `PyCodeanalyzer.__new__` instance that never ran `__init__`
+        # (and so never set `_level_int`) to isolate the schema-envelope gate below from analyzer
+        # construction — removing the guard would make those tests raise AttributeError.
         if hasattr(self, "_level_int"):
             opts["analysis_level"] = self._level_int
 
@@ -275,14 +279,15 @@ class PyCodeanalyzer(CpgLocalProviderMixin, PythonAnalysisBackend):
             )
         # The envelope reports what the analyzer actually computed; the capability gate
         # (cldk/graph/capability.py) reads it via max_level() — recorded, never sniffed.
-        # (Only record if available; schema 2.0.0+ always provides it)
-        if hasattr(analysis, "max_level"):
-            self._max_level: int = analysis.max_level
+        # Schema 2.0.0+'s Analysis envelope always carries max_level (default 1), so capturing
+        # it is unconditional here; an envelope that somehow lacks the attribute should fail
+        # loudly rather than silently fabricate a level.
+        self._max_level: int = analysis.max_level
         return analysis.application
 
     def max_level(self) -> int:
         """The analysis level of the underlying run (1-4), as reported by the analyzer."""
-        return getattr(self, "_max_level", 1)
+        return self._max_level
 
     def _id_to_signature(self) -> Dict[str, str]:
         """Map every symbol-table callable's ``can://`` id to its dotted signature.
