@@ -3,6 +3,21 @@
 Decision log for SDK-surface design (per designing-cldk-changes, sdk-facade-design-loop).
 One line per locked decision; newest section first.
 
+## 2026-07-27 — L3/L4 verb wiring is staged per release
+
+- **Staging:** rc.1 wires the five slice/flow verbs on the Python facade only (local + Neo4j);
+  rc.2 adds TypeScript; rc.3 adds the Java honest-degrade leg; rc.4 (Go) and rc.5 (C++) are
+  new-language legs entering via designing-cldk-changes (the C++ leg absorbs the existing C
+  facade); 2.0.0 final swaps the Rust query core (#279) in under the verbs, restores the
+  all-language DoD, and closes #270.
+- **URI minting:** providers mint body-vertex URIs as `<callable_id>@<local_key sans leading @>`,
+  matching the analyzers' own param_in/param_out vocabulary (the real 1.0.2 Neo4j emitter stores
+  these can:// ids directly on PyCFGNode). Local keys never escape a provider.
+- **source_slice contract:** existing span-less (synthetic) vertex → `(module_path, None)`;
+  unknown vertex → `(None, None)`; never derive a line from key shape. Both backends identical.
+- **Rust hand-off unchanged:** the Rust query core (#279) replaces the Python engine underneath
+  these verbs post-M1; the facade surface added here is the stable contract it must satisfy.
+
 ## 2026-07-21 — Rust query engine (fluent API core)
 
 - **M1 scope:** Epic B success criteria — the two Odoo PoE audit queries (#155), single-language,
