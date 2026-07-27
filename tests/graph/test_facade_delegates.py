@@ -19,7 +19,9 @@ def _mock_backend():
     b.max_level.return_value = 3
     b.callable_of.side_effect = lambda u: "c"
     g = nx.MultiDiGraph()
-    g.add_edge("c@2:0", "c@1:0", family="ddg", prov=["ssa"], var="x", kind=None)
+    # Edge direction: def→use; the definition at c@1:0 flows into the use at c@2:0.
+    # A backward slice from the use (c@2:0) walks incoming edges to reach the def (c@1:0).
+    g.add_edge("c@1:0", "c@2:0", family="ddg", prov=["ssa"], var="x", kind=None)
     b.program_graph.return_value = g
     b.sdg_edges.return_value = []
     b.resolve_location.return_value = ["c@2:0"]
