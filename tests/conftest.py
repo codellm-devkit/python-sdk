@@ -66,8 +66,8 @@ def analysis_json(analysis_json_fixture) -> str:
 def codeanalyzer_backend_path():
     """Backend-path override for the Java analyzer in tests.
 
-    Returns None so the analyzer uses its default: the JVM-free native binary shipped in the
-    ``codeanalyzer-java`` PyPI package (``python -m codeanalyzer_java``).
+    Returns None so the analyzer uses its default: the ``codeanalyzer-*.jar`` bundled under
+    ``cldk/analysis/java/codeanalyzer/jar/``, run on a cached JDK (``[java, -jar, <jar>]``).
     """
     return None
 

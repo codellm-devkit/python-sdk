@@ -19,7 +19,6 @@ Test Cases for JCodeanalyzer
 """
 
 import os
-import sys
 import json
 from typing import Dict, List, Tuple
 from unittest.mock import patch, MagicMock
@@ -195,27 +194,6 @@ def test_init_codeanalyzer_reuses_legacy_cache_when_compatible(test_fixture, cod
     assert compilation_unit.import_declarations[0].path == "java.util.List"
     assert compilation_unit.import_declarations[0].is_static is False
     assert compilation_unit.import_declarations[0].is_wildcard is False
-
-
-def test_get_codeanalyzer_exec(test_fixture, analysis_json, tmp_path):
-    """Should resolve the codeanalyzer native binary command (packaged binary only)."""
-
-    # Patch subprocess so that it does not run codeanalyzer
-    with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
-
-        code_analyzer = JCodeanalyzer(
-            project_dir=test_fixture,
-            source_code=None,
-            analysis_json_path=None,
-            analysis_level=AnalysisLevel.symbol_table,
-            eager_analysis=False,
-            target_files=None,
-        )
-
-        # The PyPI native binary, invoked via `python -m codeanalyzer_java`. There is no longer a
-        # backend-path override (the binary ships with the packaged dependency).
-        assert code_analyzer._get_codeanalyzer_exec() == [sys.executable, "-m", "codeanalyzer_java"]
 
 
 def test_generate_call_graph(test_fixture, analysis_json):
