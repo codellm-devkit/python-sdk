@@ -60,7 +60,7 @@ from codeanalyzer.core import Codeanalyzer
 from codeanalyzer.options import AnalysisOptions
 from codeanalyzer.schema import model_dump_json
 
-from cldk.analysis import ANALYSIS_LEVEL_TO_INT, AnalysisLevel
+from cldk.analysis import ANALYSIS_LEVEL_TO_INT, AnalysisLevel, to_analysis_level
 from cldk.analysis.python.backend import PythonAnalysisBackend
 from cldk.utils.exceptions import CldkSchemaMismatchException
 from cldk.models.python import (
@@ -194,7 +194,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         if not self.project_dir.is_dir():
             raise ValueError(f"project_dir does not exist or is not a directory: {self.project_dir}")
         self.analysis_level = analysis_level
-        self._level_int = ANALYSIS_LEVEL_TO_INT[AnalysisLevel(analysis_level)]
+        self._level_int = ANALYSIS_LEVEL_TO_INT[to_analysis_level(analysis_level)]
         self.eager_analysis = eager_analysis
         self.target_files = target_files
         self.use_ray = use_ray

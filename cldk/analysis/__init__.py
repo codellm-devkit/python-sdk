@@ -30,6 +30,20 @@ class AnalysisLevel(str, Enum):
     system_dependency_graph = "system dependency graph"
 
 
+def to_analysis_level(value) -> AnalysisLevel:
+    """Normalize a level given as an AnalysisLevel, its value ("call graph"),
+    or its name ("call_graph") — both spellings are in the wild."""
+    if isinstance(value, AnalysisLevel):
+        return value
+    try:
+        return AnalysisLevel(value)
+    except ValueError:
+        try:
+            return AnalysisLevel[value]
+        except KeyError:
+            raise ValueError(f"unknown analysis level: {value!r}") from None
+
+
 #: Facade-level vocabulary → the analyzers' integer analysis level (schema 2.0 ``max_level``).
 ANALYSIS_LEVEL_TO_INT = {
     AnalysisLevel.symbol_table: 1,
