@@ -65,6 +65,36 @@ jobs:
       - name: Build Package
         run: uv build
 
+      - name: Verify the codeanalyzer JAR is bundled
+        # Guard against the hatchling/.gitignore regression (issue #284): a jarless wheel
+        # installs fine but fails at runtime with "codeanalyzer jar not found". Fail the
+        # release here rather than publish a broken artifact to PyPI.
+        #
+        # The listing is captured before grepping: piping `tar tzf` (which decompresses the
+        # whole 32MB sdist) straight into `grep -q` lets grep close the pipe on first match,
+        # SIGPIPE-killing tar and — under `pipefail` — reporting a false "missing JAR".
+        run: |
+          set -euo pipefail
+          jar_re='codeanalyzer/jar/codeanalyzer-[0-9][^/]*\.jar$'
+          fail=0
+          for f in dist/*.whl dist/*.tar.gz; do
+            case "$f" in
+              *.whl)    listing=$(unzip -l "$f") ;;
+              *.tar.gz) listing=$(tar tzf "$f") ;;
+            esac
+            if grep -qE "$jar_re" <<<"$listing"; then
+              echo "  ✓ $f"
+            else
+              echo "::error::$f is missing the codeanalyzer JAR"
+              grep -i '\.jar' <<<"$listing" || echo "  (no .jar entries at all)"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "Refusing to publish a jarless release."; exit 1
+          fi
+          echo "codeanalyzer JAR present in wheel and sdist ✓"
+
       - name: Read Changelog Entry
         id: changelog_reader
         uses: mindsers/changelog-reader-action@v2
