@@ -85,6 +85,15 @@ wheels = [
 ]
 
 [[package]]
+name = "astor"
+version = "0.8.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5a/21/75b771132fee241dfe601d39ade629548a9626d1d39f333fde31bc46febe/astor-0.8.1.tar.gz", hash = "sha256:6a6effda93f4e1ce9f618779b2dd1d9d84f1e32812c23a29b3fff6fd7f63fa5e", size = 35090, upload-time = "2019-12-10T01:50:35.51Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c3/88/97eef84f48fa04fbd6750e62dcceafba6c63c81b7ac1420856c8dcc0a3f9/astor-0.8.1-py2.py3-none-any.whl", hash = "sha256:070a54e890cefb5b3739d19f30f5a5ec840ffc9c50ffa7d23cc9fc1a38ebbfc5", size = 27488, upload-time = "2019-12-10T01:50:33.628Z" },
+]
+
+[[package]]
 name = "astroid"
 version = "3.3.11"
 source = { registry = "https://pypi.org/simple" }
@@ -345,7 +354,7 @@ test = [
 [package.metadata]
 requires-dist = [
     { name = "clang", specifier = "==17.0.6" },
-    { name = "codeanalyzer-python", specifier = "==1.0.2" },
+    { name = "codeanalyzer-python", specifier = "==1.1.0" },
     { name = "codeanalyzer-typescript", specifier = "==1.0.0" },
     { name = "libclang", specifier = "==17.0.6" },
     { name = "neo4j", marker = "extra == 'neo4j'", specifier = ">=5.14,<7" },
@@ -394,15 +403,17 @@ wheels = [
 
 [[package]]
 name = "codeanalyzer-python"
-version = "1.0.2"
+version = "1.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
+    { name = "astor" },
     { name = "jedi" },
     { name = "msgpack" },
     { name = "networkx" },
     { name = "numpy" },
     { name = "packaging" },
     { name = "pandas" },
+    { name = "parso" },
     { name = "pycg" },
     { name = "pydantic" },
     { name = "ray" },
@@ -412,9 +423,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "uv" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6b/0b/82851b70b20d104d0dd332db64767dfac1025d9a9d2b5416362236c8c09a/codeanalyzer_python-1.0.2.tar.gz", hash = "sha256:53e85521c77f9acef96dc9189b07c88cf3343cc45f9bd709e3678c28ad76c07e", size = 156929, upload-time = "2026-07-17T02:44:49.489Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2b/cb/c223115d8866f4436066d3cc24e68ad5585c07dc408d3b688f915392989a/codeanalyzer_python-1.1.0.tar.gz", hash = "sha256:e706763fb8d690ecb91466060cef44098caab583cb2d2fc8b95f77c1fdaf9d77", size = 178430, upload-time = "2026-07-27T15:39:40.072Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/df/bb/ef502f9dd6106c9ad8f06a0bda977682fdf9c8549f7450b7af5384dabe07/codeanalyzer_python-1.0.2-py3-none-any.whl", hash = "sha256:f1772154817710259cde310a435ca51f7d22fe0f12cde04f4428883efa38dc49", size = 155698, upload-time = "2026-07-17T02:44:47.932Z" },
+    { url = "https://files.pythonhosted.org/packages/dd/8a/88f924b4d1ccbb0c04fae651085f43b0b558647c5b129e16c420c5c3ec1a/codeanalyzer_python-1.1.0-py3-none-any.whl", hash = "sha256:8bd302d927bdfbe79f26fdbf75a4f7e14f91058483e09c66981b294e7dbd2127", size = 180702, upload-time = "2026-07-27T15:39:38.693Z" },
 ]
 
 [[package]]
@@ -1417,11 +1428,11 @@ wheels = [
 
 [[package]]
 name = "parso"
-version = "0.8.4"
+version = "0.8.7"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/66/94/68e2e17afaa9169cf6412ab0f28623903be73d1b32e208d9e8e541bb086d/parso-0.8.4.tar.gz", hash = "sha256:eb3a7b58240fb99099a345571deecc0f9540ea5f4dd2fe14c2a99d6b281ab92d", size = 400609, upload-time = "2024-04-05T09:43:55.897Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/30/4b/90c937815137d43ce71ba043cd3566221e9df6b9c805f24b5d138c9d40a7/parso-0.8.7.tar.gz", hash = "sha256:eaaac4c9fdd5e9e8852dc778d2d7405897ec510f2a298071453e5e3a07914bb1", size = 401824, upload-time = "2026-05-01T23:13:02.138Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/c6/ac/dac4a63f978e4dcb3c6d3a78c4d8e0192a113d288502a1216950c41b1027/parso-0.8.4-py2.py3-none-any.whl", hash = "sha256:a418670a20291dacd2dddc80c377c5c3791378ee1e8d12bffc35420643d43f18", size = 103650, upload-time = "2024-04-05T09:43:53.299Z" },
+    { url = "https://files.pythonhosted.org/packages/99/5d/8268b644392ee874ee82a635cd0df1773de230bde356c38de28e298392cc/parso-0.8.7-py2.py3-none-any.whl", hash = "sha256:a8926eb2a1b915486941fdbd31e86a4baf88fe8c210f25f2f35ecec5b574ca1c", size = 107025, upload-time = "2026-05-01T23:12:58.867Z" },
 ]
 
 [[package]]
