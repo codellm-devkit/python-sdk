@@ -41,11 +41,17 @@ jobs:
 
       - name: Run Tests
         id: test
+        # continue-on-error is deliberate: without it a red suite fails the job
+        # immediately and the tag-deletion step below never runs. It must be paired
+        # with `outcome` (not `conclusion`) in that step — see the comment there.
         continue-on-error: true
         run: uv run make test
 
       - name: Delete tag on failure
-        if: steps.test.conclusion == 'failure'
+        # MUST be `outcome`, not `conclusion`: continue-on-error rewrites `conclusion`
+        # to `success`, so `steps.test.conclusion == 'failure'` is never true and this
+        # step never fires. `outcome` preserves the step's real result.
+        if: steps.test.outcome == 'failure'
         run: |
           echo "Tests failed. Deleting tag ${GITHUB_REF#refs/tags/}..."
           git push --delete origin ${GITHUB_REF#refs/tags/}
