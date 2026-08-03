@@ -498,12 +498,12 @@ class PyNeo4jBackend(PythonAnalysisBackend):
 
     def get_method_bodies(self, signatures: List[str]) -> Dict[str, str]:
         rows = self._run(
-            "MATCH (c:PyCallable) WHERE c._module IN $mods AND c.signature IN $sigs "
+            "MATCH (c:PyCallable) WHERE c._module IN $mods AND c.signature IN $sigs AND c.code IS NOT NULL "
             "RETURN c.signature AS signature, c.code AS code",
             mods=self._modules,
             sigs=list(signatures),
         )
-        return {r["signature"]: r.get("code") for r in rows}
+        return {r["signature"]: r["code"] for r in rows}
 
     def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:
         rows = self._run(
