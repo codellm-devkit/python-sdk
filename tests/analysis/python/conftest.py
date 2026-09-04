@@ -18,8 +18,10 @@
 
 ``FakeDriver``/``FakeSession`` stand in for the real ``neo4j`` driver — no container, no
 network — so :class:`~cldk.analysis.python.neo4j.neo4j_backend.PyNeo4jBackend` can be
-constructed and probed in-process. ``PyNeo4jBackend.__init__`` accepts one of these directly in
-place of a ``bolt://`` URI (see its duck-typed ``isinstance(neo4j_uri, str)`` check).
+constructed and probed in-process. Build a backend from one via
+``PyNeo4jBackend._from_driver(fake_driver, application_name=...)`` — the private constructor
+seam that exists precisely so the public ``__init__`` (a real ``bolt://`` URI + credentials)
+never has to accept anything but a URI string.
 """
 
 from typing import Any

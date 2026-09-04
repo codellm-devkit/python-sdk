@@ -33,18 +33,18 @@ def test_probe_raises_on_v1_graph(fake_driver):
     """A graph built by codeanalyzer-python 0.3.x has PY_HAS_CALLSITE, not PY_HAS_BODY_NODE."""
     fake_driver.rel_types = {"PY_HAS_MODULE", "PY_HAS_METHOD", "PY_HAS_CALLSITE", "PY_CALLS"}
     with pytest.raises(GraphSchemaMismatch) as e:
-        PyNeo4jBackend(fake_driver, application_name="app")
+        PyNeo4jBackend._from_driver(fake_driver, application_name="app")
     assert "PY_HAS_BODY_NODE" in e.value.missing
     assert "PY_HAS_CALLSITE" in str(e.value)  # names what it found, not just what it wanted
 
 
 def test_probe_passes_on_v2_graph(fake_driver):
     fake_driver.rel_types = REQUIRED | {"PY_DDG", "PY_PARAM_IN"}
-    PyNeo4jBackend(fake_driver, application_name="app")  # no raise
+    PyNeo4jBackend._from_driver(fake_driver, application_name="app")  # no raise
 
 
 def test_probe_raises_on_empty_graph(fake_driver):
     """An asset-only graph must not look like an application with no code."""
     fake_driver.rel_types = set()
     with pytest.raises(GraphSchemaMismatch):
-        PyNeo4jBackend(fake_driver, application_name="app")
+        PyNeo4jBackend._from_driver(fake_driver, application_name="app")

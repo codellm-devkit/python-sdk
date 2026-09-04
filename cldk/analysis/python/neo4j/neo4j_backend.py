@@ -121,24 +121,29 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         neo4j_database: str | None = None,
         application_name: str | None = None,
     ) -> None:
+        try:
+            from neo4j import GraphDatabase
+        except ModuleNotFoundError as e:  # pragma: no cover - import guard
+            raise CodeanalyzerExecutionException(
+                "The Neo4j backend requires the 'neo4j' driver. Install it with "
+                "`pip install neo4j` (or `pip install cldk[neo4j]`)."
+            ) from e
+        driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_username, neo4j_password))
+        self._init_with_driver(driver, application_name=application_name, neo4j_database=neo4j_database)
+
+    @classmethod
+    def _from_driver(cls, driver: Any, *, application_name: str | None = None, neo4j_database: str | None = None) -> "PyNeo4jBackend":
+        """Construct directly from an already-built driver — exists for tests injecting a fake driver."""
+        self = cls.__new__(cls)
+        self._init_with_driver(driver, application_name=application_name, neo4j_database=neo4j_database)
+        return self
+
+    def _init_with_driver(self, driver: Any, *, application_name: str | None = None, neo4j_database: str | None = None) -> None:
         if not application_name:
             raise CodeanalyzerExecutionException("application_name is required to scope queries to an application.")
         self.application_name = application_name
         self._database = neo4j_database
-
-        if isinstance(neo4j_uri, str):
-            try:
-                from neo4j import GraphDatabase
-            except ModuleNotFoundError as e:  # pragma: no cover - import guard
-                raise CodeanalyzerExecutionException(
-                    "The Neo4j backend requires the 'neo4j' driver. Install it with "
-                    "`pip install neo4j` (or `pip install cldk[neo4j]`)."
-                ) from e
-            self._driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_username, neo4j_password))
-        else:
-            # Already a constructed driver (dependency injection for tests) — used as-is, no
-            # 'neo4j' import required. Real callers always pass a bolt:// URI string.
-            self._driver = neo4j_uri
+        self._driver = driver
         # One long-lived read session reused across queries (see _run). Reconstruction is an N+1
         # fan-out, so reopening a session per query added real per-call overhead. Created lazily.
         self._session_obj: Any | None = None
