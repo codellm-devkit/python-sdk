@@ -14,23 +14,20 @@
 # limitations under the License.
 ################################################################################
 
-"""The generic cross-language AnalysisBackend contract (introspection only)."""
+"""The generic cross-language AnalysisBackend contract (introspection only).
+
+Abstract-method completeness (every concrete backend leaves ``__abstractmethods__`` empty) is
+owned by ``tests/analysis/python/test_python_backend_contract.py::test_backend_fully_implements_contract``
+— don't re-add that check here.
+"""
 
 from cldk.analysis.commons.backend import AnalysisBackend
 from cldk.analysis.python.backend import PythonAnalysisBackend
-from cldk.analysis.python.codeanalyzer.codeanalyzer import PyCodeanalyzer
 from cldk.analysis.python.neo4j.neo4j_backend import PyNeo4jBackend
 
 
 def test_python_backend_parameterises_the_generic_abc():
     assert issubclass(PythonAnalysisBackend, AnalysisBackend)
-
-
-def test_both_python_backends_implement_every_abstract_method():
-    """Local and Neo4j stay in parity: an unimplemented method makes the class abstract."""
-    for impl in (PyNeo4jBackend, PyCodeanalyzer):
-        missing = getattr(impl, "__abstractmethods__", frozenset())
-        assert not missing, f"{impl.__name__} leaves {sorted(missing)} abstract"
 
 
 def test_prefixes_declared():
