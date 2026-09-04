@@ -307,15 +307,19 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             A ``networkx.DiGraph`` where:
                 - Nodes are method/function signatures, or a raw ``@external`` id when unresolved
                 - Edges represent call relationships from caller to callee
-                - Edge attributes are ``weight`` and ``provenance`` — 1.4.0's ``PyCallEdge`` has
-                  no ``type`` field (canonical v2's rule: the edge list's own name IS the type,
-                  so there's nothing to carry)
+                - Edge attributes are ``type`` (constant ``"CALL_DEP"``), ``weight`` and
+                  ``provenance``. 1.4.0's ``PyCallEdge`` payload itself has no ``type`` field
+                  (canonical v2's rule: the edge list's own name IS the type) — but that governs
+                  the schema payload, not this networkx projection, which is CLDK's own and keeps
+                  its own ``"CALL_DEP"`` convention: the Neo4j backend's ``_build_call_graph``
+                  hardcodes the same constant, and Java/TypeScript both assert it too
+                  (``test_jcodeanalyzer.py``, ``test_typescript_neo4j_backend.py``).
         """
         graph = nx.DiGraph()
         for edge in edges:
             src = id_to_signature.get(edge.src, edge.src)
             dst = id_to_signature.get(edge.dst, edge.dst)
-            graph.add_edge(src, dst, weight=edge.weight, provenance=tuple(edge.prov))
+            graph.add_edge(src, dst, type="CALL_DEP", weight=edge.weight, provenance=tuple(edge.prov))
         return graph
 
     # --------------------------------------------------------- application

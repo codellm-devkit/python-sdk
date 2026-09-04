@@ -51,15 +51,13 @@ def _local_backend():
     """A PyCodeanalyzer wired to a hand-built application, bypassing the analyzer run.
 
     The call graph is hand-built directly onto ``backend.call_graph`` rather than via
-    ``PyApplication.call_graph`` + ``PyCodeanalyzer._build_call_graph``: since 1.4.0's
-    ``PyCallEdge`` carries no ``type`` field at all (canonical v2: the edge list's own name IS the
-    type), that method's rebuilt edges carry only ``weight``/``provenance`` — while the Neo4j
-    backend's own ``_build_call_graph`` still hardcodes ``type="CALL_DEP"`` on every edge (it has
-    no ``PyCallEdge`` to read a type from either way). Hand-building the graph here with that same
-    ``type="CALL_DEP"`` keeps ``test_backend_parity_for_module_level_lookup``'s cross-backend
-    equality assert meaningful without this fixture caring which one is "right" — the dedicated
-    ``test_build_call_graph_resolves_ids_to_signatures_and_drops_type`` below is what actually
-    exercises ``_build_call_graph`` against real ``PyCallEdge`` construction.
+    ``PyApplication.call_graph`` + ``PyCodeanalyzer._build_call_graph``, purely to keep this
+    fixture (reused by most tests in this file) simple: ``_build_call_graph`` resolves a
+    ``PyCallEdge``'s ``src``/``dst`` (``can://`` ids) back to signatures via each callable's own
+    ``id``, which would mean giving ``entry``/``helper`` below explicit, matching ``id=`` values
+    for no benefit to what this file actually tests (module-level ``get_method`` resolution).
+    ``_build_call_graph`` itself is exercised directly, against real ``PyCallEdge`` construction,
+    by ``test_build_call_graph_resolves_ids_to_signatures`` below.
     """
     entry = PyCallable(name="entry", path="pkg/mod.py", signature=ENTRY_SIG)
     helper = PyCallable(name="helper", path="pkg/mod.py", signature=HELPER_SIG)
@@ -248,12 +246,14 @@ def test_get_method_still_resolves_class_methods_neo4j():
 # ----------------------------------------------------------------------------------------------
 # regression: PyCodeanalyzer._build_call_graph must actually run against real PyCallEdge objects
 # ----------------------------------------------------------------------------------------------
-def test_build_call_graph_resolves_ids_to_signatures_and_drops_type():
+def test_build_call_graph_resolves_ids_to_signatures():
     """1.4.0's ``PyCallEdge`` is ``{src, dst, weight, prov}`` -- ``src``/``dst`` are ``can://`` ids,
-    not signatures, and there is no ``type`` field at all (canonical v2: the edge list's own name
-    IS the type). This drives ``get_call_graph()`` end to end against real ``PyCallEdge``/
+    not signatures. This drives ``get_call_graph()`` end to end against real ``PyCallEdge``/
     ``PyCallable`` construction (not a hand-built ``nx.DiGraph``), so a future rename of either
-    model trips this test the way it should have tripped the one this replaces.
+    model trips this test the way it should have tripped the one this replaces. ``type`` stays
+    the constant ``"CALL_DEP"`` -- that's this networkx projection's own convention (matching the
+    Neo4j backend and the Java/TypeScript backends), not part of the ``PyCallEdge`` payload it's
+    built from.
     """
     entry = PyCallable(name="entry", path="pkg/mod.py", signature=ENTRY_SIG, id="can://entry")
     helper = PyCallable(name="helper", path="pkg/mod.py", signature=HELPER_SIG, id="can://helper")
@@ -279,7 +279,7 @@ def test_build_call_graph_resolves_ids_to_signatures_and_drops_type():
     # nodes are signatures (parity with the Neo4j backend), not can:// ids
     assert set(graph.nodes) == {ENTRY_SIG, HELPER_SIG, "can://probe/@external/os.path/join"}
     edge = graph.get_edge_data(ENTRY_SIG, HELPER_SIG)
-    assert edge == {"weight": 2, "provenance": ("jedi",)}
+    assert edge == {"type": "CALL_DEP", "weight": 2, "provenance": ("jedi",)}
 
     # an @external target absent from the symbol table keeps its raw id rather than the edge
     # being dropped
