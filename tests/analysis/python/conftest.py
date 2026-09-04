@@ -448,7 +448,8 @@ def _locate_row(idx, module_props=None, callable_props=None, class_props=None, b
 
 
 def _locate_responder(query: str, params: dict) -> list[dict]:
-    """Answers ``_load_module_keys`` and ``PyNeo4jBackend._LOCATE_QUERY`` for the ``py`` fixture.
+    """Answers ``_load_module_keys``, ``PyNeo4jBackend._LOCATE_QUERY``, ``get_method_bodies`` and
+    ``get_source`` for the ``py`` fixture.
 
     This evaluates the query's WHERE clauses rather than short-circuiting them, so the assertions it
     backs are about the query the backend actually sends: ``$mods`` really gates the callable match
@@ -457,6 +458,20 @@ def _locate_responder(query: str, params: dict) -> list[dict]:
     """
     if "RETURN m.file_key AS k" in query:
         return [{"k": _LOCATE_MODULE_PATH}]
+    if "c.code IS NOT NULL" in query:
+        # get_method_bodies (bulk, "c.signature IN $sigs") and get_source (single, "c.signature =
+        # $sig") both gate on $mods and on a real code property -- a bodyless callable (has_span
+        # False, e.g. Store.stub) has none, so it is simply absent from the rows, never "".
+        if _LOCATE_MODULE_PATH not in params.get("mods", []):
+            return []
+        if "IN $sigs" in query:
+            return [
+                {"signature": sig, "code": _locate_code(spec["start_line"], spec["end_line"])}
+                for sig in params.get("sigs", [])
+                if (spec := _LOCATE_SPEC.get(sig)) is not None and spec["has_span"]
+            ]
+        spec = _LOCATE_SPEC.get(params.get("sig"))
+        return [{"code": _locate_code(spec["start_line"], spec["end_line"])}] if spec is not None and spec["has_span"] else []
     if "UNWIND $positions AS pos" not in query:
         return []
     rows: list[dict] = []
