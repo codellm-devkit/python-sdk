@@ -29,9 +29,11 @@ This is a pure relocation: no abstract method here is new, and no behaviour chan
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import ClassVar, Dict, Generic, List, TypeVar
+from typing import ClassVar, Dict, Generic, List, Sequence, Tuple, TypeVar
 
 import networkx as nx
+
+from cldk.analysis.commons.results import LocateResult
 
 AppT = TypeVar("AppT")
 ModuleT = TypeVar("ModuleT")
@@ -92,3 +94,26 @@ class AnalysisBackend(ABC, Generic[AppT, ModuleT, TypeT, CallableT, FieldT, Para
     @abstractmethod
     def get_method_parameters(self, qualified_class_name: str, qualified_method_name: str) -> List[ParamT]:
         """The parameters of a method."""
+
+    # -----[ graph queries ]-----
+    # One template across languages (see the v2 query-facade spec, D3): a scanner alert arrives as
+    # file:line and the caller needs the enclosing callable *and its source* in one round trip,
+    # never an ambiguous empty. Declared here rather than per language because the shape doesn't
+    # vary; only Python implements it so far (locate() ships with every language leg in turn).
+    @abstractmethod
+    def locate(self, path: str, line: int, col: int | None = None) -> LocateResult:
+        """Resolve a source position to its enclosing callable, with the source in hand.
+
+        Three outcomes, kept distinguishable rather than collapsed into an ambiguous empty: inside
+        a callable (``callable`` set), at module scope (a real position with no enclosing
+        callable — a ``module_scope`` diagnostic, never silently snapped to the nearest callable),
+        or in a file the graph has no module for (``file_not_in_graph``).
+        """
+
+    @abstractmethod
+    def locate_many(self, positions: Sequence[Tuple[str, int]]) -> List[LocateResult]:
+        """Resolve many positions in one round trip, in input order.
+
+        The bulk form, not an optimisation over :meth:`locate`: a scanner hands over a whole alert
+        set at once, and round trips cost latency for a person and context for an agent.
+        """

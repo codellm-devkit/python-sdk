@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Dict, Iterator, List, Tuple, Union
+from typing import Dict, Iterator, List, Sequence, Tuple, Union
 
 import networkx as nx
 
@@ -60,6 +60,7 @@ from codeanalyzer.options import AnalysisOptions, EmitTarget
 from codeanalyzer.schema import Analysis, model_dump_json
 
 from cldk.analysis import AnalysisLevel
+from cldk.analysis.commons.results import CallableRef, Diagnostic, LocateResult, ModuleRef, TypeRef
 from cldk.analysis.python.backend import PythonAnalysisBackend
 from cldk.models.python import (
     PyApplication,
@@ -71,6 +72,7 @@ from cldk.models.python import (
     PyClassAttribute,
     PyComment,
     PyModule,
+    Span,
 )
 
 logger = logging.getLogger(__name__)
@@ -114,6 +116,47 @@ def _code_of(c: PyCallable, module_source: str) -> str | None:
         return None
     start, end = c.span.bytes
     return module_source.encode("utf-8")[start:end].decode("utf-8")
+
+
+def _find_innermost(module: PyModule, line: int) -> Tuple[PyCallable, "PyClass | None"] | None:
+    """The callable (and its immediate owning class, if any) whose span most tightly contains
+    ``line`` — innermost first, so a closure nested inside a method wins over the method itself.
+
+    Only real callable spans count: a blank line, a comment, or a gap between two callables' spans
+    contains no callable and must never snap to the nearest one (see :meth:`locate`).
+    """
+    best: Tuple[PyCallable, "PyClass | None"] | None = None
+    best_width: int | None = None
+
+    def consider(c: PyCallable, owner: "PyClass | None") -> None:
+        nonlocal best, best_width
+        if c.start_line < 0 or c.end_line < 0:
+            return
+        if not (c.start_line <= line <= c.end_line):
+            return
+        width = c.end_line - c.start_line
+        if best_width is None or width < best_width:
+            best, best_width = (c, owner), width
+
+    def walk_callable(c: PyCallable, owner: "PyClass | None") -> None:
+        consider(c, owner)
+        for inner in c.callables.values():
+            walk_callable(inner, None)  # a nested (closure) callable has no owning class
+        for inner_cls in c.types.values():
+            walk_class(inner_cls)
+
+    def walk_class(cls: PyClass) -> None:
+        for m in cls.callables.values():
+            walk_callable(m, cls)
+        for inner_cls in cls.types.values():
+            walk_class(inner_cls)
+
+    for cls in module.types.values():
+        walk_class(cls)
+    for fn in module.functions.values():
+        walk_callable(fn, None)
+
+    return best
 
 
 class PyCodeanalyzer(PythonAnalysisBackend):
@@ -671,6 +714,54 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         """Return ``{signature: call_sites}`` for the requested signatures that exist."""
         wanted = set(signatures)
         return {c.signature: list(c.call_sites) for c, _, _, _ in self._iter_callables() if c.signature in wanted}
+
+    # ----------------------------------------------------------- locate
+    def _locate_one(self, path: str, line: int) -> LocateResult:
+        module = self.application.symbol_table.get(str(path))
+        if module is None:
+            return LocateResult(
+                node=None,
+                callable=None,
+                type=None,
+                module=ModuleRef(path=str(path)),
+                source="",
+                span=Span(start=(line, 0), end=(line, 0), bytes=(0, 0)),
+                diagnostics=[Diagnostic(code="file_not_in_graph", message=f"{path} is not covered by any analysed module.")],
+            )
+        module_ref = ModuleRef(path=module.file_path, module_name=module.module_name)
+        found = _find_innermost(module, line)
+        if found is None:
+            return LocateResult(
+                node=None,
+                callable=None,
+                type=None,
+                module=module_ref,
+                source=module.source,
+                span=Span(start=(line, 0), end=(line, 0), bytes=(0, 0)),
+                diagnostics=[Diagnostic(code="module_scope", message=f"line {line} is at module scope in {module.file_path}.")],
+            )
+        c, owner = found
+        return LocateResult(
+            node=None,
+            callable=CallableRef(signature=c.signature, name=c.name, class_signature=owner.signature if owner else None),
+            type=TypeRef(signature=owner.signature, name=owner.name) if owner else None,
+            module=module_ref,
+            source=_code_of(c, module.source) or "",
+            span=c.span or Span(start=(line, 0), end=(line, 0), bytes=(0, 0)),
+            diagnostics=[],
+        )
+
+    def locate(self, path: str, line: int, col: int | None = None) -> LocateResult:
+        """Resolve a source position to its enclosing callable (see
+        :meth:`PythonAnalysisBackend.locate`). ``col`` is accepted for interface parity but not
+        yet used: the symbol table has no column-level granularity finer than a callable's span."""
+        return self._locate_one(path, line)
+
+    def locate_many(self, positions: Sequence[Tuple[str, int]]) -> List[LocateResult]:
+        """Resolve many positions (see :meth:`PythonAnalysisBackend.locate_many`). Purely in
+        memory here — there is no round trip to batch — but the results still come back in input
+        order, matching the Neo4j backend's contract."""
+        return [self._locate_one(path, line) for path, line in positions]
 
     # ----------------------------------------------------------- callers/callees
     def get_all_callers(self, target_class_name: str, target_method_declaration: str) -> Dict:

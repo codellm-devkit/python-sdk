@@ -47,12 +47,13 @@ See Also:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Sequence, Set, Tuple
 
 import networkx as nx
 from tree_sitter import Tree
 
 from cldk.analysis.commons.backend_config import Neo4jConnectionConfig, PyBackend, PyCodeAnalyzerConfig, cache_subdir
+from cldk.analysis.commons.results import LocateResult
 from cldk.analysis.commons.treesitter import TreesitterPython
 from cldk.analysis.python.backend import PythonAnalysisBackend
 from cldk.analysis.python.codeanalyzer import PyCodeanalyzer
@@ -691,6 +692,48 @@ class PythonAnalysis:
             :meth:`get_methods_in_class`: For all methods including constructors.
         """
         return self.backend.get_all_constructors(qualified_class_name)
+
+    # -----[ locate ]-----
+    def locate(self, path: str, line: int, col: int | None = None) -> LocateResult:
+        """Resolve a source position to its enclosing callable, with the source in hand.
+
+        The single most-needed query for triaging a scanner alert: an alert arrives as
+        ``file:line`` and this resolves it to the enclosing callable in one call, rather than
+        ``get_method``, falling back to ``get_callers``, falling back to scanning the symbol table
+        by hand. Three outcomes stay distinguishable — see
+        :class:`~cldk.analysis.commons.results.LocateResult`: inside a callable (``callable``
+        set), at real module scope (``module_scope`` diagnostic, never snapped to the nearest
+        callable), or in a file the graph has no module for (``file_not_in_graph``).
+
+        Args:
+            path: The file path, as it appears as a symbol-table/module key.
+            line: The 1-based line number.
+            col: Reserved for future column-level disambiguation; not yet used.
+
+        Returns:
+            A :class:`~cldk.analysis.commons.results.LocateResult` carrying the enclosing
+            callable, its owning type, its module, and the source slice — never an ambiguous
+            empty.
+
+        See Also:
+            :meth:`locate_many`: The bulk form — the point, not an optimisation.
+        """
+        return self.backend.locate(path, line, col)
+
+    def locate_many(self, positions: Sequence[Tuple[str, int]]) -> List[LocateResult]:
+        """Resolve many ``(path, line)`` positions in one round trip, in input order.
+
+        Args:
+            positions: The ``(path, line)`` pairs to resolve, e.g. from a scanner's alert list.
+
+        Returns:
+            One :class:`~cldk.analysis.commons.results.LocateResult` per input position, in the
+            same order.
+
+        See Also:
+            :meth:`locate`: The single-position form.
+        """
+        return self.backend.locate_many(positions)
 
     # -----[ classes ]-----
     def get_classes(self) -> Dict[str, PyClass]:
