@@ -114,6 +114,11 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             ``--app-name`` the graph was loaded with (defaults to the project directory name).
     """
 
+    #: Neo4j relationship-type and node-label prefixes for codeanalyzer-python's graph vocabulary
+    #: (see :class:`~cldk.analysis.commons.backend.AnalysisBackend`).
+    P = "PY"
+    N = "Py"
+
     #: Relationship types every supported graph must have. A graph missing any of these was
     #: built by a different codeanalyzer-python generation (see ``_probe_schema``); their
     #: absence is not exercised individually, they are just the cheapest reliable fingerprint.

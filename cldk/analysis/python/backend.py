@@ -29,11 +29,10 @@ by convention. Backend-specific lifecycle (caches, drivers) is intentionally not
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from typing import Dict, List, Tuple
 
-import networkx as nx
-
+from cldk.analysis.commons.backend import AnalysisBackend
 from cldk.models.python import (
     PyApplication,
     PyCallable,
@@ -45,23 +44,17 @@ from cldk.models.python import (
 )
 
 
-class PythonAnalysisBackend(ABC):
+class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, PyCallable, PyClassAttribute, str]):
     """Abstract base every Python analysis backend implements.
 
     A backend owns all indexing and query logic for a Python application; the
     :class:`PythonAnalysis` façade is a one-line-delegation shim over it. Implementations must
     return the canonical ``cldk.models.python`` pydantic objects (or the documented
     NetworkX / dict / list shapes) so backends are behaviorally interchangeable.
+
+    The application/symbol-table/call-graph/class/method/field/parameter accessors are inherited
+    from :class:`~cldk.analysis.commons.backend.AnalysisBackend`; everything below is Python-specific.
     """
-
-    # -----[ application / whole-program ]-----
-    @abstractmethod
-    def get_application_view(self) -> PyApplication:
-        """The whole application view (symbol table + call graph)."""
-
-    @abstractmethod
-    def get_symbol_table(self) -> Dict[str, PyModule]:
-        """The per-file symbol table, keyed by module file path."""
 
     @abstractmethod
     def get_modules(self) -> List[PyModule]:
@@ -76,10 +69,6 @@ class PythonAnalysisBackend(ABC):
         """The file path declaring the given symbol."""
 
     # -----[ call graph ]-----
-    @abstractmethod
-    def get_call_graph(self) -> nx.DiGraph:
-        """NetworkX DiGraph of the application's call edges."""
-
     @abstractmethod
     def get_call_graph_json(self) -> str:
         """The application serialized as JSON."""
@@ -98,14 +87,6 @@ class PythonAnalysisBackend(ABC):
 
     # -----[ classes ]-----
     @abstractmethod
-    def get_all_classes(self) -> Dict[str, PyClass]:
-        """Every class, keyed by signature."""
-
-    @abstractmethod
-    def get_class(self, qualified_class_name: str) -> PyClass | None:
-        """A single class by signature."""
-
-    @abstractmethod
     def get_all_nested_classes(self, qualified_class_name: str) -> List[PyClass]:
         """The classes declared inside a class."""
 
@@ -123,26 +104,8 @@ class PythonAnalysisBackend(ABC):
         """All methods grouped by their owning class signature."""
 
     @abstractmethod
-    def get_all_methods_in_class(self, qualified_class_name: str) -> Dict[str, PyCallable]:
-        """The methods of a class."""
-
-    @abstractmethod
-    def get_method(self, qualified_class_name: str, qualified_method_name: str) -> PyCallable | None:
-        """A single method or module-level function. ``qualified_class_name`` accepts either a
-        class signature (resolving to that class's methods) or a module name (resolving to that
-        module's top-level functions); returns ``None`` if neither resolves."""
-
-    @abstractmethod
-    def get_method_parameters(self, qualified_class_name: str, qualified_method_name: str) -> List[str]:
-        """The parameter names of a method."""
-
-    @abstractmethod
     def get_all_constructors(self, qualified_class_name: str) -> Dict[str, PyCallable]:
         """The constructors of a class."""
-
-    @abstractmethod
-    def get_all_fields(self, qualified_class_name: str) -> List[PyClassAttribute]:
-        """The attributes/fields of a class."""
 
     # -----[ bulk / projected accessors ]-----
     # Set-at-a-time, field-projected reads — one round-trip on the Neo4j backend, one symbol-table
