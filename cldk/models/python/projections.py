@@ -56,3 +56,30 @@ class PyCallableOverview(BaseModel):
     start_line: int
     end_line: int
     decorators: List[str] = []
+
+
+class PyClassOverview(BaseModel):
+    """A lightweight projection of one class — the class-level counterpart to
+    :class:`PyCallableOverview`, for classes the analyzer marked as entrypoints in their own right
+    (``PyClass.is_entrypoint``), independent of any individual method.
+
+    A class-based view (a Django/Flask class-based view, say) can be marked as an entrypoint at
+    the class level with none of its methods individually marked — ``get_entrypoints()`` walks
+    callables only, so it never sees these. Returned by
+    :meth:`PythonAnalysis.get_entrypoint_classes`.
+
+    Attributes:
+        signature: The class's unique signature.
+        name: The class's short name.
+        path: Project-relative path of the declaring module. ``PyClass`` carries no ``path`` field
+            of its own (unlike ``PyCallable``) — this is the owning module's path.
+        start_line / end_line: The class's line span.
+        decorators: The decorator names applied to the class.
+    """
+
+    signature: str
+    name: str
+    path: str
+    start_line: int
+    end_line: int
+    decorators: List[str] = []

@@ -29,6 +29,11 @@ against ``codeanalyzer-python``'s models for this leg, so ``locate`` is declared
 backend ABC rather than the generic cross-language one — a shared declaration typed on one
 language's models is a contract no other language can satisfy. A later leg generalises ``node`` /
 ``span`` and hoists the declaration once Java or TypeScript needs the same shape.
+
+:class:`EntrypointCoverage` is the same "absence is never null" discipline applied to
+``get_entrypoints()``: that accessor's ``List[PyCallableOverview]`` return is frozen and cannot
+itself distinguish "no entrypoints" from "the detection pass had gaps", so the coverage/failure
+signal rides this separate, Python-typed accessor instead.
 """
 
 from typing import Literal
@@ -60,6 +65,7 @@ class Diagnostic(BaseModel):
         "module_source_unavailable",
         "unresolved_dispatch",
         "graph_schema_mismatch",
+        "entrypoint_report_unavailable",
     ]
     message: str
     suggestions: list[str] = []
@@ -140,4 +146,39 @@ class LocateResult(BaseModel):
     module: ModuleRef
     source: str
     span: Span
+    diagnostics: list[Diagnostic] = []
+
+
+class EntrypointCoverage(BaseModel):
+    """Coverage and failure record for ``codeanalyzer-python``'s entrypoint-detection pass —
+    surfaces its ``PyEntrypointReport`` (``schema/py_schema.py``) so
+    :meth:`~cldk.analysis.python.backend.PythonAnalysisBackend.get_entrypoints` returning ``[]``
+    stays distinguishable between "the pass ran clean and this project genuinely has none" and
+    "the pass had gaps". The pass's own docstring says it best: it "under-approximates by design,
+    so silence is its failure mode" — this is what makes a gap visible instead of indistinguishable
+    from "this project has no entrypoints".
+
+    ``get_entrypoints()``'s ``List[PyCallableOverview]`` return is frozen and carries no room for
+    this signal, so it rides a separate accessor
+    (:meth:`~cldk.analysis.python.backend.PythonAnalysisBackend.get_entrypoint_coverage`) instead.
+
+    Attributes:
+        frameworks_detected: Frameworks the pass recognized in this project (e.g. ``"flask"``).
+        rulesets: Rule sources consulted (``"shipped"`` and/or ``"user:<path>"``).
+        unresolved: Count of near-misses, keyed by rule/framework, that could not be resolved to a
+            definite entrypoint — non-zero counts are exactly the under-approximation gap.
+        errors: Hard failures the detection pass hit while running.
+        diagnostics: Non-empty when a backend cannot supply this report at all: the Neo4j
+            projection does not carry ``PyApplication.entrypoint_report`` on the graph (only the
+            derived ``is_entrypoint``/``entrypoint_frameworks`` per-node properties), so it returns
+            ``entrypoint_report_unavailable`` here instead of fabricating empty-but-clean-looking
+            fields — the same "say so honestly" precedent as ``LocateResult``'s
+            ``module_source_unavailable``. When ``diagnostics`` is non-empty, the other fields are
+            not meaningful coverage information (there was none to report), not "no gaps found".
+    """
+
+    frameworks_detected: list[str] = []
+    rulesets: list[str] = []
+    unresolved: dict[str, int] = {}
+    errors: list[str] = []
     diagnostics: list[Diagnostic] = []

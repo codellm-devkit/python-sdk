@@ -53,7 +53,7 @@ import networkx as nx
 from tree_sitter import Tree
 
 from cldk.analysis.commons.backend_config import Neo4jConnectionConfig, PyBackend, PyCodeAnalyzerConfig, cache_subdir
-from cldk.analysis.commons.results import LocateResult
+from cldk.analysis.commons.results import EntrypointCoverage, LocateResult
 from cldk.analysis.commons.treesitter import TreesitterPython
 from cldk.analysis.python.backend import PythonAnalysisBackend
 from cldk.analysis.python.codeanalyzer import PyCodeanalyzer
@@ -66,6 +66,7 @@ from cldk.models.python import (
     PyCallsite,
     PyClass,
     PyClassAttribute,
+    PyClassOverview,
     PyComment,
     PyConfigKey,
     PyConfigUseEdge,
@@ -593,8 +594,45 @@ class PythonAnalysis:
         See Also:
             :meth:`get_callables_overview`: The unfiltered projection.
             :meth:`get_decorated_callables`: The same projection filtered by decorator instead.
+            :meth:`get_entrypoint_classes`: The class-level sibling this walk never sees.
+            :meth:`get_entrypoint_coverage`: Whether the detection pass itself had gaps.
         """
         return self.backend.get_entrypoints()
+
+    def get_entrypoint_classes(self) -> List[PyClassOverview]:
+        """Return overviews of every class the analyzer marked as an entrypoint in its own right,
+        in one bulk read.
+
+        :meth:`get_entrypoints` walks callables only, so a class-based view (a Django/Flask CBV,
+        say) marked ``is_entrypoint`` at the class with no individually-marked method is invisible
+        to it. This is that sibling.
+
+        Returns:
+            A list of :class:`~cldk.models.python.PyClassOverview` for every entrypoint class.
+            Empty means the project genuinely has none, not that the graph lacks the mark.
+
+        See Also:
+            :meth:`get_entrypoints`: The callable-level projection.
+        """
+        return self.backend.get_entrypoint_classes()
+
+    def get_entrypoint_coverage(self) -> EntrypointCoverage:
+        """Return the entrypoint-detection pass's own coverage/failure record, in one bulk read.
+
+        The analyzer's detection pass "under-approximates by design, so silence is its failure
+        mode" (its own ``PyEntrypointReport`` docstring); :meth:`get_entrypoints` returning ``[]``
+        cannot, on its own, distinguish "ran clean, found none" from "had gaps". This can.
+
+        Returns:
+            An :class:`~cldk.analysis.commons.results.EntrypointCoverage`. Non-empty
+            ``diagnostics`` means this backend cannot supply the report at all (the Neo4j
+            projection does not carry it) rather than the pass having run clean — see the model's
+            own docstring for the field-by-field contract.
+
+        See Also:
+            :meth:`get_entrypoints`: The accessor whose empty result this disambiguates.
+        """
+        return self.backend.get_entrypoint_coverage()
 
     def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:
         """Return the call sites of the given callables, keyed by signature, in one bulk read.

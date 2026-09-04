@@ -60,7 +60,7 @@ from codeanalyzer.options import AnalysisOptions, EmitTarget
 from codeanalyzer.schema import Analysis, model_dump_json
 
 from cldk.analysis import AnalysisLevel
-from cldk.analysis.commons.results import CallableRef, Diagnostic, LocateResult, ModuleRef, TypeRef
+from cldk.analysis.commons.results import CallableRef, Diagnostic, EntrypointCoverage, LocateResult, ModuleRef, TypeRef
 from cldk.analysis.python.backend import PythonAnalysisBackend, body_key_column, resolve_module_key
 from cldk.models.python import (
     BodyNode,
@@ -72,6 +72,7 @@ from cldk.models.python import (
     PyCallsite,
     PyClass,
     PyClassAttribute,
+    PyClassOverview,
     PyComment,
     PyConfigKey,
     PyConfigUseEdge,
@@ -104,6 +105,20 @@ def _overview(c: PyCallable, class_signature: str | None, kind: str) -> PyCallab
         start_line=c.start_line,
         end_line=c.end_line,
         decorators=[d.qualified_name or d.name for d in c.decorators],
+    )
+
+
+def _class_overview(cls: PyClass, path: str) -> PyClassOverview:
+    """Project a :class:`PyClass` into a lightweight :class:`PyClassOverview` (see :func:`_overview`
+    for the callable equivalent). ``PyClass`` has no ``path`` field of its own (unlike
+    ``PyCallable``), so the owning module's path is threaded in by the caller."""
+    return PyClassOverview(
+        signature=cls.signature,
+        name=cls.name,
+        path=path,
+        start_line=cls.start_line,
+        end_line=cls.end_line,
+        decorators=[d.qualified_name or d.name for d in cls.decorators],
     )
 
 
@@ -739,6 +754,35 @@ class PyCodeanalyzer(PythonAnalysisBackend):
                 yield fn, None, "function", module.source
                 yield from from_callable(fn, module.source)
 
+    def _iter_classes(self) -> Iterator[Tuple[PyClass, str]]:
+        """Yield ``(class, module_path)`` for every class in the application, including classes
+        nested inside classes or inside callables (a class defined in a function body) — the same
+        containment tree :meth:`_iter_callables` walks for callables, so this backend enumerates
+        the same flat set of ``:PyClass`` nodes a ``MATCH (cl:PyClass)`` sees over Neo4j, with no
+        nesting blind spot. ``module_path`` is the symbol table's own key (matches the graph's
+        ``_module`` property) — unlike ``PyCallable``, ``PyClass`` carries no ``path`` field of its
+        own.
+        """
+
+        def from_class(cls: PyClass, path: str):
+            yield cls, path
+            for inner in cls.types.values():
+                yield from from_class(inner, path)
+            for m in cls.callables.values():
+                yield from from_callable(m, path)
+
+        def from_callable(c: PyCallable, path: str):
+            for inner_cls in c.types.values():
+                yield from from_class(inner_cls, path)
+            for inner in c.callables.values():
+                yield from from_callable(inner, path)
+
+        for path, module in self.application.symbol_table.items():
+            for cls in module.types.values():
+                yield from from_class(cls, path)
+            for fn in module.functions.values():
+                yield from from_callable(fn, path)
+
     def get_callables_overview(self) -> List[PyCallableOverview]:
         """Return a lightweight overview of every callable in the application (see
         :meth:`PythonAnalysisBackend.get_callables_overview`)."""
@@ -793,6 +837,23 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         """Return overviews of every callable marked ``is_entrypoint`` (see
         :meth:`PythonAnalysisBackend.get_entrypoints`)."""
         return [_overview(c, class_sig, kind) for c, class_sig, kind, _ in self._iter_callables() if c.is_entrypoint]
+
+    def get_entrypoint_classes(self) -> List[PyClassOverview]:
+        """Return overviews of every class marked ``is_entrypoint`` (see
+        :meth:`PythonAnalysisBackend.get_entrypoint_classes`)."""
+        return [_class_overview(cls, path) for cls, path in self._iter_classes() if cls.is_entrypoint]
+
+    def get_entrypoint_coverage(self) -> EntrypointCoverage:
+        """Return the entrypoint-detection pass's coverage/failure record (see
+        :meth:`PythonAnalysisBackend.get_entrypoint_coverage`) -- a direct passthrough of
+        ``PyApplication.entrypoint_report``, which the local backend has in full."""
+        r = self.application.entrypoint_report
+        return EntrypointCoverage(
+            frameworks_detected=list(r.frameworks_detected),
+            rulesets=list(r.rulesets),
+            unresolved=dict(r.unresolved),
+            errors=list(r.errors),
+        )
 
     def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:
         """Return ``{signature: call_sites}`` for the requested signatures that exist."""

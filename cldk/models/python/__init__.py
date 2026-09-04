@@ -51,7 +51,7 @@ from codeanalyzer.schema.py_schema import (
     SummaryEdge,
 )
 
-from .projections import PyCallableOverview
+from .projections import PyCallableOverview, PyClassOverview
 
 __all__ = [
     "BodyNode",
@@ -69,6 +69,7 @@ __all__ = [
     "PyCallsite",
     "PyClass",
     "PyClassAttribute",
+    "PyClassOverview",
     "PyComment",
     "PyConfigKey",
     "PyConfigUseEdge",

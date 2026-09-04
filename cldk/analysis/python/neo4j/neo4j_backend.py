@@ -83,7 +83,7 @@ from typing import Any, Dict, List, Sequence, Tuple
 import networkx as nx
 from codeanalyzer.schema import model_dump_json
 
-from cldk.analysis.commons.results import CallableRef, Diagnostic, LocateResult, ModuleRef, TypeRef
+from cldk.analysis.commons.results import CallableRef, Diagnostic, EntrypointCoverage, LocateResult, ModuleRef, TypeRef
 from cldk.analysis.python.backend import PythonAnalysisBackend, body_key_column, resolve_module_key
 from cldk.analysis.python.neo4j import reconstruct as R
 from cldk.models.python import (
@@ -96,6 +96,7 @@ from cldk.models.python import (
     PyCallsite,
     PyClass,
     PyClassAttribute,
+    PyClassOverview,
     PyConfigKey,
     PyConfigUseEdge,
     PyDependency,
@@ -621,6 +622,37 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             mods=self._modules,
         )
         return [R.overview(r) for r in rows]
+
+    def get_entrypoint_classes(self) -> List[PyClassOverview]:
+        rows = self._run(
+            "MATCH (cl:PyClass) WHERE cl._module IN $mods AND cl.is_entrypoint = true "
+            "RETURN cl.signature AS signature, cl.name AS name, cl.decorators AS decorators, "
+            "cl._module AS path, cl.start_line AS start_line, cl.end_line AS end_line",
+            mods=self._modules,
+        )
+        return [R.class_overview(r) for r in rows]
+
+    def get_entrypoint_coverage(self) -> EntrypointCoverage:
+        # codeanalyzer-python's neo4j/project.py projects only the derived is_entrypoint /
+        # entrypoint_frameworks properties onto :PyCallable/:PyClass -- it never projects
+        # PyApplication.entrypoint_report (frameworks_detected/rulesets/unresolved/errors) onto the
+        # graph at all (confirmed: no such property or node anywhere in neo4j/project.py). Say so
+        # rather than fabricate empty-but-clean-looking coverage fields -- same precedent as
+        # LocateResult's module_source_unavailable for the module-text gap.
+        return EntrypointCoverage(
+            diagnostics=[
+                Diagnostic(
+                    code="entrypoint_report_unavailable",
+                    message=(
+                        "The Neo4j projection does not carry PyApplication.entrypoint_report "
+                        "(frameworks_detected/rulesets/unresolved/errors) -- only the derived "
+                        "is_entrypoint/entrypoint_frameworks properties are projected onto "
+                        ":PyCallable/:PyClass nodes. Use the local codeanalyzer backend for "
+                        "entrypoint-pass coverage."
+                    ),
+                )
+            ]
+        )
 
     def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:
         # OPTIONAL MATCH so a requested callable with no call sites still yields a row (p is null),

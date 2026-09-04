@@ -35,7 +35,7 @@ from abc import abstractmethod
 from typing import Dict, Iterable, List, Sequence, Tuple
 
 from cldk.analysis.commons.backend import AnalysisBackend
-from cldk.analysis.commons.results import LocateResult
+from cldk.analysis.commons.results import EntrypointCoverage, LocateResult
 from cldk.models.python import (
     PyApplication,
     PyCallable,
@@ -43,6 +43,7 @@ from cldk.models.python import (
     PyCallsite,
     PyClass,
     PyClassAttribute,
+    PyClassOverview,
     PyModule,
 )
 
@@ -171,16 +172,48 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
 
     @abstractmethod
     def get_entrypoints(self) -> List[PyCallableOverview]:
-        """Overviews of every callable the analyzer marked as an entrypoint (``PyCallable.
+        """Overviews of every *callable* the analyzer marked as an entrypoint (``PyCallable.
         is_entrypoint``) — a route handler, CLI command, or other externally-invoked callable the
-        entrypoint-detection pass already found. An empty list means the graph carries the mark but
-        found nothing, the ordinary "no entrypoints in this project" case — never a stand-in for
-        the mark not existing at all.
+        entrypoint-detection pass already found. An empty list means the pass found no entrypoint
+        *callables*, the ordinary "no entrypoints in this project" case for this accessor — never a
+        stand-in for the mark not existing at all (the graph carries ``is_entrypoint`` as a real
+        boolean, never dropped, so it's never ambiguous at the property level).
+
+        Two things this accessor alone cannot tell you, each answered by a sibling instead of by
+        widening this one's frozen ``List[PyCallableOverview]`` return:
+
+        * **Class-level entrypoints.** ``PyClass`` carries its own ``is_entrypoint``/``entrypoints``
+          (a class-based view — a Django/Flask CBV, say — marked at the class with no individually
+          marked method). This walk is callables-only and never sees those; use
+          :meth:`get_entrypoint_classes` for them. A ``PyClass`` is not a callable, so it is not
+          folded into this list under a synthetic ``kind`` — that would misrepresent what
+          ``PyCallableOverview`` means.
+        * **Whether the pass itself had gaps.** The analyzer's own ``PyEntrypointReport`` docstring
+          says detection "under-approximates by design, so silence is its failure mode" — an empty
+          (or any) result here cannot distinguish "ran clean, found none" from "had gaps" on its
+          own. Use :meth:`get_entrypoint_coverage` for that signal.
 
         Declared here rather than on the generic cross-language ABC: Java stamps a ``JEntrypoint``
         marker label and TypeScript carries them on ``TSApplication.entrypoints`` — a third
         spelling of the same idea — and unifying that vocabulary across languages is out of scope
         for this change."""
+
+    @abstractmethod
+    def get_entrypoint_classes(self) -> List[PyClassOverview]:
+        """Overviews of every *class* the analyzer marked as an entrypoint in its own right
+        (``PyClass.is_entrypoint``) — the class-level sibling of :meth:`get_entrypoints`, which
+        walks callables only and so never sees a class-based view marked at the class with no
+        individually-marked method. Same empty-vs-absent guarantee as :meth:`get_entrypoints`."""
+
+    @abstractmethod
+    def get_entrypoint_coverage(self) -> EntrypointCoverage:
+        """Coverage and failure record for the entrypoint-detection pass (``PyEntrypointReport``),
+        so a caller can tell "the pass ran clean and found nothing" apart from "the pass had gaps"
+        — a distinction :meth:`get_entrypoints`'s empty list alone cannot make. See
+        :class:`~cldk.analysis.commons.results.EntrypointCoverage` for the field-by-field contract,
+        including the per-backend availability caveat (the Neo4j projection does not carry this
+        report at all; that backend answers with a ``diagnostics``-only result rather than
+        fabricating empty-but-clean-looking coverage fields)."""
 
     @abstractmethod
     def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:

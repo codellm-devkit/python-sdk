@@ -47,6 +47,7 @@ from cldk.models.python import (
     PyCallableOverview,
     PyClass,
     PyClassAttribute,
+    PyClassOverview,
     PyComment,
     PyConfigKey,
     PyDependency,
@@ -256,6 +257,24 @@ def overview(row: Props) -> PyCallableOverview:
         name=row.get("name", ""),
         class_signature=class_sig,
         kind="method" if class_sig else "function",
+        path=row.get("path", ""),
+        start_line=row.get("start_line", -1),
+        end_line=row.get("end_line", -1),
+        decorators=list(row.get("decorators", []) or []),
+    )
+
+
+def class_overview(row: Props) -> PyClassOverview:
+    """Build a :class:`PyClassOverview` from a projected class row (see :func:`overview` for the
+    callable equivalent).
+
+    ``row`` is a flat ``RETURN`` projection: ``signature``, ``name``, ``decorators``,
+    ``start_line``, ``end_line``, and ``path`` -- sourced from ``:PyClass``'s ``_module`` property,
+    since (unlike ``:PyCallable``) the node itself carries no ``path`` property.
+    """
+    return PyClassOverview(
+        signature=row.get("signature", ""),
+        name=row.get("name", ""),
         path=row.get("path", ""),
         start_line=row.get("start_line", -1),
         end_line=row.get("end_line", -1),
