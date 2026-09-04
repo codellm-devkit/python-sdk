@@ -577,6 +577,25 @@ class PythonAnalysis:
         """
         return self.backend.get_decorated_callables(markers)
 
+    def get_entrypoints(self) -> List[PyCallableOverview]:
+        """Return overviews of every callable the analyzer marked as an entrypoint, in one bulk read.
+
+        The analyzer's own entrypoint-detection pass already finds route handlers, CLI commands,
+        and other externally-invoked callables (``PyCallable.is_entrypoint``); this just surfaces
+        that mark instead of making a caller rediscover it (e.g. by sharding
+        :meth:`get_callables_overview` across workers to guess which callables are reachable from
+        outside the application).
+
+        Returns:
+            A list of :class:`~cldk.models.python.PyCallableOverview` for every entrypoint
+            callable. Empty means the project genuinely has none, not that the graph lacks the mark.
+
+        See Also:
+            :meth:`get_callables_overview`: The unfiltered projection.
+            :meth:`get_decorated_callables`: The same projection filtered by decorator instead.
+        """
+        return self.backend.get_entrypoints()
+
     def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:
         """Return the call sites of the given callables, keyed by signature, in one bulk read.
 

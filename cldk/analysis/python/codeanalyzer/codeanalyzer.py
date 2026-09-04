@@ -789,6 +789,11 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             if marker_set.intersection(d.qualified_name or d.name for d in c.decorators)
         ]
 
+    def get_entrypoints(self) -> List[PyCallableOverview]:
+        """Return overviews of every callable marked ``is_entrypoint`` (see
+        :meth:`PythonAnalysisBackend.get_entrypoints`)."""
+        return [_overview(c, class_sig, kind) for c, class_sig, kind, _ in self._iter_callables() if c.is_entrypoint]
+
     def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:
         """Return ``{signature: call_sites}`` for the requested signatures that exist."""
         wanted = set(signatures)

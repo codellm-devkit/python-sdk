@@ -615,6 +615,13 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         )
         return [R.overview(r) for r in rows]
 
+    def get_entrypoints(self) -> List[PyCallableOverview]:
+        rows = self._run(
+            "MATCH (c:PyCallable) WHERE c._module IN $mods AND c.is_entrypoint = true " + self._OVERVIEW_PROJECTION,
+            mods=self._modules,
+        )
+        return [R.overview(r) for r in rows]
+
     def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:
         # OPTIONAL MATCH so a requested callable with no call sites still yields a row (p is null),
         # giving it an empty-list entry — parity with the in-process backend, which keys every

@@ -170,6 +170,19 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         names)."""
 
     @abstractmethod
+    def get_entrypoints(self) -> List[PyCallableOverview]:
+        """Overviews of every callable the analyzer marked as an entrypoint (``PyCallable.
+        is_entrypoint``) — a route handler, CLI command, or other externally-invoked callable the
+        entrypoint-detection pass already found. An empty list means the graph carries the mark but
+        found nothing, the ordinary "no entrypoints in this project" case — never a stand-in for
+        the mark not existing at all.
+
+        Declared here rather than on the generic cross-language ABC: Java stamps a ``JEntrypoint``
+        marker label and TypeScript carries them on ``TSApplication.entrypoints`` — a third
+        spelling of the same idea — and unifying that vocabulary across languages is out of scope
+        for this change."""
+
+    @abstractmethod
     def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:
         """Call sites of the given callable signatures, keyed by owning signature. Each existing
         signature gets an entry (an empty list if it has no call sites); signatures with no matching
