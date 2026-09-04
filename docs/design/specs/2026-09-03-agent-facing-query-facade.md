@@ -344,7 +344,7 @@ layer rather than blocking on them.
 
 | Leg | Content | Retires | Ships |
 | --- | --- | --- | --- |
-| **1** | **Python** — v2 models (re-export), ABC conformance, `locate`/`locate_many`, bodies, artifacts, entrypoints, external symbols, `graph_schema_mismatch`. Drop C and four dead dependencies. | #315, #316, #317, #301 | `2.0.0-rc.1` |
+| **1** | **Python** — v2 models (re-export), Neo4j vocabulary migration (`PyCallSite`/`PY_HAS_CALLSITE`/`PySymbol` → `PyBodyNode`/`PY_HAS_BODY_NODE`), ABC conformance, `locate`/`locate_many`, bodies, artifacts, entrypoints, external symbols, `graph_schema_mismatch`. Drop C and four dead dependencies. | #315, #316, #317, #301 | `2.0.0-rc.1` |
 | **2** | **Java** — v2 models, ABC conformance, `locate`, bodies, artifacts; `JGraphEdges` and `_CALLABLES_LOOKUP_TABLE` retired | #310 | `2.0.0-rc.2` |
 | **3** | **TypeScript + JavaScript** — v2 models, prefixed (`TS_`/`JS_`) vocabulary, eager-init fix, `locate`, bodies, artifacts | #307; the 905 empty-result and 602 unresolved-callee incidents | `2.0.0-rc.3` |
 | **4** | **Query sweep** — selectors, diagnostics, `backward_cone`, slicing, taint, across all three at once | #311; the 513 quarantines | `2.0.0` |
@@ -362,6 +362,12 @@ settling the ABC against it means TypeScript inherits a proven shape.
 
 D4 freezes API signatures, so caller code keeps running across every leg. It does **not** make the
 SDK compatible with every graph.
+
+**This is not only TypeScript's problem.** Planning leg 1 found the same drift on the Python
+side: the SDK queries `PyCallSite`, `PY_HAS_CALLSITE` and `PySymbol`, none of which
+`codeanalyzer-python` 1.4.0 emits — call sites are `PyBodyNode {kind: 'call'}` reached by
+`PY_HAS_BODY_NODE`. TypeScript's is larger and louder because its deployed graphs are prefixed
+throughout, but every language leg carries a vocabulary migration, not just leg 3.
 
 Each leg moves its language's Neo4j backend to the vocabulary the current analyzer emits. Against
 a graph built by a matching analyzer generation the leg starts working; against one built by an
