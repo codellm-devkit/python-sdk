@@ -158,34 +158,6 @@ def test_fixture_pbw():
 
 
 @pytest.fixture(scope="session", autouse=True)
-def test_fixture_binutils():
-    """Create a test fixture for the analysis of C applications"""
-    # ----------------------------------[ SETUP ]----------------------------------
-    # Path to your pyproject.toml
-    pyproject_path = Path(__file__).parent.parent / "pyproject.toml"
-
-    # Load the configuration
-    config = toml.load(pyproject_path)
-
-    # Access the test data path
-    test_data_path = config["tool"]["cldk"]["testing"]["sample-c-application"]
-    filename = Path(test_data_path).absolute() / "binutils.zip"
-
-    # Extract the zip file to the test data path
-    with zipfile.ZipFile(filename, "r") as zip_ref:
-        zip_ref.extractall(test_data_path)
-
-    # ------------------------------ [ TEST FIXTURE ]------------------------------
-    # Binutils sample application path
-    yield Path(test_data_path) / "binutils"
-
-    # ---------------------------------[ TEARDOWN ]--------------------------------
-    # Remove the binutils sample application that was downloaded for testing
-    for directory in Path(test_data_path).iterdir():
-        if directory.exists() and directory.is_dir():
-            shutil.rmtree(directory)
-
-@pytest.fixture(scope="session", autouse=True)
 def java_code() -> str:
     """
     Returns sample Java source code for analysis.

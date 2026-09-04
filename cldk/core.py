@@ -27,7 +27,6 @@ The CLDK supports the following languages:
       tables, call graphs, and code metrics.
     - **Python**: Static analysis via codeanalyzer-python backend (Jedi plus
       PyCG call-graph construction).
-    - **C**: Basic analysis via libclang for parsing and extracting code structure.
 
 Typical usage involves instantiating :class:`CLDK` with a target language, then
 calling :meth:`CLDK.analysis` to obtain a language-specific analysis facade.
@@ -36,7 +35,6 @@ Note:
     This module requires language-specific backends to be available:
     - Java: ``codeanalyzer-*.jar`` (auto-downloaded or specified via path)
     - Python: ``codeanalyzer-python`` (auto-installed in virtualenv)
-    - C: ``libclang`` (must be installed on the system)
 """
 
 from pathlib import Path
@@ -46,7 +44,6 @@ import warnings
 from typing import List
 
 from cldk.analysis import AnalysisLevel
-from cldk.analysis.c import CAnalysis
 from cldk.analysis.java import JavaAnalysis
 from cldk.analysis.commons.backend_config import (
     CodeAnalyzerConfig,
@@ -98,7 +95,7 @@ class CLDK:
 
     Args:
         language: The target programming language for analysis. Supported values
-            are ``"java"``, ``"python"``, and ``"c"`` (case-sensitive).
+            are ``"java"``, ``"python"``, and ``"typescript"`` (case-sensitive).
 
     Attributes:
         language (str): The programming language specified during initialization.
@@ -111,7 +108,6 @@ class CLDK:
     See Also:
         - :class:`~cldk.analysis.java.JavaAnalysis`: Java-specific analysis facade.
         - :class:`~cldk.analysis.python.PythonAnalysis`: Python-specific analysis facade.
-        - :class:`~cldk.analysis.c.CAnalysis`: C-specific analysis facade.
     """
 
     def __init__(self, language: str) -> None:
@@ -119,8 +115,8 @@ class CLDK:
 
         Args:
             language: The programming language to use for analysis. Must be one
-                of the supported languages: ``"java"``, ``"python"``, or ``"c"``.
-                The language string is case-sensitive.
+                of the supported languages: ``"java"``, ``"python"``, or
+                ``"typescript"``. The language string is case-sensitive.
         """
         self.language: str = language
 
@@ -237,11 +233,6 @@ class CLDK:
             backend=backend,
         )
 
-    @staticmethod
-    def c(project_path: str | Path) -> CAnalysis:
-        """Create a C analysis facade for the given project directory."""
-        return CAnalysis(project_dir=_normalize_project_path(project_path))
-
     def analysis(
         self,
         project_path: str | Path | None = None,
@@ -254,11 +245,11 @@ class CLDK:
         cache_dir: str | Path | None = None,
         use_ray: bool = False,
         neo4j_config: "Neo4jConnectionConfig | None" = None,
-    ) -> JavaAnalysis | PythonAnalysis | CAnalysis | TypeScriptAnalysis:
+    ) -> JavaAnalysis | PythonAnalysis | TypeScriptAnalysis:
         """Deprecated entry point. Use the per-language factory methods instead.
 
         ``CLDK(language).analysis(...)`` is retained as a thin compatibility shim that forwards to
-        :meth:`java` / :meth:`python` / :meth:`typescript` / :meth:`c` with an appropriate
+        :meth:`java` / :meth:`python` / :meth:`typescript` with an appropriate
         ``backend=`` configuration object.
 
         The former ``analysis_json_path`` is folded into the unified ``cache_dir`` (it is used as
@@ -266,12 +257,12 @@ class CLDK:
         supported: the backend binary ships with the packaged dependency, and passing it is ignored.
 
         .. deprecated::
-            Use :meth:`CLDK.java`, :meth:`CLDK.python`, :meth:`CLDK.typescript`, or :meth:`CLDK.c`
+            Use :meth:`CLDK.java`, :meth:`CLDK.python`, or :meth:`CLDK.typescript`
             with a ``backend=<config>`` object.
         """
         warnings.warn(
             "CLDK(language).analysis(...) is deprecated; use the per-language factory methods "
-            "CLDK.java()/CLDK.python()/CLDK.typescript()/CLDK.c() with a backend=<config> object.",
+            "CLDK.java()/CLDK.python()/CLDK.typescript() with a backend=<config> object.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -318,8 +309,6 @@ class CLDK:
                 eager=eager,
                 backend=backend,
             )
-        elif self.language == "c":
-            return CLDK.c(project_path)
         else:
             raise NotImplementedError(f"Analysis support for {self.language} is not implemented yet.")
 

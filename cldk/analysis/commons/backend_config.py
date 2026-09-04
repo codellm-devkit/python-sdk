@@ -41,7 +41,7 @@ from typing import Union
 # The canonical sub-directory name each language's artifacts live under inside the shared cache
 # root. Keyed so that a polyglot repository analyzed under more than one language does not have its
 # backends overwrite a single shared ``analysis.json``.
-_CACHE_KEYS = {"java": "java", "python": "python", "typescript": "typescript", "c": "c"}
+_CACHE_KEYS = {"java": "java", "python": "python", "typescript": "typescript"}
 
 
 @dataclass
@@ -126,7 +126,7 @@ def cache_subdir(cache_dir: Union[str, Path, None], project_dir: Union[str, Path
         cache_dir: The cache root from the backend config. When ``None``, defaults to
             ``<project_dir>/.codeanalyzer``.
         project_dir: The project directory, used to derive the default root.
-        language: The canonical language key (``"java"``, ``"python"``, ``"typescript"``, ``"c"``).
+        language: The canonical language key (``"java"``, ``"python"``, ``"typescript"``).
 
     Returns:
         ``<root>/<language>`` as an absolute path, or ``None`` if no root can be determined

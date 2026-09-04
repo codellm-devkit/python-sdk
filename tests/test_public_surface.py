@@ -1,5 +1,5 @@
 ################################################################################
-# Copyright IBM Corporation 2024
+# Copyright IBM Corporation 2026
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,8 +14,21 @@
 # limitations under the License.
 ################################################################################
 
-"""
-C/C++ package
-"""
+import pytest
+from cldk import CLDK
 
-from cldk.models.c.models import *
+
+def test_c_factory_is_gone():
+    assert not hasattr(CLDK, "c")
+
+
+def test_c_modules_are_gone():
+    with pytest.raises(ModuleNotFoundError):
+        __import__("cldk.analysis.c")
+    with pytest.raises(ModuleNotFoundError):
+        __import__("cldk.models.c")
+
+
+def test_legacy_shim_rejects_c():
+    with pytest.raises(NotImplementedError):
+        CLDK(language="c").analysis(project_path=".")

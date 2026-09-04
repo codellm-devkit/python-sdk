@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+- **C analysis support** (`CLDK.c()`, `cldk.analysis.c`, `cldk.models.c`) — libclang-backed and
+  syntactic-only, it emitted none of the 2.0 code-property graph the query surface is built on and
+  had no analyzer to grow one. `clang`, `libclang`, `tree-sitter-c`, and `tree-sitter-go` are
+  dropped as dependencies along with it. `CLDK.java()`, `CLDK.python()`, and `CLDK.typescript()`
+  are unaffected.
+
 ## [v1.5.0] - 2026-07-27
 
 ### Added
