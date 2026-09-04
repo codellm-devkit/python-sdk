@@ -34,7 +34,7 @@ both backends:
 """
 
 import networkx as nx
-from codeanalyzer.schema.py_schema import PyApplication, PyCallable, PyClass, PyModule
+from codeanalyzer.schema.py_schema import PyApplication, PyCallable, PyCallEdge, PyClass, PyModule
 
 from cldk.analysis.python.codeanalyzer.codeanalyzer import PyCodeanalyzer
 from cldk.analysis.python.neo4j import PyNeo4jBackend
@@ -51,12 +51,15 @@ def _local_backend():
     """A PyCodeanalyzer wired to a hand-built application, bypassing the analyzer run.
 
     The call graph is hand-built directly onto ``backend.call_graph`` rather than via
-    ``PyApplication.call_graph`` + ``PyCodeanalyzer._build_call_graph``: that static method still
-    reads 0.3.x ``PyCallEdge`` field names (``source``/``target``/``type``/``provenance``) that the
-    real 1.4.0 ``PyCallEdge`` (``src``/``dst``/``weight``/``prov``) doesn't have. That's a separate,
-    pre-existing, out-of-scope bug (see task-4-report.md's concerns), not this fixture's to fix —
-    pre-building the graph exercises the same ``get_all_callers``/``get_all_callees`` lookup logic
-    this test targets without tripping over it.
+    ``PyApplication.call_graph`` + ``PyCodeanalyzer._build_call_graph``: since 1.4.0's
+    ``PyCallEdge`` carries no ``type`` field at all (canonical v2: the edge list's own name IS the
+    type), that method's rebuilt edges carry only ``weight``/``provenance`` — while the Neo4j
+    backend's own ``_build_call_graph`` still hardcodes ``type="CALL_DEP"`` on every edge (it has
+    no ``PyCallEdge`` to read a type from either way). Hand-building the graph here with that same
+    ``type="CALL_DEP"`` keeps ``test_backend_parity_for_module_level_lookup``'s cross-backend
+    equality assert meaningful without this fixture caring which one is "right" — the dedicated
+    ``test_build_call_graph_resolves_ids_to_signatures_and_drops_type`` below is what actually
+    exercises ``_build_call_graph`` against real ``PyCallEdge`` construction.
     """
     entry = PyCallable(name="entry", path="pkg/mod.py", signature=ENTRY_SIG)
     helper = PyCallable(name="helper", path="pkg/mod.py", signature=HELPER_SIG)
@@ -240,3 +243,44 @@ def test_get_method_still_resolves_class_methods_neo4j():
     assert method is not None
     assert method.signature == "pkg.models.Entity.greet"
     assert backend.get_method("pkg.models.Entity", "nope") is None
+
+
+# ----------------------------------------------------------------------------------------------
+# regression: PyCodeanalyzer._build_call_graph must actually run against real PyCallEdge objects
+# ----------------------------------------------------------------------------------------------
+def test_build_call_graph_resolves_ids_to_signatures_and_drops_type():
+    """1.4.0's ``PyCallEdge`` is ``{src, dst, weight, prov}`` -- ``src``/``dst`` are ``can://`` ids,
+    not signatures, and there is no ``type`` field at all (canonical v2: the edge list's own name
+    IS the type). This drives ``get_call_graph()`` end to end against real ``PyCallEdge``/
+    ``PyCallable`` construction (not a hand-built ``nx.DiGraph``), so a future rename of either
+    model trips this test the way it should have tripped the one this replaces.
+    """
+    entry = PyCallable(name="entry", path="pkg/mod.py", signature=ENTRY_SIG, id="can://entry")
+    helper = PyCallable(name="helper", path="pkg/mod.py", signature=HELPER_SIG, id="can://helper")
+    module = PyModule(
+        file_path="pkg/mod.py",
+        module_name=MODULE_NAME,
+        functions={"entry": entry, "helper": helper},
+    )
+    app = PyApplication(
+        symbol_table={"pkg/mod.py": module},
+        call_graph=[
+            PyCallEdge(src="can://entry", dst="can://helper", weight=2, prov=["jedi"]),
+            PyCallEdge(src="can://helper", dst="can://probe/@external/os.path/join", weight=1, prov=["jedi"]),
+        ],
+    )
+
+    backend = object.__new__(PyCodeanalyzer)
+    backend.application = app
+    backend.call_graph = None
+
+    graph = backend.get_call_graph()
+
+    # nodes are signatures (parity with the Neo4j backend), not can:// ids
+    assert set(graph.nodes) == {ENTRY_SIG, HELPER_SIG, "can://probe/@external/os.path/join"}
+    edge = graph.get_edge_data(ENTRY_SIG, HELPER_SIG)
+    assert edge == {"weight": 2, "provenance": ("jedi",)}
+
+    # an @external target absent from the symbol table keeps its raw id rather than the edge
+    # being dropped
+    assert graph.has_edge(HELPER_SIG, "can://probe/@external/os.path/join")

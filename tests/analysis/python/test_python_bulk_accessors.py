@@ -48,13 +48,20 @@ def _backend():
         source_parts.append(code + "\n")
         return Span(start=(0, 0), end=(0, 0), bytes=(start, start + len(code.encode("utf-8"))))
 
+    def decorator(d):
+        # A plain string is name-only; a (name, qualified_name) pair models a decorator Jedi
+        # actually resolved -- e.g. Jedi turns `@route` into (name="route",
+        # qualified_name="app.route"). Real analyzer output almost always has both, so at least
+        # one fixture decorator should too, rather than every one collapsing name==qualified_name.
+        return PyDecorator(name=d[0], qualified_name=d[1]) if isinstance(d, tuple) else PyDecorator(name=d)
+
     def callable_(name, signature, *, code="", decorators=None, inner_callables=None, inner_classes=None, call_sites=None):
         return PyCallable(
             name=name,
             path="pkg/models.py",
             signature=signature,
             span=add_code(code),
-            decorators=[PyDecorator(name=d) for d in (decorators or [])],
+            decorators=[decorator(d) for d in (decorators or [])],
             callables=inner_callables or {},
             types=inner_classes or {},
             call_sites=call_sites or [],
@@ -63,12 +70,15 @@ def _backend():
     def class_(name, signature, *, methods=None, inner_classes=None):
         return PyClass(name=name, signature=signature, callables=methods or {}, types=inner_classes or {})
 
-    decorate = callable_("_decorate", "pkg.models.greet.<locals>._decorate", code="return s.upper()")
+    # Non-ASCII body text: exercises add_code()/_code_of()'s UTF-8 encode-slice-decode path
+    # (every other fixture snippet here is plain ASCII, which can't tell a byte-offset bug from a
+    # character-offset one).
+    decorate = callable_("_decorate", "pkg.models.greet.<locals>._decorate", code="return s.upper()  # café")
     greet = callable_(
         "greet",
         "pkg.models.greet",
         code="def greet(who): ...",
-        decorators=["app.route"],
+        decorators=[("route", "app.route")],
         inner_callables={"_decorate": decorate},
     )
     meta = class_(
@@ -166,3 +176,24 @@ def test_callsites_for_keys_existing_signatures_only():
     assert set(sites) == {"pkg.models.Entity.describe", "pkg.models.greet"}
     assert [s.method_name for s in sites["pkg.models.Entity.describe"]] == ["greet"]
     assert sites["pkg.models.greet"] == []
+
+
+def test_method_bodies_round_trips_non_ascii_source():
+    """get_method_bodies slices span.bytes (UTF-8 byte offsets) out of the module source -- a
+    multi-byte character before a callable would shift a naive character-offset slice, so this
+    checks the exact non-ASCII text comes back, not just that something does."""
+    bodies = _backend().get_method_bodies(["pkg.models.greet.<locals>._decorate"])
+    assert bodies == {"pkg.models.greet.<locals>._decorate": "return s.upper()  # café"}
+
+
+def test_decorated_callables_matches_by_qualified_name():
+    """Parity with the Neo4j backend, whose flat graph property already carries the qualified
+    spelling: get_decorated_callables (and get_callables_overview) must match/report a resolved
+    decorator's qualified_name, not its bare name."""
+    backend = _backend()
+    routed = backend.get_decorated_callables(["app.route"])
+    assert [o.signature for o in routed] == ["pkg.models.greet"]
+    assert routed[0].decorators == ["app.route"]
+
+    # the bare (unqualified) name alone no longer matches, now that it has a distinct qualified_name
+    assert backend.get_decorated_callables(["route"]) == []

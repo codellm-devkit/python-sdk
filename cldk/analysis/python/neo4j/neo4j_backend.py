@@ -35,8 +35,10 @@ Identity model (must match the in-memory backend; see ``codeanalyzer/neo4j/proje
 
 * a class/callable/external is keyed by ``id``, under its specific label — ``:PyClass`` /
   ``:PyCallable`` / ``:PyExternal`` — which is all this backend ever matches on: the producer also
-  stamps a shared secondary label across all three (no longer ``signature``-keyed, unlike 0.3.x),
-  but the specific labels already uniquely identify these nodes so the shared one goes unqueried;
+  stamps a shared secondary label across all three (a declared symbol is id-keyed there too, not
+  signature-keyed, unlike 0.3.x — the one exception is an unresolved ``PY_EXTENDS`` base-class
+  ghost, still merged by ``signature``, irrelevant to every query below), but the specific labels
+  already uniquely identify these nodes so the shared one goes unqueried;
 * a module is a ``:PyModule`` keyed by ``file_key`` (which equals the original ``PyModule.file_path``
   and the symbol-table key);
 * call-graph edges are ``(:PyCallable|:PyExternal)-[:PY_CALLS {weight, prov}]->(...)`` with a
@@ -277,7 +279,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         classes: Dict[str, PyClass] = {}
         for r in self._run("MATCH (:PyModule {file_key: $fk})-[:PY_DECLARES]->(c:PyClass) RETURN properties(c) AS p", fk=file_key):
             c = self._class_full(r["p"])
-            classes[c.signature] = c  # module.classes keyed by signature
+            classes[c.signature] = c  # module.types keyed by signature
         functions: Dict[str, PyCallable] = {}
         for r in self._run("MATCH (:PyModule {file_key: $fk})-[:PY_DECLARES]->(f:PyCallable) RETURN properties(f) AS p", fk=file_key):
             fn = self._callable_full(r["p"])
@@ -313,7 +315,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         ``PY_CALLS`` only ever connects declared callables and external-symbol ghosts (see
         ``codeanalyzer.neo4j.schema.REL_TYPES``), so matching either label directly is both
         sufficient and cheaper than matching on the shared secondary label 1.4.0 also stamps these
-        nodes with (which is no longer ``signature``-keyed, only ``id``-keyed, so this Cypher
+        nodes with (a declared symbol is id-keyed there, not signature-keyed, so this Cypher
         doesn't depend on it at all).
         """
         return self._run(
@@ -350,7 +352,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         return self._module_full(rows[0]["p"]) if rows else None
 
     def get_python_file(self, qualified_class_name: str) -> str | None:
-        # Only top-level classes are in the in-memory _class_to_file map (module.classes).
+        # Only top-level classes are in the in-memory _class_to_file map (module.types).
         rows = self._run(
             "MATCH (:PyModule)-[:PY_DECLARES]->(c:PyClass {signature: $sig}) WHERE c._module IN $mods RETURN c._module AS fk LIMIT 1",
             sig=qualified_class_name,

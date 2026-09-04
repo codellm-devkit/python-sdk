@@ -81,8 +81,12 @@ def _overview(c: PyCallable, class_signature: str | None, kind: str) -> PyCallab
 
     ``c.decorators`` is 1.4.0's structured ``List[PyDecorator]`` (#128 upstream), not 0.3.x's
     flat ``List[str]`` — ``PyCallableOverview.decorators`` is CLDK's own model and keeps its
-    ``List[str]`` shape (a frozen public contract), so decorators project down to their bare
-    ``name``.
+    ``List[str]`` shape (a frozen public contract), so decorators project down to a single string.
+    Prefer ``qualified_name`` over ``name`` (falling back when Jedi couldn't resolve it): the
+    Neo4j graph's flat ``decorators`` property is emitted as ``qualified_name or name``, so using
+    bare ``name`` here would diverge from the Neo4j backend's ``get_callables_overview`` /
+    ``get_decorated_callables`` for any decorator Jedi did resolve (``@lru_cache`` reads as
+    ``"lru_cache"`` locally vs ``"functools.lru_cache"`` over Neo4j).
     """
     return PyCallableOverview(
         signature=c.signature,
@@ -92,7 +96,7 @@ def _overview(c: PyCallable, class_signature: str | None, kind: str) -> PyCallab
         path=c.path,
         start_line=c.start_line,
         end_line=c.end_line,
-        decorators=[d.name for d in c.decorators],
+        decorators=[d.qualified_name or d.name for d in c.decorators],
     )
 
 
@@ -226,7 +230,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
                 self._class_to_file[class_sig] = file_path
 
         if analysis_level == AnalysisLevel.call_graph:
-            self.call_graph: nx.DiGraph | None = self._build_call_graph(self.application.call_graph)
+            self.call_graph: nx.DiGraph | None = self._build_call_graph(self.application.call_graph, self._id_to_signature())
         else:
             self.call_graph = None
 
@@ -271,8 +275,19 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         with Codeanalyzer(options) as analyzer:
             return analyzer.analyze()
 
+    def _id_to_signature(self) -> Dict[str, str]:
+        """Map every declared callable's canonical ``can://`` id to its signature.
+
+        1.4.0's ``PyCallEdge.src``/``.dst`` are ids, not signatures, but every other accessor on
+        this backend (and the Neo4j backend, which keys its own call graph by
+        ``s.signature``/``t.signature`` straight off Cypher) keys the call graph by signature —
+        so edges are resolved back to that identity once here, rather than a dual-backend
+        divergence where the local graph is id-keyed and the Neo4j one isn't.
+        """
+        return {c.id: c.signature for c, _, _, _ in self._iter_callables()}
+
     @staticmethod
-    def _build_call_graph(edges: List[PyCallEdge]) -> nx.DiGraph:
+    def _build_call_graph(edges: List[PyCallEdge], id_to_signature: Dict[str, str]) -> nx.DiGraph:
         """Convert a list of call edges into a NetworkX directed graph.
 
         Transforms the flat list of :class:`PyCallEdge` objects from the
@@ -282,16 +297,25 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         Args:
             edges: List of :class:`~cldk.models.python.PyCallEdge` objects
                 representing call relationships between methods/functions.
+            id_to_signature: Maps a declared callable's ``id`` to its ``signature`` (see
+                :meth:`_id_to_signature`) — used to resolve ``edge.src``/``.dst`` (1.4.0's are
+                ``can://`` ids) back to the signature every other accessor keys by. A target that
+                isn't in the map (an ``@external`` id, not a declared callable) keeps its raw id
+                rather than the edge being dropped.
 
         Returns:
             A ``networkx.DiGraph`` where:
-                - Nodes are method/function signatures (strings)
+                - Nodes are method/function signatures, or a raw ``@external`` id when unresolved
                 - Edges represent call relationships from caller to callee
-                - Edge attributes include ``type``, ``weight``, and ``provenance``
+                - Edge attributes are ``weight`` and ``provenance`` — 1.4.0's ``PyCallEdge`` has
+                  no ``type`` field (canonical v2's rule: the edge list's own name IS the type,
+                  so there's nothing to carry)
         """
         graph = nx.DiGraph()
         for edge in edges:
-            graph.add_edge(edge.source, edge.target, type=edge.type, weight=edge.weight, provenance=tuple(edge.provenance))
+            src = id_to_signature.get(edge.src, edge.src)
+            dst = id_to_signature.get(edge.dst, edge.dst)
+            graph.add_edge(src, dst, weight=edge.weight, provenance=tuple(edge.prov))
         return graph
 
     # --------------------------------------------------------- application
@@ -332,7 +356,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             relationships across the project.
         """
         if self.call_graph is None:
-            self.call_graph = self._build_call_graph(self.application.call_graph)
+            self.call_graph = self._build_call_graph(self.application.call_graph, self._id_to_signature())
         return self.call_graph
 
     def get_call_graph_json(self) -> str:
@@ -636,7 +660,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         return [
             _overview(c, class_sig, kind)
             for c, class_sig, kind, _ in self._iter_callables()
-            if marker_set.intersection(d.name for d in c.decorators)
+            if marker_set.intersection(d.qualified_name or d.name for d in c.decorators)
         ]
 
     def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:
