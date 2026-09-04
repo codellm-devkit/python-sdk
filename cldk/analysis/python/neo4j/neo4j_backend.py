@@ -567,6 +567,34 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         )
         return {r["signature"]: r["code"] for r in rows}
 
+    def get_source(self, node_id: str) -> str:
+        """Return the source text named by ``node_id`` (see
+        :meth:`PythonAnalysisBackend.get_source`).
+
+        Only a callable-granularity ``node_id`` (no ``"@"``) is answerable here: ``:PyCallable.code``
+        is a real, precomputed property. A body-node id names something the graph structurally
+        cannot supply text for — no per-statement ``code`` property exists, and ``:PyModule`` has no
+        source to slice one out of either — so that case raises rather than silently substituting
+        the enclosing callable's (too much) text.
+        """
+        sig, sep, _ = node_id.partition("@")
+        if sep:
+            raise NotImplementedError(
+                f"get_source({node_id!r}): the attached graph carries no source text below callable "
+                "granularity -- :PyBodyNode has a line span and no code/text property, and :PyModule "
+                "has no source to slice one out of. Only the local codeanalyzer backend can answer "
+                "for a statement or call site."
+            )
+        rows = self._run(
+            "MATCH (c:PyCallable) WHERE c._module IN $mods AND c.signature = $sig AND c.code IS NOT NULL "
+            "RETURN c.code AS code",
+            mods=self._modules,
+            sig=sig,
+        )
+        if not rows:
+            raise KeyError(f"no callable with signature {sig!r} (or it has no code)")
+        return rows[0]["code"]
+
     def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:
         rows = self._run(
             "MATCH (c:PyCallable) WHERE c._module IN $mods "
@@ -710,8 +738,11 @@ class PyNeo4jBackend(PythonAnalysisBackend):
                 ],
             )
         cprops, clsprops = best_row["callable_props"], best_row["class_props"]
+        found_body = self._innermost_body_node(rows, cprops["signature"])
+        node, node_id = (found_body[1], f"{cprops['signature']}@{found_body[0]}") if found_body else (None, None)
         return LocateResult(
-            node=self._innermost_body_node(rows, cprops["signature"]),
+            node=node,
+            node_id=node_id,
             callable=CallableRef(signature=cprops["signature"], name=cprops["name"], class_signature=clsprops["signature"] if clsprops else None),
             type=TypeRef(signature=clsprops["signature"], name=clsprops["name"]) if clsprops else None,
             module=module_ref,
@@ -721,8 +752,10 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         )
 
     @staticmethod
-    def _innermost_body_node(rows: List[Dict[str, Any]], signature: str) -> "BodyNode | None":
-        """The tightest ``:PyBodyNode`` of ``signature`` the query matched, or ``None``.
+    def _innermost_body_node(rows: List[Dict[str, Any]], signature: str) -> "Tuple[str, BodyNode] | None":
+        """The tightest ``:PyBodyNode`` of ``signature`` the query matched, plus its local body key
+        (the trailing segment of its graph ``id``), or ``None``. The key rides along so a caller can
+        build the node's ``get_source`` id (``"<signature>@<key>"``) without re-deriving it.
 
         ``None`` is a real outcome, not an error: a position on a callable's ``def`` line or on a
         blank line inside it is contained by the callable and by no body node, and the caller still
@@ -741,7 +774,8 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             return (b["end_line"] - b["start_line"], -body_key_column(key), key)
 
         best = min(matches, key=rank)
-        return R.body_node(best)
+        key = str(best.get("id", "")).rsplit("@", 1)[-1]
+        return (key, R.body_node(best))
 
     def locate(self, path: str, line: int) -> LocateResult:
         """Resolve a source position to its enclosing callable (see
