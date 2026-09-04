@@ -103,20 +103,30 @@ def _overview(c: PyCallable, class_signature: str | None, kind: str) -> PyCallab
     )
 
 
+def _slice(span: "Span | None", module_source: str) -> str | None:
+    """The text ``span`` covers, sliced out of ``module_source`` by its UTF-8 byte offsets.
+
+    ``span.bytes`` are UTF-8 byte offsets (see ``codeanalyzer.schema.py_schema.byte_offsets``), not
+    character offsets, hence the encode/slice/decode instead of a plain string slice — a non-ASCII
+    character anywhere earlier in the module would shift a naive character slice. Shared by
+    :func:`_code_of` (a callable's own span) and :meth:`PyCodeanalyzer.get_source` (any node's
+    span), so this byte-slicing logic exists exactly once.
+    """
+    if span is None or not module_source:
+        return None
+    start, end = span.bytes
+    return module_source.encode("utf-8")[start:end].decode("utf-8")
+
+
 def _code_of(c: PyCallable, module_source: str) -> str | None:
     """The callable's source text, sliced out of its owning module's source by ``span.bytes``.
 
     1.4.0 dropped ``PyCallable.code`` (the denormalized source-text field 0.3.x carried on every
     callable) in favor of ``span`` (byte offsets into ``PyModule.source``) — the Neo4j graph still
     projects a flat ``code`` property (computed at emit time), but the in-memory model no longer
-    does, so this backend now reconstructs it the same way. ``span.bytes`` are UTF-8 byte offsets
-    (see ``codeanalyzer.schema.py_schema.byte_offsets``), not character offsets, hence the
-    encode/slice/decode instead of a plain string slice.
+    does, so this backend now reconstructs it the same way.
     """
-    if c.span is None or not module_source:
-        return None
-    start, end = c.span.bytes
-    return module_source.encode("utf-8")[start:end].decode("utf-8")
+    return _slice(c.span, module_source)
 
 
 def _find_innermost(module: PyModule, line: int) -> Tuple[PyCallable, "PyClass | None"] | None:
@@ -167,8 +177,10 @@ def _find_innermost(module: PyModule, line: int) -> Tuple[PyCallable, "PyClass |
     return best
 
 
-def _find_body_node(c: PyCallable, line: int) -> "BodyNode | None":
-    """The innermost body node of ``c`` whose span contains ``line``, or ``None``.
+def _find_body_node(c: PyCallable, line: int) -> "Tuple[str, BodyNode] | None":
+    """The innermost body node of ``c`` whose span contains ``line`` and its ``c.body`` key, or
+    ``None``. The key rides along so a caller can build the node's :meth:`PyCodeanalyzer.get_source`
+    id (``"<c.signature>@<key>"``) without a second walk over ``c.body``.
 
     ``c.body`` is keyed by local id (``"20:8"``, ``"@entry"``, ``"22:8/actual_in:0"``). A node with
     no ``span`` is a synthetic analysis vertex (``@entry`` / ``@exit`` / ``@formal_in:N``) modelling
@@ -187,6 +199,7 @@ def _find_body_node(c: PyCallable, line: int) -> "BodyNode | None":
     """
     best: "BodyNode | None" = None
     best_key: Tuple[int, int, str] | None = None
+    best_local_key: str | None = None
     for key, node in (c.body or {}).items():
         if node.span is None:
             continue
@@ -194,8 +207,8 @@ def _find_body_node(c: PyCallable, line: int) -> "BodyNode | None":
             continue
         rank = (node.span.end[0] - node.span.start[0], -body_key_column(key), key)
         if best_key is None or rank < best_key:
-            best, best_key = node, rank
-    return best
+            best, best_key, best_local_key = node, rank, key
+    return (best_local_key, best) if best is not None else None
 
 
 class PyCodeanalyzer(PythonAnalysisBackend):
@@ -740,6 +753,29 @@ class PyCodeanalyzer(PythonAnalysisBackend):
                 out[c.signature] = code
         return out
 
+    def get_source(self, node_id: str) -> str:
+        """Return the source text named by ``node_id`` (see
+        :meth:`PythonAnalysisBackend.get_source`) — a callable's own signature, or
+        ``"<signature>@<body key>"`` for one of its body nodes, sliced out of the owning module's
+        text by ``span.bytes`` via :func:`_slice`, the same byte-accurate helper
+        :meth:`get_method_bodies` uses for the callable case.
+        """
+        sig, sep, body_key = node_id.partition("@")
+        for c, _, _, source in self._iter_callables():
+            if c.signature != sig:
+                continue
+            if not sep:
+                code = _code_of(c, source)
+            else:
+                node = (c.body or {}).get(body_key)
+                if node is None:
+                    raise KeyError(f"{sig!r} has no body node keyed {body_key!r} (from node_id {node_id!r})")
+                code = _slice(node.span, source)
+            if code is None:
+                raise KeyError(f"no recoverable source for node_id {node_id!r} (no span)")
+            return code
+        raise KeyError(f"no callable with signature {sig!r} (from node_id {node_id!r})")
+
     def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:
         """Return overviews of callables decorated with any of ``markers``."""
         marker_set = set(markers)
@@ -797,8 +833,11 @@ class PyCodeanalyzer(PythonAnalysisBackend):
                 diagnostics=[Diagnostic(code="module_scope", message=f"line {line} is at module scope in {module.file_path}.")],
             )
         c, owner = found
+        found_body = _find_body_node(c, line)
+        node, node_id = (found_body[1], f"{c.signature}@{found_body[0]}") if found_body else (None, None)
         return LocateResult(
-            node=_find_body_node(c, line),
+            node=node,
+            node_id=node_id,
             callable=CallableRef(signature=c.signature, name=c.name, class_signature=owner.signature if owner else None),
             type=TypeRef(signature=owner.signature, name=owner.name) if owner else None,
             module=module_ref,
