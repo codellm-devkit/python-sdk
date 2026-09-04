@@ -89,12 +89,16 @@ from cldk.analysis.python.neo4j import reconstruct as R
 from cldk.models.python import (
     BodyNode,
     PyApplication,
+    PyArtifact,
     PyCallEdge,
     PyCallable,
     PyCallableOverview,
     PyCallsite,
     PyClass,
     PyClassAttribute,
+    PyConfigKey,
+    PyConfigUseEdge,
+    PyDependency,
     PyModule,
     Span,
 )
@@ -126,6 +130,13 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     #: Relationship types every supported graph must have. A graph missing any of these was
     #: built by a different codeanalyzer-python generation (see ``_probe_schema``); their
     #: absence is not exercised individually, they are just the cheapest reliable fingerprint.
+    #: ``HAS_ARTIFACT`` is deliberately NOT added here even though it is what
+    #: get_artifacts()/get_dependencies()/get_config_keys()/get_config_uses() query: it was
+    #: introduced in the very same codeanalyzer-python generation as ``PY_HAS_BODY_NODE`` (both
+    #: Task 6/#152/#162, both 1.4.0-only), so a pre-1.4.0 graph is already caught by the existing
+    #: fingerprint. Adding it too would make a *genuinely* artifact-less v2 project (no non-.py
+    #: files at all) fail schema probing outright, for a layer that was never in that project to
+    #: begin with -- the wrong kind of "absence is never null".
     _REQUIRED_RELATIONSHIP_TYPES: frozenset[str] = frozenset({"PY_HAS_MODULE", "PY_HAS_METHOD", "PY_HAS_BODY_NODE", "PY_CALLS"})
 
     def __init__(
@@ -622,6 +633,58 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             if r["p"] is not None:
                 sites.append(R.callsite(r["p"]))
         return out
+
+    # =====================================================================================
+    # PythonAnalysisBackend — repository artifacts (Artifact/ConfigKey/Package, unprefixed —
+    # see cldk/analysis/commons/backend.py's module docstring)
+    # =====================================================================================
+    def get_artifacts(self) -> Dict[str, PyArtifact]:
+        result: Dict[str, PyArtifact] = {}
+        for r in self._run(
+            "MATCH (:PyApplication {name: $app})-[:HAS_ARTIFACT]->(a:Artifact) "
+            "OPTIONAL MATCH (a)-[:DEFINES_CONFIG]->(ck:ConfigKey) "
+            "RETURN properties(a) AS p, collect(properties(ck)) AS cks",
+            app=self.application_name,
+        ):
+            art = R.artifact(r["p"], config_keys=[R.config_key(p) for p in r["cks"]])
+            result[art.path] = art
+        return result
+
+    def get_dependencies(self) -> List[PyDependency]:
+        return [
+            R.dependency(r["rel"], name=r["name"], declared_in=r["declared_in"])
+            for r in self._run(
+                "MATCH (:PyApplication {name: $app})-[:HAS_ARTIFACT]->(a:Artifact)-[r:DECLARES_DEPENDENCY]->(p:Package) "
+                "RETURN properties(r) AS rel, p.name AS name, a.id AS declared_in",
+                app=self.application_name,
+            )
+        ]
+
+    def get_config_keys(self) -> Dict[str, PyConfigKey]:
+        result: Dict[str, PyConfigKey] = {}
+        for r in self._run(
+            "MATCH (:PyApplication {name: $app})-[:HAS_ARTIFACT]->(:Artifact)-[:DEFINES_CONFIG]->(ck:ConfigKey) "
+            "RETURN properties(ck) AS p",
+            app=self.application_name,
+        ):
+            ck = R.config_key(r["p"])
+            result[ck.id] = ck
+        return result
+
+    def get_config_uses(self, key: str | None = None) -> List[PyConfigUseEdge]:
+        # PY_USES_CONFIG (the one prefixed edge in this layer, per the leg-1 brief) connects
+        # (:PyBodyNode)-->(:ConfigKey) directly, so its endpoints ARE src/dst -- no reconstruction
+        # helper needed, unlike artifact()/dependency()/config_key() above. Scoped like every other
+        # body-node query in this file (`bn._module IN $mods`), not via the Artifact/ConfigKey path,
+        # since a config key can be read from a module outside this application's declared modules
+        # only if it were mis-scoped -- $mods is the same guard get_method_bodies/_call_rows use.
+        query = "MATCH (bn:PyBodyNode)-[u:PY_USES_CONFIG]->(ck:ConfigKey) WHERE bn._module IN $mods"
+        params: Dict[str, Any] = {"mods": self._modules}
+        if key is not None:
+            query += " AND ck.key = $key"
+            params["key"] = key
+        query += " RETURN bn.id AS src, ck.id AS dst, u.prov AS prov"
+        return [PyConfigUseEdge(src=r["src"], dst=r["dst"], prov=list(r["prov"] or [])) for r in self._run(query, **params)]
 
     # =====================================================================================
     # locate / locate_many — one round trip, UNWIND over the position list

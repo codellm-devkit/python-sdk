@@ -23,7 +23,9 @@ concrete model types returned — ``get_all_classes()`` returns ``Dict[str, PyCl
 parameterised per language by six type variables, so a query added to the shape has to land in
 every language and in both the local and Neo4j backends, or the class stops instantiating.
 
-This is a pure relocation: no abstract method here is new, and no behaviour changes.
+Originally a pure relocation (no abstract method new, no behaviour changed); the repository-artifact
+getters below are the first genuinely new addition, for the reasons given after the ``locate``
+discussion.
 
 What does *not* belong here is a query whose return type is one language's models. ``locate`` /
 ``locate_many`` (the v2 query-facade spec's D3) is declared on
@@ -32,6 +34,19 @@ What does *not* belong here is a query whose return type is one language's model
 and ``Span``: hoisted here it would be a shared contract Java and TypeScript cannot satisfy as
 typed. It is hoisted when a second language implements it and the language-neutral shape of a body
 node and a span is known from two examples rather than guessed from one.
+
+The repository-artifact getters below (``get_artifacts`` / ``get_dependencies`` /
+``get_config_keys`` / ``get_config_uses``) are the opposite case, even though they are typed on
+``cldk.models.python``'s ``Py*`` classes today. Unlike ``PyModule``/``PyClass``/``BodyNode``, those
+four models are not Python-specific shapes wearing a ``Py`` prefix out of habit:
+``codeanalyzer-python``'s own schema module documents the ``Py`` on ``PyArtifact`` / ``PyConfigKey``
+as "naming precedent, not a Python-specific claim," and the Neo4j labels/relationship-types they
+mirror (``Artifact``, ``ConfigKey``, ``Package``, ``HAS_ARTIFACT``, ``DECLARES_DEPENDENCY``,
+``DEFINES_CONFIG``, ``LOCKS``) are the one part of the graph every analyzer projects identically,
+with no ``P``/``N`` prefix at all. So this hoist is not "guessed from one example" the way a second
+``locate`` implementation would be — it is one example of a layer already built, contractually,
+to be reused verbatim. Java/TypeScript are expected to return these same four classes unchanged
+when they implement this layer, not language-specific equivalents.
 """
 
 from __future__ import annotations
@@ -40,6 +55,8 @@ from abc import ABC, abstractmethod
 from typing import ClassVar, Dict, Generic, List, TypeVar
 
 import networkx as nx
+
+from cldk.models.python import PyArtifact, PyConfigKey, PyConfigUseEdge, PyDependency
 
 AppT = TypeVar("AppT")
 ModuleT = TypeVar("ModuleT")
@@ -100,3 +117,32 @@ class AnalysisBackend(ABC, Generic[AppT, ModuleT, TypeT, CallableT, FieldT, Para
     @abstractmethod
     def get_method_parameters(self, qualified_class_name: str, qualified_method_name: str) -> List[ParamT]:
         """The parameters of a method."""
+
+    # -----[ repository artifacts ]-----
+    # See the module docstring for why these are typed on cldk.models.python's Py* classes despite
+    # living on the generic ABC.
+    @abstractmethod
+    def get_artifacts(self) -> Dict[str, PyArtifact]:
+        """Every non-code project artifact (manifest, config file, lockfile, ...), keyed by its
+        repo-relative path."""
+
+    @abstractmethod
+    def get_dependencies(self) -> List[PyDependency]:
+        """Every declared third-party dependency, one entry per declaring manifest."""
+
+    @abstractmethod
+    def get_config_keys(self) -> Dict[str, PyConfigKey]:
+        """Every configuration key flattened out of a config-bearing artifact, keyed by its id
+        (``<artifact-id>@key/<dotted.key>``) — a bare ``key`` (e.g. ``"DB_URL"``) is not unique
+        across artifacts/namespaces, so the id is the dict key."""
+
+    @abstractmethod
+    def get_config_uses(self, key: str | None = None) -> List[PyConfigUseEdge]:
+        """Resolved code-to-config edges: which body node reads which config key.
+
+        Args:
+            key: When given, only edges whose target :class:`PyConfigKey` has this bare ``key``
+                (e.g. ``"DB_URL"``) — matched against :meth:`get_config_keys`, since
+                :class:`PyConfigUseEdge` itself carries only ``src``/``dst``/``prov``, not the key
+                text. ``None`` (default) returns every edge.
+        """

@@ -65,6 +65,7 @@ from cldk.analysis.python.backend import PythonAnalysisBackend, body_key_column,
 from cldk.models.python import (
     BodyNode,
     PyApplication,
+    PyArtifact,
     PyCallEdge,
     PyCallable,
     PyCallableOverview,
@@ -72,6 +73,9 @@ from cldk.models.python import (
     PyClass,
     PyClassAttribute,
     PyComment,
+    PyConfigKey,
+    PyConfigUseEdge,
+    PyDependency,
     PyModule,
     Span,
 )
@@ -789,6 +793,34 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         """Return ``{signature: call_sites}`` for the requested signatures that exist."""
         wanted = set(signatures)
         return {c.signature: list(c.call_sites) for c, _, _, _ in self._iter_callables() if c.signature in wanted}
+
+    # ----------------------------------------------------------- repository artifacts
+    def get_artifacts(self) -> Dict[str, PyArtifact]:
+        """Return every non-code artifact (see :meth:`AnalysisBackend.get_artifacts`).
+
+        ``PyApplication.artifacts`` is already keyed by repo-relative path (the analyzer's own
+        ``project.py`` iterates it the same way), so this is a direct passthrough."""
+        return dict(self.application.artifacts)
+
+    def get_dependencies(self) -> List[PyDependency]:
+        """Return every declared dependency (see :meth:`AnalysisBackend.get_dependencies`)."""
+        return list(self.application.dependencies)
+
+    def get_config_keys(self) -> Dict[str, PyConfigKey]:
+        """Return every configuration key (see :meth:`AnalysisBackend.get_config_keys`).
+
+        ``PyApplication`` carries no flat ``config_keys`` collection — each key nests under the
+        artifact that defines it (``PyArtifact.config_keys``, mirroring the graph's
+        ``DEFINES_CONFIG`` containment edge) — so this flattens them, keyed by id."""
+        return {ck.id: ck for artifact in self.application.artifacts.values() for ck in artifact.config_keys}
+
+    def get_config_uses(self, key: str | None = None) -> List[PyConfigUseEdge]:
+        """Return resolved code-to-config edges (see :meth:`AnalysisBackend.get_config_uses`)."""
+        edges = list(self.application.config_uses)
+        if key is None:
+            return edges
+        matching_ids = {ck.id for ck in self.get_config_keys().values() if ck.key == key}
+        return [e for e in edges if e.dst in matching_ids]
 
     # ----------------------------------------------------------- locate
     def _not_analysed(self, path: str, line: int) -> LocateResult:

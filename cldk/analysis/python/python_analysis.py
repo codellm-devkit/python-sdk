@@ -60,12 +60,16 @@ from cldk.analysis.python.codeanalyzer import PyCodeanalyzer
 from cldk.analysis.python.neo4j import PyNeo4jBackend
 from cldk.models.python import (
     PyApplication,
+    PyArtifact,
     PyCallable,
     PyCallableOverview,
     PyCallsite,
     PyClass,
     PyClassAttribute,
     PyComment,
+    PyConfigKey,
+    PyConfigUseEdge,
+    PyDependency,
     PyModule,
 )
 
@@ -770,6 +774,41 @@ class PythonAnalysis:
             :meth:`locate`: The usual way to obtain a ``node_id`` in the first place.
         """
         return self.backend.get_source(node_id)
+
+    # -----[ repository artifacts ]-----
+    def get_artifacts(self) -> Dict[str, PyArtifact]:
+        """Return every non-code project artifact (manifest, config file, lockfile, ...), keyed by
+        its repo-relative path.
+
+        This layer (``Artifact``/``ConfigKey``/``Package`` nodes, ``HAS_ARTIFACT``/
+        ``DECLARES_DEPENDENCY``/``DEFINES_CONFIG``/``LOCKS`` edges) is the one part of the graph
+        every ``codeanalyzer-<lang>`` projects identically and unprefixed.
+
+        See Also:
+            :meth:`get_dependencies`, :meth:`get_config_keys`, :meth:`get_config_uses`.
+        """
+        return self.backend.get_artifacts()
+
+    def get_dependencies(self) -> List[PyDependency]:
+        """Return every declared third-party dependency, one entry per declaring manifest."""
+        return self.backend.get_dependencies()
+
+    def get_config_keys(self) -> Dict[str, PyConfigKey]:
+        """Return every configuration key flattened out of a config-bearing artifact, keyed by its
+        id (``<artifact-id>@key/<dotted.key>``) — a bare ``key`` (e.g. ``"DB_URL"``) is not unique
+        across artifacts/namespaces, so the id is the dict key."""
+        return self.backend.get_config_keys()
+
+    def get_config_uses(self, key: str | None = None) -> List[PyConfigUseEdge]:
+        """Return resolved code-to-config edges: which body node reads which config key.
+
+        Args:
+            key: When given, only edges whose target :class:`PyConfigKey` has this bare ``key``
+                (e.g. ``"DB_URL"``) — matched against :meth:`get_config_keys`, since
+                :class:`PyConfigUseEdge` itself carries only ``src``/``dst``/``prov``, not the key
+                text. ``None`` (default) returns every edge.
+        """
+        return self.backend.get_config_uses(key)
 
     # -----[ classes ]-----
     def get_classes(self) -> Dict[str, PyClass]:
