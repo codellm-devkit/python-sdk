@@ -112,7 +112,16 @@ def variable(props: Props) -> PyVariableDeclaration:
 
 
 def callsite(props: Props) -> PyCallsite:
-    """Rebuild a :class:`PyCallsite` from a ``:PyCallSite`` node's properties."""
+    """Rebuild a :class:`PyCallsite` from a ``:PyBodyNode {kind: 'call'}`` node's properties.
+
+    1.4.0 emits one call site as a body node (#120), not a dedicated ``:PyCallSite`` label — the
+    graph carries ``method_name`` / ``receiver_expr`` / ``receiver_type`` / ``return_type`` /
+    ``is_constructor_call`` and the line span, same as before. It does not project
+    ``argument_types``, ``start_column``/``end_column``, or a resolved ``callee_signature``
+    property (callee resolution lives on the separate ``PY_RESOLVES_TO`` edge, out of scope for a
+    property-only reconstruction) — those fall back to their existing empty/``-1``/``None``
+    defaults below, the same "projection-lossy field" shape as everything else in this module.
+    """
     return PyCallsite(
         method_name=props.get("method_name", ""),
         receiver_expr=props.get("receiver_expr"),

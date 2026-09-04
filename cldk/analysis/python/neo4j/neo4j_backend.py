@@ -33,11 +33,13 @@ backend.
 
 Identity model (must match the in-memory backend; see ``codeanalyzer/neo4j/project.py``):
 
-* a class/callable/external is a ``:PySymbol`` keyed by ``signature``
-  (also carrying its specific label ``:PyClass`` / ``:PyCallable`` / ``:PyExternal``);
+* a class/callable/external is keyed by ``id``, under its specific label — ``:PyClass`` /
+  ``:PyCallable`` / ``:PyExternal`` — which is all this backend ever matches on: the producer also
+  stamps a shared secondary label across all three (no longer ``signature``-keyed, unlike 0.3.x),
+  but the specific labels already uniquely identify these nodes so the shared one goes unqueried;
 * a module is a ``:PyModule`` keyed by ``file_key`` (which equals the original ``PyModule.file_path``
   and the symbol-table key);
-* call-graph edges are ``(:PyCallable|:PyExternal)-[:PY_CALLS {weight, provenance}]->(...)`` with a
+* call-graph edges are ``(:PyCallable|:PyExternal)-[:PY_CALLS {weight, prov}]->(...)`` with a
   constant ``CALL_DEP`` type;
 * class inheritance is ``(:PyClass)-[:PY_EXTENDS]->(:PyClass)`` (plus a ``base_classes`` property);
 * every project-owned node carries a ``_module`` provenance property, so a single database may hold
@@ -57,8 +59,9 @@ present in both, zero weight/provenance mismatches). The residual gap is not in 
 * **Upstream emitter gap (not recoverable here):** ``codeanalyzer-python``'s projection drops call
   edges whose target is a bare module name that is *also* imported (e.g. a call to ``os`` /
   ``re`` / ``json`` when ``import os`` is present) — its ``RowBuilder`` keys ``:PyPackage`` names
-  and call-target signatures in one namespace, so the edge gets a dangling ``:PySymbol`` reference
-  and is silently dropped by the writer. Those edges never reach Neo4j, so the call graph here can
+  and call-target signatures in the same id namespace as declared symbols, so the edge gets a
+  dangling reference and is silently dropped by the writer. Those edges never reach Neo4j, so the
+  call graph here can
   be missing a small fraction of external-target edges. This is a producer bug, not a query bug.
 * **Projection-lossy fields** (inherent to what the graph stores — see :mod:`reconstruct`): comments
   collapse to a single docstring (module-level comments dropped); ``PyVariableDeclaration.value`` and
@@ -227,8 +230,8 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         call_sites = [
             R.callsite(r["p"])
             for r in self._run(
-                "MATCH (:PyCallable {signature: $sig})-[:PY_HAS_CALLSITE]->(s:PyCallSite) "
-                "RETURN properties(s) AS p ORDER BY s.start_line, s.start_column",
+                "MATCH (:PyCallable {signature: $sig})-[:PY_HAS_BODY_NODE]->(s:PyBodyNode {kind: 'call'}) "
+                "RETURN properties(s) AS p ORDER BY s.start_line",
                 sig=sig,
             )
         ]
@@ -304,9 +307,16 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         return out
 
     def _call_rows(self) -> List[Dict[str, Any]]:
-        """Raw ``PY_CALLS`` edge rows scoped to this application (by source module)."""
+        """Raw ``PY_CALLS`` edge rows scoped to this application (by source module).
+
+        ``PY_CALLS`` only ever connects declared callables and external-symbol ghosts (see
+        ``codeanalyzer.neo4j.schema.REL_TYPES``), so matching either label directly is both
+        sufficient and cheaper than matching on the shared secondary label 1.4.0 also stamps these
+        nodes with (which is no longer ``signature``-keyed, only ``id``-keyed, so this Cypher
+        doesn't depend on it at all).
+        """
         return self._run(
-            "MATCH (s:PySymbol)-[r:PY_CALLS]->(t:PySymbol) WHERE s._module IN $mods "
+            "MATCH (s:PyCallable|PyExternal)-[r:PY_CALLS]->(t:PyCallable|PyExternal) WHERE s._module IN $mods "
             "RETURN s.signature AS src, t.signature AS tgt, properties(r) AS p",
             mods=self._modules,
         )
@@ -351,13 +361,19 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     # call graph
     # =====================================================================================
     def _call_edges(self) -> List[PyCallEdge]:
-        """The application's call edges as ``PyCallEdge`` records (``PyApplication.call_graph``)."""
+        """The application's call edges as ``PyCallEdge`` records (``PyApplication.call_graph``).
+
+        ``PyCallEdge`` itself is a v2 model (fields ``src``/``dst``/``weight``/``prov`` — 0.3.x's
+        ``source``/``target``/``provenance`` don't exist on it), and the Cypher property carrying
+        provenance on the graph is ``prov``, not ``provenance``. Same vocabulary migration as the
+        label/relationship rename above, just one level down (model kwargs / property keys).
+        """
         return [
             PyCallEdge(
-                source=r["src"],
-                target=r["tgt"],
+                src=r["src"],
+                dst=r["tgt"],
                 weight=r["p"].get("weight", 1),
-                provenance=list(r["p"].get("provenance", []) or []),
+                prov=list(r["p"].get("prov", []) or []),
             )
             for r in self._call_rows()
         ]
@@ -366,7 +382,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         graph = nx.DiGraph()
         for r in self._call_rows():
             p = r["p"]
-            graph.add_edge(r["src"], r["tgt"], type="CALL_DEP", weight=p.get("weight", 1), provenance=tuple(p.get("provenance", []) or []))
+            graph.add_edge(r["src"], r["tgt"], type="CALL_DEP", weight=p.get("weight", 1), provenance=tuple(p.get("prov", []) or []))
         return graph
 
     def get_call_graph(self) -> nx.DiGraph:
@@ -554,9 +570,9 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         # existing signature. ORDER mirrors _callable_full's call-site ordering.
         rows = self._run(
             "MATCH (c:PyCallable) WHERE c._module IN $mods AND c.signature IN $sigs "
-            "OPTIONAL MATCH (c)-[:PY_HAS_CALLSITE]->(s:PyCallSite) "
+            "OPTIONAL MATCH (c)-[:PY_HAS_BODY_NODE]->(s:PyBodyNode {kind: 'call'}) "
             "RETURN c.signature AS owner, properties(s) AS p "
-            "ORDER BY s.start_line, s.start_column",
+            "ORDER BY s.start_line",
             mods=self._modules,
             sigs=list(signatures),
         )
