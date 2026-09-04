@@ -659,10 +659,10 @@ class PyNeo4jBackend(PythonAnalysisBackend):
 
     def get_dependencies(self) -> List[PyDependency]:
         return [
-            R.dependency(r["rel"], name=r["name"], declared_in=r["declared_in"])
+            R.dependency(r["rel"], name=r["name"], ecosystem=r["ecosystem"], declared_in=r["declared_in"])
             for r in self._run(
                 "MATCH (:PyApplication {name: $app})-[:HAS_ARTIFACT]->(a:Artifact)-[r:DECLARES_DEPENDENCY]->(p:Package) "
-                "RETURN properties(r) AS rel, p.name AS name, a.id AS declared_in",
+                "RETURN properties(r) AS rel, p.name AS name, p.ecosystem AS ecosystem, a.id AS declared_in",
                 app=self.application_name,
             )
         ]

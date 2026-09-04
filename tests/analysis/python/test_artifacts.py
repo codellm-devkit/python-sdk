@@ -67,6 +67,7 @@ _CONFIG_KEY_NAMESPACE = "env"
 _CONFIG_KEY_VALUE = "postgres://x"
 
 _DEP_NAME = "flask"
+_DEP_ECOSYSTEM = "pypi"
 _DEP_SPEC = ">=2.0,<3"
 _DEP_KIND = "runtime"
 _DEP_PROV = ["declared"]
@@ -109,7 +110,7 @@ def _artifacts_application() -> PyApplication:
     )
     dependency = PyDependency(
         name=_DEP_NAME,
-        ecosystem="pypi",
+        ecosystem=_DEP_ECOSYSTEM,
         spec=_DEP_SPEC,
         kind=_DEP_KIND,
         declared_in=_ART1_ID,
@@ -176,7 +177,7 @@ def _artifacts_responder(query: str, params: dict) -> list[dict[str, Any]]:
             {"p": _ART2_PROPS, "cks": [_CONFIG_KEY_PROPS]},
         ]
     if "DECLARES_DEPENDENCY" in query:  # get_dependencies
-        return [{"rel": _DEP_REL_PROPS, "name": _DEP_NAME, "declared_in": _ART1_ID}]
+        return [{"rel": _DEP_REL_PROPS, "name": _DEP_NAME, "ecosystem": _DEP_ECOSYSTEM, "declared_in": _ART1_ID}]
     if "DEFINES_CONFIG" in query:  # get_config_keys (get_artifacts is caught above first)
         return [{"p": _CONFIG_KEY_PROPS}]
     if "PY_USES_CONFIG" in query:  # get_config_uses
@@ -220,6 +221,23 @@ def test_artifact_carries_its_flattened_config_keys(py):
 def test_dependencies_record_their_declaring_manifest(py):
     deps = py.get_dependencies()
     assert any(d.name == _DEP_NAME and d.declared_in.endswith(".toml") for d in deps)
+
+
+def test_dependency_ecosystem_is_read_off_the_package_node(fake_driver):
+    """Regression for a hardcoded ``ecosystem="pypi"``: the query must read ``Package.ecosystem``
+    off the graph, not fabricate it -- prove it with a non-default value in the canned row."""
+
+    def responder(query: str, params: dict) -> list[dict[str, Any]]:
+        if "RETURN m.file_key AS k" in query:
+            return [{"k": _MODULE_PATH}]
+        if "DECLARES_DEPENDENCY" in query:
+            return [{"rel": _DEP_REL_PROPS, "name": _DEP_NAME, "ecosystem": "conda-forge", "declared_in": _ART1_ID}]
+        return []
+
+    fake_driver.responder = responder
+    backend = PyNeo4jBackend._from_driver(fake_driver, application_name=_APP)
+    deps = backend.get_dependencies()
+    assert deps[0].ecosystem == "conda-forge"
 
 
 # =====================================================================================

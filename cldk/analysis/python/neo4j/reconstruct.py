@@ -212,9 +212,13 @@ def artifact(props: Props, *, config_keys: List[PyConfigKey] | None = None) -> P
     )
 
 
-def dependency(props: Props, *, name: str, declared_in: str) -> PyDependency:
+def dependency(props: Props, *, name: str, ecosystem: str, declared_in: str) -> PyDependency:
     """Rebuild a :class:`PyDependency` from a ``[:DECLARES_DEPENDENCY]`` edge's properties plus its
-    endpoints (``name`` off the ``:Package`` node, ``declared_in`` off the ``:Artifact`` node).
+    endpoints (``name``/``ecosystem`` off the ``:Package`` node, ``declared_in`` off the
+    ``:Artifact`` node). ``ecosystem`` is a real ``Package`` property (``neo4j/schema.py``'s
+    ``Package`` node type carries it); ``"pypi"`` is only ever what the analyzer happens to write
+    there today (its only ecosystem, per ``PyDependency.ecosystem``'s own docstring) — read off the
+    node rather than hardcoded, so this doesn't silently go stale the day a second ecosystem ships.
 
     ``locked_version``/``provides_imports`` are projection-lossy here: the graph carries them on
     the separate ``[:LOCKS]``/``[:PY_PROVIDES]`` edges (per-package facts, not per-declaration), and
@@ -223,7 +227,7 @@ def dependency(props: Props, *, name: str, declared_in: str) -> PyDependency:
     """
     return PyDependency(
         name=name,
-        ecosystem="pypi",
+        ecosystem=ecosystem,
         spec=props.get("spec", ""),
         kind=props.get("kind", "runtime"),
         extras=list(props.get("extras", []) or []),
