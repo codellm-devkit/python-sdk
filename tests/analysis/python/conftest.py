@@ -356,6 +356,10 @@ def _prune(props: dict) -> dict:
     return {k: v for k, v in props.items() if v is not None}
 
 
+# NB: no "source" key. :PyModule nodes carry file_key/module_name/content_hash/last_modified/
+# file_size/_module/id and nothing else (codeanalyzer/neo4j/project.py::_module_props, and
+# neo4j/schema.py declares the same set) — fabricating one here is what let the module-scope test
+# pass against a property the graph never emits.
 _LOCATE_MODULE_PROPS = {
     "id": f"can://{_LOCATE_MODULE_PATH}",
     "file_key": _LOCATE_MODULE_PATH,
@@ -363,7 +367,6 @@ _LOCATE_MODULE_PROPS = {
     "content_hash": "deadbeef",
     "file_size": len(_LOCATE_MODULE_SOURCE.encode("utf-8")),
     "_module": _LOCATE_MODULE_PATH,
-    "source": _LOCATE_MODULE_SOURCE,  # NB: fabricated -- Critical 1 removes this
 }
 
 

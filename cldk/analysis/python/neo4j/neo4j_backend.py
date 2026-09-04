@@ -678,14 +678,29 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             default=None,
         )
         if best_row is None:
+            # Module scope is a real position, not an absence — but the graph genuinely does not
+            # carry module text, so say so instead of returning something invented. Reading the
+            # file from disk is not an option (this backend attaches to a graph someone else
+            # built and may not have the project checked out), and concatenating the callables'
+            # ``code`` would silently drop every module-level statement.
             return LocateResult(
                 node=None,
                 callable=None,
                 type=None,
                 module=module_ref,
-                source=module_props.get("source") or "",
+                source="",
                 span=self._line_span(line, line),
-                diagnostics=[Diagnostic(code="module_scope", message=f"line {line} is at module scope in {path}.")],
+                diagnostics=[
+                    Diagnostic(code="module_scope", message=f"line {line} is at module scope in {path}."),
+                    Diagnostic(
+                        code="module_source_unavailable",
+                        message=(
+                            "The attached graph does not carry module text: :PyModule nodes project "
+                            "file_key/module_name/content_hash/last_modified/file_size and no source. "
+                            "The local codeanalyzer backend returns the module's text for this position."
+                        ),
+                    ),
+                ],
             )
         cprops, clsprops = best_row["callable_props"], best_row["class_props"]
         return LocateResult(

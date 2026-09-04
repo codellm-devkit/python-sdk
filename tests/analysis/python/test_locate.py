@@ -30,19 +30,33 @@ def test_locate_inside_callable(py):
 
 
 def test_locate_module_scope(py):
-    """A module top-level statement is a real position, not an absence."""
+    """A module top-level statement is a real position, not an absence.
+
+    The original ``assert r.source`` here was wrong and only passed because the fixture fabricated a
+    ``source`` property on the module node. ``:PyModule`` has no such property (see
+    ``test_locate_parity_documented_module_source_divergence``), so over Neo4j the honest answer is
+    an empty source that says *why* it is empty — never the module text invented from somewhere.
+    """
     r = py.locate("src/app.py", 1)
     assert r.callable is None
     assert r.module.path == "src/app.py"
-    assert [d.code for d in r.diagnostics] == ["module_scope"]
-    assert r.source  # the module's text
+    assert "module_scope" in [d.code for d in r.diagnostics]
+    assert r.source == ""
+    assert "module_source_unavailable" in [d.code for d in r.diagnostics]
 
 
 def test_locate_gap_between_callables(py):
-    """A line between two callables must never snap to the nearest one."""
+    """A line between two callables must never snap to the nearest one.
+
+    Membership rather than list equality: this backend's module-scope result now also carries
+    ``module_source_unavailable`` (it cannot supply the module text). What this test is about is
+    that the position does not snap to a neighbouring callable, so it asserts that directly.
+    """
     r = py.locate("src/app.py", 17)  # blank line between wrap() and key()
     assert r.callable is None
-    assert [d.code for d in r.diagnostics] == ["module_scope"]
+    assert r.type is None
+    assert "module_scope" in [d.code for d in r.diagnostics]
+    assert "file_not_in_graph" not in [d.code for d in r.diagnostics]
 
 
 def test_locate_unanalysed_file(py):
