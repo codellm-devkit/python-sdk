@@ -52,6 +52,7 @@ from cldk.models.python import (
 from cldk.models.python import (
     PyCallableParameter,
     PyCallsite,
+    PyDecorator,
     PySymbol,
     PyVariableDeclaration,
 )
@@ -171,23 +172,30 @@ def callable_(
     inner_classes: Dict[str, PyClass] | None = None,
     local_variables: List[PyVariableDeclaration] | None = None,
 ) -> PyCallable:
-    """Rebuild a :class:`PyCallable` from a ``:PyCallable`` node plus its fetched children."""
+    """Rebuild a :class:`PyCallable` from a ``:PyCallable`` node plus its fetched children.
+
+    Two 1.4.0 shape changes from the node's flat properties: ``decorators`` (graph: flat
+    ``string[]`` of names) rewraps into the model's structured ``List[PyDecorator]``, name-only
+    (the graph doesn't project a decorator's arguments/qualified name); and ``code`` has no model
+    field to receive it at all any more (superseded by ``span`` + ``PyModule.source`` — this
+    backend's ``get_method_bodies`` instead reads the graph's own flat ``code`` property directly,
+    unaffected by the model shape).
+    """
     return PyCallable(
         name=props.get("name", ""),
         path=props.get("path", ""),
         signature=props.get("signature", ""),
         comments=comments(props),
-        decorators=list(props.get("decorators", []) or []),
+        decorators=[PyDecorator(name=d) for d in props.get("decorators", []) or []],
         parameters=parameters(props),
         return_type=props.get("return_type"),
-        code=props.get("code"),
         start_line=props.get("start_line", -1),
         end_line=props.get("end_line", -1),
         code_start_line=props.get("code_start_line", -1),
         accessed_symbols=accessed_symbols(props),
         call_sites=call_sites or [],
-        inner_callables=inner_callables or {},
-        inner_classes=inner_classes or {},
+        callables=inner_callables or {},
+        types=inner_classes or {},
         local_variables=local_variables or [],
         cyclomatic_complexity=props.get("cyclomatic_complexity", 0),
     )
@@ -200,16 +208,19 @@ def class_(
     attributes: Dict[str, PyClassAttribute] | None = None,
     inner_classes: Dict[str, PyClass] | None = None,
 ) -> PyClass:
-    """Rebuild a :class:`PyClass` from a ``:PyClass`` node plus its fetched children."""
+    """Rebuild a :class:`PyClass` from a ``:PyClass`` node plus its fetched children.
+
+    Like :func:`callable_`: no model field receives the graph's flat ``code`` property any more
+    (superseded by ``span`` + ``PyModule.source``, unused on this read-only reconstruction path).
+    """
     return PyClass(
         name=props.get("name", ""),
         signature=props.get("signature", ""),
         comments=comments(props),
-        code=props.get("code"),
         base_classes=list(props.get("base_classes", []) or []),
-        methods=methods or {},
+        callables=methods or {},
         attributes=attributes or {},
-        inner_classes=inner_classes or {},
+        types=inner_classes or {},
         start_line=props.get("start_line", -1),
         end_line=props.get("end_line", -1),
     )
@@ -234,7 +245,7 @@ def module(
         module_name=props.get("module_name", ""),
         imports=imports or [],
         comments=[],
-        classes=classes or {},
+        types=classes or {},
         functions=functions or {},
         variables=variables or [],
         content_hash=props.get("content_hash"),

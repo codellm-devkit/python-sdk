@@ -57,7 +57,7 @@ import networkx as nx
 
 from codeanalyzer.core import Codeanalyzer
 from codeanalyzer.options import AnalysisOptions, EmitTarget
-from codeanalyzer.schema import model_dump_json
+from codeanalyzer.schema import Analysis, model_dump_json
 
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.python.backend import PythonAnalysisBackend
@@ -77,7 +77,13 @@ logger = logging.getLogger(__name__)
 
 
 def _overview(c: PyCallable, class_signature: str | None, kind: str) -> PyCallableOverview:
-    """Project a :class:`PyCallable` into a lightweight :class:`PyCallableOverview`."""
+    """Project a :class:`PyCallable` into a lightweight :class:`PyCallableOverview`.
+
+    ``c.decorators`` is 1.4.0's structured ``List[PyDecorator]`` (#128 upstream), not 0.3.x's
+    flat ``List[str]`` — ``PyCallableOverview.decorators`` is CLDK's own model and keeps its
+    ``List[str]`` shape (a frozen public contract), so decorators project down to their bare
+    ``name``.
+    """
     return PyCallableOverview(
         signature=c.signature,
         name=c.name,
@@ -86,8 +92,24 @@ def _overview(c: PyCallable, class_signature: str | None, kind: str) -> PyCallab
         path=c.path,
         start_line=c.start_line,
         end_line=c.end_line,
-        decorators=list(c.decorators or []),
+        decorators=[d.name for d in c.decorators],
     )
+
+
+def _code_of(c: PyCallable, module_source: str) -> str | None:
+    """The callable's source text, sliced out of its owning module's source by ``span.bytes``.
+
+    1.4.0 dropped ``PyCallable.code`` (the denormalized source-text field 0.3.x carried on every
+    callable) in favor of ``span`` (byte offsets into ``PyModule.source``) — the Neo4j graph still
+    projects a flat ``code`` property (computed at emit time), but the in-memory model no longer
+    does, so this backend now reconstructs it the same way. ``span.bytes`` are UTF-8 byte offsets
+    (see ``codeanalyzer.schema.py_schema.byte_offsets``), not character offsets, hence the
+    encode/slice/decode instead of a plain string slice.
+    """
+    if c.span is None or not module_source:
+        return None
+    start, end = c.span.bytes
+    return module_source.encode("utf-8")[start:end].decode("utf-8")
 
 
 class PyCodeanalyzer(PythonAnalysisBackend):
@@ -112,7 +134,10 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         target_files (List[str] | None): Specific files to analyze.
         cache_dir (Path | None): Cache directory for the backend.
         analysis_json_path (Path | None): Path for persisting analysis results.
-        application (PyApplication): The analyzed application model.
+        analysis (Analysis): The v2 envelope the analyzer returns — ``application`` plus
+            ``schema_version`` / ``max_level`` / ``analyzer`` metadata later callers may need to
+            tell "no result" apart from "unanswerable at this analysis level".
+        application (PyApplication): The analyzed application model (``analysis.application``).
         call_graph (nx.DiGraph | None): The call graph (if analysis_level is call_graph).
 
     See Also:
@@ -186,11 +211,18 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         self.cache_dir = Path(cache_dir).expanduser().resolve() if cache_dir else None
         self.analysis_json_path = Path(analysis_json_path).expanduser().resolve() if analysis_json_path else None
 
-        self.application: PyApplication = self._run_analyzer()
+        # codeanalyzer-python 1.4.0's analyze() returns the v2 envelope (schema_version,
+        # max_level, analyzer, application) rather than a bare application. Unwrap it here, once,
+        # so every downstream `self.application.xxx` read below keeps working unchanged; the
+        # envelope itself is kept on `self.analysis` rather than discarded, since schema_version /
+        # max_level are facts a later, interprocedural-aware facade needs to tell "no result"
+        # apart from "unanswerable at this analysis level".
+        self.analysis: Analysis = self._run_analyzer()
+        self.application: PyApplication = self.analysis.application
         # Class-signature → file path lookup, built once.
         self._class_to_file: Dict[str, str] = {}
         for file_path, module in self.application.symbol_table.items():
-            for class_sig in module.classes:
+            for class_sig in module.types:
                 self._class_to_file[class_sig] = file_path
 
         if analysis_level == AnalysisLevel.call_graph:
@@ -199,17 +231,18 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             self.call_graph = None
 
     # ----------------------------------------------------------------- core
-    def _run_analyzer(self) -> PyApplication:
-        """Execute the codeanalyzer-python analysis and return results.
+    def _run_analyzer(self) -> Analysis:
+        """Execute the codeanalyzer-python analysis and return the v2 envelope.
 
         Configures and runs the codeanalyzer-python backend with the options
         specified during initialization. The backend handles all caching
         internally.
 
         Returns:
-            A :class:`~cldk.models.python.PyApplication` object containing
-            the complete analysis results, including the symbol table and
-            call graph edges.
+            The :class:`~codeanalyzer.schema.Analysis` envelope (``schema_version``,
+            ``max_level``, ``analyzer``, ``application``) — see the caller in
+            :meth:`__init__`, which unwraps ``.application`` for every other accessor on this
+            class.
 
         Note:
             If ``target_files`` contains multiple files, only the first
@@ -347,7 +380,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         """
         result: Dict[str, PyClass] = {}
         for module in self.application.symbol_table.values():
-            result.update(module.classes)
+            result.update(module.types)
         return result
 
     def get_class(self, qualified_class_name: str) -> PyClass | None:
@@ -375,7 +408,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             not found.
         """
         cls = self.get_class(qualified_class_name)
-        return list(cls.inner_classes.values()) if cls else []
+        return list(cls.types.values()) if cls else []
 
     def get_all_sub_classes(self, qualified_class_name: str) -> Dict[str, PyClass]:
         """Return all classes that inherit from a specific class.
@@ -446,8 +479,8 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         """
         result: Dict[str, Dict[str, PyCallable]] = {}
         for module in self.application.symbol_table.values():
-            for class_sig, cls in module.classes.items():
-                result[class_sig] = dict(cls.methods)
+            for class_sig, cls in module.types.items():
+                result[class_sig] = dict(cls.callables)
             if module.functions:
                 result.setdefault(module.module_name, {}).update(module.functions)
         return result
@@ -464,7 +497,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             Returns empty dict if class not found.
         """
         cls = self.get_class(qualified_class_name)
-        return dict(cls.methods) if cls else {}
+        return dict(cls.callables) if cls else {}
 
     def get_method(self, qualified_class_name: str, qualified_method_name: str) -> PyCallable | None:
         """Return a specific method or module-level function by scope and name.
@@ -545,61 +578,71 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         return list(cls.attributes.values()) if cls else []
 
     # ----------------------------------------------------------- bulk / projected accessors
-    def _iter_callables(self) -> Iterator[Tuple[PyCallable, "str | None", str]]:
-        """Yield ``(callable, class_signature, kind)`` for every callable in the application.
+    def _iter_callables(self) -> Iterator[Tuple[PyCallable, "str | None", str, str]]:
+        """Yield ``(callable, class_signature, kind, module_source)`` for every callable in the
+        application.
 
         Walks the in-memory symbol table the same way the Neo4j backend's ``MATCH (c:PyCallable)``
         sees nodes: a callable is a ``"method"`` only when a class declares it directly (mirroring
         ``PY_HAS_METHOD``); module-level functions and functions nested inside a callable are
         ``"function"`` with a ``None`` class signature. The two backends therefore enumerate the
-        same set.
+        same set. ``module_source`` (the owning module's full source text) rides along so callers
+        needing the callable's own source can slice it via :func:`_code_of` — a callable's
+        ``span`` offsets are always relative to its top-level module, however deeply nested.
         """
 
-        def from_callable(c: PyCallable):
-            for inner in c.inner_callables.values():
-                yield inner, None, "function"
-                yield from from_callable(inner)
-            for inner_cls in c.inner_classes.values():
-                yield from from_class(inner_cls)
+        def from_callable(c: PyCallable, source: str):
+            for inner in c.callables.values():
+                yield inner, None, "function", source
+                yield from from_callable(inner, source)
+            for inner_cls in c.types.values():
+                yield from from_class(inner_cls, source)
 
-        def from_class(cls: PyClass):
-            for m in cls.methods.values():
-                yield m, cls.signature, "method"
-                yield from from_callable(m)
-            for inner_cls in cls.inner_classes.values():
-                yield from from_class(inner_cls)
+        def from_class(cls: PyClass, source: str):
+            for m in cls.callables.values():
+                yield m, cls.signature, "method", source
+                yield from from_callable(m, source)
+            for inner_cls in cls.types.values():
+                yield from from_class(inner_cls, source)
 
         for module in self.application.symbol_table.values():
-            for cls in module.classes.values():
-                yield from from_class(cls)
+            for cls in module.types.values():
+                yield from from_class(cls, module.source)
             for fn in module.functions.values():
-                yield fn, None, "function"
-                yield from from_callable(fn)
+                yield fn, None, "function", module.source
+                yield from from_callable(fn, module.source)
 
     def get_callables_overview(self) -> List[PyCallableOverview]:
         """Return a lightweight overview of every callable in the application (see
         :meth:`PythonAnalysisBackend.get_callables_overview`)."""
-        return [_overview(c, class_sig, kind) for c, class_sig, kind in self._iter_callables()]
+        return [_overview(c, class_sig, kind) for c, class_sig, kind, _ in self._iter_callables()]
 
     def get_method_bodies(self, signatures: List[str]) -> Dict[str, str]:
         """Return ``{signature: code}`` for the requested signatures that exist and have a body
         (omits callables whose ``code`` is ``None``)."""
         wanted = set(signatures)
-        return {c.signature: c.code for c, _, _ in self._iter_callables() if c.signature in wanted and c.code is not None}
+        out: Dict[str, str] = {}
+        for c, _, _, source in self._iter_callables():
+            if c.signature not in wanted:
+                continue
+            code = _code_of(c, source)
+            if code is not None:
+                out[c.signature] = code
+        return out
 
     def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:
         """Return overviews of callables decorated with any of ``markers``."""
         marker_set = set(markers)
         return [
             _overview(c, class_sig, kind)
-            for c, class_sig, kind in self._iter_callables()
-            if marker_set.intersection(c.decorators or [])
+            for c, class_sig, kind, _ in self._iter_callables()
+            if marker_set.intersection(d.name for d in c.decorators)
         ]
 
     def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:
         """Return ``{signature: call_sites}`` for the requested signatures that exist."""
         wanted = set(signatures)
-        return {c.signature: list(c.call_sites) for c, _, _ in self._iter_callables() if c.signature in wanted}
+        return {c.signature: list(c.call_sites) for c, _, _, _ in self._iter_callables() if c.signature in wanted}
 
     # ----------------------------------------------------------- callers/callees
     def get_all_callers(self, target_class_name: str, target_method_declaration: str) -> Dict:
@@ -708,7 +751,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
                 return []
             return list(nx.edge_dfs(graph, source=method.signature))
         edges: List[Tuple[str, str]] = []
-        for method in cls.methods.values():
+        for method in cls.callables.values():
             if method.signature in graph:
                 edges.extend(nx.edge_dfs(graph, source=method.signature))
         return edges
