@@ -742,6 +742,35 @@ class PythonAnalysis:
         """
         return self.backend.locate_many(positions)
 
+    # -----[ source access ]-----
+    def get_source(self, node_id: str) -> str:
+        """Return the source text named by ``node_id`` — a callable, or one of its body nodes.
+
+        Generalises :meth:`get_method_bodies` below callable granularity: ``node_id`` is either a
+        callable's signature, or ``"<signature>@<body key>"`` for one of that callable's body
+        nodes — exactly the string :attr:`~cldk.analysis.commons.results.LocateResult.node_id`
+        hands back alongside :attr:`~cldk.analysis.commons.results.LocateResult.node`, so a
+        statement or call site :meth:`locate` found can be re-fetched precisely, not just the
+        callable enclosing it.
+
+        Args:
+            node_id: A callable signature, or ``"<signature>@<body key>"``.
+
+        Returns:
+            The source text, never an ambiguous empty string.
+
+        Raises:
+            KeyError: No callable/body node matches ``node_id``, or it has no recoverable source
+                (no span).
+            NotImplementedError: (Neo4j backend only) ``node_id`` names a body node — the attached
+                graph carries no source text below callable granularity.
+
+        See Also:
+            :meth:`get_method_bodies`: The bulk, callable-only, omit-if-absent form.
+            :meth:`locate`: The usual way to obtain a ``node_id`` in the first place.
+        """
+        return self.backend.get_source(node_id)
+
     # -----[ classes ]-----
     def get_classes(self) -> Dict[str, PyClass]:
         """Return all classes in the project.
