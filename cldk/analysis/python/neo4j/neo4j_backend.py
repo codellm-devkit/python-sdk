@@ -88,7 +88,7 @@ from cldk.models.python import (
     PyClassAttribute,
     PyModule,
 )
-from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
+from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException, GraphSchemaMismatch
 
 logger = logging.getLogger(__name__)
 
@@ -108,35 +108,64 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             ``--app-name`` the graph was loaded with (defaults to the project directory name).
     """
 
+    #: Relationship types every supported graph must have. A graph missing any of these was
+    #: built by a different codeanalyzer-python generation (see ``_probe_schema``); their
+    #: absence is not exercised individually, they are just the cheapest reliable fingerprint.
+    _REQUIRED_RELATIONSHIP_TYPES: frozenset[str] = frozenset({"PY_HAS_MODULE", "PY_HAS_METHOD", "PY_HAS_BODY_NODE", "PY_CALLS"})
+
     def __init__(
         self,
         neo4j_uri: str,
-        neo4j_username: str,
-        neo4j_password: str,
+        neo4j_username: str | None = None,
+        neo4j_password: str | None = None,
         neo4j_database: str | None = None,
         application_name: str | None = None,
     ) -> None:
-        try:
-            from neo4j import GraphDatabase
-        except ModuleNotFoundError as e:  # pragma: no cover - import guard
-            raise CodeanalyzerExecutionException(
-                "The Neo4j backend requires the 'neo4j' driver. Install it with "
-                "`pip install neo4j` (or `pip install cldk[neo4j]`)."
-            ) from e
-
         if not application_name:
             raise CodeanalyzerExecutionException("application_name is required to scope queries to an application.")
         self.application_name = application_name
         self._database = neo4j_database
-        self._driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_username, neo4j_password))
+
+        if isinstance(neo4j_uri, str):
+            try:
+                from neo4j import GraphDatabase
+            except ModuleNotFoundError as e:  # pragma: no cover - import guard
+                raise CodeanalyzerExecutionException(
+                    "The Neo4j backend requires the 'neo4j' driver. Install it with "
+                    "`pip install neo4j` (or `pip install cldk[neo4j]`)."
+                ) from e
+            self._driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_username, neo4j_password))
+        else:
+            # Already a constructed driver (dependency injection for tests) — used as-is, no
+            # 'neo4j' import required. Real callers always pass a bolt:// URI string.
+            self._driver = neo4j_uri
         # One long-lived read session reused across queries (see _run). Reconstruction is an N+1
         # fan-out, so reopening a session per query added real per-call overhead. Created lazily.
         self._session_obj: Any | None = None
+
+        # Fail fast if the attached graph doesn't speak this backend's vocabulary — one round
+        # trip, run once per connection, before any query can silently come back empty.
+        self._probe_schema()
 
         # The application's module file_keys, used to scope every query to this app.
         self._modules: List[str] = self._load_module_keys()
         # Lazily-built call graph cache (mirrors PyCodeanalyzer.call_graph).
         self._call_graph: nx.DiGraph | None = None
+
+    def _probe_schema(self) -> None:
+        """Verify the connected graph's vocabulary once, at connection time.
+
+        A graph built by a different ``codeanalyzer-python`` generation (or an empty/asset-only
+        database) answers every one of this backend's Cypher queries with zero rows — no error,
+        nothing to distinguish it from "this codebase has no callables". This runs
+        ``CALL db.relationshipTypes()`` (one round trip, read-only) and compares the result
+        against :attr:`_REQUIRED_RELATIONSHIP_TYPES`, raising :class:`GraphSchemaMismatch` if any
+        are absent.
+        """
+        found = {r["relationshipType"] for r in self._run("CALL db.relationshipTypes()")}
+        missing = self._REQUIRED_RELATIONSHIP_TYPES - found
+        if missing:
+            raise GraphSchemaMismatch(expected=set(self._REQUIRED_RELATIONSHIP_TYPES), found=found, missing=missing)
 
     # -----[ lifecycle ]-----
     def close(self) -> None:
