@@ -50,6 +50,7 @@ from cldk.models.python import (
     PyClassOverview,
     PyComment,
     PyConfigKey,
+    PyConfigRead,
     PyDependency,
     PyImport,
     PyModule,
@@ -235,6 +236,27 @@ def dependency(props: Props, *, name: str, ecosystem: str, declared_in: str) -> 
         declared_in=declared_in,
         direct=props.get("direct", True),
         provides_imports=[],
+        prov=list(props.get("prov", []) or []),
+    )
+
+
+def unresolved_config_read(props: Props, *, callee: str) -> PyConfigRead:
+    """Rebuild a :class:`PyConfigRead` from a ``[:PY_READS_CONFIG_UNRESOLVED]`` edge's properties
+    plus its ``:PyExternal`` ghost endpoint (``callee``).
+
+    ``site`` (the reading call's own body-node id) is projection-lossy here, always ``""``: unlike
+    ``PY_USES_CONFIG``, this edge runs application-to-ghost (``:PyApplication`` -> ``:PyExternal``),
+    never touching the actual :PyBodyNode that made the call, so there is no node id to recover it
+    from. The edge's own discriminant is ``(key, reason)``, not per-site (see
+    ``codeanalyzer/neo4j/project.py``'s own comment on this), so several distinct call sites
+    sharing a ``(callee, key, reason)`` triple also collapse into one edge -- a count/site gap, not
+    a presence/absence one: any unresolved read for that triple guarantees at least one edge here.
+    """
+    return PyConfigRead(
+        site="",
+        callee=callee,
+        key=props.get("key"),
+        reason=props.get("reason", "non-literal"),
         prov=list(props.get("prov", []) or []),
     )
 

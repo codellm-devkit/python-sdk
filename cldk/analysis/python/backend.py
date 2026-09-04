@@ -221,6 +221,21 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         signature gets an entry (an empty list if it has no call sites); signatures with no matching
         callable are omitted."""
 
+    @abstractmethod
+    def get_config_readers(self, key: str) -> List[PyCallableOverview]:
+        """Overviews of every callable that reads configuration key ``key``, resolved from
+        :meth:`~cldk.analysis.commons.backend.AnalysisBackend.get_config_uses`'s edges.
+
+        That generic accessor hands back ``PyConfigUseEdge.src`` as an opaque GLOBAL ordinal id
+        (``<callable-id>@<local-id>``) — resolving it to "which callable" requires knowing
+        ``codeanalyzer-python``'s id grammar, so this stays Python-specific even though its return
+        type (``PyCallableOverview``) is the same shared projection :meth:`get_entrypoints` and
+        :meth:`get_callables_overview` already return. Empty means no callable reads this key,
+        which is not the same as "a read exists but never resolved to a key" — see
+        :meth:`~cldk.analysis.commons.backend.AnalysisBackend.get_unresolved_config_reads` for
+        that case.
+        """
+
     # -----[ locate ]-----
     # The v2 query-facade spec's D3. Declared here rather than on the generic cross-language ABC
     # because LocateResult carries codeanalyzer-python's BodyNode/Span — see

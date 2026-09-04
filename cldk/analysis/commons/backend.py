@@ -36,9 +36,10 @@ typed. It is hoisted when a second language implements it and the language-neutr
 node and a span is known from two examples rather than guessed from one.
 
 The repository-artifact getters below (``get_artifacts`` / ``get_dependencies`` /
-``get_config_keys`` / ``get_config_uses``) are the opposite case, even though they are typed on
-``cldk.models.python``'s ``Py*`` classes today. Unlike ``PyModule``/``PyClass``/``BodyNode``, those
-four models are not Python-specific shapes wearing a ``Py`` prefix out of habit:
+``get_config_keys`` / ``get_config_uses`` / ``get_unresolved_config_reads``) are the opposite case,
+even though they are typed on ``cldk.models.python``'s ``Py*`` classes today. Unlike
+``PyModule``/``PyClass``/``BodyNode``, those models are not Python-specific shapes wearing a ``Py``
+prefix out of habit:
 ``codeanalyzer-python``'s own schema module documents the ``Py`` on ``PyArtifact`` / ``PyConfigKey``
 as "naming precedent, not a Python-specific claim," and the Neo4j labels/relationship-types they
 mirror (``Artifact``, ``ConfigKey``, ``Package``, ``HAS_ARTIFACT``, ``DECLARES_DEPENDENCY``,
@@ -56,7 +57,7 @@ from typing import ClassVar, Dict, Generic, List, TypeVar
 
 import networkx as nx
 
-from cldk.models.python import PyArtifact, PyConfigKey, PyConfigUseEdge, PyDependency
+from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
 
 AppT = TypeVar("AppT")
 ModuleT = TypeVar("ModuleT")
@@ -127,8 +128,23 @@ class AnalysisBackend(ABC, Generic[AppT, ModuleT, TypeT, CallableT, FieldT, Para
         repo-relative path."""
 
     @abstractmethod
-    def get_dependencies(self) -> List[PyDependency]:
-        """Every declared third-party dependency, one entry per declaring manifest."""
+    def get_dependencies(
+        self, *, direct_only: bool = False, ecosystem: str | None = None, declared_in: str | None = None
+    ) -> List[PyDependency]:
+        """Every declared third-party dependency, one entry per declaring manifest.
+
+        All three filters default to "don't filter" -- a pure widening of the original
+        zero-argument signature, so every existing call keeps working unchanged.
+
+        Args:
+            direct_only: When ``True``, excludes lockfile-only transitive pins
+                (``PyDependency.direct is False``).
+            ecosystem: When given, only dependencies from this package ecosystem (e.g.
+                ``"pypi"``) -- matched against the real ``Package.ecosystem`` graph property /
+                ``PyDependency.ecosystem`` field, never a hardcoded assumption.
+            declared_in: When given, only dependencies declared by this artifact id
+                (``PyDependency.declared_in``, e.g. from :meth:`get_artifacts`).
+        """
 
     @abstractmethod
     def get_config_keys(self) -> Dict[str, PyConfigKey]:
@@ -145,4 +161,17 @@ class AnalysisBackend(ABC, Generic[AppT, ModuleT, TypeT, CallableT, FieldT, Para
                 (e.g. ``"DB_URL"``) — matched against :meth:`get_config_keys`, since
                 :class:`PyConfigUseEdge` itself carries only ``src``/``dst``/``prov``, not the key
                 text. ``None`` (default) returns every edge.
+        """
+
+    @abstractmethod
+    def get_unresolved_config_reads(self) -> List[PyConfigRead]:
+        """Detector-matched config reads that never closed on exactly one declared key -- the
+        failure case :meth:`get_config_uses` cannot show, so that method's empty result stays
+        ambiguous between "nothing reads this key" and "a read exists but the analyzer couldn't
+        resolve it" without this sibling.
+
+        Distinct from a missing declaration: this is a call the detector matched (e.g.
+        ``os.getenv(...)``) whose key argument either never closed on a literal at all
+        (``reason="non-literal"``) or closed on one that matches no declared
+        :class:`PyConfigKey` (``reason="undefined-key"``, with ``key`` populated).
         """

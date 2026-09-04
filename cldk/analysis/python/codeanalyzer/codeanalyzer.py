@@ -75,6 +75,7 @@ from cldk.models.python import (
     PyClassOverview,
     PyComment,
     PyConfigKey,
+    PyConfigRead,
     PyConfigUseEdge,
     PyDependency,
     PyModule,
@@ -868,9 +869,19 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         ``project.py`` iterates it the same way), so this is a direct passthrough."""
         return dict(self.application.artifacts)
 
-    def get_dependencies(self) -> List[PyDependency]:
-        """Return every declared dependency (see :meth:`AnalysisBackend.get_dependencies`)."""
-        return list(self.application.dependencies)
+    def get_dependencies(
+        self, *, direct_only: bool = False, ecosystem: str | None = None, declared_in: str | None = None
+    ) -> List[PyDependency]:
+        """Return every declared dependency, optionally filtered (see
+        :meth:`AnalysisBackend.get_dependencies`)."""
+        deps = self.application.dependencies
+        if direct_only:
+            deps = [d for d in deps if d.direct]
+        if ecosystem is not None:
+            deps = [d for d in deps if d.ecosystem == ecosystem]
+        if declared_in is not None:
+            deps = [d for d in deps if d.declared_in == declared_in]
+        return list(deps)
 
     def get_config_keys(self) -> Dict[str, PyConfigKey]:
         """Return every configuration key (see :meth:`AnalysisBackend.get_config_keys`).
@@ -887,6 +898,24 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             return edges
         matching_ids = {ck.id for ck in self.get_config_keys().values() if ck.key == key}
         return [e for e in edges if e.dst in matching_ids]
+
+    def get_unresolved_config_reads(self) -> List[PyConfigRead]:
+        """Return every detector-matched config read that never resolved to a declared key (see
+        :meth:`AnalysisBackend.get_unresolved_config_reads`) -- a direct passthrough."""
+        return list(self.application.config_reads_unresolved)
+
+    def get_config_readers(self, key: str) -> List[PyCallableOverview]:
+        """Return overviews of every callable reading configuration key ``key`` (see
+        :meth:`PythonAnalysisBackend.get_config_readers`).
+
+        Resolves :meth:`get_config_uses`'s opaque ``src`` (a GLOBAL ordinal id,
+        ``<callable-id>@<local-id>``) back to the owning callable by its ``id`` -- the same split
+        Task 8's report documented as the caller's job, done here instead.
+        """
+        reading_ids = {e.src.rsplit("@", 1)[0] for e in self.get_config_uses(key)}
+        if not reading_ids:
+            return []
+        return [_overview(c, class_sig, kind) for c, class_sig, kind, _ in self._iter_callables() if c.id in reading_ids]
 
     # ----------------------------------------------------------- locate
     def _not_analysed(self, path: str, line: int) -> LocateResult:

@@ -69,6 +69,7 @@ from cldk.models.python import (
     PyClassOverview,
     PyComment,
     PyConfigKey,
+    PyConfigRead,
     PyConfigUseEdge,
     PyDependency,
     PyModule,
@@ -846,9 +847,22 @@ class PythonAnalysis:
         """
         return self.backend.get_artifacts()
 
-    def get_dependencies(self) -> List[PyDependency]:
-        """Return every declared third-party dependency, one entry per declaring manifest."""
-        return self.backend.get_dependencies()
+    def get_dependencies(
+        self, *, direct_only: bool = False, ecosystem: str | None = None, declared_in: str | None = None
+    ) -> List[PyDependency]:
+        """Return every declared third-party dependency, one entry per declaring manifest,
+        optionally filtered.
+
+        All three filters default to "don't filter" — a pure widening, so existing calls are
+        unaffected.
+
+        Args:
+            direct_only: When ``True``, excludes lockfile-only transitive pins.
+            ecosystem: When given, only dependencies from this package ecosystem (e.g. ``"pypi"``).
+            declared_in: When given, only dependencies declared by this artifact id (see
+                :meth:`get_artifacts`).
+        """
+        return self.backend.get_dependencies(direct_only=direct_only, ecosystem=ecosystem, declared_in=declared_in)
 
     def get_config_keys(self) -> Dict[str, PyConfigKey]:
         """Return every configuration key flattened out of a config-bearing artifact, keyed by its
@@ -864,8 +878,51 @@ class PythonAnalysis:
                 (e.g. ``"DB_URL"``) — matched against :meth:`get_config_keys`, since
                 :class:`PyConfigUseEdge` itself carries only ``src``/``dst``/``prov``, not the key
                 text. ``None`` (default) returns every edge.
+
+        See Also:
+            :meth:`get_config_readers`: The same edges, resolved to their reading callables.
+            :meth:`get_unresolved_config_reads`: The reads this can't show — a match the detector
+                found but never closed on a declared key.
         """
         return self.backend.get_config_uses(key)
+
+    def get_unresolved_config_reads(self) -> List[PyConfigRead]:
+        """Return every detector-matched config read that never closed on exactly one declared
+        key, in one bulk read.
+
+        :meth:`get_config_uses` (and :meth:`get_config_readers`) can only show reads that
+        *resolved*; a call the detector matched but couldn't pin to a key (a dynamic key
+        expression, or a key with no matching declaration) is otherwise invisible — an empty
+        :meth:`get_config_uses` for some key cannot then distinguish "nothing reads this" from "a
+        read exists but the analyzer couldn't resolve it." This is that missing signal.
+
+        Returns:
+            A list of :class:`~cldk.models.python.PyConfigRead`, each naming *why* resolution
+            failed (``reason="non-literal"`` or ``"undefined-key"``). Over the Neo4j backend,
+            ``site`` always comes back ``""`` and several call sites sharing the same
+            ``(callee, key, reason)`` may collapse into one entry — the graph doesn't carry the
+            call site on this edge (see :meth:`~cldk.analysis.python.neo4j.PyNeo4jBackend.get_unresolved_config_reads`'s
+            comment) — but "no unresolved reads" here is never a false negative.
+        """
+        return self.backend.get_unresolved_config_reads()
+
+    def get_config_readers(self, key: str) -> List[PyCallableOverview]:
+        """Return overviews of every callable reading configuration key ``key``, in one bulk read.
+
+        :meth:`get_config_uses` hands back ``PyConfigUseEdge.src``/``dst`` as opaque ordinal ids —
+        answering "which callable reads this" otherwise means parsing
+        ``codeanalyzer-python``'s id grammar yourself. This does that resolution for you.
+
+        Args:
+            key: The bare configuration key (e.g. ``"DB_URL"``), matched the same way
+                :meth:`get_config_uses` matches it.
+
+        Returns:
+            A list of :class:`~cldk.models.python.PyCallableOverview`, one per distinct reading
+            callable. Empty means no callable reads this key — see :meth:`get_unresolved_config_reads`
+            if you need to rule out "a read exists but never resolved" too.
+        """
+        return self.backend.get_config_readers(key)
 
     # -----[ classes ]-----
     def get_classes(self) -> Dict[str, PyClass]:

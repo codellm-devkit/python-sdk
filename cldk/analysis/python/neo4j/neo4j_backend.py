@@ -98,6 +98,7 @@ from cldk.models.python import (
     PyClassAttribute,
     PyClassOverview,
     PyConfigKey,
+    PyConfigRead,
     PyConfigUseEdge,
     PyDependency,
     PyModule,
@@ -689,14 +690,28 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             result[art.path] = art
         return result
 
-    def get_dependencies(self) -> List[PyDependency]:
+    def get_dependencies(
+        self, *, direct_only: bool = False, ecosystem: str | None = None, declared_in: str | None = None
+    ) -> List[PyDependency]:
+        conditions: list[str] = []
+        params: Dict[str, Any] = {"app": self.application_name}
+        if direct_only:
+            conditions.append("r.direct = true")
+        if ecosystem is not None:
+            conditions.append("p.ecosystem = $ecosystem")
+            params["ecosystem"] = ecosystem
+        if declared_in is not None:
+            conditions.append("a.id = $declared_in")
+            params["declared_in"] = declared_in
+        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+        query = (
+            "MATCH (:PyApplication {name: $app})-[:HAS_ARTIFACT]->(a:Artifact)-[r:DECLARES_DEPENDENCY]->(p:Package)"
+            + where
+            + " RETURN properties(r) AS rel, p.name AS name, p.ecosystem AS ecosystem, a.id AS declared_in"
+        )
         return [
             R.dependency(r["rel"], name=r["name"], ecosystem=r["ecosystem"], declared_in=r["declared_in"])
-            for r in self._run(
-                "MATCH (:PyApplication {name: $app})-[:HAS_ARTIFACT]->(a:Artifact)-[r:DECLARES_DEPENDENCY]->(p:Package) "
-                "RETURN properties(r) AS rel, p.name AS name, p.ecosystem AS ecosystem, a.id AS declared_in",
-                app=self.application_name,
-            )
+            for r in self._run(query, **params)
         ]
 
     def get_config_keys(self) -> Dict[str, PyConfigKey]:
@@ -724,6 +739,46 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             params["key"] = key
         query += " RETURN bn.id AS src, ck.id AS dst, u.prov AS prov"
         return [PyConfigUseEdge(src=r["src"], dst=r["dst"], prov=list(r["prov"] or [])) for r in self._run(query, **params)]
+
+    def get_unresolved_config_reads(self) -> List[PyConfigRead]:
+        # PY_READS_CONFIG_UNRESOLVED (app.config_reads_unresolved) DOES reach the graph -- verified
+        # against codeanalyzer/neo4j/project.py's _project_config_uses -- but two things are lossy
+        # here relative to the local backend's list, both documented rather than silently eaten:
+        # (1) PyConfigRead.site (the reading call's own body-node id) is not an edge property at
+        #     all; the edge runs (:PyApplication)-[:PY_READS_CONFIG_UNRESOLVED]->(:PyExternal ghost)
+        #     with key/reason/prov as edge properties, no site. `site` comes back "" here.
+        # (2) the edge's own discriminant is `_k=(key, reason)` (per project.py's comment: "does
+        #     not per-site discriminate the non-literal bucket"), so several distinct call sites
+        #     reading the same (callee, key, reason) collapse into ONE edge under MERGE -- a count
+        #     mismatch against the local backend's one-entry-per-occurrence list is expected, not a
+        #     bug. Presence/absence still agrees: any unresolved read for a (callee, key, reason)
+        #     triple guarantees at least one edge, so "no rows" here still means "no unresolved
+        #     reads," never a false negative -- unlike finding 1's entrypoint_report, which the
+        #     graph doesn't carry at all.
+        rows = self._run(
+            "MATCH (:PyApplication {name: $app})-[u:PY_READS_CONFIG_UNRESOLVED]->(ghost:PyExternal) "
+            "RETURN properties(u) AS p, ghost.id AS callee",
+            app=self.application_name,
+        )
+        return [R.unresolved_config_read(r["p"], callee=r["callee"]) for r in rows]
+
+    def get_config_readers(self, key: str) -> List[PyCallableOverview]:
+        # PyConfigUseEdge.src IS the reading call's :PyBodyNode.id (see get_config_uses's own
+        # comment), and _project_program_graphs adds PY_HAS_BODY_NODE from a callable to every
+        # PyBodyNode it creates in the same loop iteration that creates the node -- so any
+        # PyBodyNode a PY_USES_CONFIG edge points at is guaranteed to already have that edge to its
+        # owner. DISTINCT because one callable can read the same key at several call sites.
+        rows = self._run(
+            "MATCH (bn:PyBodyNode)-[:PY_USES_CONFIG]->(ck:ConfigKey) WHERE bn._module IN $mods AND ck.key = $key "
+            "MATCH (reader:PyCallable)-[:PY_HAS_BODY_NODE]->(bn) "
+            "OPTIONAL MATCH (cls:PyClass)-[:PY_HAS_METHOD]->(reader) "
+            "RETURN DISTINCT reader.signature AS signature, reader.name AS name, reader.decorators AS decorators, "
+            "reader.path AS path, reader.start_line AS start_line, reader.end_line AS end_line, "
+            "cls.signature AS class_signature",
+            mods=self._modules,
+            key=key,
+        )
+        return [R.overview(r) for r in rows]
 
     # =====================================================================================
     # locate / locate_many — one round trip, UNWIND over the position list

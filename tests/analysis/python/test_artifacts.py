@@ -15,7 +15,9 @@
 ################################################################################
 
 """Task 8: the repository-artifact layer (``get_artifacts`` / ``get_dependencies`` /
-``get_config_keys`` / ``get_config_uses``).
+``get_config_keys`` / ``get_config_uses``), plus the review-round additions (2026-09-04):
+``get_config_readers`` (resolve ``get_config_uses``'s opaque ids to callables) and
+``get_unresolved_config_reads`` (the failure case ``get_config_uses`` can't show).
 
 Same discipline as the ``locate``/``get_source`` fixtures in ``conftest.py``: ONE fixture project
 description, rendered twice -- once as a real in-memory ``PyApplication`` for
@@ -25,8 +27,8 @@ so a parity test comparing the two backends is actually comparing answers about 
 Fixture project:
     * ``pyproject.toml`` -- a dependency-manifest artifact declaring ``flask``.
     * ``.env`` -- a config-bearing artifact defining one key, ``DB_URL``.
-    * one resolved config-use edge: a body node in ``src/db.py``'s ``connect`` function reads
-      ``DB_URL`` (``prov=["literal"]``).
+    * ``src/db.py`` -- one function, ``connect``, that reads ``DB_URL`` (``prov=["literal"]``);
+      this is the callable ``get_config_readers`` must resolve the resolved edge back to.
 
 This module defines its own ``py`` fixture (parametrized over both backends), which deliberately
 shadows ``conftest.py``'s ``py`` (the Neo4j-only ``locate`` fixture) for tests in this file only --
@@ -41,7 +43,17 @@ import pytest
 
 from cldk.analysis.python.codeanalyzer.codeanalyzer import PyCodeanalyzer
 from cldk.analysis.python.neo4j import PyNeo4jBackend
-from cldk.models.python import PyApplication, PyArtifact, PyConfigKey, PyConfigUseEdge, PyDependency
+from cldk.models.python import (
+    PyApplication,
+    PyArtifact,
+    PyCallable,
+    PyCallableOverview,
+    PyConfigKey,
+    PyConfigRead,
+    PyConfigUseEdge,
+    PyDependency,
+    PyModule,
+)
 
 # -----[ shared identifiers -- both renderings below are built from these, not re-typed ]-----
 _APP = "app"
@@ -118,11 +130,21 @@ def _artifacts_application() -> PyApplication:
         prov=list(_DEP_PROV),
     )
     use_edge = PyConfigUseEdge(src=_USE_SRC, dst=_CONFIG_KEY_ID, prov=list(_USE_PROV))
+    unresolved_read = PyConfigRead(
+        site=f"{_CALLABLE_ID}@12:4",
+        callee=_UNRESOLVED_READ_CALLEE,
+        key=_UNRESOLVED_READ_KEY,
+        reason=_UNRESOLVED_READ_REASON,
+        prov=list(_UNRESOLVED_READ_PROV),
+    )
+    connect = PyCallable(name="connect", path=_MODULE_PATH, signature="src.db.connect", id=_CALLABLE_ID)
+    module = PyModule(file_path=_MODULE_PATH, module_name="src.db", functions={"connect": connect})
     return PyApplication(
-        symbol_table={},
+        symbol_table={_MODULE_PATH: module},
         artifacts={_ART1_PATH: art1, _ART2_PATH: art2},
         dependencies=[dependency],
         config_uses=[use_edge],
+        config_reads_unresolved=[unresolved_read],
     )
 
 
@@ -164,6 +186,22 @@ _CONFIG_KEY_PROPS = {
     "references": [],
 }
 _DEP_REL_PROPS = {"spec": _DEP_SPEC, "kind": _DEP_KIND, "extras": [], "prov": list(_DEP_PROV), "direct": True}
+_CONNECT_OVERVIEW_ROW = {
+    "signature": "src.db.connect",
+    "name": "connect",
+    "decorators": [],
+    "path": _MODULE_PATH,
+    "start_line": 5,
+    "end_line": 11,
+    "class_signature": None,
+}
+
+# -----[ an unresolved config read, for get_unresolved_config_reads ]-----
+_UNRESOLVED_READ_CALLEE = f"can://app/{_APP}/@external/os/getenv"
+_UNRESOLVED_READ_KEY = None
+_UNRESOLVED_READ_REASON = "non-literal"
+_UNRESOLVED_READ_PROV = ["dataflow"]
+_UNRESOLVED_READ_PROPS = {"key": _UNRESOLVED_READ_KEY, "reason": _UNRESOLVED_READ_REASON, "prov": list(_UNRESOLVED_READ_PROV)}
 
 
 def _artifacts_responder(query: str, params: dict) -> list[dict[str, Any]]:
@@ -177,13 +215,28 @@ def _artifacts_responder(query: str, params: dict) -> list[dict[str, Any]]:
             {"p": _ART2_PROPS, "cks": [_CONFIG_KEY_PROPS]},
         ]
     if "DECLARES_DEPENDENCY" in query:  # get_dependencies
+        # The fixture's one dependency is direct=True/ecosystem=pypi/declared_in=_ART1_ID, so
+        # emulate the WHERE clause for real rather than ignoring params -- otherwise a filter test
+        # against this shared fixture would pass over Neo4j for the wrong reason (a responder that
+        # always answers regardless of the query it was actually asked).
+        if params.get("ecosystem") not in (None, _DEP_ECOSYSTEM):
+            return []
+        if params.get("declared_in") not in (None, _ART1_ID):
+            return []
         return [{"rel": _DEP_REL_PROPS, "name": _DEP_NAME, "ecosystem": _DEP_ECOSYSTEM, "declared_in": _ART1_ID}]
     if "DEFINES_CONFIG" in query:  # get_config_keys (get_artifacts is caught above first)
         return [{"p": _CONFIG_KEY_PROPS}]
+    if "PY_HAS_BODY_NODE" in query:  # get_config_readers (checked before PY_USES_CONFIG below --
+        # get_config_readers's own query text also contains "PY_USES_CONFIG")
+        if params.get("key") != _CONFIG_KEY_KEY:
+            return []
+        return [_CONNECT_OVERVIEW_ROW]
     if "PY_USES_CONFIG" in query:  # get_config_uses
         if "key" in params and params["key"] != _CONFIG_KEY_KEY:
             return []
         return [{"src": _USE_SRC, "dst": _CONFIG_KEY_ID, "prov": list(_USE_PROV)}]
+    if "PY_READS_CONFIG_UNRESOLVED" in query:  # get_unresolved_config_reads
+        return [{"p": _UNRESOLVED_READ_PROPS, "callee": _UNRESOLVED_READ_CALLEE}]
     return []
 
 
@@ -240,6 +293,49 @@ def test_dependency_ecosystem_is_read_off_the_package_node(fake_driver):
     assert deps[0].ecosystem == "conda-forge"
 
 
+def test_dependencies_direct_only_filters_out_transitive_pins(fake_driver):
+    """direct_only=True excludes lockfile-only transitive pins, on both backends. Self-contained
+    (not the shared single-dependency fixture above) so a genuine direct/transitive pair exists to
+    filter."""
+    transitive = PyDependency(name="click", ecosystem="pypi", declared_in=_ART1_ID, direct=False)
+    direct = PyDependency(
+        name=_DEP_NAME, ecosystem=_DEP_ECOSYSTEM, spec=_DEP_SPEC, kind=_DEP_KIND, declared_in=_ART1_ID,
+        direct=True, prov=list(_DEP_PROV),
+    )
+    local = object.__new__(PyCodeanalyzer)
+    local.application = PyApplication(symbol_table={}, dependencies=[direct, transitive])
+    assert {d.name for d in local.get_dependencies()} == {_DEP_NAME, "click"}
+    assert [d.name for d in local.get_dependencies(direct_only=True)] == [_DEP_NAME]
+
+    def responder(query: str, params: dict) -> list[dict[str, Any]]:
+        if "RETURN m.file_key AS k" in query:
+            return [{"k": _MODULE_PATH}]
+        if "DECLARES_DEPENDENCY" in query:
+            assert "r.direct = true" in query  # the filter must run in Cypher, not in Python
+            return [{"rel": _DEP_REL_PROPS, "name": _DEP_NAME, "ecosystem": _DEP_ECOSYSTEM, "declared_in": _ART1_ID}]
+        return []
+
+    fake_driver.responder = responder
+    neo4j = PyNeo4jBackend._from_driver(fake_driver, application_name=_APP)
+    assert [d.name for d in neo4j.get_dependencies(direct_only=True)] == [_DEP_NAME]
+
+
+def test_dependencies_filters_are_pure_widening(py):
+    """The original zero-argument call keeps returning everything -- adding defaulted keywords
+    changed nothing for an existing caller."""
+    assert py.get_dependencies() == py.get_dependencies(direct_only=False, ecosystem=None, declared_in=None)
+
+
+def test_dependencies_ecosystem_filter(py):
+    assert [d.name for d in py.get_dependencies(ecosystem=_DEP_ECOSYSTEM)] == [_DEP_NAME]
+    assert py.get_dependencies(ecosystem="conda-forge") == []
+
+
+def test_dependencies_declared_in_filter(py):
+    assert [d.name for d in py.get_dependencies(declared_in=_ART1_ID)] == [_DEP_NAME]
+    assert py.get_dependencies(declared_in="can://artifact/app/nonexistent.toml") == []
+
+
 # =====================================================================================
 # get_config_keys
 # =====================================================================================
@@ -274,6 +370,59 @@ def test_config_uses_default_returns_every_edge(py):
 
 
 # =====================================================================================
+# get_config_readers -- resolves get_config_uses's opaque ids to callables
+# =====================================================================================
+def test_config_readers_resolves_the_reading_callable(py):
+    readers = py.get_config_readers(_CONFIG_KEY_KEY)
+    assert [r.signature for r in readers] == ["src.db.connect"]
+    assert isinstance(readers[0], PyCallableOverview)
+
+
+def test_config_readers_key_filter_excludes_non_matches(py):
+    assert py.get_config_readers("NO_SUCH_KEY") == []
+
+
+# =====================================================================================
+# get_unresolved_config_reads -- the failure case get_config_uses can't show
+# =====================================================================================
+def test_unresolved_config_reads_surfaces_the_failure_locally(py_local):
+    reads = py_local.get_unresolved_config_reads()
+    assert len(reads) == 1
+    assert reads[0].callee == _UNRESOLVED_READ_CALLEE
+    assert reads[0].reason == _UNRESOLVED_READ_REASON
+    assert reads[0].key is None  # reason="non-literal" -- never closed on a literal at all
+    assert reads[0].site  # the local backend has the real call site
+
+
+def test_unresolved_config_reads_over_neo4j_carries_key_and_reason_but_not_site(fake_driver):
+    """The graph does carry PY_READS_CONFIG_UNRESOLVED (unlike finding 1's entrypoint_report) --
+    but its edge has no site property (see reconstruct.unresolved_config_read's docstring), so
+    that field always comes back "" over this backend rather than a fabricated value."""
+    fake_driver.responder = _artifacts_responder
+    backend = PyNeo4jBackend._from_driver(fake_driver, application_name=_APP)
+    reads = backend.get_unresolved_config_reads()
+    assert len(reads) == 1
+    assert reads[0].callee == _UNRESOLVED_READ_CALLEE
+    assert reads[0].reason == _UNRESOLVED_READ_REASON
+    assert reads[0].site == ""
+
+
+def test_no_unresolved_config_reads_is_an_empty_list_not_none(fake_driver):
+    def responder(query: str, params: dict) -> list[dict[str, Any]]:
+        if "RETURN m.file_key AS k" in query:
+            return [{"k": _MODULE_PATH}]
+        return []
+
+    fake_driver.responder = responder
+    backend = PyNeo4jBackend._from_driver(fake_driver, application_name=_APP)
+    assert backend.get_unresolved_config_reads() == []
+
+    local = object.__new__(PyCodeanalyzer)
+    local.application = PyApplication(symbol_table={})
+    assert local.get_unresolved_config_reads() == []
+
+
+# =====================================================================================
 # parity between backends
 # =====================================================================================
 def test_artifacts_layer_parity_between_backends(py_local, py_neo4j):
@@ -282,3 +431,17 @@ def test_artifacts_layer_parity_between_backends(py_local, py_neo4j):
     assert py_local.get_config_keys() == py_neo4j.get_config_keys()
     assert py_local.get_config_uses() == py_neo4j.get_config_uses()
     assert py_local.get_config_uses(key=_CONFIG_KEY_KEY) == py_neo4j.get_config_uses(key=_CONFIG_KEY_KEY)
+    assert [r.signature for r in py_local.get_config_readers(_CONFIG_KEY_KEY)] == [
+        r.signature for r in py_neo4j.get_config_readers(_CONFIG_KEY_KEY)
+    ]
+    # Deliberately not full equality: the Neo4j reconstruction always has site="" (see
+    # reconstruct.unresolved_config_read's docstring) while the local backend has a real one --
+    # documented projection loss, not a bug. key/reason/callee/prov still agree exactly.
+    local_reads, neo4j_reads = py_local.get_unresolved_config_reads(), py_neo4j.get_unresolved_config_reads()
+    assert len(local_reads) == len(neo4j_reads) == 1
+    assert (local_reads[0].key, local_reads[0].reason, local_reads[0].callee, local_reads[0].prov) == (
+        neo4j_reads[0].key,
+        neo4j_reads[0].reason,
+        neo4j_reads[0].callee,
+        neo4j_reads[0].prov,
+    )
