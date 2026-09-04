@@ -55,9 +55,8 @@ from typing import Dict, Iterator, List, Tuple, Union
 
 import networkx as nx
 
-from codeanalyzer.config import OutputFormat
 from codeanalyzer.core import Codeanalyzer
-from codeanalyzer.options import AnalysisOptions
+from codeanalyzer.options import AnalysisOptions, EmitTarget
 from codeanalyzer.schema import model_dump_json
 
 from cldk.analysis import AnalysisLevel
@@ -226,7 +225,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         options = AnalysisOptions(
             input=self.project_dir,
             output=self.analysis_json_path,
-            format=OutputFormat.JSON,
+            emit=EmitTarget.JSON,
             using_ray=self.use_ray,
             rebuild_analysis=self.eager_analysis,
             skip_tests=True,
