@@ -203,3 +203,25 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         The bulk form, not an optimisation over :meth:`locate`: a scanner hands over a whole alert
         set at once, and round trips cost latency for a person and context for an agent.
         """
+
+    # -----[ source access ]-----
+    @abstractmethod
+    def get_source(self, node_id: str) -> str:
+        """Source text for one node, named by ``node_id``.
+
+        Generalises body access below callable granularity: ``node_id`` is either a callable's
+        signature (the same key :meth:`get_method_bodies` uses) or ``"<signature>@<body key>"``
+        for one of that callable's body nodes — exactly the string :attr:`LocateResult.node_id`
+        hands back alongside :attr:`LocateResult.node`, so a caller can re-fetch the precise
+        statement or call site :meth:`locate` found, not just its enclosing callable.
+
+        Raises:
+            KeyError: No callable has that signature, no body node has that key, or the node
+                exists but carries no recoverable source (no span — e.g. an abstract stub).
+            NotImplementedError: (Neo4j backend only) ``node_id`` names a body node. The graph
+                projects per-callable text (``:PyCallable.code``) but nothing below that —
+                ``:PyBodyNode`` carries a line span and no text to slice, and ``:PyModule`` carries
+                no source either (see :class:`~cldk.analysis.commons.results.LocateResult`). Only
+                the local codeanalyzer backend, which holds the module's real text and byte
+                offsets, can answer for a statement or call site.
+        """
