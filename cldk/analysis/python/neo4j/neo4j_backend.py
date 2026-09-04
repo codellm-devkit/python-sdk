@@ -47,9 +47,10 @@ Identity model (must match the in-memory backend; see ``codeanalyzer/neo4j/proje
   ``(:PyApplication {name})-[:PY_HAS_MODULE]->(:PyModule)``.
 
 In-memory dict keys this backend reproduces exactly (the projection stores nodes by ``signature``
-only, so the keys are rebuilt from node properties): ``module.classes`` / ``inner_classes`` →
-``signature``; ``module.functions`` / ``methods`` / ``inner_callables`` → short ``name``;
-``attributes`` → ``name``. ``get_all_classes`` / ``get_class`` return **top-level** classes only
+only, so the keys are rebuilt from node properties): ``module.types`` / a class's own ``types`` →
+``signature``; ``module.functions`` / a class's own ``callables`` / a callable's own ``callables``
+→ short ``name``; ``attributes`` → ``name``. ``get_all_classes`` / ``get_class`` return
+**top-level** classes only
 (``PyModule-[:PY_DECLARES]->PyClass``), matching the in-memory backend.
 
 Parity: verified against a real 57-module project — every node and edge **present in the graph**
@@ -420,7 +421,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
                 return []
             return list(nx.edge_dfs(graph, source=method.signature))
         edges: List[Tuple[str, str]] = []
-        for method in cls.methods.values():
+        for method in cls.callables.values():
             if method.signature in graph:
                 edges.extend(nx.edge_dfs(graph, source=method.signature))
         return edges
@@ -449,7 +450,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
 
     def get_all_nested_classes(self, qualified_class_name: str) -> List[PyClass]:
         cls = self.get_class(qualified_class_name)
-        return list(cls.inner_classes.values()) if cls else []
+        return list(cls.types.values()) if cls else []
 
     def get_all_sub_classes(self, qualified_class_name: str) -> Dict[str, PyClass]:
         cls = self.get_class(qualified_class_name)
@@ -476,15 +477,15 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     def get_all_methods_in_application(self) -> Dict[str, Dict[str, PyCallable]]:
         result: Dict[str, Dict[str, PyCallable]] = {}
         for module in self.get_symbol_table().values():
-            for class_sig, cls in module.classes.items():
-                result[class_sig] = dict(cls.methods)
+            for class_sig, cls in module.types.items():
+                result[class_sig] = dict(cls.callables)
             if module.functions:
                 result.setdefault(module.module_name, {}).update(module.functions)
         return result
 
     def get_all_methods_in_class(self, qualified_class_name: str) -> Dict[str, PyCallable]:
         cls = self.get_class(qualified_class_name)
-        return dict(cls.methods) if cls else {}
+        return dict(cls.callables) if cls else {}
 
     def _get_module_functions(self, module_name: str) -> Dict[str, PyCallable]:
         """Fetch a module's top-level functions by ``module_name`` (not ``file_key``) — the scope
@@ -508,7 +509,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         is treated as a module name and resolved against that module's top-level functions.
         """
         cls = self.get_class(qualified_class_name)
-        methods = dict(cls.methods) if cls is not None else self._get_module_functions(qualified_class_name)
+        methods = dict(cls.callables) if cls is not None else self._get_module_functions(qualified_class_name)
         if qualified_method_name in methods:
             return methods[qualified_method_name]
         for sig, callable_ in methods.items():

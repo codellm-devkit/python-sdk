@@ -23,49 +23,65 @@ Neo4j backend is checked for byte-for-byte parity against this same logic in
 ``test_python_neo4j_backend.py`` when a server is available.
 """
 
-from codeanalyzer.schema.py_schema import PyApplication, PyCallable, PyCallsite, PyClass, PyModule
+from codeanalyzer.schema.py_schema import PyApplication, PyCallable, PyCallsite, PyClass, PyDecorator, PyModule, Span
 
 from cldk.analysis.python.codeanalyzer.codeanalyzer import PyCodeanalyzer
 
 
-def _callable(name, signature, *, code="", decorators=None, inner_callables=None, inner_classes=None, call_sites=None):
-    return PyCallable(
-        name=name,
-        path="pkg/models.py",
-        signature=signature,
-        code=code,
-        decorators=decorators or [],
-        inner_callables=inner_callables or {},
-        inner_classes=inner_classes or {},
-        call_sites=call_sites or [],
-    )
-
-
-def _class(name, signature, *, methods=None, inner_classes=None):
-    return PyClass(name=name, signature=signature, methods=methods or {}, inner_classes=inner_classes or {})
-
-
 def _backend():
-    """A PyCodeanalyzer wired to a hand-built application, bypassing the analyzer run."""
-    decorate = _callable("_decorate", "pkg.models.greet.<locals>._decorate", code="return s.upper()")
-    greet = _callable(
+    """A PyCodeanalyzer wired to a hand-built application, bypassing the analyzer run.
+
+    1.4.0 shape notes (schema v2): ``PyCallable``/``PyClass`` no longer have a ``code`` field —
+    source text lives on ``PyModule.source``, sliced per-callable via ``span.bytes`` (UTF-8 byte
+    offsets) — so each callable's code snippet is appended to a running module source and its
+    span recorded, mirroring what the real analyzer emits. ``decorators`` is now structured
+    ``List[PyDecorator]``, not flat strings. Containment fields are also renamed: ``PyModule.
+    classes`` -> ``types``, ``PyClass.methods`` -> ``callables``, ``*.inner_classes`` -> ``types``,
+    ``PyCallable.inner_callables`` -> ``callables``.
+    """
+    source_parts: list[str] = []
+
+    def add_code(code: str) -> Span | None:
+        if not code:
+            return None
+        start = len("".join(source_parts).encode("utf-8"))
+        source_parts.append(code + "\n")
+        return Span(start=(0, 0), end=(0, 0), bytes=(start, start + len(code.encode("utf-8"))))
+
+    def callable_(name, signature, *, code="", decorators=None, inner_callables=None, inner_classes=None, call_sites=None):
+        return PyCallable(
+            name=name,
+            path="pkg/models.py",
+            signature=signature,
+            span=add_code(code),
+            decorators=[PyDecorator(name=d) for d in (decorators or [])],
+            callables=inner_callables or {},
+            types=inner_classes or {},
+            call_sites=call_sites or [],
+        )
+
+    def class_(name, signature, *, methods=None, inner_classes=None):
+        return PyClass(name=name, signature=signature, callables=methods or {}, types=inner_classes or {})
+
+    decorate = callable_("_decorate", "pkg.models.greet.<locals>._decorate", code="return s.upper()")
+    greet = callable_(
         "greet",
         "pkg.models.greet",
         code="def greet(who): ...",
         decorators=["app.route"],
         inner_callables={"_decorate": decorate},
     )
-    meta = _class(
+    meta = class_(
         "Meta",
         "pkg.models.Entity.Meta",
-        methods={"m": _callable("m", "pkg.models.Entity.Meta.m", code="return 1")},
+        methods={"m": callable_("m", "pkg.models.Entity.Meta.m", code="return 1")},
     )
-    entity = _class(
+    entity = class_(
         "Entity",
         "pkg.models.Entity",
         methods={
-            "__init__": _callable("__init__", "pkg.models.Entity.__init__", code="self.x = 1"),
-            "describe": _callable(
+            "__init__": callable_("__init__", "pkg.models.Entity.__init__", code="self.x = 1"),
+            "describe": callable_(
                 "describe",
                 "pkg.models.Entity.describe",
                 code="return self.x",
@@ -78,8 +94,9 @@ def _backend():
     module = PyModule(
         file_path="pkg/models.py",
         module_name="pkg.models",
-        classes={"pkg.models.Entity": entity},
+        types={"pkg.models.Entity": entity},
         functions={"greet": greet},
+        source="".join(source_parts),
     )
     app = PyApplication(symbol_table={"pkg/models.py": module})
 

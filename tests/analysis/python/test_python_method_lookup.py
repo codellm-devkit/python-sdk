@@ -33,7 +33,8 @@ both backends:
   into a ``PyCallable``); it does not touch the neo4j driver or a real graph.
 """
 
-from codeanalyzer.schema.py_schema import PyApplication, PyCallable, PyCallEdge, PyClass, PyModule
+import networkx as nx
+from codeanalyzer.schema.py_schema import PyApplication, PyCallable, PyClass, PyModule
 
 from cldk.analysis.python.codeanalyzer.codeanalyzer import PyCodeanalyzer
 from cldk.analysis.python.neo4j import PyNeo4jBackend
@@ -47,22 +48,31 @@ HELPER_SIG = "pkg.mod.helper"
 
 
 def _local_backend():
-    """A PyCodeanalyzer wired to a hand-built application, bypassing the analyzer run."""
-    entry = PyCallable(name="entry", path="pkg/mod.py", signature=ENTRY_SIG, code="helper()")
-    helper = PyCallable(name="helper", path="pkg/mod.py", signature=HELPER_SIG, code="return 1")
+    """A PyCodeanalyzer wired to a hand-built application, bypassing the analyzer run.
+
+    The call graph is hand-built directly onto ``backend.call_graph`` rather than via
+    ``PyApplication.call_graph`` + ``PyCodeanalyzer._build_call_graph``: that static method still
+    reads 0.3.x ``PyCallEdge`` field names (``source``/``target``/``type``/``provenance``) that the
+    real 1.4.0 ``PyCallEdge`` (``src``/``dst``/``weight``/``prov``) doesn't have. That's a separate,
+    pre-existing, out-of-scope bug (see task-4-report.md's concerns), not this fixture's to fix —
+    pre-building the graph exercises the same ``get_all_callers``/``get_all_callees`` lookup logic
+    this test targets without tripping over it.
+    """
+    entry = PyCallable(name="entry", path="pkg/mod.py", signature=ENTRY_SIG)
+    helper = PyCallable(name="helper", path="pkg/mod.py", signature=HELPER_SIG)
     module = PyModule(
         file_path="pkg/mod.py",
         module_name=MODULE_NAME,
         functions={"entry": entry, "helper": helper},
     )
-    app = PyApplication(
-        symbol_table={"pkg/mod.py": module},
-        call_graph=[PyCallEdge(source=ENTRY_SIG, target=HELPER_SIG)],
-    )
+    app = PyApplication(symbol_table={"pkg/mod.py": module})
+
+    call_graph = nx.DiGraph()
+    call_graph.add_edge(ENTRY_SIG, HELPER_SIG, type="CALL_DEP", weight=1, provenance=())
 
     backend = object.__new__(PyCodeanalyzer)
     backend.application = app
-    backend.call_graph = None
+    backend.call_graph = call_graph
     return backend
 
 
@@ -87,7 +97,7 @@ def _fake_cypher(classes, methods, modules, call_edges):
             mod = modules.get(params["name"])
             return [{"p": p} for p in mod["functions"]] if mod else []
         if "PY_CALLS" in query:
-            return [{"src": e[0], "tgt": e[1], "p": {"weight": 1, "provenance": []}} for e in call_edges]
+            return [{"src": e[0], "tgt": e[1], "p": {"weight": 1, "prov": []}} for e in call_edges]
         return []  # attributes / inner classes / inner callables / call sites / local vars: none in this fixture
 
     return run
@@ -95,8 +105,8 @@ def _fake_cypher(classes, methods, modules, call_edges):
 
 def _neo4j_backend():
     """A bare PyNeo4jBackend with ``_run`` stubbed (no live server, no __init__ side effects)."""
-    entry_props = {"name": "entry", "signature": ENTRY_SIG, "path": "pkg/mod.py", "code": "helper()"}
-    helper_props = {"name": "helper", "signature": HELPER_SIG, "path": "pkg/mod.py", "code": "return 1"}
+    entry_props = {"name": "entry", "signature": ENTRY_SIG, "path": "pkg/mod.py"}
+    helper_props = {"name": "helper", "signature": HELPER_SIG, "path": "pkg/mod.py"}
     modules = {MODULE_NAME: {"file_key": "pkg/mod.py", "functions": [entry_props, helper_props]}}
     call_edges = [(ENTRY_SIG, HELPER_SIG)]
 
@@ -193,9 +203,9 @@ def test_backend_parity_for_module_level_lookup():
 # regression: class-scoped lookup keeps working (get_method must not become module-only)
 # ----------------------------------------------------------------------------------------------
 def test_get_method_still_resolves_class_methods_local():
-    greet = PyCallable(name="greet", path="pkg/models.py", signature="pkg.models.Entity.greet", code="...")
-    entity = PyClass(name="Entity", signature="pkg.models.Entity", methods={"greet": greet})
-    module = PyModule(file_path="pkg/models.py", module_name="pkg.models", classes={"pkg.models.Entity": entity})
+    greet = PyCallable(name="greet", path="pkg/models.py", signature="pkg.models.Entity.greet")
+    entity = PyClass(name="Entity", signature="pkg.models.Entity", callables={"greet": greet})
+    module = PyModule(file_path="pkg/models.py", module_name="pkg.models", types={"pkg.models.Entity": entity})
     app = PyApplication(symbol_table={"pkg/models.py": module})
 
     backend = object.__new__(PyCodeanalyzer)
@@ -209,8 +219,8 @@ def test_get_method_still_resolves_class_methods_local():
 
 
 def test_get_method_still_resolves_class_methods_neo4j():
-    entity_props = {"name": "Entity", "signature": "pkg.models.Entity", "code": "class Entity: ..."}
-    greet_props = {"name": "greet", "signature": "pkg.models.Entity.greet", "path": "pkg/models.py", "code": "..."}
+    entity_props = {"name": "Entity", "signature": "pkg.models.Entity"}
+    greet_props = {"name": "greet", "signature": "pkg.models.Entity.greet", "path": "pkg/models.py"}
 
     backend = object.__new__(PyNeo4jBackend)
     backend.application_name = "test_app"
