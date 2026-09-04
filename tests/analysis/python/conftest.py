@@ -28,7 +28,9 @@ from typing import Any, Callable
 
 import pytest
 
+from cldk.analysis.python.codeanalyzer.codeanalyzer import PyCodeanalyzer
 from cldk.analysis.python.neo4j import PyNeo4jBackend
+from cldk.models.python import BodyNode, PyApplication, PyCallable, PyClass, PyModule, Span
 
 # The full vocabulary codeanalyzer-python 1.4.0 emits (see cldk/analysis/python/neo4j/neo4j_backend
 # .py's module docstring / the leg-1 brief) — a reasonable "healthy v2 graph" default so fixtures
@@ -159,83 +161,304 @@ def query_counter(fake_driver: FakeDriver) -> QueryCounter:
 
 
 # --------------------------------------------------------------------------------------------
-# ``py`` — a PyNeo4jBackend fixture for Task 6's locate()/locate_many() tests.
+# Task 6 locate()/locate_many() fixture — ONE module description, BOTH backends.
 #
-# One module, "src/app.py": a docstring at line 1, a ``Store`` class whose ``__init__`` spans
-# lines 9-11 and whose ``key`` method spans lines 18-19, with a real gap (lines 12-17) between
-# them — so line 17 lands inside the class body but outside both methods' spans, and line 1 lands
-# at real module top level. "test/conftest.py" is deliberately absent from ``_MODULES`` (a file
-# that exists on disk but was never analysed, per the brief's file_not_in_graph outcome).
+# The module below, its callables and its body nodes are described once; the local
+# ``PyCodeanalyzer`` application and the Neo4j responder rows are both derived from that single
+# description. That is deliberate: a parity test comparing two backends is only worth running if
+# they are answering about the same code, and two hand-maintained copies of the same fixture drift.
+#
+# What each position in the module is for:
+#   line  1  module docstring          -> module scope (a real position, not an absence)
+#   line 11  Meta.tag's body           -> a class nested inside a class (innermost owner wins)
+#   line 15  inner()'s body            -> a closure nested inside a method (no owning class)
+#   line 17  blank, inside the class   -> the gap between two callables; must NOT snap to either
+#   line 19  ``def key(self):``        -> inside a callable, but inside no body node
+#   line 20  ``if self._key:``         -> the ``if`` body node
+#   line 21  the ``if``'s return       -> two nested body nodes contain it; innermost must win
+#   line 24  ``def stub(self): ...``   -> a callable with NO span (abstract/protocol stub)
+# "test/conftest.py" is deliberately absent (a file on disk that was never analysed).
 # --------------------------------------------------------------------------------------------
 _LOCATE_MODULE_PATH = "src/app.py"
-_LOCATE_MODULE_SOURCE = (
-    '"""Store module."""\n'
-    "\n"
-    "class Store:\n"
-    "    \n"
-    "    \n"
-    "    \n"
-    "    \n"
-    "    def __init__(self, key):\n"
-    "        self._key = key\n"
-    "        self._value = None\n"
-    "    \n"
-    "    \n"
-    "    \n"
-    "    \n"
-    "    \n"
-    "    \n"
-    "    \n"
-    "    def key(self):\n"
-    "        return self._key\n"
-)
-_LOCATE_CLASS = {"signature": "src.app.Store", "name": "Store"}
-_LOCATE_CALLABLES = [
+_LOCATE_SOURCE_LINES = [
+    '"""Store module."""',  # 1
+    "",  # 2
+    "",  # 3
+    "class Store:",  # 4
+    '    """A store, with a nested class and a closure."""',  # 5
+    "",  # 6
+    "    class Meta:",  # 7
+    '        label = "meta"',  # 8
+    "",  # 9
+    "        def tag(self):",  # 10
+    "            return self.label  # café",  # 11 — non-ASCII: byte offsets != char offsets
+    "",  # 12
+    "    def wrap(self):",  # 13
+    "        def inner():",  # 14
+    "            return 1",  # 15
+    "        return inner",  # 16
+    "",  # 17
+    "",  # 18
+    "    def key(self):",  # 19
+    "        if self._key:",  # 20
+    "            return self._key",  # 21
+    "        return None",  # 22
+    "",  # 23
+    "    def stub(self): ...",  # 24
+]
+_LOCATE_MODULE_SOURCE = "".join(line + "\n" for line in _LOCATE_SOURCE_LINES)
+
+
+def _locate_span(start_line: int, end_line: int) -> Span:
+    """The analyzer-shaped :class:`Span` for lines ``start_line``..``end_line`` (1-based, inclusive).
+
+    ``bytes`` are real UTF-8 offsets into ``_LOCATE_MODULE_SOURCE``, computed rather than written by
+    hand, so ``_code_of``'s encode/slice/decode is exercised on a module that actually contains a
+    non-ASCII character (line 11) — a char-offset bug would slice every later callable short.
+    """
+    lines = _LOCATE_MODULE_SOURCE.splitlines(keepends=True)
+    before = "".join(lines[: start_line - 1]).encode("utf-8")
+    body = "".join(lines[start_line - 1 : end_line]).encode("utf-8")
+    first, last = lines[start_line - 1], lines[end_line - 1].rstrip("\n")
+    return Span(
+        start=(start_line, len(first) - len(first.lstrip())),
+        end=(end_line, len(last)),
+        bytes=(len(before), len(before) + len(body)),
+    )
+
+
+def _locate_code(start_line: int, end_line: int) -> str:
+    """The module text of lines ``start_line``..``end_line`` — what the graph's flat ``code``
+    property holds (the emitter computes it the same way, via ``_span_code``)."""
+    start, end = _locate_span(start_line, end_line).bytes
+    return _LOCATE_MODULE_SOURCE.encode("utf-8")[start:end].decode("utf-8")
+
+
+_LOCATE_CLASSES = {
+    "src.app.Store": {"signature": "src.app.Store", "name": "Store"},
+    "src.app.Store.Meta": {"signature": "src.app.Store.Meta", "name": "Meta"},
+}
+
+# ``body`` maps a local body key -> (kind, start_line, end_line); ``None`` lines mark the synthetic
+# analysis vertices (@entry/@exit/@formal_in:N) that carry no span and can never contain a position.
+# ``has_span`` False is a callable the analyzer emitted with no span at all — an abstract method or a
+# protocol stub — whose source is unrecoverable, and which must degrade rather than raise.
+_LOCATE_CALLABLE_SPECS = [
     {
-        "signature": "src.app.Store.__init__",
-        "name": "__init__",
-        "start_line": 9,
+        "signature": "src.app.Store.Meta.tag",
+        "name": "tag",
+        "start_line": 10,
         "end_line": 11,
-        "code": "    def __init__(self, key):\n        self._key = key\n        self._value = None\n",
-        "class_signature": _LOCATE_CLASS["signature"],
+        "class_signature": "src.app.Store.Meta",
+        "has_span": True,
+        "body": {"@entry": ("entry", None, None), "11:12": ("return", 11, 11)},
+    },
+    {
+        "signature": "src.app.Store.wrap",
+        "name": "wrap",
+        "start_line": 13,
+        "end_line": 16,
+        "class_signature": "src.app.Store",
+        "has_span": True,
+        "body": {"16:8": ("return", 16, 16)},
+    },
+    {
+        "signature": "src.app.Store.wrap.<locals>.inner",
+        "name": "inner",
+        "start_line": 14,
+        "end_line": 15,
+        "class_signature": None,  # a closure has no owning class
+        "has_span": True,
+        "body": {"15:12": ("return", 15, 15)},
     },
     {
         "signature": "src.app.Store.key",
         "name": "key",
-        "start_line": 18,
-        "end_line": 19,
-        "code": "    def key(self):\n        return self._key\n",
-        "class_signature": _LOCATE_CLASS["signature"],
+        "start_line": 19,
+        "end_line": 22,
+        "class_signature": "src.app.Store",
+        "has_span": True,
+        "body": {
+            "@entry": ("entry", None, None),
+            "20:8": ("if", 20, 21),
+            "21:12": ("return", 21, 21),
+            "22:8": ("return", 22, 22),
+            "@exit": ("exit", None, None),
+        },
+    },
+    {
+        "signature": "src.app.Store.stub",
+        "name": "stub",
+        "start_line": 24,
+        "end_line": 24,
+        "class_signature": "src.app.Store",
+        "has_span": False,
+        "body": {},
     },
 ]
+_LOCATE_SPEC = {c["signature"]: c for c in _LOCATE_CALLABLE_SPECS}
+
+
+def _locate_callable_id(signature: str) -> str:
+    """A stand-in for the analyzer's ``can://`` id. Only its shape matters here: a body node's graph
+    ``id`` is ``<callable id>@<body key>``, which is what the Neo4j backend's innermost-node tie
+    break splits on."""
+    return f"can://{_LOCATE_MODULE_PATH}#{signature}"
+
+
+# -----[ the local backend's view: a real in-memory PyApplication ]-----
+def _locate_pycallable(spec: dict, **children: Any) -> PyCallable:
+    return PyCallable(
+        name=spec["name"],
+        path=_LOCATE_MODULE_PATH,
+        signature=spec["signature"],
+        id=_locate_callable_id(spec["signature"]),
+        span=_locate_span(spec["start_line"], spec["end_line"]) if spec["has_span"] else None,
+        start_line=spec["start_line"],
+        end_line=spec["end_line"],
+        body={key: BodyNode(kind=kind, span=_locate_span(s, e) if s is not None else None) for key, (kind, s, e) in spec["body"].items()},
+        **children,
+    )
+
+
+def _locate_application() -> PyApplication:
+    """The fixture module as the in-process analyzer would hand it over."""
+    inner = _locate_pycallable(_LOCATE_SPEC["src.app.Store.wrap.<locals>.inner"])
+    meta = PyClass(
+        name="Meta",
+        signature="src.app.Store.Meta",
+        callables={"tag": _locate_pycallable(_LOCATE_SPEC["src.app.Store.Meta.tag"])},
+    )
+    store = PyClass(
+        name="Store",
+        signature="src.app.Store",
+        callables={
+            "wrap": _locate_pycallable(_LOCATE_SPEC["src.app.Store.wrap"], callables={"inner": inner}),
+            "key": _locate_pycallable(_LOCATE_SPEC["src.app.Store.key"]),
+            "stub": _locate_pycallable(_LOCATE_SPEC["src.app.Store.stub"]),
+        },
+        types={"src.app.Store.Meta": meta},
+    )
+    module = PyModule(
+        file_path=_LOCATE_MODULE_PATH,
+        module_name="src.app",
+        types={"src.app.Store": store},
+        source=_LOCATE_MODULE_SOURCE,
+    )
+    return PyApplication(symbol_table={_LOCATE_MODULE_PATH: module})
+
+
+# -----[ the Neo4j backend's view: the same module, as property maps ]-----
+def _prune(props: dict) -> dict:
+    """What ``codeanalyzer/neo4j/project.py``'s ``prune`` does: a ``None`` property is not written at
+    all, so ``properties(n)`` simply has no such key. Body nodes with no span therefore reach the
+    query with no ``start_line``, which is why the Cypher guards on ``IS NOT NULL``."""
+    return {k: v for k, v in props.items() if v is not None}
+
+
+_LOCATE_MODULE_PROPS = {
+    "id": f"can://{_LOCATE_MODULE_PATH}",
+    "file_key": _LOCATE_MODULE_PATH,
+    "module_name": "src.app",
+    "content_hash": "deadbeef",
+    "file_size": len(_LOCATE_MODULE_SOURCE.encode("utf-8")),
+    "_module": _LOCATE_MODULE_PATH,
+    "source": _LOCATE_MODULE_SOURCE,  # NB: fabricated -- Critical 1 removes this
+}
+
+
+def _locate_callable_props(spec: dict) -> dict:
+    return _prune(
+        {
+            "id": _locate_callable_id(spec["signature"]),
+            "signature": spec["signature"],
+            "name": spec["name"],
+            "path": _LOCATE_MODULE_PATH,
+            "code": _locate_code(spec["start_line"], spec["end_line"]) if spec["has_span"] else None,
+            "start_line": spec["start_line"],
+            "end_line": spec["end_line"],
+            "_module": _LOCATE_MODULE_PATH,
+        }
+    )
+
+
+def _locate_body_props(spec: dict) -> list[dict]:
+    return [
+        _prune(
+            {
+                "id": f"{_locate_callable_id(spec['signature'])}@{key}",
+                "kind": kind,
+                "start_line": s,
+                "end_line": e,
+                "_module": _LOCATE_MODULE_PATH,
+            }
+        )
+        for key, (kind, s, e) in spec["body"].items()
+    ]
+
+
+def _locate_row(idx, module_props=None, callable_props=None, class_props=None, body_props=None) -> dict:
+    return {"idx": idx, "module_props": module_props, "callable_props": callable_props, "class_props": class_props, "body_props": body_props}
 
 
 def _locate_responder(query: str, params: dict) -> list[dict]:
-    """Answers ``_load_module_keys`` and ``PyNeo4jBackend._LOCATE_QUERY`` for the ``py`` fixture."""
+    """Answers ``_load_module_keys`` and ``PyNeo4jBackend._LOCATE_QUERY`` for the ``py`` fixture.
+
+    This evaluates the query's WHERE clauses rather than short-circuiting them, so the assertions it
+    backs are about the query the backend actually sends: ``$mods`` really gates the callable match
+    (drop the application's module keys and the callables disappear), a callable row repeats once per
+    matching body node, and every containment decision is made on lines the way Cypher would.
+    """
     if "RETURN m.file_key AS k" in query:
         return [{"k": _LOCATE_MODULE_PATH}]
-    if "UNWIND $positions AS pos" in query:
-        rows = []
-        for pos in params["positions"]:
-            if pos["path"] != _LOCATE_MODULE_PATH:
-                rows.append({"idx": pos["idx"], "module_props": None, "callable_props": None, "class_props": None})
-                continue
-            module_props = {"file_key": _LOCATE_MODULE_PATH, "module_name": "src.app", "source": _LOCATE_MODULE_SOURCE}
-            matches = [c for c in _LOCATE_CALLABLES if c["start_line"] <= pos["line"] <= c["end_line"]]
-            if not matches:
-                rows.append({"idx": pos["idx"], "module_props": module_props, "callable_props": None, "class_props": None})
-                continue
-            best = min(matches, key=lambda c: c["end_line"] - c["start_line"])
-            rows.append({"idx": pos["idx"], "module_props": module_props, "callable_props": best, "class_props": _LOCATE_CLASS})
-        return rows
-    return []
+    if "UNWIND $positions AS pos" not in query:
+        return []
+    rows: list[dict] = []
+    for pos in params["positions"]:
+        if pos["path"] != _LOCATE_MODULE_PATH:
+            rows.append(_locate_row(pos["idx"]))  # no :PyModule for this file_key
+            continue
+        # ``OPTIONAL MATCH (c:PyCallable {_module: pos.path}) WHERE c._module IN $mods AND ...``
+        in_scope = _LOCATE_MODULE_PATH in params["mods"]
+        matches = [c for c in _LOCATE_CALLABLE_SPECS if in_scope and c["start_line"] <= pos["line"] <= c["end_line"]]
+        if not matches:
+            rows.append(_locate_row(pos["idx"], _LOCATE_MODULE_PROPS))
+            continue
+        for spec in matches:
+            cprops = _locate_callable_props(spec)
+            clsprops = _LOCATE_CLASSES.get(spec["class_signature"]) if spec["class_signature"] else None
+            bodies = [b for b in _locate_body_props(spec) if "start_line" in b and b["start_line"] <= pos["line"] <= b["end_line"]]
+            for b in bodies or [None]:
+                rows.append(_locate_row(pos["idx"], _LOCATE_MODULE_PROPS, cprops, clsprops, b))
+    return rows
 
 
 @pytest.fixture
 def py(fake_driver: FakeDriver) -> PyNeo4jBackend:
-    """A :class:`PyNeo4jBackend` over the tiny ``src/app.py`` fixture above, driven by
-    ``fake_driver`` — the same instance :func:`query_counter` wraps, so a test taking both
-    fixtures counts genuine round trips against the backend ``py`` actually queries.
+    """A :class:`PyNeo4jBackend` over the fixture module above, driven by ``fake_driver`` — the same
+    instance :func:`query_counter` wraps, so a test taking both fixtures counts genuine round trips
+    against the backend ``py`` actually queries.
     """
     fake_driver.responder = _locate_responder
     return PyNeo4jBackend._from_driver(fake_driver, application_name="app")
+
+
+@pytest.fixture
+def py_local(tmp_path) -> PyCodeanalyzer:
+    """A :class:`PyCodeanalyzer` over the *same* fixture module, with no analyzer run and no Neo4j.
+
+    Built with ``object.__new__`` and a hand-assembled application (the pattern
+    ``test_python_bulk_accessors.py`` uses), plus a ``project_dir`` — ``locate`` consults it to tell
+    "the file exists but was not analysed" from "no such file", which is the one thing the local
+    backend knows and the Neo4j backend cannot.
+    """
+    backend = object.__new__(PyCodeanalyzer)
+    backend.application = _locate_application()
+    backend.project_dir = tmp_path
+    return backend
+
+
+@pytest.fixture(params=["neo4j", "local"])
+def py_either(request, py, py_local):
+    """Both backends, for the outcome tests that must hold identically on each."""
+    return py if request.param == "neo4j" else py_local

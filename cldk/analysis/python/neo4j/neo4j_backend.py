@@ -84,9 +84,10 @@ import networkx as nx
 from codeanalyzer.schema import model_dump_json
 
 from cldk.analysis.commons.results import CallableRef, Diagnostic, LocateResult, ModuleRef, TypeRef
-from cldk.analysis.python.backend import PythonAnalysisBackend
+from cldk.analysis.python.backend import PythonAnalysisBackend, resolve_module_key
 from cldk.analysis.python.neo4j import reconstruct as R
 from cldk.models.python import (
+    BodyNode,
     PyApplication,
     PyCallEdge,
     PyCallable,
@@ -597,23 +598,53 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     # =====================================================================================
     # locate / locate_many — one round trip, UNWIND over the position list
     # =====================================================================================
-    # Containment is over PyCallable's own start_line/end_line (present at every analysis level,
-    # unlike PyBodyNode, which only exists from L1 up) rather than PY_HAS_BODY_NODE — the smallest
-    # span containing the line is the innermost callable, which naturally treats a gap between two
-    # callables (or a module top-level line) the same way: no callable matches, so it falls through
-    # to module_scope rather than snapping to a neighbour. PY_HAS_METHOD is still walked (reversed)
-    # to find the owning class for ``type``.
+    # Two layers of containment, both in the same statement so the whole resolution is still one
+    # round trip:
+    #
+    # * the **callable** comes from PyCallable's own start_line/end_line (present at every analysis
+    #   level, unlike PyBodyNode, which only exists from L1 up) — the smallest line span containing
+    #   the position is the innermost callable, which naturally treats a gap between two callables
+    #   (or a module top-level line) the same way: no callable matches, so it falls through to
+    #   module_scope rather than snapping to a neighbour. PY_HAS_METHOD is walked reversed for the
+    #   owning class (``type``);
+    # * the **body node** comes from PY_HAS_BODY_NODE off that same candidate callable, again by
+    #   line containment, innermost first. Synthetic vertices (@entry / @exit / @formal_in:N) carry
+    #   no span, so the emitter prunes their start_line/end_line away entirely — the
+    #   ``IS NOT NULL`` guard is what stops a span-less vertex being read as "contains everything".
+    #
+    # Every other query in this file is scoped to the application with ``_module IN $mods``, and so
+    # is this one: a database may hold several applications, and a same-valued ``file_key`` from a
+    # different application would otherwise win the ``{_module: pos.path}`` match.
     _LOCATE_QUERY = (
         "UNWIND $positions AS pos "
         "OPTIONAL MATCH (:PyApplication {name: $app})-[:PY_HAS_MODULE]->(m:PyModule {file_key: pos.path}) "
         "WITH pos, m "
         "OPTIONAL MATCH (c:PyCallable {_module: pos.path}) "
-        "WHERE c.start_line IS NOT NULL AND c.end_line IS NOT NULL "
+        "WHERE c._module IN $mods "
+        "AND c.start_line IS NOT NULL AND c.end_line IS NOT NULL "
         "AND c.start_line <= pos.line AND pos.line <= c.end_line "
         "WITH pos, m, c "
         "OPTIONAL MATCH (cls:PyClass)-[:PY_HAS_METHOD]->(c) "
-        "RETURN pos.idx AS idx, properties(m) AS module_props, properties(c) AS callable_props, properties(cls) AS class_props"
+        "WITH pos, m, c, cls "
+        "OPTIONAL MATCH (c)-[:PY_HAS_BODY_NODE]->(b:PyBodyNode) "
+        "WHERE b.start_line IS NOT NULL AND b.end_line IS NOT NULL "
+        "AND b.start_line <= pos.line AND pos.line <= b.end_line "
+        "RETURN pos.idx AS idx, properties(m) AS module_props, properties(c) AS callable_props, "
+        "properties(cls) AS class_props, properties(b) AS body_props"
     )
+
+    @staticmethod
+    def _line_span(start_line: int, end_line: int) -> Span:
+        """A :class:`Span` over the only positional data the graph carries: line numbers.
+
+        ``codeanalyzer-python``'s projection writes ``start_line`` / ``end_line`` on ``:PyCallable``
+        and ``:PyBodyNode`` and nothing finer — no columns, no UTF-8 byte offsets into the module
+        source (see ``codeanalyzer/neo4j/project.py``'s ``_callable_props`` /
+        ``_project_program_graphs``). The columns and ``bytes`` here are therefore ``0``
+        placeholders, not offsets: they are documented as meaningless on this backend rather than
+        dressed up as real (see :class:`~cldk.analysis.commons.results.LocateResult`).
+        """
+        return Span(start=(start_line, 0), end=(end_line, 0), bytes=(0, 0))
 
     def _locate_result(self, path: str, line: int, rows: List[Dict[str, Any]]) -> LocateResult:
         module_props = next((r["module_props"] for r in rows if r["module_props"] is not None), None)
@@ -624,40 +655,68 @@ class PyNeo4jBackend(PythonAnalysisBackend):
                 type=None,
                 module=ModuleRef(path=path),
                 source="",
-                span=Span(start=(line, 0), end=(line, 0), bytes=(0, 0)),
-                diagnostics=[Diagnostic(code="file_not_in_graph", message=f"{path} is not covered by any analysed module.")],
+                span=self._line_span(line, line),
+                diagnostics=[
+                    Diagnostic(
+                        code="file_not_in_graph",
+                        message=(
+                            f"{path} is not covered by any analysed module of application "
+                            f"{self.application_name!r}. This backend reads an attached graph and has no "
+                            f"access to the project sources, so it cannot tell a file that was never "
+                            f"analysed from one that is not on disk."
+                        ),
+                    )
+                ],
             )
         module_ref = ModuleRef(path=module_props.get("file_key", path), module_name=module_props.get("module_name"))
-        candidates = [r["callable_props"] for r in rows if r["callable_props"] is not None]
-        if not candidates:
+        # Innermost callable = smallest line span containing the position. Rows with a null
+        # callable are the OPTIONAL MATCH misses; there is one row per (callable, body node) pair,
+        # so the same callable can repeat.
+        best_row = min(
+            (r for r in rows if r["callable_props"] is not None),
+            key=lambda r: r["callable_props"]["end_line"] - r["callable_props"]["start_line"],
+            default=None,
+        )
+        if best_row is None:
             return LocateResult(
                 node=None,
                 callable=None,
                 type=None,
                 module=module_ref,
                 source=module_props.get("source") or "",
-                span=Span(start=(line, 0), end=(line, 0), bytes=(0, 0)),
+                span=self._line_span(line, line),
                 diagnostics=[Diagnostic(code="module_scope", message=f"line {line} is at module scope in {path}.")],
             )
-        best_row = min(
-            (r for r in rows if r["callable_props"] is not None),
-            key=lambda r: r["callable_props"]["end_line"] - r["callable_props"]["start_line"],
-        )
         cprops, clsprops = best_row["callable_props"], best_row["class_props"]
         return LocateResult(
-            node=None,
+            node=self._innermost_body_node(rows, cprops["signature"]),
             callable=CallableRef(signature=cprops["signature"], name=cprops["name"], class_signature=clsprops["signature"] if clsprops else None),
             type=TypeRef(signature=clsprops["signature"], name=clsprops["name"]) if clsprops else None,
             module=module_ref,
             source=cprops.get("code") or "",
-            span=Span(start=(cprops["start_line"], 0), end=(cprops["end_line"], 0), bytes=(0, 0)),
+            span=self._line_span(cprops["start_line"], cprops["end_line"]),
             diagnostics=[],
         )
 
-    def locate(self, path: str, line: int, col: int | None = None) -> LocateResult:
+    @staticmethod
+    def _innermost_body_node(rows: List[Dict[str, Any]], signature: str) -> "BodyNode | None":
+        """The tightest ``:PyBodyNode`` of ``signature`` the query matched, or ``None``.
+
+        ``None`` is a real outcome, not an error: a position on a callable's ``def`` line or on a
+        blank line inside it is contained by the callable and by no body node, and the caller still
+        gets the callable. Ties break on the trailing local key of the node's global ``id``
+        (``<callable can:// id>@<body key>``) — the same key the local backend's ``body`` dict is
+        keyed by, so both backends resolve a tie to the same node.
+        """
+        matches = [r["body_props"] for r in rows if r["body_props"] is not None and r["callable_props"] is not None and r["callable_props"]["signature"] == signature]
+        if not matches:
+            return None
+        best = min(matches, key=lambda b: (b["end_line"] - b["start_line"], str(b.get("id", "")).rsplit("@", 1)[-1]))
+        return R.body_node(best)
+
+    def locate(self, path: str, line: int) -> LocateResult:
         """Resolve a source position to its enclosing callable (see
-        :meth:`PythonAnalysisBackend.locate`). ``col`` is accepted for interface parity but not
-        yet used: the graph's ``PyCallable``/``PyBodyNode`` spans carry no column-level data."""
+        :meth:`PythonAnalysisBackend.locate`)."""
         return self.locate_many([(path, line)])[0]
 
     def locate_many(self, positions: Sequence[Tuple[str, int]]) -> List[LocateResult]:
@@ -668,12 +727,17 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         positions = list(positions)
         if not positions:
             return []
+        # Whatever the caller's scanner printed ("./src/app.py", an absolute path) is normalised to
+        # the graph's file_key before it becomes a Cypher parameter — an unnormalised path would
+        # match no :PyModule and read back as file_not_in_graph.
+        keys = [resolve_module_key(path, self._modules) for path, _ in positions]
         rows = self._run(
             self._LOCATE_QUERY,
             app=self.application_name,
-            positions=[{"idx": i, "path": path, "line": line} for i, (path, line) in enumerate(positions)],
+            mods=self._modules,
+            positions=[{"idx": i, "path": key, "line": line} for i, (key, (_, line)) in enumerate(zip(keys, positions))],
         )
         by_idx: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
         for r in rows:
             by_idx[r["idx"]].append(r)
-        return [self._locate_result(path, line, by_idx.get(i, [])) for i, (path, line) in enumerate(positions)]
+        return [self._locate_result(key, line, by_idx.get(i, [])) for i, (key, (_, line)) in enumerate(zip(keys, positions))]

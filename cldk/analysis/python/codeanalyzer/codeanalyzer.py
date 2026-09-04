@@ -61,8 +61,9 @@ from codeanalyzer.schema import Analysis, model_dump_json
 
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.results import CallableRef, Diagnostic, LocateResult, ModuleRef, TypeRef
-from cldk.analysis.python.backend import PythonAnalysisBackend
+from cldk.analysis.python.backend import PythonAnalysisBackend, resolve_module_key
 from cldk.models.python import (
+    BodyNode,
     PyApplication,
     PyCallEdge,
     PyCallable,
@@ -156,6 +157,35 @@ def _find_innermost(module: PyModule, line: int) -> Tuple[PyCallable, "PyClass |
     for fn in module.functions.values():
         walk_callable(fn, None)
 
+    return best
+
+
+def _find_body_node(c: PyCallable, line: int) -> "BodyNode | None":
+    """The innermost body node of ``c`` whose span contains ``line``, or ``None``.
+
+    ``c.body`` is keyed by local id (``"20:8"``, ``"@entry"``, ``"22:8/actual_in:0"``). A node with
+    no ``span`` is a synthetic analysis vertex (``@entry`` / ``@exit`` / ``@formal_in:N``) modelling
+    dataflow, not a source region — it can never contain a position, so it is skipped rather than
+    treated as a match. Containment is by line, the only granularity the Neo4j backend's projection
+    also carries (``:PyBodyNode`` gets ``start_line``/``end_line`` and nothing finer), so the two
+    backends agree on which node is innermost. Ties break on the body key for the same reason: a
+    body node's graph ``id`` is ``<callable can:// id>@<body key>``, so ordering by key here is the
+    ordering the Neo4j backend sees.
+
+    ``None`` is a real outcome, not an error: a position on the ``def`` line, on a blank line, or on
+    a comment inside a callable is contained by the callable and by no body node, and the caller
+    still gets the callable.
+    """
+    best: "BodyNode | None" = None
+    best_key: Tuple[int, str] | None = None
+    for key, node in (c.body or {}).items():
+        if node.span is None:
+            continue
+        if not (node.span.start[0] <= line <= node.span.end[0]):
+            continue
+        rank = (node.span.end[0] - node.span.start[0], key)
+        if best_key is None or rank < best_key:
+            best, best_key = node, rank
     return best
 
 
@@ -716,18 +746,35 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         return {c.signature: list(c.call_sites) for c, _, _, _ in self._iter_callables() if c.signature in wanted}
 
     # ----------------------------------------------------------- locate
+    def _not_analysed(self, path: str, line: int) -> LocateResult:
+        """The ``file_not_in_graph`` outcome, with the one distinction this backend *can* draw.
+
+        Unlike the Neo4j backend (which attaches to a graph and may not have the project checked
+        out), this one runs against the project directory, so it can tell "the file is there and
+        was not analysed" — a ``--target-files`` narrowing, an excluded directory, a syntax error
+        the analyzer skipped — from "there is no such file". The code stays ``file_not_in_graph``
+        either way; the distinction rides in the message, which is the field an agent reads.
+        """
+        project_dir = getattr(self, "project_dir", None)
+        on_disk = Path(path).is_file() or bool(project_dir and (Path(project_dir) / path).is_file())
+        why = "the file exists but no analysed module covers it" if on_disk else "no such file in the analysed project"
+        return LocateResult(
+            node=None,
+            callable=None,
+            type=None,
+            module=ModuleRef(path=str(path)),
+            source="",
+            span=Span(start=(line, 0), end=(line, 0), bytes=(0, 0)),
+            diagnostics=[Diagnostic(code="file_not_in_graph", message=f"{path} is not covered by any analysed module ({why}).")],
+        )
+
     def _locate_one(self, path: str, line: int) -> LocateResult:
-        module = self.application.symbol_table.get(str(path))
+        # Whatever the caller's scanner printed ("./src/app.py", an absolute path) is normalised to
+        # the symbol-table key first; an unnormalised path would otherwise read as file_not_in_graph.
+        key = resolve_module_key(str(path), self.application.symbol_table.keys())
+        module = self.application.symbol_table.get(key)
         if module is None:
-            return LocateResult(
-                node=None,
-                callable=None,
-                type=None,
-                module=ModuleRef(path=str(path)),
-                source="",
-                span=Span(start=(line, 0), end=(line, 0), bytes=(0, 0)),
-                diagnostics=[Diagnostic(code="file_not_in_graph", message=f"{path} is not covered by any analysed module.")],
-            )
+            return self._not_analysed(key, line)
         module_ref = ModuleRef(path=module.file_path, module_name=module.module_name)
         found = _find_innermost(module, line)
         if found is None:
@@ -742,7 +789,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             )
         c, owner = found
         return LocateResult(
-            node=None,
+            node=_find_body_node(c, line),
             callable=CallableRef(signature=c.signature, name=c.name, class_signature=owner.signature if owner else None),
             type=TypeRef(signature=owner.signature, name=owner.name) if owner else None,
             module=module_ref,
@@ -751,10 +798,9 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             diagnostics=[],
         )
 
-    def locate(self, path: str, line: int, col: int | None = None) -> LocateResult:
+    def locate(self, path: str, line: int) -> LocateResult:
         """Resolve a source position to its enclosing callable (see
-        :meth:`PythonAnalysisBackend.locate`). ``col`` is accepted for interface parity but not
-        yet used: the symbol table has no column-level granularity finer than a callable's span."""
+        :meth:`PythonAnalysisBackend.locate`)."""
         return self._locate_one(path, line)
 
     def locate_many(self, positions: Sequence[Tuple[str, int]]) -> List[LocateResult]:

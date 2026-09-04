@@ -41,6 +41,7 @@ import json
 from typing import Any, Dict, List, Mapping
 
 from cldk.models.python import (
+    BodyNode,
     PyCallable,
     PyCallableOverview,
     PyClass,
@@ -55,6 +56,7 @@ from cldk.models.python import (
     PyDecorator,
     PySymbol,
     PyVariableDeclaration,
+    Span,
 )
 
 Props = Mapping[str, Any]
@@ -135,6 +137,34 @@ def callsite(props: Props) -> PyCallsite:
         start_column=props.get("start_column", -1),
         end_line=props.get("end_line", -1),
         end_column=props.get("end_column", -1),
+    )
+
+
+def body_node(props: Props) -> BodyNode:
+    """Rebuild a :class:`BodyNode` from a ``:PyBodyNode`` node's properties.
+
+    Line-only ``span``: the projection writes ``start_line`` / ``end_line`` and nothing finer, so
+    the columns and UTF-8 ``bytes`` offsets rehydrate as ``0`` — the same projection-lossy shape as
+    :func:`callsite`, and the reason ``LocateResult.span`` documents which of its fields are real
+    per backend. ``span`` stays ``None`` when the node carries no lines at all: the emitter prunes
+    them from synthetic analysis vertices (``@entry`` / ``@exit`` / ``@formal_in:N``), which have no
+    source region, and a fabricated ``0``-line span would make one look like it contained line 0.
+    ``callee`` is not a property (callee resolution is the separate ``PY_RESOLVES_TO`` edge), and
+    ``arguments`` is left empty — the graph stores it JSON-encoded in ``arguments_json``, but
+    ``PyCallArgument`` is not among the models CLDK re-exports and no caller of this function reads
+    it, so it stays a projection-lossy field like :func:`callsite`'s ``argument_types``.
+    """
+    lines = (props.get("start_line"), props.get("end_line"))
+    return BodyNode(
+        kind=props.get("kind", ""),
+        span=Span(start=(lines[0], 0), end=(lines[1], 0), bytes=(0, 0)) if None not in lines else None,
+        of=props.get("var"),
+        parent=props.get("call_node"),
+        method_name=props.get("method_name"),
+        receiver_expr=props.get("receiver_expr"),
+        receiver_type=props.get("receiver_type"),
+        return_type=props.get("return_type"),
+        is_constructor_call=props.get("is_constructor_call"),
     )
 
 
