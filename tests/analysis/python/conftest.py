@@ -177,6 +177,13 @@ def query_counter(fake_driver: FakeDriver) -> QueryCounter:
 #   line 20  ``if self._key:``         -> the ``if`` body node
 #   line 21  the ``if``'s return       -> two nested body nodes contain it; innermost must win
 #   line 24  ``def stub(self): ...``   -> a callable with NO span (abstract/protocol stub)
+#   line 26  ``def one(self): return lambda: 2``
+#                                     -> a lambda inside a one-line def: two callables of EQUAL line
+#                                        width contain the position, so the innermost cannot be
+#                                        decided by width and both backends must break the tie the
+#                                        same way (longer signature = deeper)
+#   line 29  ``if x: return x``        -> two body nodes of equal line width contain the position;
+#                                        the tie breaks on the key's start column, deeper first
 # "test/conftest.py" is deliberately absent (a file on disk that was never analysed).
 # --------------------------------------------------------------------------------------------
 _LOCATE_MODULE_PATH = "src/app.py"
@@ -205,6 +212,11 @@ _LOCATE_SOURCE_LINES = [
     "        return None",  # 22
     "",  # 23
     "    def stub(self): ...",  # 24
+    "",  # 25
+    "    def one(self): return lambda: 2",  # 26 — two callables tie on line width
+    "",  # 27
+    "    def two(self, x):",  # 28
+    "        if x: return x",  # 29 — two body nodes tie on line width
 ]
 _LOCATE_MODULE_SOURCE = "".join(line + "\n" for line in _LOCATE_SOURCE_LINES)
 
@@ -287,6 +299,34 @@ _LOCATE_CALLABLE_SPECS = [
         },
     },
     {
+        "signature": "src.app.Store.one",
+        "name": "one",
+        "start_line": 26,
+        "end_line": 26,
+        "class_signature": "src.app.Store",
+        "has_span": True,
+        "body": {"26:19": ("return", 26, 26)},
+    },
+    {
+        "signature": "src.app.Store.one.<locals>.<lambda>",
+        "name": "<lambda>",
+        "start_line": 26,  # same span as its owner: the width tie-break case
+        "end_line": 26,
+        "class_signature": None,
+        "has_span": True,
+        "body": {"26:34": ("return", 26, 26)},
+    },
+    {
+        "signature": "src.app.Store.two",
+        "name": "two",
+        "start_line": 28,
+        "end_line": 29,
+        "class_signature": "src.app.Store",
+        "has_span": True,
+        # Both span line 29 alone: equal width, so the start column decides.
+        "body": {"29:8": ("if", 29, 29), "29:14": ("return", 29, 29)},
+    },
+    {
         "signature": "src.app.Store.stub",
         "name": "stub",
         "start_line": 24,
@@ -324,6 +364,7 @@ def _locate_pycallable(spec: dict, **children: Any) -> PyCallable:
 def _locate_application() -> PyApplication:
     """The fixture module as the in-process analyzer would hand it over."""
     inner = _locate_pycallable(_LOCATE_SPEC["src.app.Store.wrap.<locals>.inner"])
+    lam = _locate_pycallable(_LOCATE_SPEC["src.app.Store.one.<locals>.<lambda>"])
     meta = PyClass(
         name="Meta",
         signature="src.app.Store.Meta",
@@ -335,6 +376,8 @@ def _locate_application() -> PyApplication:
         callables={
             "wrap": _locate_pycallable(_LOCATE_SPEC["src.app.Store.wrap"], callables={"inner": inner}),
             "key": _locate_pycallable(_LOCATE_SPEC["src.app.Store.key"]),
+            "one": _locate_pycallable(_LOCATE_SPEC["src.app.Store.one"], callables={"<lambda>": lam}),
+            "two": _locate_pycallable(_LOCATE_SPEC["src.app.Store.two"]),
             "stub": _locate_pycallable(_LOCATE_SPEC["src.app.Store.stub"]),
         },
         types={"src.app.Store.Meta": meta},

@@ -84,7 +84,7 @@ import networkx as nx
 from codeanalyzer.schema import model_dump_json
 
 from cldk.analysis.commons.results import CallableRef, Diagnostic, LocateResult, ModuleRef, TypeRef
-from cldk.analysis.python.backend import PythonAnalysisBackend, resolve_module_key
+from cldk.analysis.python.backend import PythonAnalysisBackend, body_key_column, resolve_module_key
 from cldk.analysis.python.neo4j import reconstruct as R
 from cldk.models.python import (
     BodyNode,
@@ -671,10 +671,17 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         module_ref = ModuleRef(path=module_props.get("file_key", path), module_name=module_props.get("module_name"))
         # Innermost callable = smallest line span containing the position. Rows with a null
         # callable are the OPTIONAL MATCH misses; there is one row per (callable, body node) pair,
-        # so the same callable can repeat.
+        # so the same callable can repeat. Equal widths (a lambda inside a one-line def) tie, and
+        # `min` would then be decided by Cypher's row order — nondeterministic here and different
+        # from the local walk's order. Break it on the longer signature, deeper first, exactly as
+        # _find_innermost does: a nested callable's signature extends its owner's.
         best_row = min(
             (r for r in rows if r["callable_props"] is not None),
-            key=lambda r: r["callable_props"]["end_line"] - r["callable_props"]["start_line"],
+            key=lambda r: (
+                r["callable_props"]["end_line"] - r["callable_props"]["start_line"],
+                -len(r["callable_props"]["signature"]),
+                r["callable_props"]["signature"],
+            ),
             default=None,
         )
         if best_row is None:
@@ -721,12 +728,19 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         blank line inside it is contained by the callable and by no body node, and the caller still
         gets the callable. Ties break on the trailing local key of the node's global ``id``
         (``<callable can:// id>@<body key>``) — the same key the local backend's ``body`` dict is
-        keyed by, so both backends resolve a tie to the same node.
+        keyed by, ranked the same way (deeper column first, see
+        :func:`~cldk.analysis.python.backend.body_key_column`), so both backends resolve a tie to the
+        same node.
         """
         matches = [r["body_props"] for r in rows if r["body_props"] is not None and r["callable_props"] is not None and r["callable_props"]["signature"] == signature]
         if not matches:
             return None
-        best = min(matches, key=lambda b: (b["end_line"] - b["start_line"], str(b.get("id", "")).rsplit("@", 1)[-1]))
+
+        def rank(b: Dict[str, Any]) -> Tuple[int, int, str]:
+            key = str(b.get("id", "")).rsplit("@", 1)[-1]
+            return (b["end_line"] - b["start_line"], -body_key_column(key), key)
+
+        best = min(matches, key=rank)
         return R.body_node(best)
 
     def locate(self, path: str, line: int) -> LocateResult:

@@ -68,6 +68,24 @@ def resolve_module_key(path: str, keys: Iterable[str]) -> str:
     return max(suffix_matches, key=len) if suffix_matches else path
 
 
+def body_key_column(key: str) -> int:
+    """The start column encoded in a body node's local key (``"21:12"`` -> ``12``), or ``-1``.
+
+    Both backends need one tie-break for two body nodes that span the *same* line — ``if x: return x``
+    emits an ``if`` and a ``return`` each spanning one line — and line numbers are the only positional
+    data the Neo4j projection carries, so the span cannot break it. The local *key* can: it is
+    ``<line>:<col>`` (sometimes suffixed, as in ``"22:8/actual_in:0"``), it exists on both sides
+    (locally the ``body`` dict key, over Neo4j the trailing segment of ``<callable id>@<key>``), and a
+    larger column is the more deeply nested statement. Comparing the keys as *strings* instead would
+    order ``"29:10"`` before ``"29:4"`` and pick the outer node, so the column is parsed as an int.
+
+    ``-1`` for a key with no column (the synthetic ``@entry`` / ``@exit`` vertices) — they carry no
+    span, so they are filtered out before ranking and never reach this.
+    """
+    _, _, col = key.split("/", 1)[0].partition(":")
+    return int(col) if col.isdigit() else -1
+
+
 class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, PyCallable, PyClassAttribute, str]):
     """Abstract base every Python analysis backend implements.
 

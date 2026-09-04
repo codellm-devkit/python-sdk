@@ -61,7 +61,7 @@ from codeanalyzer.schema import Analysis, model_dump_json
 
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.results import CallableRef, Diagnostic, LocateResult, ModuleRef, TypeRef
-from cldk.analysis.python.backend import PythonAnalysisBackend, resolve_module_key
+from cldk.analysis.python.backend import PythonAnalysisBackend, body_key_column, resolve_module_key
 from cldk.models.python import (
     BodyNode,
     PyApplication,
@@ -125,19 +125,26 @@ def _find_innermost(module: PyModule, line: int) -> Tuple[PyCallable, "PyClass |
 
     Only real callable spans count: a blank line, a comment, or a gap between two callables' spans
     contains no callable and must never snap to the nearest one (see :meth:`locate`).
+
+    Equal line widths tie — ``def one(self): return lambda: 2`` nests two callables on one line — and
+    lines are all the Neo4j projection carries, so the tie breaks on the *longer signature*: a nested
+    callable's signature strictly extends its owner's (``...one.<locals>.<lambda>``), so longer is
+    deeper. Without it the local walk keeps whichever it met first (the owner) and the Neo4j backend
+    keeps whichever Cypher returned first, so the two backends could disagree — the exact divergence
+    ``test_locate_parity_*`` exists to forbid.
     """
     best: Tuple[PyCallable, "PyClass | None"] | None = None
-    best_width: int | None = None
+    best_rank: Tuple[int, int, str] | None = None
 
     def consider(c: PyCallable, owner: "PyClass | None") -> None:
-        nonlocal best, best_width
+        nonlocal best, best_rank
         if c.start_line < 0 or c.end_line < 0:
             return
         if not (c.start_line <= line <= c.end_line):
             return
-        width = c.end_line - c.start_line
-        if best_width is None or width < best_width:
-            best, best_width = (c, owner), width
+        rank = (c.end_line - c.start_line, -len(c.signature), c.signature)
+        if best_rank is None or rank < best_rank:
+            best, best_rank = (c, owner), rank
 
     def walk_callable(c: PyCallable, owner: "PyClass | None") -> None:
         consider(c, owner)
@@ -168,22 +175,24 @@ def _find_body_node(c: PyCallable, line: int) -> "BodyNode | None":
     dataflow, not a source region — it can never contain a position, so it is skipped rather than
     treated as a match. Containment is by line, the only granularity the Neo4j backend's projection
     also carries (``:PyBodyNode`` gets ``start_line``/``end_line`` and nothing finer), so the two
-    backends agree on which node is innermost. Ties break on the body key for the same reason: a
-    body node's graph ``id`` is ``<callable can:// id>@<body key>``, so ordering by key here is the
-    ordering the Neo4j backend sees.
+    backends agree on which node is innermost. Two nodes spanning the same single line (``if x:
+    return x``) tie on width, so the tie breaks on the key's start column, deeper first — see
+    :func:`~cldk.analysis.python.backend.body_key_column` for why the key and not the span, and why
+    it is parsed rather than string-compared. A body node's graph ``id`` is ``<callable can:// id>@<body
+    key>``, so the Neo4j backend ranks on the same key this does.
 
     ``None`` is a real outcome, not an error: a position on the ``def`` line, on a blank line, or on
     a comment inside a callable is contained by the callable and by no body node, and the caller
     still gets the callable.
     """
     best: "BodyNode | None" = None
-    best_key: Tuple[int, str] | None = None
+    best_key: Tuple[int, int, str] | None = None
     for key, node in (c.body or {}).items():
         if node.span is None:
             continue
         if not (node.span.start[0] <= line <= node.span.end[0]):
             continue
-        rank = (node.span.end[0] - node.span.start[0], key)
+        rank = (node.span.end[0] - node.span.start[0], -body_key_column(key), key)
         if best_key is None or rank < best_key:
             best, best_key = node, rank
     return best

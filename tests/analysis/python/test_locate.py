@@ -286,3 +286,51 @@ def test_locate_not_in_graph_message_says_what_the_backend_knows(py, py_local, t
     assert "exists but no analysed module covers it" in present
     assert "no such file" in absent
     assert "no access to the project sources" in py.locate("present.py", 1).diagnostics[0].message
+
+
+# ================================================================================================
+# Equal-width ties. Both backends rank by line span, and lines are all the graph carries — so when
+# two callables (or two body nodes) span exactly the same lines, width cannot decide and something
+# else must, identically on both sides. Locally an unbroken tie keeps whichever the walk met first
+# (the *owner*, i.e. the wrong one); over Neo4j it keeps whichever row Cypher returned first, which
+# is not even deterministic. That is a parity divergence of the same class as the fabricated module
+# source, so it is pinned here rather than left to the first `def f(): return lambda: 1` in the wild.
+# ================================================================================================
+def test_locate_innermost_callable_wins_an_equal_width_tie(py_either):
+    """``def one(self): return lambda: 2`` — the lambda and its owner span the same single line."""
+    r = py_either.locate("src/app.py", 26)
+    assert r.callable.signature == "src.app.Store.one.<locals>.<lambda>"
+    assert r.callable.class_signature is None  # a lambda has no owning class
+    assert r.type is None
+
+
+def test_locate_innermost_body_node_wins_an_equal_width_tie(py_either):
+    """``if x: return x`` — the ``if`` and the ``return`` both span line 29 alone, so the tie is
+    broken on the key's start column: the ``return`` at col 14 is nested inside the ``if`` at col 8."""
+    r = py_either.locate("src/app.py", 29)
+    assert r.callable.signature == "src.app.Store.two"
+    assert r.node.kind == "return"
+    assert (r.node.span.start[0], r.node.span.end[0]) == (29, 29)
+
+
+def test_locate_parity_equal_width_ties_agree(py, py_local):
+    """The two backends must resolve both ties to the same node, not merely to *a* node."""
+    for line in (26, 29):
+        a, b = py.locate("src/app.py", line), py_local.locate("src/app.py", line)
+        assert a.callable == b.callable, line
+        assert (a.node is None) == (b.node is None), line
+        if a.node is not None:
+            assert (a.node.kind, a.node.span.start[0]) == (b.node.kind, b.node.span.start[0]), line
+
+
+def test_locate_body_key_column_is_parsed_not_string_compared():
+    """The keys are ``<line>:<col>``, sometimes suffixed. Comparing them as strings would order
+    ``"29:10"`` before ``"29:4"`` and pick the *outer* statement; the column is parsed as an int."""
+    from cldk.analysis.python.backend import body_key_column
+
+    assert body_key_column("29:4") == 4
+    assert body_key_column("29:10") == 10
+    assert body_key_column("22:8/actual_in:0") == 8
+    assert body_key_column("@entry") == -1  # synthetic vertices carry no column
+    assert "29:10" < "29:4"  # ...which is why the string comparison had to go
+    assert body_key_column("29:10") > body_key_column("29:4")
