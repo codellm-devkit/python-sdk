@@ -694,31 +694,38 @@ class PythonAnalysis:
         return self.backend.get_all_constructors(qualified_class_name)
 
     # -----[ locate ]-----
-    def locate(self, path: str, line: int, col: int | None = None) -> LocateResult:
+    def locate(self, path: str, line: int) -> LocateResult:
         """Resolve a source position to its enclosing callable, with the source in hand.
 
         The single most-needed query for triaging a scanner alert: an alert arrives as
         ``file:line`` and this resolves it to the enclosing callable in one call, rather than
         ``get_method``, falling back to ``get_callers``, falling back to scanning the symbol table
-        by hand. Three outcomes stay distinguishable — see
-        :class:`~cldk.analysis.commons.results.LocateResult`: inside a callable (``callable``
-        set), at real module scope (``module_scope`` diagnostic, never snapped to the nearest
-        callable), or in a file the graph has no module for (``file_not_in_graph``).
+        by hand. Four outcomes stay distinguishable — see
+        :class:`~cldk.analysis.commons.results.LocateResult`: inside a callable (``callable`` set,
+        plus ``node`` when a body node is that precise), at real module scope (``module_scope``
+        diagnostic), in the gap between two callables (also module scope, never snapped to the
+        nearest callable), or in a file the graph has no module for (``file_not_in_graph``).
+
+        There is no ``col`` parameter. Column-level disambiguation would have to be honoured by
+        both backends to mean anything, and the Neo4j graph projects only ``start_line`` /
+        ``end_line`` on ``:PyCallable`` and ``:PyBodyNode`` — so a ``col`` would work in-process
+        and be silently ignored over Neo4j. Better absent than documented and inert.
 
         Args:
-            path: The file path, as it appears as a symbol-table/module key.
+            path: The file path. Normalised against the backend's module keys, so a
+                ``./``-prefixed or absolute path resolves rather than reading back as
+                ``file_not_in_graph``.
             line: The 1-based line number.
-            col: Reserved for future column-level disambiguation; not yet used.
 
         Returns:
-            A :class:`~cldk.analysis.commons.results.LocateResult` carrying the enclosing
-            callable, its owning type, its module, and the source slice — never an ambiguous
-            empty.
+            A :class:`~cldk.analysis.commons.results.LocateResult` carrying the innermost body
+            node, the enclosing callable, its owning type, its module, and the source slice —
+            never an ambiguous empty.
 
         See Also:
             :meth:`locate_many`: The bulk form — the point, not an optimisation.
         """
-        return self.backend.locate(path, line, col)
+        return self.backend.locate(path, line)
 
     def locate_many(self, positions: Sequence[Tuple[str, int]]) -> List[LocateResult]:
         """Resolve many ``(path, line)`` positions in one round trip, in input order.

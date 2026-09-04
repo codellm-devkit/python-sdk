@@ -29,10 +29,13 @@ by convention. Backend-specific lifecycle (caches, drivers) is intentionally not
 
 from __future__ import annotations
 
+import os
+import posixpath
 from abc import abstractmethod
-from typing import Dict, List, Tuple
+from typing import Dict, Iterable, List, Sequence, Tuple
 
 from cldk.analysis.commons.backend import AnalysisBackend
+from cldk.analysis.commons.results import LocateResult
 from cldk.models.python import (
     PyApplication,
     PyCallable,
@@ -42,6 +45,27 @@ from cldk.models.python import (
     PyClassAttribute,
     PyModule,
 )
+
+
+def resolve_module_key(path: str, keys: Iterable[str]) -> str:
+    """The symbol-table / graph ``file_key`` naming ``path``, or ``path`` unchanged if none does.
+
+    A caller of :meth:`PythonAnalysisBackend.locate` hands over whatever its scanner printed —
+    ``./src/app.py``, ``src/../src/app.py``, or an absolute path from the machine the scan ran on —
+    while both backends are keyed by the project-relative path the analyzer saw. Exact key first,
+    then the normalised form, then the longest known key the normalised path *ends on a segment
+    boundary* of (which is what an absolute path is). Returning ``path`` unchanged when nothing
+    matches is deliberate: the caller then gets ``file_not_in_graph`` naming the path it asked
+    about, not a silently substituted neighbour.
+    """
+    keys = list(keys)
+    if path in keys:
+        return path
+    norm = posixpath.normpath(str(path).replace(os.sep, "/"))
+    if norm in keys:
+        return norm
+    suffix_matches = [k for k in keys if norm.endswith("/" + k)]
+    return max(suffix_matches, key=len) if suffix_matches else path
 
 
 class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, PyCallable, PyClassAttribute, str]):
@@ -132,3 +156,32 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         """Call sites of the given callable signatures, keyed by owning signature. Each existing
         signature gets an entry (an empty list if it has no call sites); signatures with no matching
         callable are omitted."""
+
+    # -----[ locate ]-----
+    # The v2 query-facade spec's D3. Declared here rather than on the generic cross-language ABC
+    # because LocateResult carries codeanalyzer-python's BodyNode/Span — see
+    # cldk/analysis/commons/backend.py's module docstring for why that stays out of the shared
+    # contract until a second language implements it.
+    @abstractmethod
+    def locate(self, path: str, line: int) -> LocateResult:
+        """Resolve a source position to its enclosing callable, with the source in hand.
+
+        Four outcomes, kept distinguishable rather than collapsed into an ambiguous empty: inside a
+        callable (``callable`` set, and ``node`` set too when a body node is that precise); at module
+        scope (a real position with no enclosing callable — a ``module_scope`` diagnostic); in the
+        gap between two callables (also module scope, and never silently snapped to the nearest
+        callable); or in a file the graph has no module for (``file_not_in_graph``).
+
+        Args:
+            path: The file path. Normalised against the backend's module keys, so a ``./``-prefixed
+                or absolute path resolves rather than reading back as ``file_not_in_graph``.
+            line: The 1-based line number.
+        """
+
+    @abstractmethod
+    def locate_many(self, positions: Sequence[Tuple[str, int]]) -> List[LocateResult]:
+        """Resolve many positions in one round trip, in input order.
+
+        The bulk form, not an optimisation over :meth:`locate`: a scanner hands over a whole alert
+        set at once, and round trips cost latency for a person and context for an agent.
+        """
