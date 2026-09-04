@@ -73,6 +73,46 @@ def test_locate_many_is_one_round_trip(py, query_counter):
 
 
 # ================================================================================================
+# The same four outcomes, on the LOCAL backend.
+#
+# The five tests above take ``py``, which is a PyNeo4jBackend — so PyCodeanalyzer's ``_locate_one``
+# and the recursive ``_find_innermost``/``_find_body_node`` walk had no coverage at all. These run
+# the identical positions in-process, and ``test_locate_parity_*`` below pins the two together.
+# ================================================================================================
+def test_locate_inside_callable_local(py_local):
+    r = py_local.locate("src/app.py", 19)
+    assert r.callable.signature == "src.app.Store.key"
+    assert r.source.startswith("    def key(")
+    assert r.diagnostics == []
+
+
+def test_locate_module_scope_local(py_local):
+    """The local backend has the module text, so module scope carries no second diagnostic."""
+    r = py_local.locate("src/app.py", 1)
+    assert r.callable is None
+    assert r.module.path == "src/app.py"
+    assert [d.code for d in r.diagnostics] == ["module_scope"]
+    assert r.source.startswith('"""Store module."""')
+
+
+def test_locate_gap_between_callables_local(py_local):
+    r = py_local.locate("src/app.py", 17)
+    assert r.callable is None
+    assert [d.code for d in r.diagnostics] == ["module_scope"]
+
+
+def test_locate_unanalysed_file_local(py_local):
+    r = py_local.locate("test/conftest.py", 3)
+    assert [d.code for d in r.diagnostics] == ["file_not_in_graph"]
+    assert r.callable is None
+
+
+def test_locate_many_local_is_input_order(py_local):
+    rs = py_local.locate_many([("src/app.py", 19), ("src/app.py", 1), ("src/app.py", 11)])
+    assert [r.callable.signature if r.callable else None for r in rs] == ["src.app.Store.key", None, "src.app.Store.Meta.tag"]
+
+
+# ================================================================================================
 # What ``_find_innermost`` has to get right.
 # ================================================================================================
 def test_locate_closure_inside_method_wins(py_either):
@@ -144,3 +184,105 @@ def test_locate_spanless_body_node_never_matches(py_either):
 def test_locate_body_node_survives_a_callable_with_no_body(py_either):
     """``stub`` has an empty ``body``/no PY_HAS_BODY_NODE edges: node is None, not an exception."""
     assert py_either.locate("src/app.py", 24).node is None
+
+
+# ================================================================================================
+# Parity — the two backends on the same position, including where they legitimately differ.
+# ================================================================================================
+def test_locate_parity_inside_callable(py, py_local):
+    a, b = py.locate("src/app.py", 21), py_local.locate("src/app.py", 21)
+    assert a.callable == b.callable
+    assert a.type == b.type
+    assert a.module == b.module
+    assert a.source == b.source  # the callable's text: `code` property vs `span.bytes` slice
+    assert [d.code for d in a.diagnostics] == [d.code for d in b.diagnostics] == []
+    # ...and the same innermost body node, compared on the fields the graph actually carries.
+    assert (a.node.kind, a.node.span.start[0], a.node.span.end[0]) == (b.node.kind, b.node.span.start[0], b.node.span.end[0])
+
+
+def test_locate_parity_innermost_node_agrees_at_every_position(py, py_local):
+    def probe(backend, line):
+        r = backend.locate("src/app.py", line)
+        node = r.node
+        return (
+            r.callable.signature if r.callable else None,
+            r.type.signature if r.type else None,
+            (node.kind, node.span.start[0], node.span.end[0]) if node else None,
+        )
+
+    lines = [1, 11, 15, 16, 17, 19, 20, 21, 22, 24]
+    assert [probe(py, line) for line in lines] == [probe(py_local, line) for line in lines]
+
+
+def test_locate_parity_documented_span_divergence(py, py_local):
+    """``span``'s meaningful fields differ *by design*, and the docstring now says which.
+
+    The local backend returns the analyzer's real Span (columns + UTF-8 byte offsets into the
+    module source); the graph projects only ``start_line``/``end_line`` on ``:PyCallable``, so the
+    Neo4j span's columns and ``bytes`` are 0 placeholders. Lines agree; nothing else claims to.
+    """
+    a, b = py.locate("src/app.py", 21), py_local.locate("src/app.py", 21)
+    assert (a.span.start[0], a.span.end[0]) == (b.span.start[0], b.span.end[0]) == (19, 22)
+    assert a.span.bytes == (0, 0) and a.span.start[1] == 0 and a.span.end[1] == 0
+    assert b.span.bytes != (0, 0)
+    assert b.span.end[1] > 0
+    # The byte offsets are real: slicing the module source by them reproduces `source`.
+    assert py_local.application.symbol_table["src/app.py"].source.encode("utf-8")[slice(*b.span.bytes)].decode("utf-8") == b.source
+
+
+def test_locate_parity_documented_module_source_divergence(py, py_local):
+    """The one outcome the two backends cannot agree on, stated rather than papered over.
+
+    :PyModule nodes carry no ``source`` property (``codeanalyzer/neo4j/project.py::_module_props``
+    writes id/file_key/module_name/content_hash/last_modified/file_size/_module, and
+    ``neo4j/schema.py`` declares the same set), and this backend has no project checkout to read
+    the file from — so it returns "" plus ``module_source_unavailable`` instead of inventing text.
+    """
+    a, b = py.locate("src/app.py", 1), py_local.locate("src/app.py", 1)
+    assert a.callable is None and b.callable is None
+    assert a.module == b.module
+    assert [d.code for d in a.diagnostics] == ["module_scope", "module_source_unavailable"]
+    assert [d.code for d in b.diagnostics] == ["module_scope"]
+    assert a.source == ""
+    assert b.source == py_local.application.symbol_table["src/app.py"].source
+    # The empty source says *why* it is empty (D7) rather than looking like a negative result.
+    assert "does not carry module text" in next(d.message for d in a.diagnostics if d.code == "module_source_unavailable")
+
+
+# ================================================================================================
+# Application scope, path normalisation, and the file_not_in_graph distinction.
+# ================================================================================================
+def test_locate_query_is_scoped_to_the_application(py, fake_driver):
+    """Every other query in neo4j_backend.py constrains ``_module IN $mods``; so must this one, or
+    a same-valued file_key from another application in the same database can win."""
+    py.locate("src/app.py", 21)
+    statement = next(s for s in fake_driver.statements if "UNWIND $positions AS pos" in s)
+    assert "c._module IN $mods" in statement
+
+
+def test_locate_scope_is_actually_honoured(py):
+    """Not just present in the text: drop the application's module keys and no callable matches."""
+    py._modules = []
+    r = py.locate("src/app.py", 21)
+    assert r.callable is None
+    assert "module_scope" in [d.code for d in r.diagnostics]
+
+
+def test_locate_normalises_the_path(py_either):
+    """A scanner prints ``./src/app.py`` or an absolute path; neither is the symbol-table key."""
+    for path in ("./src/app.py", "src/./app.py", "/home/ci/checkout/src/app.py"):
+        r = py_either.locate(path, 21)
+        assert r.callable is not None, path
+        assert r.callable.signature == "src.app.Store.key"
+        assert r.module.path == "src/app.py"
+
+
+def test_locate_not_in_graph_message_says_what_the_backend_knows(py, py_local, tmp_path):
+    """``file_not_in_graph`` can't tell "not analysed" from "not on disk" — but the local backend
+    can look, and the Neo4j backend says plainly that it cannot."""
+    (tmp_path / "present.py").write_text("x = 1\n")
+    present = py_local.locate("present.py", 1).diagnostics[0].message
+    absent = py_local.locate("gone.py", 1).diagnostics[0].message
+    assert "exists but no analysed module covers it" in present
+    assert "no such file" in absent
+    assert "no access to the project sources" in py.locate("present.py", 1).diagnostics[0].message
