@@ -34,9 +34,13 @@ language's models is a contract no other language can satisfy. A later leg gener
 ``get_entrypoints()``: that accessor's ``List[PyCallableOverview]`` return is frozen and cannot
 itself distinguish "no entrypoints" from "the detection pass had gaps", so the coverage/failure
 signal rides this separate, Python-typed accessor instead.
+
+:class:`EdgePage` is E5's "a bound is never silent" as a return type: an accessor whose answer can
+be millions of edges returns a page that says how big the whole answer is and where to resume,
+so the caller is bounded without anything being discarded.
 """
 
-from typing import Literal
+from typing import Generic, Literal, TypeVar
 
 from pydantic import BaseModel
 
@@ -248,3 +252,51 @@ class EntrypointCoverage(BaseModel):
     unresolved: dict[str, int] = {}
     errors: list[str] = []
     diagnostics: list[Diagnostic] = []
+
+
+E = TypeVar("E", bound=BaseModel)
+
+
+class EdgePage(BaseModel, Generic[E]):
+    """One page of an edge set, plus everything needed to tell what is missing from it.
+
+    Per-callable scoping bounds *which* edges an accessor may return; it does not bound *how
+    many*. Measured on odoo-slim-19, one callable — ``Website.configurator_apply`` — has 1,386,918
+    DDG edges, 27% of the whole application's 5,134,655, while 15,520 of the 15,549 callables have
+    fewer than 10,000. So the accessors that return edges page, and the ruling is **paginate, do
+    not truncate**: a cap discards edges the caller may need and can only report that it did,
+    whereas a page bounds the response while leaving every edge reachable.
+
+    E5 requires that a bound is never silent. It is satisfied here without a second call:
+    ``total`` is the size of the whole answer, ``next_cursor`` is ``None`` exactly when this page
+    is the end of it, and the two together let a caller distinguish "this is everything" from
+    "there is more" — and, for the D7 case, an empty *page* whose ``total`` is 0 from a page that
+    merely ran out of room.
+
+    **Why a page model and not a generator of pages.** A cursor is a value: it survives being
+    serialized into a result, stored, and passed back later by a different process, which is how
+    this surface is actually driven. A generator is a live object with a position, so it cannot
+    cross that boundary — and it would also force the caller to consume pages in order when the
+    common case (99.8% of callables) is one page that needs no loop at all.
+
+    Attributes:
+        edges: This page's edges, in the accessor's canonical order (see
+            :func:`~cldk.analysis.python.backend.ddg_sort_key` and its siblings) — the same order
+            on every backend, which is what makes page *n* the same page everywhere.
+        total: The size of the whole edge set, not of this page. Reported on every page, so a
+            caller reads the cost before deciding whether to walk the rest.
+        next_cursor: An opaque handle naming where to resume — pass it back as ``cursor=`` to get
+            the next page. ``None`` means this page ends the set. It is not for reading: it
+            encodes the sort key of the last edge on the page, which is an implementation detail
+            of the order, not part of the caller's vocabulary.
+    """
+
+    edges: list[E]
+    total: int
+    next_cursor: str | None = None
+
+    @property
+    def has_more(self) -> bool:
+        """Whether edges remain after this page. Derived from ``next_cursor`` rather than stored,
+        so the two cannot disagree."""
+        return self.next_cursor is not None

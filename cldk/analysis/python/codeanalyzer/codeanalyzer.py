@@ -61,9 +61,21 @@ from codeanalyzer.schema import Analysis, model_dump_json
 
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.resolve import CallableCandidate, resolve_callable_signature, resolve_value_name, resolve_within, value_candidate
-from cldk.analysis.commons.results import CallableRef, Diagnostic, EntrypointCoverage, LocateResult, ModuleRef, SliceNode, TypeRef
+from cldk.analysis.commons.results import CallableRef, Diagnostic, EdgePage, EntrypointCoverage, LocateResult, ModuleRef, SliceNode, TypeRef
 from cldk.utils.exceptions import CodeanalyzerUsageException
-from cldk.analysis.python.backend import PythonAnalysisBackend, body_key_column, bounded_subgraph, call_graph_scope, resolve_module_key, scope_paths
+from cldk.analysis.python.backend import (
+    CDG_ORDER,
+    CFG_ORDER,
+    DDG_ORDER,
+    DEFAULT_PAGE_SIZE,
+    PythonAnalysisBackend,
+    body_key_column,
+    bounded_subgraph,
+    call_graph_scope,
+    edge_page,
+    resolve_module_key,
+    scope_paths,
+)
 from cldk.models.python import (
     BodyNode,
     CdgEdge,
@@ -1118,26 +1130,30 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         sig = self.resolve_callable(name, in_class=in_class).callable
         return next(c for c, _, _, _, _ in self._iter_callables() if c.signature == sig)
 
-    def get_cfg(self, callable: str, *, in_class: str | None = None) -> List[CfgEdge]:
-        """Control flow within one callable (see :meth:`PythonAnalysisBackend.get_cfg`).
+    def get_cfg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[CfgEdge]:
+        """One page of control flow within one callable (see :meth:`PythonAnalysisBackend.get_cfg`).
 
         ``PyCallable.cfg`` keys its endpoints by the *local* body key (``"9:8"``, ``"@entry"``);
         :func:`body_node_id` joins them to the callable id to give the same global spelling the
         graph merges ``:PyBodyNode`` on, so an endpoint from this backend is the one the Neo4j
-        backend would return and the one :meth:`get_source` accepts.
+        backend would return and the one :meth:`get_source` accepts. The join happens *before* the
+        sort, because the order is over the ids a caller sees, not over the local keys.
         """
         c = self._graphs_of(callable, in_class)
-        return [CfgEdge(src=body_node_id(c.id, e.src), dst=body_node_id(c.id, e.dst), kind=e.kind) for e in c.cfg or []]
+        edges = [CfgEdge(src=body_node_id(c.id, e.src), dst=body_node_id(c.id, e.dst), kind=e.kind) for e in c.cfg or []]
+        return edge_page(CfgEdge, c.signature, edges, CFG_ORDER, page_size, cursor)
 
-    def get_cdg(self, callable: str, *, in_class: str | None = None) -> List[CdgEdge]:
-        """Control dependence within one callable (see :meth:`PythonAnalysisBackend.get_cdg`)."""
+    def get_cdg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[CdgEdge]:
+        """One page of control dependence within one callable (see :meth:`PythonAnalysisBackend.get_cdg`)."""
         c = self._graphs_of(callable, in_class)
-        return [CdgEdge(src=body_node_id(c.id, e.src), dst=body_node_id(c.id, e.dst)) for e in c.cdg or []]
+        edges = [CdgEdge(src=body_node_id(c.id, e.src), dst=body_node_id(c.id, e.dst)) for e in c.cdg or []]
+        return edge_page(CdgEdge, c.signature, edges, CDG_ORDER, page_size, cursor)
 
-    def get_ddg(self, callable: str, *, in_class: str | None = None) -> List[DdgEdge]:
-        """Data dependence within one callable (see :meth:`PythonAnalysisBackend.get_ddg`)."""
+    def get_ddg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[DdgEdge]:
+        """One page of data dependence within one callable (see :meth:`PythonAnalysisBackend.get_ddg`)."""
         c = self._graphs_of(callable, in_class)
-        return [DdgEdge(src=body_node_id(c.id, e.src), dst=body_node_id(c.id, e.dst), var=e.var, prov=list(e.prov or [])) for e in c.ddg or []]
+        edges = [DdgEdge(src=body_node_id(c.id, e.src), dst=body_node_id(c.id, e.dst), var=e.var, prov=list(e.prov or [])) for e in c.ddg or []]
+        return edge_page(DdgEdge, c.signature, edges, DDG_ORDER, page_size, cursor)
 
     def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:
         """Return overviews of callables decorated with any of ``markers``."""

@@ -29,15 +29,18 @@ by convention. Backend-specific lifecycle (caches, drivers) is intentionally not
 
 from __future__ import annotations
 
+import base64
+import json
 import os
 import posixpath
 from abc import abstractmethod
-from typing import Dict, Iterable, List, Sequence, Tuple
+from bisect import bisect_right
+from typing import Callable, Dict, Iterable, List, NamedTuple, Sequence, Tuple
 
 import networkx as nx
 
 from cldk.analysis.commons.backend import AnalysisBackend
-from cldk.analysis.commons.results import EntrypointCoverage, LocateResult, SliceNode
+from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, LocateResult, SliceNode
 from cldk.utils.exceptions import SelectorNotInGraph
 from cldk.models.python import (
     CdgEdge,
@@ -260,6 +263,180 @@ def bounded_subgraph(graph: nx.DiGraph, roots: List[str], depth: int | None, dec
     sub = graph.subgraph(nodes).copy()
     sub.add_nodes_from(isolated)
     return sub
+
+
+# ----------------------------------------------------------------------------------------------
+# Paging the per-callable graphs (E5).
+#
+# THE CANONICAL ORDER, defined once here because it is the only thing that makes a page mean the
+# same thing on both backends. Neo4j returns rows in no order unless told to, and the local
+# backend returns the analyzer's emission order; without one stated sort, page two on Neo4j is a
+# different set of edges from page two locally. Each backend uses these functions -- the local one
+# sorts and slices with them directly, the Neo4j one writes the same components into its ORDER BY
+# and rebuilds the cursor from them -- so a change here moves both at once.
+#
+# The order is over the edge's OWN fields, in the order a reader would name them: source, then
+# target, then whatever else the edge carries. Nothing positional and nothing backend-specific
+# (no relationship element id, no row number), because a key one backend cannot compute is not a
+# shared order.
+#
+# TOTALITY. A keyset cursor resumes strictly *after* a key, so a repeated key would drop its twin.
+# The full field tuple is unique on real data: measured across odoo-slim-19's 5,134,655 PY_DDG,
+# 247,906 PY_CFG_NEXT and 139,065 PY_CDG edges, zero (src, dst, ...) tuples repeat -- and for CFG
+# the endpoints alone are *not* enough (13,310 node pairs carry two edges of different ``kind``),
+# which is why ``kind`` is in the key. On the graph side the emitter MERGEs these relationships on
+# exactly these properties, so uniqueness is structural there rather than incidental. Two edges
+# equal in every field would be equal as values -- the models carry nothing else -- so their
+# relative order is unobservable, and the page boundary is the same either way.
+#
+# ``or ""`` / ``or []`` is not cosmetic: ``DdgEdge.var`` is ``Optional[str]``, and a ``None`` in a
+# sort key raises in Python and silently drops the row in Cypher (``null > x`` is null). The
+# Cypher spells the same normalisation with ``coalesce``.
+
+
+#: Edges per page when the caller does not say. 10,000 is where the measured distribution
+#: splits: on odoo-slim-19, 15,520 of the 15,549 callables have fewer than 10,000 DDG edges, so
+#: this default answers 99.8% of callables completely in one page and no caller of a normal
+#: callable ever writes a loop -- while the 29 that are larger, up to 1,386,918 edges, are held to
+#: a response a caller can actually hold. CFG and CDG max out at 402 and 314 edges on the same
+#: application, so for them it is never reached.
+DEFAULT_PAGE_SIZE = 10_000
+
+
+def cfg_sort_key(edge: CfgEdge) -> Tuple:
+    """The canonical order for :meth:`PythonAnalysisBackend.get_cfg`: source, target, kind."""
+    return (edge.src, edge.dst, edge.kind or "")
+
+
+def cdg_sort_key(edge: CdgEdge) -> Tuple:
+    """The canonical order for :meth:`PythonAnalysisBackend.get_cdg`: source, target. A control
+    dependence carries nothing else to break a tie on, and needs nothing else: the pair is unique.
+    """
+    return (edge.src, edge.dst)
+
+
+def ddg_sort_key(edge: DdgEdge) -> Tuple:
+    """The canonical order for :meth:`PythonAnalysisBackend.get_ddg`: source, target, variable,
+    provenance.
+
+    ``prov`` is a list, and it is in the key rather than dropped from it because the same
+    (source, target, variable) triple with two different provenances is two edges a caller can
+    tell apart -- so an order that ignored ``prov`` would not be total over what the caller sees.
+    Python and Cypher order lists the same way (element-wise, shorter first on a prefix), verified
+    on the live graph rather than assumed: see ``test_neo4j_orders_a_page_exactly_as_python_would``.
+    """
+    return (edge.src, edge.dst, edge.var or "", list(edge.prov or []))
+
+
+class EdgeOrder(NamedTuple):
+    """One edge kind's canonical order, in both spellings that have to agree.
+
+    The Python sort key and the Cypher expressions are the same components said twice, in two
+    languages, and the whole point of the order is that the two never disagree — so they are
+    written down once, together, and each backend takes the half it can run. ``len(exprs)`` is
+    also the order's arity, which is how a cursor from one accessor is refused by another
+    (:func:`decode_cursor`): the three arities are 3, 2 and 4.
+
+    ``coalesce`` in the expressions is ``or ""`` / ``or []`` in the key: ``DdgEdge.var`` is
+    optional, and a ``None`` in a sort key raises in Python and silently drops the row in Cypher.
+    """
+
+    key: Callable[[object], Tuple]
+    exprs: Tuple[str, ...]
+
+
+#: The three orders. ``src``/``dst``/``kind``/``var``/``prov`` are the aliases the backends'
+#: ``WITH`` clause projects, so an expression here is valid Cypher exactly where it is used.
+CFG_ORDER = EdgeOrder(cfg_sort_key, ("src", "dst", "coalesce(kind,'')"))
+CDG_ORDER = EdgeOrder(cdg_sort_key, ("src", "dst"))
+DDG_ORDER = EdgeOrder(ddg_sort_key, ("src", "dst", "coalesce(var,'')", "coalesce(prov,[])"))
+
+
+def encode_cursor(scope: str, key: Tuple) -> str:
+    """An opaque, round-trippable spelling of a sort key, stamped with the callable it came from.
+
+    Opaque on purpose: the caller passes it back and never reads it, so the components of the
+    order stay an implementation detail rather than joining the caller's vocabulary. Base64 of
+    JSON, because the key holds strings and a list of strings, and both survive that unchanged.
+
+    ``scope`` is the resolved callable signature, carried so that :func:`decode_cursor` can refuse
+    a cursor minted for a different callable. Without it, an agent looping over callables and
+    reusing the wrong ``next_cursor`` would get a plausible page of the *right* callable's edges
+    resumed from a position in the *wrong* one — silently, since body-node ids sort by callable id
+    and the filter would simply skip everything or nothing.
+    """
+    return base64.urlsafe_b64encode(json.dumps([scope, list(key)]).encode("utf-8")).decode("ascii")
+
+
+def decode_cursor(cursor: str, scope: str, arity: int) -> Tuple:
+    """Inverse of :func:`encode_cursor`, checked against the caller it is being used for.
+
+    Three ways a cursor can be wrong, all of them raising rather than being read as "start from
+    the beginning" — which would silently hand back page one when page nine was asked for:
+    it does not decode; it was minted for another callable; or it has the wrong number of
+    components, which is what a cursor from a *different accessor* looks like (the three orders
+    have arities 3, 2 and 4, so no cursor is silently valid for the wrong graph).
+    """
+    try:
+        got_scope, key = json.loads(base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8"))
+    except Exception as exc:  # noqa: BLE001 -- any decode failure is the same caller error
+        raise ValueError(f"not a cursor from a previous page: {cursor!r}") from exc
+    if got_scope != scope:
+        raise ValueError(f"this cursor is from a page of {got_scope!r}, not {scope!r}")
+    if len(key) != arity:
+        raise ValueError(f"cursor has {len(key)} components, this accessor's order has {arity}: {cursor!r}")
+    return tuple(key)
+
+
+def check_page_size(page_size: int) -> int:
+    """``page_size`` must ask for at least one edge.
+
+    Zero is refused rather than treated as "no limit": a page of nothing whose ``next_cursor`` can
+    never advance is an infinite loop dressed as an empty answer.
+    """
+    if page_size < 1:
+        raise ValueError(f"page_size must be at least 1, got {page_size}")
+    return page_size
+
+
+def keyset_where(exprs: Sequence[str]) -> str:
+    """The Cypher for "strictly after the cursor", written out because Cypher has no tuple
+    comparison: ``(a, b) > ($c0, $c1)`` has to become
+    ``a > $c0 OR (a = $c0 AND (b > $c1))``.
+
+    Keyset rather than ``SKIP``: measured on ``Website.configurator_apply`` (1,386,918 DDG edges,
+    10,000 per page, query alone), ``SKIP`` costs 2.6s for the first page, 9.0s for the middle one
+    and 4.3s for the last -- it re-sorts a prefix that grows with the offset -- while this filter
+    is flat at 3.1s / 2.9s / 2.4s. The offset form is not wrong, it just gets worse the further in
+    the caller reads, which is the one direction pagination exists to make cheap.
+    """
+    clause = ""
+    for i in reversed(range(len(exprs))):
+        expr, param = exprs[i], f"$c{i}"
+        clause = f"{expr} > {param}" + (f" OR ({expr} = {param} AND ({clause}))" if clause else "")
+    return clause
+
+
+def cursor_params(cursor: str, scope: str, arity: int) -> Dict[str, object]:
+    """The ``$c0…$cN`` bindings :func:`keyset_where` reads, from an opaque cursor."""
+    return {f"c{i}": v for i, v in enumerate(decode_cursor(cursor, scope, arity))}
+
+
+def edge_page(model, scope: str, edges: List, order: EdgeOrder, page_size: int, cursor: str | None) -> EdgePage:
+    """One page of an edge set already held in memory.
+
+    The local backend has every edge in hand, so it sorts by ``key`` and slices. The cursor is
+    resolved by binary search over the sorted keys -- ``bisect_right``, i.e. the first edge
+    strictly after it -- so it means exactly what :func:`keyset_where` makes it mean on the graph,
+    rather than an independently-invented position that happens to line up.
+    """
+    check_page_size(page_size)
+    key = order.key
+    rows = sorted(edges, key=key)
+    start = bisect_right([key(e) for e in rows], decode_cursor(cursor, scope, len(order.exprs))) if cursor is not None else 0
+    window = rows[start : start + page_size]
+    more = start + len(window) < len(rows)
+    return EdgePage[model](edges=window, total=len(rows), next_cursor=encode_cursor(scope, key(window[-1])) if more and window else None)
 
 
 class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, PyCallable, PyClassAttribute, str]):
@@ -696,11 +873,27 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
     # so the restriction states the domain rather than narrowing it -- interprocedural flow lives
     # on PY_PARAM_IN / PY_PARAM_OUT / PY_SUMMARY, which these accessors deliberately do not follow.
     #
-    # That is what makes them bounded by construction: no depth argument and no cap, because a
-    # callable's body is finite and already chosen by the caller. Finite is not the same as small
-    # -- measured maxima on odoo-slim-19 are 402 CFG edges, 314 CDG edges and 1,386,918 DDG edges
-    # (all three on ``Website.configurator_apply``, whose DDG is 96% ``reaching-defs``). A caller
-    # that cannot afford the largest DDG wants a slice, not a cap here.
+    # PER-CALLABLE IS A SCOPING BOUND, NOT A SIZE ONE, and E5 wants both. A callable's body is
+    # finite and already chosen by the caller, but finite is not small: measured maxima on
+    # odoo-slim-19 are 402 CFG edges, 314 CDG edges and 1,386,918 DDG edges -- that last one is
+    # 27% of the entire application's data dependence, in one callable, and returning it as a list
+    # is on the order of half a gigabyte of models built in one call. So the response is paged.
+    #
+    # PAGED, NOT TRUNCATED. A cap answers "there was more" and throws the rest away; a page
+    # answers the same question and keeps every edge reachable, which is the whole difference when
+    # the caller is composing queries and cannot know in advance which edges it will need.
+    # :class:`~cldk.analysis.commons.results.EdgePage` carries ``total`` and ``next_cursor``, so
+    # "this is everything" and "there is more" are distinguishable from one page (E5's "never
+    # silent"), and an empty page with ``total == 0`` still means "no dependence" (D7).
+    #
+    # ALL THREE PAGE, though only DDG needs it today: CFG tops out at 402 edges and CDG at 314 on
+    # a real application, so neither is at risk -- but three sibling accessors returning two
+    # different shapes is a defect generator on a surface composed at runtime, and the day a CFG
+    # does get large the shape would have to change under callers who had already learnt it.
+    #
+    # ORDER. Paging is only defined over a total order, and the same one on both backends. It is
+    # stated once, in :func:`cfg_sort_key` / :func:`cdg_sort_key` / :func:`ddg_sort_key`, and both
+    # backends use those functions rather than each choosing an order that happens to agree.
     #
     # ``src`` / ``dst`` are body-node ids in the one vocabulary the rest of this contract already
     # uses: ``<callable can:// id>@<body key>``, exactly what
@@ -710,38 +903,41 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
     #
     # ANALYSIS LEVEL. All three graphs are built by the analyzer only at level 3
     # (``program_dependency_graph``) and above; ``points-to`` DDG evidence needs level 4. A
-    # backend attached to a shallower analysis MUST raise rather than return ``[]``: an empty
-    # there would be indistinguishable from a callable that genuinely has no data dependence,
-    # which is the ambiguous empty D7 rules out. An empty list from a level-3-or-deeper backend
-    # is the honest answer and stays available to mean exactly that. (The Neo4j backend is always
-    # level 4 -- ``--emit neo4j`` forces it -- so only the local backend can be below the line;
-    # the rule is stated here, once, because it is the contract and not an implementation detail.)
-    #
-    # There is no order. These are edge sets (E2), returned in whatever order the backend finds
-    # them; nothing downstream may read them as a sequence.
+    # backend attached to a shallower analysis MUST raise rather than return an empty page: an
+    # empty there would be indistinguishable from a callable that genuinely has no data
+    # dependence, which is the ambiguous empty D7 rules out. An empty page from a
+    # level-3-or-deeper backend is the honest answer and stays available to mean exactly that.
+    # (The Neo4j backend is always level 4 -- ``--emit neo4j`` forces it -- so only the local
+    # backend can be below the line; the rule is stated here, once, because it is the contract and
+    # not an implementation detail.)
     @abstractmethod
-    def get_cfg(self, callable: str, *, in_class: str | None = None) -> List[CfgEdge]:
-        """Control flow edges within one callable.
+    def get_cfg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[CfgEdge]:
+        """One page of the control flow edges within one callable.
 
         Args:
             callable: The callable's name, resolved by :meth:`resolve_callable` -- so an ambiguous
                 name raises listing candidates rather than being guessed at.
             in_class: Disambiguate by owning class, as in :meth:`resolve_callable`.
+            page_size: Most edges to return. See :data:`DEFAULT_PAGE_SIZE`.
+            cursor: ``next_cursor`` from a previous page; ``None`` starts at the beginning.
 
         Returns:
-            One :class:`~cldk.models.python.CfgEdge` per control-flow edge, carrying the analyzer's
-            ``kind`` (``fallthrough``, ``true``, ``false``, ``exception``, ``return``,
-            ``loop_back``, ``break``, ``continue``, ``yield``, ``await_resume``) -- a conditional's
-            two successors stay two edges, discriminated by ``kind``.
+            An :class:`~cldk.analysis.commons.results.EdgePage` of
+            :class:`~cldk.models.python.CfgEdge`, each carrying the analyzer's ``kind``
+            (``fallthrough``, ``true``, ``false``, ``exception``, ``return``, ``loop_back``,
+            ``break``, ``continue``, ``yield``, ``await_resume``) -- a conditional's two successors
+            stay two edges, discriminated by ``kind``, which is also why ``kind`` is part of the
+            order (:func:`cfg_sort_key`).
 
         Raises:
             AmbiguousName: ``callable`` named more than one callable.
             SelectorNotInGraph: Nothing matched.
+            ValueError: ``page_size`` below 1, or ``cursor`` not from a previous page.
         """
 
     @abstractmethod
-    def get_cdg(self, callable: str, *, in_class: str | None = None) -> List[CdgEdge]:
-        """Control dependence edges within one callable.
+    def get_cdg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[CdgEdge]:
+        """One page of the control dependence edges within one callable.
 
         ``src`` is the branching node a ``dst`` is control dependent on -- post-dominance over the
         CFG :meth:`get_cfg` returns, computed by the analyzer, not re-derived here.
@@ -749,18 +945,22 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         Args:
             callable: The callable's name, resolved by :meth:`resolve_callable`.
             in_class: Disambiguate by owning class.
+            page_size: Most edges to return. See :data:`DEFAULT_PAGE_SIZE`.
+            cursor: ``next_cursor`` from a previous page.
 
         Returns:
-            One :class:`~cldk.models.python.CdgEdge` per control dependence.
+            An :class:`~cldk.analysis.commons.results.EdgePage` of
+            :class:`~cldk.models.python.CdgEdge`, ordered by :func:`cdg_sort_key`.
 
         Raises:
             AmbiguousName: ``callable`` named more than one callable.
             SelectorNotInGraph: Nothing matched.
+            ValueError: ``page_size`` below 1, or ``cursor`` not from a previous page.
         """
 
     @abstractmethod
-    def get_ddg(self, callable: str, *, in_class: str | None = None) -> List[DdgEdge]:
-        """Data dependence edges within one callable.
+    def get_ddg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[DdgEdge]:
+        """One page of the data dependence edges within one callable.
 
         Each edge carries the variable it flows (``var``) and its evidence (``prov``), so a caller
         separates syntactic from alias-aware dependence without a second call. Three provenances
@@ -773,16 +973,25 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         * ``points-to`` (1,548,237) -- the alias-aware delta the level-4 oracle adds beyond the
           syntactic set. Absent at level 3, which is a narrower answer and not a wrong one.
 
+        This is the accessor pagination exists for: one callable's DDG reaches 1,386,918 edges on
+        a real application. ``EdgePage.total`` reports that up front, on the first page, so a
+        caller sees the size of the answer before deciding to walk it.
+
         Args:
             callable: The callable's name, resolved by :meth:`resolve_callable`.
             in_class: Disambiguate by owning class.
+            page_size: Most edges to return. See :data:`DEFAULT_PAGE_SIZE`.
+            cursor: ``next_cursor`` from a previous page.
 
         Returns:
-            One :class:`~cldk.models.python.DdgEdge` per (edge, variable, provenance): the same
+            An :class:`~cldk.analysis.commons.results.EdgePage` of
+            :class:`~cldk.models.python.DdgEdge` -- one per (edge, variable, provenance): the same
             statement pair legitimately appears more than once when it carries several variables
-            or several kinds of evidence, and collapsing those would drop dependences.
+            or several kinds of evidence, and collapsing those would drop dependences. That is
+            also why ``var`` and ``prov`` are both in the order (:func:`ddg_sort_key`).
 
         Raises:
             AmbiguousName: ``callable`` named more than one callable.
             SelectorNotInGraph: Nothing matched.
+            ValueError: ``page_size`` below 1, or ``cursor`` not from a previous page.
         """

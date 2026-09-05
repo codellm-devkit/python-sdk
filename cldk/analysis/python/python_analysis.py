@@ -53,9 +53,9 @@ import networkx as nx
 from tree_sitter import Tree
 
 from cldk.analysis.commons.backend_config import Neo4jConnectionConfig, PyBackend, PyCodeAnalyzerConfig, cache_subdir
-from cldk.analysis.commons.results import EntrypointCoverage, LocateResult
+from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, LocateResult
 from cldk.analysis.commons.treesitter import TreesitterPython
-from cldk.analysis.python.backend import PythonAnalysisBackend
+from cldk.analysis.python.backend import DEFAULT_PAGE_SIZE, PythonAnalysisBackend
 from cldk.analysis.python.codeanalyzer import PyCodeanalyzer
 from cldk.analysis.python.neo4j import PyNeo4jBackend
 from cldk.models.python import (
@@ -928,13 +928,15 @@ class PythonAnalysis:
         return self.backend.get_source(node_id)
 
     # -----[ per-callable graphs ]-----
-    def get_cfg(self, callable: str, *, in_class: str | None = None) -> List[CfgEdge]:
-        """Return the control flow edges inside one callable.
+    def get_cfg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[CfgEdge]:
+        """Return one page of the control flow edges inside one callable.
 
-        Bounded by construction: the domain is that one callable's own body nodes, so there is no
-        depth argument and no cap to get wrong. Finite is not the same as small — the largest CFG
-        measured on a real application is 402 edges, but its DDG is over a million (see
-        :meth:`get_ddg`).
+        The callable is the scope; the page is the size bound. Naming a callable says *which*
+        edges you want, not *how many* there will be — see :meth:`get_ddg`, where one callable's
+        answer runs to 1.39 million edges on a real application. CFG is the small one (the largest
+        measured is 402 edges), so this returns a single complete page in practice; it pages
+        anyway, because three sibling accessors that answer in two different shapes are a trap for
+        anything composing them.
 
         ``src`` and ``dst`` are body-node ids in the same vocabulary
         :attr:`~cldk.analysis.commons.results.LocateResult.node_id` uses, so an endpoint can be
@@ -946,26 +948,33 @@ class PythonAnalysis:
                 layer resolve names, so ``"charge"`` is enough when it is unique and an ambiguous
                 name raises listing the candidates instead of being guessed at.
             in_class: Narrow to the class this names, when the bare name is ambiguous.
+            page_size: Most edges in the page. Defaults to
+                :data:`~cldk.analysis.python.backend.DEFAULT_PAGE_SIZE`.
+            cursor: ``next_cursor`` from a previous page, to continue where it left off. ``None``
+                starts at the beginning.
 
         Returns:
-            A list of :class:`~cldk.models.python.CfgEdge`, each carrying the edge ``kind``
-            (``"true"``/``"false"`` on a conditional, ``"exception"``, ``"loop_back"``, ...). It
-            is a set, not a sequence: no order is implied.
+            An :class:`~cldk.analysis.commons.results.EdgePage` of
+            :class:`~cldk.models.python.CfgEdge`, each carrying the edge ``kind``
+            (``"true"``/``"false"`` on a conditional, ``"exception"``, ``"loop_back"``, ...), in
+            the canonical order (source, target, kind) that makes this page the same page on
+            every backend.
 
         Raises:
             AmbiguousName: ``callable`` matched more than one callable.
             SelectorNotInGraph: Nothing matched.
+            ValueError: ``page_size`` below 1, or ``cursor`` not from a previous page.
             CodeanalyzerUsageException: This analysis was built below
                 ``analysis_level="program_dependency_graph"``, where the analyzer emits no control
-                or data flow at all — reported rather than returned as a misleading empty list.
+                or data flow at all — reported rather than returned as a misleading empty page.
 
         See Also:
             :meth:`get_cdg`, :meth:`get_ddg`: The other two graphs of the same callable.
         """
-        return self.backend.get_cfg(callable, in_class=in_class)
+        return self.backend.get_cfg(callable, in_class=in_class, page_size=page_size, cursor=cursor)
 
-    def get_cdg(self, callable: str, *, in_class: str | None = None) -> List[CdgEdge]:
-        """Return the control dependence edges inside one callable.
+    def get_cdg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[CdgEdge]:
+        """Return one page of the control dependence edges inside one callable.
 
         ``src`` is the branch a ``dst`` is control dependent on — "this statement runs only
         because that test went this way" — computed by the analyzer over the CFG :meth:`get_cfg`
@@ -974,19 +983,24 @@ class PythonAnalysis:
         Args:
             callable: The callable's name, resolved as in :meth:`get_cfg`.
             in_class: Narrow to the class this names.
+            page_size: Most edges in the page.
+            cursor: ``next_cursor`` from a previous page.
 
         Returns:
-            A list of :class:`~cldk.models.python.CdgEdge`, in no particular order.
+            An :class:`~cldk.analysis.commons.results.EdgePage` of
+            :class:`~cldk.models.python.CdgEdge`, ordered by source then target. The largest CDG
+            measured on a real application is 314 edges, so this is one page in practice.
 
         Raises:
             AmbiguousName: ``callable`` matched more than one callable.
             SelectorNotInGraph: Nothing matched.
+            ValueError: ``page_size`` below 1, or ``cursor`` not from a previous page.
             CodeanalyzerUsageException: Analysis level below ``program_dependency_graph``.
         """
-        return self.backend.get_cdg(callable, in_class=in_class)
+        return self.backend.get_cdg(callable, in_class=in_class, page_size=page_size, cursor=cursor)
 
-    def get_ddg(self, callable: str, *, in_class: str | None = None) -> List[DdgEdge]:
-        """Return the data dependence edges inside one callable.
+    def get_ddg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[DdgEdge]:
+        """Return one page of the data dependence edges inside one callable.
 
         Every edge names the variable that flows (``var``) and the evidence for it (``prov``), so
         a caller separates syntactic dependence from alias-aware dependence without asking a
@@ -997,27 +1011,44 @@ class PythonAnalysis:
         The same statement pair appears more than once when it carries several variables or
         several kinds of evidence — that is the point, not duplication.
 
-        This is the one accessor here whose per-callable result can be large: the maximum measured
-        on a real application is 1,386,918 edges for a single callable (96% of them
-        ``reaching-defs``). It is still bounded by construction and still uncapped — a caller who
-        cannot afford the whole dependence graph of one callable wants a slice of it.
+        **This is the accessor pagination exists for.** Per-callable scoping bounds which edges
+        you get, not how many: the largest single callable measured on a real application has
+        1,386,918 DDG edges — 27% of the whole application's 5,134,655 — and returning that as one
+        list is around half a gigabyte of objects. 15,520 of that application's 15,549 callables
+        have fewer than 10,000, so with the default page size the common case is still one call
+        and no loop::
+
+            page = py.get_ddg("Portal.charge")
+            page.total          # 169 — the size of the whole answer, not of this page
+            page.has_more       # False: this is everything
+
+            while page.has_more:                      # only the outliers need this
+                page = py.get_ddg("Portal.charge", cursor=page.next_cursor)
+
+        Nothing is discarded to make the page fit: the rest is reachable through
+        ``next_cursor``, and ``total`` says up front how much of it there is.
 
         Args:
             callable: The callable's name, resolved as in :meth:`get_cfg`.
             in_class: Narrow to the class this names.
+            page_size: Most edges in the page. Defaults to
+                :data:`~cldk.analysis.python.backend.DEFAULT_PAGE_SIZE`.
+            cursor: ``next_cursor`` from a previous page.
 
         Returns:
-            A list of :class:`~cldk.models.python.DdgEdge`, in no particular order. An empty list
-            from a level-3-or-deeper analysis is an honest answer: this callable has no data
-            dependence.
+            An :class:`~cldk.analysis.commons.results.EdgePage` of
+            :class:`~cldk.models.python.DdgEdge`, in the canonical order (source, target,
+            variable, provenance). An empty page whose ``total`` is 0, from a level-3-or-deeper
+            analysis, is an honest answer: this callable has no data dependence.
 
         Raises:
             AmbiguousName: ``callable`` matched more than one callable.
             SelectorNotInGraph: Nothing matched.
+            ValueError: ``page_size`` below 1, or ``cursor`` not from a previous page.
             CodeanalyzerUsageException: Analysis level below ``program_dependency_graph``, where an
-                empty list could not be told apart from the honest empty above.
+                empty page could not be told apart from the honest empty above.
         """
-        return self.backend.get_ddg(callable, in_class=in_class)
+        return self.backend.get_ddg(callable, in_class=in_class, page_size=page_size, cursor=cursor)
 
     # -----[ repository artifacts ]-----
     def get_artifacts(self) -> Dict[str, PyArtifact]:
@@ -1284,4 +1315,3 @@ class PythonAnalysis:
             :meth:`get_sub_classes`: For finding classes that extend this class.
         """
         return self.backend.get_extended_classes(qualified_class_name)
-

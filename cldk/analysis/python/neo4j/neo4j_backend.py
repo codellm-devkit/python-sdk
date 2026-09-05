@@ -86,8 +86,24 @@ from codeanalyzer.schema import model_dump_json
 from codeanalyzer.schema.ids import application_id
 
 from cldk.analysis.commons.resolve import CallableCandidate, resolve_callable_signature, resolve_value_name, resolve_within, value_candidate
-from cldk.analysis.commons.results import CallableRef, Diagnostic, EntrypointCoverage, LocateResult, ModuleRef, SliceNode, TypeRef
-from cldk.analysis.python.backend import PythonAnalysisBackend, body_key_column, call_graph_scope, check_selector, resolve_module_key, scope_paths
+from cldk.analysis.commons.results import CallableRef, Diagnostic, EdgePage, EntrypointCoverage, LocateResult, ModuleRef, SliceNode, TypeRef
+from cldk.analysis.python.backend import (
+    CDG_ORDER,
+    CFG_ORDER,
+    DDG_ORDER,
+    DEFAULT_PAGE_SIZE,
+    EdgeOrder,
+    PythonAnalysisBackend,
+    body_key_column,
+    call_graph_scope,
+    check_page_size,
+    check_selector,
+    cursor_params,
+    encode_cursor,
+    keyset_where,
+    resolve_module_key,
+    scope_paths,
+)
 from cldk.analysis.python.neo4j import reconstruct as R
 from cldk.models.python import (
     BodyNode,
@@ -1131,45 +1147,85 @@ class PyNeo4jBackend(PythonAnalysisBackend):
 
     # -----[ per-callable graphs ]-----
     #: Both endpoints anchored to the SAME ``c`` — the domain is one callable's own body nodes
-    #: (see :meth:`PythonAnalysisBackend.get_cfg`), which is what makes the result bounded with no
-    #: cap. It is written as a restriction rather than trusted: the emitter projects these three
-    #: relationships per callable, so an edge leaving one is impossible on a graph built that way
-    #: (verified: 0 cross-callable edges of 5,521,626 on odoo-slim-19), but a graph built some
-    #: other way must not be able to widen the answer silently.
+    #: (see :meth:`PythonAnalysisBackend.get_cfg`). It is written as a restriction rather than
+    #: trusted: the emitter projects these three relationships per callable, so an edge leaving
+    #: one is impossible on a graph built that way (verified: 0 cross-callable edges of 5,521,626
+    #: on odoo-slim-19), but a graph built some other way must not be able to widen the answer
+    #: silently.
     _OWN_EDGES = (
         "MATCH (c:PyCallable) WHERE c._module IN $mods AND c.signature = $sig "
         "MATCH (c)-[:PY_HAS_BODY_NODE]->(s:PyBodyNode)-[r:{rel}]->(d:PyBodyNode)<-[:PY_HAS_BODY_NODE]-(c) "
-        "RETURN s.id AS src, d.id AS dst{projection}"
     )
 
-    def _own_edges(self, name: str, in_class: str | None, rel: str, projection: str = "") -> List[Dict[str, Any]]:
-        """Rows for one callable's own ``rel`` edges, resolved through
-        :meth:`resolve_callable` — Task 4's resolver, so an ambiguous name raises listing
-        candidates here exactly as it does there, and there is no second resolution path to drift.
+    def _own_edges(self, name: str, in_class: str | None, rel: str, projection: str, order: EdgeOrder, page_size: int, cursor: str | None):
+        """One page of a callable's own ``rel`` edges: ``(rows, whole size, is there more)``.
 
-        One round trip for the edges; ``resolve_callable`` costs its own, which is the price of
-        the caller naming a callable instead of quoting a signature.
+        Resolution is :meth:`resolve_callable`'s, not a second path, so an ambiguous name raises
+        listing candidates here exactly as it does there.
+
+        **Keyset, not ``SKIP``.** ``order.exprs`` is the canonical order written as Cypher —
+        the same components ``order.key`` produces in Python, ``coalesce``-d the way
+        ``or ""``/``or []`` normalise there (:class:`~cldk.analysis.python.backend.EdgeOrder`
+        holds the two side by side so they cannot drift apart) — and a
+        cursor becomes a ``WHERE`` filter (:func:`~cldk.analysis.python.backend.keyset_where`)
+        rather than an offset. Measured on the worst callable on odoo-slim-19
+        (``Website.configurator_apply``, 1,386,918 DDG edges, 10,000 per page): ``SKIP`` takes
+        2.6s / 9.0s / 4.3s for the first / middle / last page because it re-sorts a prefix that
+        grows with the offset, while this form is flat at 3.1s / 2.9s / 2.4s. Deep pages are where
+        pagination has to hold up, so the flat one wins.
+
+        **Three round trips, not one.** ``resolve_callable`` costs one — the price of the caller
+        naming a callable instead of quoting a signature — then a ``count`` for ``total`` and the
+        page itself. ``total`` is not free (0.4s on 1.39M edges) and is not optional: without it a
+        caller cannot see the size of what it is walking into from the first page, which is E5's
+        whole point. It is re-counted per page rather than cached, because the alternative is a
+        number that can quietly go stale against a graph this backend does not own.
+
+        The page asks for ``page_size + 1`` rows and reports ``more`` from whether it got them, so
+        "there is more" is a fact about the data and not an inference from ``len(rows) ==
+        page_size`` — which is wrong exactly when the set ends on a page boundary.
         """
+        check_page_size(page_size)
         sig = self.resolve_callable(name, in_class=in_class).callable
-        return self._run(self._OWN_EDGES.format(rel=rel, projection=projection), mods=self._modules, sig=sig)
+        match = self._OWN_EDGES.format(rel=rel)
+        params: Dict[str, Any] = {"mods": self._modules, "sig": sig}
+        total = self._run(match + "RETURN count(r) AS total", **params)[0]["total"]
+        where = f"WHERE {keyset_where(order.exprs)} " if cursor is not None else ""
+        rows = self._run(
+            f"{match}WITH s.id AS src, d.id AS dst{projection} {where}RETURN * ORDER BY {', '.join(order.exprs)} LIMIT $lim",
+            lim=page_size + 1,
+            **params,
+            **(cursor_params(cursor, sig, len(order.exprs)) if cursor is not None else {}),
+        )
+        return sig, rows[:page_size], total, len(rows) > page_size
 
-    def get_cfg(self, callable: str, *, in_class: str | None = None) -> List[CfgEdge]:
-        """Control flow within one callable (see :meth:`PythonAnalysisBackend.get_cfg`)."""
-        rows = self._own_edges(callable, in_class, "PY_CFG_NEXT", ", r.kind AS kind")
-        return [CfgEdge(src=r["src"], dst=r["dst"], kind=r["kind"]) for r in rows]
+    @staticmethod
+    def _page(model, scope: str, edges: List, order: EdgeOrder, total: int, more: bool) -> EdgePage:
+        """Wrap a page's edges, deriving ``next_cursor`` from the *same* sort key the local
+        backend uses — so a cursor minted here and one minted there name the same position."""
+        return EdgePage[model](edges=edges, total=total, next_cursor=encode_cursor(scope, order.key(edges[-1])) if more and edges else None)
 
-    def get_cdg(self, callable: str, *, in_class: str | None = None) -> List[CdgEdge]:
-        """Control dependence within one callable (see :meth:`PythonAnalysisBackend.get_cdg`)."""
-        return [CdgEdge(src=r["src"], dst=r["dst"]) for r in self._own_edges(callable, in_class, "PY_CDG")]
+    def get_cfg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[CfgEdge]:
+        """One page of control flow within one callable (see :meth:`PythonAnalysisBackend.get_cfg`)."""
+        sig, rows, total, more = self._own_edges(callable, in_class, "PY_CFG_NEXT", ", r.kind AS kind", CFG_ORDER, page_size, cursor)
+        return self._page(CfgEdge, sig, [CfgEdge(src=r["src"], dst=r["dst"], kind=r["kind"]) for r in rows], CFG_ORDER, total, more)
 
-    def get_ddg(self, callable: str, *, in_class: str | None = None) -> List[DdgEdge]:
-        """Data dependence within one callable (see :meth:`PythonAnalysisBackend.get_ddg`).
+    def get_cdg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[CdgEdge]:
+        """One page of control dependence within one callable (see :meth:`PythonAnalysisBackend.get_cdg`)."""
+        sig, rows, total, more = self._own_edges(callable, in_class, "PY_CDG", "", CDG_ORDER, page_size, cursor)
+        return self._page(CdgEdge, sig, [CdgEdge(src=r["src"], dst=r["dst"]) for r in rows], CDG_ORDER, total, more)
+
+    def get_ddg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[DdgEdge]:
+        """One page of data dependence within one callable (see :meth:`PythonAnalysisBackend.get_ddg`).
 
         ``prov`` is projected through ``prune``, so it is absent rather than null on an edge that
-        carries none; ``or []`` restores the model's default instead of failing validation.
+        carries none; ``or []`` restores the model's default instead of failing validation, and
+        the ``coalesce`` in the sort key does the same for the ordering — a null there would make
+        the keyset filter drop the row silently rather than misplace it.
         """
-        rows = self._own_edges(callable, in_class, "PY_DDG", ", r.var AS var, r.prov AS prov")
-        return [DdgEdge(src=r["src"], dst=r["dst"], var=r["var"], prov=list(r["prov"] or [])) for r in rows]
+        sig, rows, total, more = self._own_edges(callable, in_class, "PY_DDG", ", r.var AS var, r.prov AS prov", DDG_ORDER, page_size, cursor)
+        edges = [DdgEdge(src=r["src"], dst=r["dst"], var=r["var"], prov=list(r["prov"] or [])) for r in rows]
+        return self._page(DdgEdge, sig, edges, DDG_ORDER, total, more)
 
     def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:
         rows = self._run(
@@ -1274,9 +1330,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             result[art.path] = art
         return result
 
-    def get_dependencies(
-        self, *, direct_only: bool = False, ecosystem: str | None = None, declared_in: str | None = None
-    ) -> List[PyDependency]:
+    def get_dependencies(self, *, direct_only: bool = False, ecosystem: str | None = None, declared_in: str | None = None) -> List[PyDependency]:
         conditions: list[str] = []
         params: Dict[str, Any] = {"app": self.application_name}
         if direct_only:
@@ -1293,10 +1347,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             + where
             + " RETURN properties(r) AS rel, p.name AS name, p.ecosystem AS ecosystem, a.id AS declared_in"
         )
-        return [
-            R.dependency(r["rel"], name=r["name"], ecosystem=r["ecosystem"], declared_in=r["declared_in"])
-            for r in self._run(query, **params)
-        ]
+        return [R.dependency(r["rel"], name=r["name"], ecosystem=r["ecosystem"], declared_in=r["declared_in"]) for r in self._run(query, **params)]
 
     def get_config_keys(self) -> Dict[str, PyConfigKey]:
         result: Dict[str, PyConfigKey] = {}

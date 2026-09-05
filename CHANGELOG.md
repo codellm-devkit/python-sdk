@@ -55,6 +55,32 @@ Python leg (leg 1) of the CLDK 2.0 agent-facing query facade (see
 | 2.0.0-rc.1 (this) | >= 1.4.0 | `PyBodyNode` / `PY_HAS_BODY_NODE` |
 
 ### Added
+- **Per-callable control and data flow: `get_cfg(callable)` / `get_cdg(callable)` /
+  `get_ddg(callable)`**, on both backends. `DdgEdge` carries the variable that flows (`var`) and
+  the evidence for it (`prov` — `ssa`, `reaching-defs` or `points-to`), so syntactic and
+  alias-aware dependence are told apart without a second call. Endpoints are body-node ids in the
+  same vocabulary `LocateResult.node_id` uses and `get_source()` accepts. Requires
+  `analysis_level="program_dependency_graph"` or deeper: a local backend built shallower raises
+  `CodeanalyzerUsageException` naming the level required and the level in use, rather than
+  returning an empty result that could not be told apart from a callable with no dependence.
+
+  **All three return an `EdgePage`, not a list** (`cldk.analysis.commons.results.EdgePage`).
+  Per-callable is a *scoping* bound, not a *size* one: measured on a 970k-node graph, one callable
+  (`Website.configurator_apply`) has 1,386,918 DDG edges — 27% of the whole application's
+  5,134,655 — which as a list is around half a gigabyte of models in one call. The page bounds the
+  response and **discards nothing**: `page.total` is the size of the whole answer, `page.edges` is
+  at most `page_size` of them (default 10,000, chosen because 15,520 of the application's 15,549
+  callables fall under it and so need no loop at all), and `page.next_cursor` — opaque, passed
+  back as `cursor=` — reaches the rest. `page.has_more` distinguishes "this is everything" from
+  "there is more" without a second call. Edges come in one canonical order, identical on both
+  backends (source, target, then `kind` for CFG and `var`/`prov` for DDG), so page *n* is the same
+  page whichever backend answered. Paging is by cursor rather than offset because offsets get
+  slower the deeper you read: for the same query on that callable, `SKIP` costs 2.6s / 9.0s / 4.3s
+  for the first / middle / last page while the cursor filter is flat at 3.1s / 2.9s / 2.4s (end to
+  end through the SDK, including name resolution and the count, the cursor form measures 3.5s /
+  3.6s / 3.0s, median of three runs). CFG and CDG page identically despite topping out at 402 and 314 edges — three
+  sibling accessors answering in two shapes is a defect generator on a surface composed at
+  runtime.
 - **`locate(path, line)` / `locate_many(positions)`** — resolve a source position to its enclosing
   callable (or `module_scope` / `file_not_in_graph` when there isn't one), with the callable's
   source text attached. Backed by the new `LocateResult` model

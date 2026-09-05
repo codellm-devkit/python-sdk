@@ -289,7 +289,10 @@ This layer is identical across Python, Java and TypeScript — the queries port 
 
 ---
 
-## Dataflow — **leg 1.5, not yet implemented**
+## Dataflow — **leg 1.5, mostly not yet implemented**
+
+The three per-callable graphs (`get_cfg` / `get_cdg` / `get_ddg`) have shipped; everything else in
+this section is the design.
 
 Names in, names out. No `can://` URIs, no ordinals — you say `"invoice_id"`, not `"…@formal_in:1"`.
 
@@ -305,9 +308,9 @@ Names in, names out. No `can://` URIs, no ordinals — you say `"invoice_id"`, n
 | `backward_cone(sinks=[…])` | everything reaching these | `py.backward_cone(sinks=["execute"])` |
 | `callers_of(name, in_class=, in_module=)` | who calls this, by name | `py.callers_of("action_validate_step")` |
 | `callees_of(name, in_class=, in_module=)` | what this calls, by name | |
-| `get_cfg(callable, in_class=)` | control flow, one callable | `py.get_cfg("invoice_transaction", in_class="PaymentPortal")` |
-| `get_cdg(callable, in_class=)` | control dependence | |
-| `get_ddg(callable, in_class=)` | data dependence | |
+| `get_cfg(callable, in_class=, page_size=, cursor=)` | control flow, one callable | `py.get_cfg("invoice_transaction", in_class="PaymentPortal")` |
+| `get_cdg(callable, in_class=, page_size=, cursor=)` | control dependence | |
+| `get_ddg(callable, in_class=, page_size=, cursor=)` | data dependence | |
 | `describe(nodes)` | fill in `source` for chosen nodes | `py.describe([n for n in sl.nodes if n.kind == "call"])` |
 
 **`flows_to_call` and `flows_to_argument` are different questions.** A tainted value can reach a
@@ -326,6 +329,29 @@ reach B", with each hop carrying the edge that justified it.
 - **Ambiguity raises with candidates. Nothing is guessed.** 86% of names in a real application are
   unique; the rest are framework methods (`__init__`, `write`, `create` — 200+ each) where you must
   pass `in_class=`.
+
+**The per-callable graphs return a page, not a list.** Naming a callable says *which* edges you
+want, not *how many*: on a real application one callable's DDG is 1,386,918 edges — 27% of the whole
+application's 5,134,655 — while 15,520 of its 15,549 callables have fewer than 10,000. So all three
+return an `EdgePage`, and nothing is discarded to make it fit:
+
+```python
+page = py.get_ddg("configurator_apply", in_class="Website")
+page.total          # 1386918 — the size of the whole answer, on the first page
+len(page.edges)     # 10000  — the default page_size
+page.has_more       # True
+
+while page.has_more:                                    # the rest is reachable, not thrown away
+    page = py.get_ddg("configurator_apply", in_class="Website", cursor=page.next_cursor)
+```
+
+`total` and `next_cursor` are what make the bound non-silent: "this is everything" (`has_more`
+False) and "there is more" are distinguishable from one page, and an empty page whose `total` is 0
+still means "this callable has no data dependence". `next_cursor` is opaque — pass it back, do not
+read it. Edges come in one canonical order (source, target, then `kind` for CFG and `var`/`prov`
+for DDG), identical on both backends, so page *n* is the same page whichever backend answered.
+CFG and CDG page the same way even though they are small (402 and 314 edges at their largest) —
+three sibling accessors with two different shapes is a trap for anything composing them.
 
 **Reading code from a slice is a second call:**
 
@@ -381,3 +407,10 @@ Measured on a 970k-node graph (Odoo, 2,364 files). The whole-application four we
 until the per-node fan-out was collapsed to one query per child collection; there is no
 minutes-long accessor left. Scope with `paths=` / `module=` / `roots=` and they cost under a
 second — a whole-application enumeration should be something you asked for, not the default shape.
+
+`get_cfg` / `get_cdg` / `get_ddg` cost under a second on a normal callable. One page of 10,000 DDG
+edges from the largest callable on that graph (1,386,918 edges) is ~3s, and stays ~3s at any depth:
+paging resumes from a cursor rather than an offset, so reading the last page is not more expensive
+than reading the first (measured end to end, median of three runs: 3.5s / 3.6s / 3.0s for the
+first, middle and last page; the offset form would have cost 2.6s / 9.0s / 4.3s for the same
+three).
