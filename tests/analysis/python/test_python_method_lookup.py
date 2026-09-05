@@ -82,10 +82,14 @@ def _fake_cypher(classes, methods, modules, call_edges):
 
     ``classes``: {signature: props} (top-level classes, matched via ``PyModule)-[:PY_DECLARES]->
     (c:PyClass``). ``methods``: {class_signature: [props, ...]}. ``modules``: {module_name:
-    {"file_key": ..., "functions": [props, ...]}}. Anything else (attributes, inner
-    classes/callables, call sites, local variables) yields no rows, matching a fixture with no
-    such children — each check below is ordered most-specific first so it never falls through to
-    a broader, wrong match.
+    {"file_key": ..., "functions": [props, ...]}}. ``call_edges``: 2-tuples ``(src, tgt_signature)``
+    for an ordinary in-project callee, or 3-tuples ``(src, None, external_id)`` for a call landing
+    on a ``:PyExternal`` ghost with no ``signature`` property — mirroring the real query's own
+    ``coalesce(t.signature, t.id)`` (see ``PyNeo4jBackend._call_rows``), so this stub can express
+    the exact row shape that used to come back as ``tgt=None`` before that coalesce existed.
+    Anything else (attributes, inner classes/callables, call sites, local variables) yields no
+    rows, matching a fixture with no such children — each check below is ordered most-specific
+    first so it never falls through to a broader, wrong match.
     """
 
     def run(query, **params):
@@ -98,7 +102,12 @@ def _fake_cypher(classes, methods, modules, call_edges):
             mod = modules.get(params["name"])
             return [{"p": p} for p in mod["functions"]] if mod else []
         if "PY_CALLS" in query:
-            return [{"src": e[0], "tgt": e[1], "p": {"weight": 1, "prov": []}} for e in call_edges]
+            rows = []
+            for e in call_edges:
+                src, sig, *external_id = e
+                tgt = sig if sig is not None else external_id[0]
+                rows.append({"src": src, "tgt": tgt, "p": {"weight": 1, "prov": []}})
+            return rows
         return []  # attributes / inner classes / inner callables / call sites / local vars: none in this fixture
 
     return run
@@ -187,6 +196,33 @@ def test_get_all_callers_missing_method_stays_false_empty():
         backend = factory()
         assert backend.get_all_callers(MODULE_NAME, "does_not_exist") == {"caller_details": []}
         assert backend.get_all_callees(MODULE_NAME, "does_not_exist") == {"callee_details": []}
+
+
+# ----------------------------------------------------------------------------------------------
+# regression (9edc812): a PY_CALLS target landing on a signature-less :PyExternal ghost must not
+# reach _build_call_graph as a bare None -- it must already be coalesced to the external can-id,
+# same as a live graph's own query text produces.
+# ----------------------------------------------------------------------------------------------
+def test_get_all_callees_external_target_survives_as_external_keyed_node_neo4j():
+    external_id = "can://python/test_app/@external/builtins.print"
+    modules = {MODULE_NAME: {"file_key": "pkg/mod.py", "functions": [{"name": "entry", "signature": ENTRY_SIG, "path": "pkg/mod.py"}]}}
+    call_edges = [(ENTRY_SIG, None, external_id)]
+
+    backend = object.__new__(PyNeo4jBackend)
+    backend.application_name = "test_app"
+    backend._database = None
+    backend._driver = None
+    backend._session_obj = None
+    backend._modules = ["pkg/mod.py"]
+    backend._call_graph = None
+    backend._run = _fake_cypher(classes={}, methods={}, modules=modules, call_edges=call_edges)
+
+    result = backend.get_all_callees(MODULE_NAME, "entry")
+    assert [c["callee_signature"] for c in result["callee_details"]] == [external_id]
+
+    graph = backend.get_call_graph()
+    assert None not in graph.nodes
+    assert external_id in graph.nodes
 
 
 # ----------------------------------------------------------------------------------------------
