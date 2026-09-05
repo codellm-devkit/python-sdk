@@ -52,6 +52,7 @@ from cldk.models.python import (
     PyConfigKey,
     PyConfigRead,
     PyDependency,
+    PyExternalSymbol,
     PyImport,
     PyModule,
 )
@@ -119,16 +120,24 @@ def variable(props: Props) -> PyVariableDeclaration:
     )
 
 
-def callsite(props: Props) -> PyCallsite:
+def callsite(props: Props, *, callee_signature: str | None = None) -> PyCallsite:
     """Rebuild a :class:`PyCallsite` from a ``:PyBodyNode {kind: 'call'}`` node's properties.
 
     1.4.0 emits one call site as a body node (#120), not a dedicated ``:PyCallSite`` label — the
     graph carries ``method_name`` / ``receiver_expr`` / ``receiver_type`` / ``return_type`` /
     ``is_constructor_call`` and the line span, same as before. It does not project
-    ``argument_types``, ``start_column``/``end_column``, or a resolved ``callee_signature``
-    property (callee resolution lives on the separate ``PY_RESOLVES_TO`` edge, out of scope for a
-    property-only reconstruction) — those fall back to their existing empty/``-1``/``None``
-    defaults below, the same "projection-lossy field" shape as everything else in this module.
+    ``argument_types`` or ``start_column``/``end_column`` — those fall back to their existing
+    empty/``-1`` defaults below, the same "projection-lossy field" shape as everything else in
+    this module.
+
+    ``callee_signature`` is NOT one of ``props`` (the call node itself carries no such property —
+    callee resolution lives on the separate ``PY_RESOLVES_TO`` edge to the resolved target, a
+    declared ``:PyCallable`` or an ``:PyExternal`` ghost). The caller resolves that edge and passes
+    the result in explicitly (``t.signature`` for a declared target, ``t.id`` — the
+    ``can://…/@external/…`` id — for an external one; ``None`` when the edge doesn't exist, either
+    because the call is genuinely unresolved or because the graph was populated at an analysis
+    level below the one where the defuse-linker backfill runs — see
+    :meth:`~cldk.analysis.python.backend.PythonAnalysisBackend.get_callsites_for`).
     """
     return PyCallsite(
         method_name=props.get("method_name", ""),
@@ -136,13 +145,20 @@ def callsite(props: Props) -> PyCallsite:
         receiver_type=props.get("receiver_type"),
         argument_types=list(props.get("argument_types", []) or []),
         return_type=props.get("return_type"),
-        callee_signature=props.get("callee_signature"),
+        callee_signature=callee_signature,
         is_constructor_call=props.get("is_constructor_call", False),
         start_line=props.get("start_line", -1),
         start_column=props.get("start_column", -1),
         end_line=props.get("end_line", -1),
         end_column=props.get("end_column", -1),
     )
+
+
+def external_symbol(props: Props) -> PyExternalSymbol:
+    """Rebuild a :class:`PyExternalSymbol` from a ``:PyExternal`` node's properties. A 1:1 field
+    map (``id``/``name``/``module``) — the node carries no ``kind``, so the model's own
+    ``"external"`` default supplies it."""
+    return PyExternalSymbol(id=props.get("id", ""), name=props.get("name", ""), module=props.get("module"))
 
 
 def body_node(props: Props) -> BodyNode:

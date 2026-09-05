@@ -44,6 +44,7 @@ from cldk.models.python import (
     PyClass,
     PyClassAttribute,
     PyClassOverview,
+    PyExternalSymbol,
     PyModule,
 )
 
@@ -219,7 +220,46 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
     def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:
         """Call sites of the given callable signatures, keyed by owning signature. Each existing
         signature gets an entry (an empty list if it has no call sites); signatures with no matching
-        callable are omitted."""
+        callable are omitted.
+
+        Every returned :class:`~cldk.models.python.PyCallsite`'s ``callee_signature`` is resolved
+        through the union of declared callables and :meth:`get_external_symbols` rather than left
+        in Jedi's raw, unaddressable dotted-name form for a library/builtin target (field data:
+        602 recorded incidents were ``callee_signature=None`` for exactly this case) — a call to a
+        declared callable keeps its dotted signature; a call to something outside the project
+        resolves to the ``can://…/@external/…`` id under which :meth:`get_external_symbols` files
+        it, so ``get_external_symbols()[site.callee_signature]`` finds it. ``None`` still means the
+        call site is genuinely unresolved (Jedi failed and no backfilled resolution exists) — the
+        one case this cannot and must not manufacture an answer for.
+
+        One caveat, inherent to what each backend can see rather than a bug: the local backend can
+        always attempt this (Jedi's own guess is present regardless of analysis level), but the
+        Neo4j backend can only follow a call's ``PY_RESOLVES_TO`` edge — present only when the
+        graph was populated at an analysis level where the defuse-linker backfill ran (``-a 2`` or
+        higher). A ``None`` from the Neo4j backend can therefore mean either "genuinely
+        unresolved" or "this graph doesn't carry per-site resolution at all" — ``PyCallsite`` is
+        the analyzer's own frozen model with no field to carry that distinction, so it cannot be
+        disambiguated here the way an accessor's own empty return could be.
+        """
+
+    @abstractmethod
+    def get_external_symbols(self) -> Dict[str, PyExternalSymbol]:
+        """Every call-graph endpoint outside the analyzed project — an imported library or builtin
+        member — keyed by its ``can://…/@external/…`` id, the ``@external`` can-id
+        :class:`~cldk.models.python.PyExternalSymbol` is filed under. The analyzer mints one of
+        these ghost symbols for every call target that isn't a declared class/callable, precisely
+        so no call-graph edge dangles; this is how a caller resolves one, and how
+        :meth:`get_callsites_for` addresses a resolved external ``callee_signature``.
+
+        Declared here rather than on the generic cross-language ABC: ``PyExternalSymbol`` is
+        ``codeanalyzer-python``'s own model, with no cross-language equivalent yet (mirrors why
+        :meth:`get_entrypoints` stays Python-specific despite a shared-looking return type).
+
+        An empty dict means this project's call graph has no calls outside itself — a real,
+        unambiguous fact on both backends, not a stand-in for "can't tell": external symbols are
+        homed from the aggregate call graph, which every analysis level and the Neo4j projection
+        both carry unconditionally (unlike the per-call-site backfill :meth:`get_callsites_for`'s
+        docstring caveats)."""
 
     @abstractmethod
     def get_config_readers(self, key: str) -> List[PyCallableOverview]:

@@ -78,6 +78,7 @@ from cldk.models.python import (
     PyConfigRead,
     PyConfigUseEdge,
     PyDependency,
+    PyExternalSymbol,
     PyModule,
     Span,
 )
@@ -147,6 +148,46 @@ def _code_of(c: PyCallable, module_source: str) -> str | None:
     does, so this backend now reconstructs it the same way.
     """
     return _slice(c.span, module_source)
+
+
+def _resolve_callee(
+    cs: PyCallsite,
+    body: Dict[str, BodyNode],
+    id_to_sig: Dict[str, str],
+    declared_sigs: set,
+    reverse_externals: Dict[str, str],
+) -> PyCallsite:
+    """Resolve ``cs.callee_signature`` so a library/builtin target is addressable through
+    :meth:`PyCodeanalyzer.get_external_symbols`, instead of staying in Jedi's raw, unaddressable
+    dotted-name form (see :meth:`PythonAnalysisBackend.get_callsites_for`).
+
+    Two resolution sources, the body node preferred when it exists:
+
+    1. The call site's own body node (``body[f"{start_line}:{start_column}"]``) carries
+       ``callee`` — already a canonical ``can://`` id, declared or ``@external`` — once the
+       analysis ran at a level where the defuse-linker backfill runs (``-a 2``+). ``id_to_sig``
+       turns a *declared* id back into its dotted signature; an external id is already the right
+       shape and passes through unchanged.
+    2. Otherwise, Jedi's own ``callee_signature`` (present regardless of level): already the right
+       dotted signature for a declared target (it's a member of ``declared_sigs`` by
+       construction), or rewritten to the external's ``can://…/@external/…`` id by reversing
+       ``PyExternalSymbol.module``/``.name`` back into the dotted spelling that names it in
+       ``reverse_externals`` — the *inverse* of how the analyzer minted that id, not a
+       reimplementation of its private id-construction logic, so it can't drift out of step with
+       it. A signature not in this map (the homing pass never saw it, or the target was dropped as
+       lib→lib) is left as Jedi wrote it rather than guessed at further.
+
+    A call site with neither — Jedi failed and no body-node resolution exists — keeps
+    ``callee_signature`` as ``None``: genuinely unresolved, not a gap this closes.
+    """
+    node = body.get(f"{cs.start_line}:{cs.start_column}")
+    if node is not None and node.callee:
+        resolved = id_to_sig.get(node.callee, node.callee)
+    elif cs.callee_signature and cs.callee_signature not in declared_sigs:
+        resolved = reverse_externals.get(cs.callee_signature, cs.callee_signature)
+    else:
+        resolved = cs.callee_signature
+    return cs if resolved == cs.callee_signature else cs.model_copy(update={"callee_signature": resolved})
 
 
 def _find_innermost(module: PyModule, line: int) -> Tuple[PyCallable, "PyClass | None"] | None:
@@ -857,9 +898,27 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         )
 
     def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:
-        """Return ``{signature: call_sites}`` for the requested signatures that exist."""
+        """Return ``{signature: call_sites}`` for the requested signatures that exist, with each
+        call site's ``callee_signature`` resolved (see :meth:`PythonAnalysisBackend.get_callsites_for`
+        and :func:`_resolve_callee`)."""
         wanted = set(signatures)
-        return {c.signature: list(c.call_sites) for c, _, _, _ in self._iter_callables() if c.signature in wanted}
+        id_to_sig = self._id_to_signature()
+        declared_sigs = set(id_to_sig.values())
+        reverse_externals = {
+            (f"{ext.module}.{ext.name}" if ext.module else ext.name): ext.id
+            for ext in self.application.external_symbols.values()
+        }
+        return {
+            c.signature: [_resolve_callee(cs, c.body, id_to_sig, declared_sigs, reverse_externals) for cs in c.call_sites]
+            for c, _, _, _ in self._iter_callables()
+            if c.signature in wanted
+        }
+
+    def get_external_symbols(self) -> Dict[str, PyExternalSymbol]:
+        """Return every ``@external`` ghost symbol the application's call graph homed (see
+        :meth:`PythonAnalysisBackend.get_external_symbols`) — a direct passthrough of
+        ``PyApplication.external_symbols``, which the local backend has in full."""
+        return dict(self.application.external_symbols)
 
     # ----------------------------------------------------------- repository artifacts
     def get_artifacts(self) -> Dict[str, PyArtifact]:

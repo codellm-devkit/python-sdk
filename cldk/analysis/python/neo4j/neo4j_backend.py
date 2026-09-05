@@ -82,6 +82,7 @@ from typing import Any, Dict, List, Sequence, Tuple
 
 import networkx as nx
 from codeanalyzer.schema import model_dump_json
+from codeanalyzer.schema.ids import application_id
 
 from cldk.analysis.commons.results import CallableRef, Diagnostic, EntrypointCoverage, LocateResult, ModuleRef, TypeRef
 from cldk.analysis.python.backend import PythonAnalysisBackend, body_key_column, resolve_module_key
@@ -101,6 +102,7 @@ from cldk.models.python import (
     PyConfigRead,
     PyConfigUseEdge,
     PyDependency,
+    PyExternalSymbol,
     PyModule,
     Span,
 )
@@ -658,11 +660,19 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:
         # OPTIONAL MATCH so a requested callable with no call sites still yields a row (p is null),
         # giving it an empty-list entry — parity with the in-process backend, which keys every
-        # existing signature. ORDER mirrors _callable_full's call-site ordering.
+        # existing signature. ORDER mirrors _callable_full's call-site ordering. The second
+        # OPTIONAL MATCH follows PY_RESOLVES_TO to the call's resolved target: a declared
+        # :PyCallable (carries `signature`) or a :PyExternal ghost (no `signature`, only
+        # `id`/`name`/`module`) -- coalesce picks whichever property the target actually has, so
+        # an external target resolves to its addressable @external can-id (see
+        # PythonAnalysisBackend.get_callsites_for). Absent (null) when the call is genuinely
+        # unresolved, or when the graph was populated at an analysis level below the one where the
+        # defuse-linker backfill runs (see that same docstring's caveat).
         rows = self._run(
             "MATCH (c:PyCallable) WHERE c._module IN $mods AND c.signature IN $sigs "
             "OPTIONAL MATCH (c)-[:PY_HAS_BODY_NODE]->(s:PyBodyNode {kind: 'call'}) "
-            "RETURN c.signature AS owner, properties(s) AS p "
+            "OPTIONAL MATCH (s)-[:PY_RESOLVES_TO]->(t) "
+            "RETURN c.signature AS owner, properties(s) AS p, coalesce(t.signature, t.id) AS callee "
             "ORDER BY s.start_line",
             mods=self._modules,
             sigs=list(signatures),
@@ -671,8 +681,21 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         for r in rows:
             sites = out.setdefault(r["owner"], [])
             if r["p"] is not None:
-                sites.append(R.callsite(r["p"]))
+                sites.append(R.callsite(r["p"], callee_signature=r["callee"]))
         return out
+
+    def get_external_symbols(self) -> Dict[str, PyExternalSymbol]:
+        # :PyExternal carries no `_module` property (it isn't owned by one module -- see this
+        # file's module docstring on MODULE_OWNED_LABELS), so it can't be scoped the way every
+        # other query here is. Its id embeds this application's own can:// id by construction
+        # (`<app-id>/@external/<module>/<name>`), which is app-scoping enough on its own -- a
+        # second application in the same database mints a disjoint id prefix.
+        prefix = f"{application_id(self.application_name)}/@external/"
+        rows = self._run(
+            "MATCH (e:PyExternal) WHERE e.id STARTS WITH $prefix RETURN properties(e) AS p",
+            prefix=prefix,
+        )
+        return {r["p"]["id"]: R.external_symbol(r["p"]) for r in rows}
 
     # =====================================================================================
     # PythonAnalysisBackend — repository artifacts (Artifact/ConfigKey/Package, unprefixed —

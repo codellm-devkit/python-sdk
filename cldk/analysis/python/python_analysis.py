@@ -72,6 +72,7 @@ from cldk.models.python import (
     PyConfigRead,
     PyConfigUseEdge,
     PyDependency,
+    PyExternalSymbol,
     PyModule,
 )
 
@@ -650,6 +651,21 @@ class PythonAnalysis:
             Signatures with no matching callable are omitted.
         """
         return self.backend.get_callsites_for(signatures)
+
+    def get_external_symbols(self) -> Dict[str, PyExternalSymbol]:
+        """Every call-graph endpoint outside the analyzed project (an imported library or builtin
+        member), keyed by its ``can://…/@external/…`` id.
+
+        The analyzer mints one of these ghost symbols for every call target that isn't a declared
+        class/callable, so no call-graph edge dangles; :meth:`get_callsites_for`'s resolved
+        ``callee_signature`` for an external target is exactly this dict's key.
+
+        Returns:
+            A dict mapping each ``@external`` can-id to its
+            :class:`~cldk.models.python.PyExternalSymbol`. Empty means this project's call graph
+            makes no calls outside itself.
+        """
+        return self.backend.get_external_symbols()
 
     def get_methods_in_class(self, qualified_class_name: str) -> Dict[str, PyCallable]:
         """Return all methods defined in a specific class.
