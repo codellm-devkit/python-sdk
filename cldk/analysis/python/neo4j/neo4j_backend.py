@@ -214,19 +214,27 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         once here, same "one round trip at construction" pattern as :meth:`_probe_schema`.
 
         ``get_callsites_for``'s per-site ``callee_signature`` is ``None`` both for "genuinely
-        unresolved" and for "this graph was populated at an analysis level below the one where the
-        defuse-linker backfill runs, so ``PY_RESOLVES_TO`` doesn't exist at all" — ``PyCallsite`` is
-        the analyzer's own frozen model with no field to carry that distinction (see
-        :meth:`PythonAnalysisBackend.get_callsites_for`). ``:PyApplication`` carries no
+        unresolved" and, in principle, for "this graph was populated at an analysis level below the
+        one where the defuse-linker backfill runs, so ``PY_RESOLVES_TO`` doesn't exist at all" —
+        ``PyCallsite`` is the analyzer's own frozen model with no field to carry that distinction
+        (see :meth:`PythonAnalysisBackend.get_callsites_for`). ``:PyApplication`` carries no
         ``max_level``/provenance marker either (its projected properties are ``name``,
         ``schema_version``, ``analyzer_name``, ``analyzer_version``, ``repo_uri``,
         ``source_revision``, ``repo_dirty`` — verified against ``codeanalyzer/neo4j/schema.py``,
-        nothing else), so this probe is the *only* way this backend can learn which situation a
-        caller is in: zero edges anywhere in this application's scope means every ``None`` from
-        ``get_callsites_for`` is explained by the graph's analysis level, not by per-site failure.
+        nothing else), so this probe is the only way this backend could learn which situation a
+        caller is in, if that second situation were ever real.
 
-        This is information, not an error — a level-1 graph with no resolution edges is legitimate,
-        working output, so this never raises the way :meth:`_probe_schema` does.
+        It is not, on the documented ingestion path: ``codeanalyzer/__main__.py`` forces
+        ``analysis_level = 4`` unconditionally for ``--emit neo4j`` (level/``--graphs`` cannot even
+        be passed alongside it — a ``typer.Exit`` if you try), so ``backfill_callees`` (gated on
+        ``analysis_level >= 2``) always runs and ``PY_RESOLVES_TO`` always exists on any graph
+        built that way. ``has_resolution_edges`` is expected to be ``True`` on every such graph;
+        this probe is defensive against a graph built some other way (a hand-populated database, an
+        older/forked emitter generation) rather than a gap in the documented pipeline — a corrected
+        finding from this leg's own review ledger, which had assumed the SDK's own local-backend
+        default analysis level (1) also applied to Neo4j ingestion.
+
+        This is information, not an error — this never raises the way :meth:`_probe_schema` does.
         """
         rows = self._run(
             "MATCH (s:PyBodyNode)-[:PY_RESOLVES_TO]->() WHERE s._module IN $mods RETURN s LIMIT 1",
