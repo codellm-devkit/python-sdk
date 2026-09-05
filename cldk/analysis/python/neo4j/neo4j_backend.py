@@ -86,7 +86,7 @@ from codeanalyzer.schema import model_dump_json
 from codeanalyzer.schema.ids import application_id
 
 from cldk.analysis.commons.results import CallableRef, Diagnostic, EntrypointCoverage, LocateResult, ModuleRef, TypeRef
-from cldk.analysis.python.backend import PythonAnalysisBackend, body_key_column, resolve_module_key
+from cldk.analysis.python.backend import PythonAnalysisBackend, body_key_column, call_graph_scope, resolve_module_key
 from cldk.analysis.python.neo4j import reconstruct as R
 from cldk.models.python import (
     BodyNode,
@@ -300,6 +300,12 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     # instance built through the ``object.__new__`` seam the unit tests use sees it too.
     _prefetch: Dict[str, Dict[str, List[Dict[str, Any]]]] | None = None
 
+    #: The module keys the live prefetch buckets are scoped to. Set alongside ``_prefetch`` by
+    #: :meth:`_bulk`, and normally the whole application — but a scoped accessor
+    #: (``get_symbol_table(paths=...)``, ``get_all_classes(module=...)``) narrows it, so asking for
+    #: one module does not prefetch the application's other 77,000 call sites to answer.
+    _prefetch_scope: List[str] | None = None
+
     def close(self) -> None:
         """Close the reused session (if any) and the underlying Neo4j driver."""
         self._close_session()
@@ -393,22 +399,30 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     def _collect(self, bucket: str) -> Dict[str, List[Dict[str, Any]]]:
         """One whole child collection for this application, in one round trip, grouped by ``pk``."""
         index: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-        for row in self._run(_BULK_CHILD_QUERIES[bucket], mods=self._modules):
+        for row in self._run(_BULK_CHILD_QUERIES[bucket], mods=self._prefetch_scope):
             index[row["pk"]].append(row)
         return index
 
     @contextmanager
-    def _bulk(self) -> Any:
-        """Serve child collections from application-wide prefetches for the duration of the block.
+    def _bulk(self, mods: Sequence[str] | None = None) -> Any:
+        """Serve child collections from prefetches for the duration of the block.
 
-        Re-entrant: an inner block reuses (and does not discard) an outer block's index.
+        ``mods`` is the module scope the buckets are fetched for — the whole application by
+        default, or the subset a scoped accessor asked for, so ``get_symbol_table(paths=[one])``
+        prefetches one module's children rather than the application's.
+
+        Re-entrant: an inner block reuses (and does not discard) an outer block's index *and its
+        scope* — narrowing inside an already-primed block would serve a half-filled bucket as if
+        it were complete.
         """
-        outer = self._prefetch
-        self._prefetch = {} if outer is None else outer
+        outer, outer_scope = self._prefetch, self._prefetch_scope
+        if outer is None:
+            self._prefetch = {}
+            self._prefetch_scope = list(mods) if mods is not None else self._modules
         try:
             yield
         finally:
-            self._prefetch = outer
+            self._prefetch, self._prefetch_scope = outer, outer_scope
 
     def _callable_full(self, props: Dict[str, Any]) -> PyCallable:
         """Rebuild a full :class:`PyCallable` (call sites, inner callables/classes, locals).
@@ -572,22 +586,76 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             mods=self._modules,
         )
 
+    def _bounded_call_rows(self, roots: List[str], depth: int | None) -> List[Dict[str, Any]]:
+        """``PY_CALLS`` rows for the sub-graph reachable from ``roots``, within ``depth`` hops.
+
+        Pushed into Cypher rather than filtered out of a full fetch in Python: this application's
+        graph has 364,752 call edges, which is not an answer to a question about one function, and
+        materialising all of them to keep a few hundred would make the keyword decorative.
+
+        Two matches, deliberately. The first walks out from the roots and collects the **node set**
+        reached; the second returns every ``PY_CALLS`` edge *among that set*. Collecting the
+        relationships traversed by the first match would have been one match shorter and wrong in a
+        specific way: it yields only the edges lying on a root-anchored path, so an edge between two
+        nodes the caller can plainly see — a sibling calling back towards the root — would be
+        missing, and ``graph.predecessors()`` would lie about a node in the graph it returned. The
+        induced shape is what :func:`~cldk.analysis.python.backend.bounded_subgraph` gives on the
+        local backend, so this is also what keeps the two backends answering identically.
+
+        ``depth`` is interpolated into the pattern because Cypher does not accept a parameter as a
+        variable-length bound. It is an ``int`` validated by
+        :func:`~cldk.analysis.python.backend.call_graph_scope` and re-coerced here, so nothing
+        caller-controlled reaches the statement as text; ``roots`` stays a parameter.
+
+        The traversal starts at ``*0``, so a root with no outgoing calls still contributes itself
+        and any edges among the roots — a root absent from the graph entirely contributes nothing,
+        which is not an error (a callable the projection recorded no call edges for is isolated,
+        not missing).
+        """
+        hops = "" if depth is None else str(int(depth))
+        return self._run(
+            "MATCH (root:PyCallable|PyExternal) WHERE coalesce(root.signature, root.id) IN $roots "
+            "AND (root._module IS NULL OR root._module IN $mods) "
+            f"MATCH (root)-[:PY_CALLS*0..{hops}]->(n) "
+            "WITH collect(DISTINCT n) AS ns "
+            "UNWIND ns AS s "
+            "MATCH (s)-[r:PY_CALLS]->(t) WHERE t IN ns AND s._module IN $mods "
+            "RETURN s.signature AS src, coalesce(t.signature, t.id) AS tgt, properties(r) AS p",
+            roots=list(roots),
+            mods=self._modules,
+        )
+
     # =====================================================================================
     # PythonAnalysisBackend — application / whole-program
     # =====================================================================================
     def get_application_view(self) -> PyApplication:
         return PyApplication(symbol_table=self.get_symbol_table(), call_graph=self._call_edges())
 
-    def get_symbol_table(self) -> Dict[str, PyModule]:
+    def get_symbol_table(self, *, paths: Sequence[str] | None = None) -> Dict[str, PyModule]:
+        # ``paths`` narrows in Cypher (the WHERE below) *and* narrows the prefetch scope, which is
+        # where the saving actually is: without the second the eleven bulk statements would still
+        # drag the whole application's children back to describe one module.
+        keys = self._resolve_paths(paths)
         result: Dict[str, PyModule] = {}
-        with self._bulk():  # every module's children in eleven queries, not 45 per module
+        with self._bulk(keys):  # every module's children in eleven queries, not 45 per module
             for r in self._run(
-                "MATCH (:PyApplication {name: $app})-[:PY_HAS_MODULE]->(m:PyModule) RETURN properties(m) AS p",
+                "MATCH (:PyApplication {name: $app})-[:PY_HAS_MODULE]->(m:PyModule) "
+                "WHERE $paths IS NULL OR m.file_key IN $paths RETURN properties(m) AS p",
                 app=self.application_name,
+                paths=keys,
             ):
                 mod = self._module_full(r["p"])
                 result[mod.file_path] = mod  # symbol_table keyed by file_path (== file_key)
         return result
+
+    def _resolve_paths(self, paths: Sequence[str] | None) -> List[str] | None:
+        """Requested module paths as graph ``file_key``s — ``None`` passes through as "everything".
+
+        Leniently, via the same :func:`resolve_module_key` the local backend uses, so an absolute
+        path or one with native separators finds its module and the two backends accept the same
+        strings. A path matching nothing is kept as-is and simply selects no rows.
+        """
+        return None if paths is None else [resolve_module_key(p, self._modules) for p in paths]
 
     def get_modules(self) -> List[PyModule]:
         return list(self.get_symbol_table().values())
@@ -630,14 +698,20 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             for r in self._call_rows()
         ]
 
-    def _build_call_graph(self) -> nx.DiGraph:
+    def _build_call_graph(self, rows: List[Dict[str, Any]] | None = None) -> nx.DiGraph:
         graph = nx.DiGraph()
-        for r in self._call_rows():
+        for r in self._call_rows() if rows is None else rows:
             p = r["p"]
             graph.add_edge(r["src"], r["tgt"], type="CALL_DEP", weight=p.get("weight", 1), provenance=tuple(p.get("prov", []) or []))
         return graph
 
-    def get_call_graph(self) -> nx.DiGraph:
+    def get_call_graph(self, *, roots: Sequence[str] | None = None, depth: int | None = None) -> nx.DiGraph:
+        # Only the unscoped graph is cached: it is the one every other accessor here reuses
+        # (get_all_callers / get_all_callees / get_class_call_graph), and caching a scoped result
+        # under the same attribute would hand the next unscoped caller a subgraph.
+        scope = call_graph_scope(roots, depth)
+        if scope is not None:
+            return self._build_call_graph(self._bounded_call_rows(scope, depth))
         if self._call_graph is None:
             self._call_graph = self._build_call_graph()
         return self._call_graph
@@ -680,12 +754,16 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     # =====================================================================================
     # classes
     # =====================================================================================
-    def get_all_classes(self) -> Dict[str, PyClass]:
+    def get_all_classes(self, *, module: str | None = None) -> Dict[str, PyClass]:
+        # The statement was already scoped by ``$mods``, so narrowing to one module is just a
+        # shorter list -- and the same list narrows the prefetch, so the seven bulk statements
+        # fetch one module's members instead of the application's.
+        scope = self._resolve_paths(None if module is None else [module]) or self._modules
         result: Dict[str, PyClass] = {}
-        with self._bulk():  # every class's members in seven queries, not one per child collection
+        with self._bulk(scope):  # every class's members in seven queries, not one per child collection
             for r in self._run(
                 "MATCH (:PyModule)-[:PY_DECLARES]->(c:PyClass) WHERE c._module IN $mods RETURN properties(c) AS p",
-                mods=self._modules,
+                mods=scope,
             ):
                 c = self._class_full(r["p"])
                 result[c.signature] = c

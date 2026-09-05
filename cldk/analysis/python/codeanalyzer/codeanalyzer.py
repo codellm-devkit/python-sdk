@@ -61,7 +61,7 @@ from codeanalyzer.schema import Analysis, model_dump_json
 
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.results import CallableRef, Diagnostic, EntrypointCoverage, LocateResult, ModuleRef, TypeRef
-from cldk.analysis.python.backend import PythonAnalysisBackend, body_key_column, resolve_module_key
+from cldk.analysis.python.backend import PythonAnalysisBackend, body_key_column, bounded_subgraph, call_graph_scope, resolve_module_key
 from cldk.models.python import (
     BodyNode,
     PyApplication,
@@ -488,14 +488,22 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         """
         return self.application
 
-    def get_symbol_table(self) -> Dict[str, PyModule]:
+    def get_symbol_table(self, *, paths: Sequence[str] | None = None) -> Dict[str, PyModule]:
         """Return the symbol table mapping file paths to modules.
+
+        Args:
+            paths: Restrict to these modules, named by symbol-table key. ``None`` (the default)
+                returns the whole table — the same object it always returned.
 
         Returns:
             A dictionary where keys are file paths (strings) and values
             are :class:`~cldk.models.python.PyModule` objects.
         """
-        return self.application.symbol_table
+        table = self.application.symbol_table
+        if paths is None:
+            return table
+        keys = [resolve_module_key(p, table.keys()) for p in paths]
+        return {k: table[k] for k in keys if k in table}
 
     def get_modules(self) -> List[PyModule]:
         """Return all analyzed modules as a list.
@@ -506,18 +514,31 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         """
         return list(self.application.symbol_table.values())
 
-    def get_call_graph(self) -> nx.DiGraph:
+    def get_call_graph(self, *, roots: Sequence[str] | None = None, depth: int | None = None) -> nx.DiGraph:
         """Return the call graph as a NetworkX directed graph.
 
-        Lazily builds the call graph from edge data if not already constructed.
+        Lazily builds the whole call graph from edge data if not already constructed, then — when
+        ``roots`` is given — carves the reachable sub-graph out of it. The full graph is already
+        in memory here, so there is nothing to push down: the cache is built once and every scoped
+        call is served from it (see :func:`~cldk.analysis.python.backend.bounded_subgraph`; the
+        Neo4j backend reaches the same shape through Cypher instead).
+
+        Args:
+            roots: Restrict to the sub-graph reachable from these callables, by signature.
+                ``None`` (the default) returns the whole graph, the cached object itself.
+            depth: Maximum call hops from a root; ``None`` is unbounded.
 
         Returns:
             A ``networkx.DiGraph`` representing method/function call
             relationships across the project.
+
+        Raises:
+            ValueError: ``depth`` below 1, or ``depth`` without ``roots``.
         """
+        scope = call_graph_scope(roots, depth)
         if self.call_graph is None:
             self.call_graph = self._build_call_graph(self.application.call_graph, self._id_to_signature())
-        return self.call_graph
+        return self.call_graph if scope is None else bounded_subgraph(self.call_graph, scope, depth)
 
     def get_call_graph_json(self) -> str:
         """Return the complete application model serialized as JSON.
@@ -552,19 +573,23 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         return self._class_to_file.get(qualified_class_name)
 
     # ----------------------------------------------------------- classes
-    def get_all_classes(self) -> Dict[str, PyClass]:
+    def get_all_classes(self, *, module: str | None = None) -> Dict[str, PyClass]:
         """Return all classes from all modules in the project.
 
         Aggregates class definitions from all analyzed modules into a
         single dictionary for convenient access.
+
+        Args:
+            module: Restrict to one module's classes, named by symbol-table key (not a dotted
+                module name). ``None`` (the default) aggregates the whole application.
 
         Returns:
             A dictionary mapping qualified class names to
             :class:`~cldk.models.python.PyClass` objects.
         """
         result: Dict[str, PyClass] = {}
-        for module in self.application.symbol_table.values():
-            result.update(module.types)
+        for mod in self.get_symbol_table(paths=None if module is None else [module]).values():
+            result.update(mod.types)
         return result
 
     def get_class(self, qualified_class_name: str) -> PyClass | None:

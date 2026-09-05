@@ -262,12 +262,18 @@ class PythonAnalysis:
         """
         return self.backend.get_application_view()
 
-    def get_symbol_table(self) -> Dict[str, PyModule]:
+    def get_symbol_table(self, *, paths: Sequence[str] | None = None) -> Dict[str, PyModule]:
         """Return the symbol table mapping file paths to module objects.
 
         Returns a dictionary that maps each analyzed file's path to its
         corresponding :class:`PyModule` object. This is useful for looking
         up module information when you know the file path.
+
+        Args:
+            paths: Restrict the result to these modules, named by symbol-table key (the module's
+                file path). Absolute paths and native separators are accepted; a path naming no
+                module contributes nothing. ``None`` (the default) returns the whole application —
+                on a large graph that is thousands of modules, so prefer naming the ones you need.
 
         Returns:
             A dictionary where keys are file paths (as strings) and values are
@@ -279,7 +285,7 @@ class PythonAnalysis:
             :meth:`get_python_module`: For direct lookup by file path.
             :meth:`get_modules`: For a flat list without file paths.
         """
-        return self.backend.get_symbol_table()
+        return self.backend.get_symbol_table(paths=paths)
 
     def get_modules(self) -> List[PyModule]:
         """Return a list of all analyzed modules.
@@ -366,13 +372,24 @@ class PythonAnalysis:
         }
 
     # -----[ call graph ]-----
-    def get_call_graph(self) -> nx.DiGraph:
+    def get_call_graph(self, *, roots: Sequence[str] | None = None, depth: int | None = None) -> nx.DiGraph:
         """Return the project call graph as a NetworkX directed graph.
 
         Constructs and returns a directed graph representing method/function
         call relationships across the entire project. Each node represents
         a callable (function or method), and each edge represents a call
         from one callable to another.
+
+        Args:
+            roots: Restrict the result to the sub-graph reachable from these callables, named by
+                signature. ``None`` (the default) returns the whole application's call graph.
+            depth: Maximum number of call hops from a root; ``None`` is unbounded. Requires
+                ``roots``.
+
+        The unscoped graph on a real application runs to hundreds of thousands of edges, which is
+        not an answer to a question about one function — ``roots=`` and ``depth=`` are how you ask
+        the question you actually have. The result is the *induced* sub-graph over the reached
+        nodes, so an edge between two nodes you can see is never silently absent.
 
         The call graph is built using:
             - Jedi for semantic call resolution
@@ -394,7 +411,7 @@ class PythonAnalysis:
             :meth:`get_callees`: For finding callees of a specific method.
             :meth:`get_class_call_graph`: For call graph subset by class.
         """
-        return self.backend.get_call_graph()
+        return self.backend.get_call_graph(roots=roots, depth=depth)
 
     def get_call_graph_json(self) -> str:
         """Return the complete analysis results serialized as JSON.
@@ -982,12 +999,18 @@ class PythonAnalysis:
         return self.backend.get_config_readers(key)
 
     # -----[ classes ]-----
-    def get_classes(self) -> Dict[str, PyClass]:
+    def get_classes(self, *, module: str | None = None) -> Dict[str, PyClass]:
         """Return all classes in the project.
 
         Retrieves all class definitions discovered during analysis, organized
         by their fully qualified names. This includes regular classes,
         dataclasses, abstract base classes, and nested classes.
+
+        Args:
+            module: Restrict the result to one module's classes, named by symbol-table key (the
+                module's file path — *not* a dotted module name, so it reads the same way as
+                :meth:`get_symbol_table`'s ``paths``). ``None`` (the default) returns every class
+                in the application.
 
         Returns:
             A dictionary mapping fully qualified class names (strings) to
@@ -998,7 +1021,7 @@ class PythonAnalysis:
             :meth:`get_class`: For a single class by name.
             :meth:`get_classes_by_criteria`: For filtered class retrieval.
         """
-        return self.backend.get_all_classes()
+        return self.backend.get_all_classes(module=module)
 
     def get_class(self, qualified_class_name: str) -> PyClass | None:
         """Return a specific class by its qualified name.

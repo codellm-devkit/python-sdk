@@ -34,6 +34,8 @@ import posixpath
 from abc import abstractmethod
 from typing import Dict, Iterable, List, Sequence, Tuple
 
+import networkx as nx
+
 from cldk.analysis.commons.backend import AnalysisBackend
 from cldk.analysis.commons.results import EntrypointCoverage, LocateResult
 from cldk.models.python import (
@@ -88,6 +90,53 @@ def body_key_column(key: str) -> int:
     return int(col) if col.isdigit() else -1
 
 
+def call_graph_scope(roots: Sequence[str] | None, depth: int | None) -> List[str] | None:
+    """Normalise :meth:`PythonAnalysisBackend.get_call_graph`'s scoping keywords.
+
+    Returns the roots as a list, or ``None`` for "the whole application" — the unscoped call,
+    which must keep behaving exactly as it did before the keywords existed.
+
+    Both backends route through this so the two cannot drift apart on what a keyword combination
+    means (the failure mode Fix 1 of leg 1.5 had to go back and repair on the child-fetch paths).
+
+    Raises:
+        ValueError: ``depth`` below 1, or ``depth`` without ``roots``. A hop budget with no origin
+            to count from has no meaning, and quietly returning all 364,752 edges would be the
+            worst of the available answers — the caller asked for a bounded graph and would be
+            handed an unbounded one with no signal.
+    """
+    if depth is not None and depth < 1:
+        raise ValueError(f"depth must be >= 1, got {depth!r}")
+    if roots is None:
+        if depth is not None:
+            raise ValueError("depth= requires roots=; a hop budget needs an origin to count from")
+        return None
+    return list(roots)
+
+
+def bounded_subgraph(graph: nx.DiGraph, roots: List[str], depth: int | None) -> nx.DiGraph:
+    """The sub-call-graph reachable from ``roots``, within ``depth`` hops when given.
+
+    **Induced**, not path-only: every edge between two reached nodes is kept, including one
+    pointing back towards a root. A path-only answer would let ``graph.predecessors(n)`` lie about
+    a node the caller can see, which is a worse defect than the extra edges are a cost. The Neo4j
+    backend's Cypher is written to produce the same induced shape rather than the cheaper
+    edges-along-the-path shape, for exactly this reason.
+
+    A root absent from the graph contributes nothing — a callable with no call edges at all is not
+    an error, it is an isolated node the projection never recorded.
+    """
+    nodes: set = set()
+    for root in roots:
+        if root not in graph:
+            continue
+        if depth is None:
+            nodes |= nx.descendants(graph, root) | {root}
+        else:
+            nodes |= set(nx.ego_graph(graph, root, radius=depth).nodes)
+    return graph.subgraph(nodes).copy()
+
+
 class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, PyCallable, PyClassAttribute, str]):
     """Abstract base every Python analysis backend implements.
 
@@ -99,6 +148,53 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
     The application/symbol-table/call-graph/class/method/field/parameter accessors are inherited
     from :class:`~cldk.analysis.commons.backend.AnalysisBackend`; everything below is Python-specific.
     """
+
+    # -----[ bounded enumeration ]-----
+    # These three are declared on the generic AnalysisBackend without keywords; Python widens them
+    # with defaulted, keyword-only scoping arguments so whole-application enumeration is the
+    # exception a caller asks for rather than the default shape. Every keyword defaults to the
+    # pre-existing behaviour, so no existing call site changes and no public signature moves.
+    # Redeclared here rather than left to the generic base because a reader of *this* contract
+    # would otherwise see the unwidened signature and believe it.
+    @abstractmethod
+    def get_symbol_table(self, *, paths: Sequence[str] | None = None) -> Dict[str, PyModule]:
+        """The symbol table, keyed by file path.
+
+        Args:
+            paths: Restrict to these modules, named by symbol-table key (equivalently, the module's
+                file path). Resolved leniently through :func:`resolve_module_key`, so an absolute
+                path or one with native separators finds its module. A path naming no module in the
+                application contributes nothing rather than raising. ``None`` (the default) returns
+                every module.
+        """
+
+    @abstractmethod
+    def get_all_classes(self, *, module: str | None = None) -> Dict[str, PyClass]:
+        """Top-level classes, keyed by signature.
+
+        Args:
+            module: Restrict to the classes declared by one module, named the same way
+                :meth:`get_symbol_table`'s ``paths`` names one — a symbol-table key, not a dotted
+                module name. ``None`` (the default) returns the whole application's classes.
+        """
+
+    @abstractmethod
+    def get_call_graph(self, *, roots: Sequence[str] | None = None, depth: int | None = None) -> nx.DiGraph:
+        """The call graph, as a NetworkX ``DiGraph`` keyed by callable signature.
+
+        Args:
+            roots: Restrict to the sub-graph reachable from these callables, named by signature
+                (or, for an external ghost, by its ``@external`` can-id — the same strings that
+                appear as graph nodes). ``None`` (the default) returns the whole application.
+            depth: Maximum number of call hops from a root. ``None`` means unbounded.
+
+        The result is the **induced** sub-graph over the reached nodes (see
+        :func:`bounded_subgraph`), identically on both backends.
+
+        Raises:
+            ValueError: ``depth`` below 1, or ``depth`` given without ``roots``
+                (see :func:`call_graph_scope`).
+        """
 
     @abstractmethod
     def get_modules(self) -> List[PyModule]:

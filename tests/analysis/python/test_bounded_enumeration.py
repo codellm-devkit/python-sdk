@@ -14,7 +14,8 @@
 # limitations under the License.
 ################################################################################
 
-"""The whole-application accessors must cost a *bounded* number of Cypher round trips.
+"""The whole-application accessors must cost a *bounded* number of Cypher round trips — and be
+avoidable altogether.
 
 ``get_symbol_table()`` used to rebuild each module by issuing one query per child collection, per
 parent node, all the way down the nesting: 73,669 round trips for this graph's 1,626 modules —
@@ -26,6 +27,12 @@ What this module pins is the *shape* of the cost, not the clock: a bounded, cons
 statements independent of how many modules, classes and callables the application has. A wall-clock
 ceiling belongs in ``test_e2e_neo4j_live.py`` (and is there); a machine with a cold page cache can
 make seconds lie, but it cannot make a query count lie.
+
+The second half of the module covers the scoping keywords (leg 1.5 Task 2), which are the other
+half of the same problem: collapsing the fan-out made whole-application enumeration affordable,
+but ``roots=``/``depth=``/``paths=``/``module=`` are what make it unnecessary. Every keyword
+defaults to the unscoped behaviour, and that is asserted too — a widening that changed an existing
+answer would be a break, not a widening.
 
 Runs only against a live, pre-loaded graph — the same one, and the same environment variables, as
 ``test_e2e_neo4j_live.py`` (see ``conftest.py``'s ``live_analysis``). Strictly read-only::
@@ -139,3 +146,92 @@ def test_scoped_and_bulk_paths_reconstruct_identically(live_analysis, count_roun
     tree = list(_walk_classes({from_bulk.signature: from_bulk}))
     tree_size = len(tree) + sum(len(list(_walk_callables(c.callables))) for c in tree)
     assert n["c"] <= 1 + 4 * tree_size, f"the scoped path cost {n['c']} round trips for a {tree_size}-node class"
+
+
+# =================================================================================================
+# Scoping keywords — whole-application enumeration becomes the exception, not the default shape
+# =================================================================================================
+def test_symbol_table_scoped_to_paths(live_analysis):
+    all_mods = live_analysis.get_symbol_table()
+    one = next(iter(all_mods))
+
+    scoped = live_analysis.get_symbol_table(paths=[one])
+
+    assert set(scoped) == {one}
+    assert scoped[one].model_dump() == all_mods[one].model_dump(), "scoping changed the module it returned"
+
+
+def test_symbol_table_scoping_narrows_the_prefetch_not_just_the_result(live_analysis):
+    """The saving has to be in what is *fetched*, not in what is thrown away afterwards.
+
+    Filtering a full fetch in Python would satisfy the test above and cost exactly as much as the
+    unscoped call. So this one measures: one module out of 1,626 must come back in a small
+    fraction of the ~12 s the whole application takes. The ceiling is deliberately loose (a factor
+    of six above what one module actually costs) because it is guarding an order of magnitude, not
+    a stopwatch — a Python-side filter over a full fetch would blow it by 6x, not by 10%.
+    """
+    import time
+
+    one = next(iter(live_analysis.get_symbol_table(paths=None)))
+
+    started = time.monotonic()
+    scoped = live_analysis.get_symbol_table(paths=[one])
+    elapsed = time.monotonic() - started
+
+    assert set(scoped) == {one}
+    assert elapsed < 3.0, f"one module took {elapsed:.1f}s; the whole application takes ~12s, so this fetched too much"
+
+
+def test_symbol_table_accepts_an_absolute_path(live_analysis):
+    """``paths`` resolves leniently, the same way ``get_python_module`` does."""
+    one = next(iter(live_analysis.get_symbol_table()))
+    assert set(live_analysis.get_symbol_table(paths=["/somewhere/else/" + one])) == {one}
+
+
+def test_symbol_table_scoped_to_an_unknown_path_is_empty(live_analysis):
+    assert live_analysis.get_symbol_table(paths=["no/such/module.py"]) == {}
+
+
+def test_classes_scoped_to_a_module(live_analysis):
+    table = live_analysis.get_symbol_table()
+    path, module = max(table.items(), key=lambda kv: len(kv[1].types))
+
+    scoped = live_analysis.get_classes(module=path)
+
+    assert scoped, "expected the most class-heavy module to declare at least one class"
+    assert set(scoped) == set(module.types), "scoped get_classes disagrees with the module's own types"
+    assert len(scoped) < len(live_analysis.get_classes()), "one module should not hold every class"
+
+
+def test_call_graph_scoped_to_roots(live_analysis):
+    full = live_analysis.get_call_graph()
+    root = max(full.nodes, key=full.out_degree)
+
+    scoped = live_analysis.get_call_graph(roots=[root], depth=2)
+
+    assert root in scoped
+    assert scoped.number_of_nodes() > 1, "depth=2 should reach past the root"
+    assert scoped.number_of_nodes() < full.number_of_nodes()
+    assert set(scoped.edges) <= set(full.edges), "the bounded graph invented an edge"
+
+
+def test_call_graph_depth_is_a_real_bound(live_analysis):
+    """Two hops must reach strictly further than one, and no further than the unbounded answer."""
+    full = live_analysis.get_call_graph()
+    root = max(full.nodes, key=full.out_degree)
+
+    one, two = live_analysis.get_call_graph(roots=[root], depth=1), live_analysis.get_call_graph(roots=[root], depth=2)
+
+    assert set(one.nodes) <= set(two.nodes) <= set(live_analysis.get_call_graph(roots=[root]).nodes)
+    assert set(one.nodes) == {root} | set(full.successors(root)), "depth=1 is not exactly the root's direct callees"
+
+
+def test_call_graph_unknown_root_is_empty_not_an_error(live_analysis):
+    assert live_analysis.get_call_graph(roots=["no.such.callable"], depth=3).number_of_nodes() == 0
+
+
+def test_unscoped_calls_are_unaffected(live_analysis):
+    """The widening must not change existing behaviour."""
+    assert len(live_analysis.get_symbol_table()) == len(live_analysis.get_symbol_table(paths=None))
+    assert len(live_analysis.get_classes()) == len(live_analysis.get_classes(module=None))
+    assert live_analysis.get_call_graph().number_of_edges() == live_analysis.get_call_graph(roots=None, depth=None).number_of_edges()
