@@ -679,6 +679,13 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             A dictionary mapping method signatures to
             :class:`~cldk.models.python.PyCallable` objects.
             Returns empty dict if class not found.
+
+        Note:
+            Returned callables' call sites are the raw ``PyApplication.symbol_table`` ones, not
+            resolved through :func:`_resolve_callee`: a call to an external target keeps Jedi's
+            raw, unaddressable dotted guess instead of the ``@external`` can-id
+            :meth:`get_callsites_for` resolves it to. Use :meth:`get_callsites_for` when that
+            resolution matters.
         """
         cls = self.get_class(qualified_class_name)
         return dict(cls.callables) if cls else {}
@@ -702,6 +709,12 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             e.g. class ``pkg.User`` vs file ``pkg/User.py``), this backend merges both under one
             key in :meth:`get_all_methods_in_application`, while the Neo4j backend resolves
             class-first — a resolution-order asymmetry between the two backends.
+
+        Note:
+            The returned callable's call sites are the raw ``PyApplication.symbol_table`` ones,
+            not resolved through :func:`_resolve_callee`: a call to an external target keeps
+            Jedi's raw, unaddressable dotted guess instead of the ``@external`` can-id
+            :meth:`get_callsites_for` resolves it to.
 
         Args:
             qualified_class_name: The fully qualified class name, or a module name for
@@ -745,6 +758,11 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             A dictionary mapping constructor signatures to
             :class:`~cldk.models.python.PyCallable` objects.
             Typically contains at most one ``__init__`` method.
+
+        Note:
+            Routed through :meth:`get_all_methods_in_class`, so the same caveat applies: call
+            sites are not resolved through :func:`_resolve_callee` here. Use
+            :meth:`get_callsites_for` when that resolution matters.
         """
         return {sig: c for sig, c in self.get_all_methods_in_class(qualified_class_name).items() if c.name == "__init__"}
 

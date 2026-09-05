@@ -683,6 +683,13 @@ class PythonAnalysis:
             :class:`~cldk.models.python.PyCallable` objects. Returns an
             empty dictionary if the class is not found or has no methods.
 
+        Note:
+            Returned callables' call sites are not resolved the way :meth:`get_callsites_for`
+            resolves them: on the Neo4j backend ``callee_signature`` is always ``None`` here; on
+            the local backend an external target keeps Jedi's raw, unaddressable dotted guess
+            instead of the resolved ``@external`` can-id. Use :meth:`get_callsites_for` for the
+            same call sites with resolved signatures.
+
         See Also:
             :meth:`get_method`: For a single method by name.
             :meth:`get_constructors`: For ``__init__`` methods specifically.
@@ -713,6 +720,13 @@ class PythonAnalysis:
             A :class:`~cldk.models.python.PyCallable` object containing
             all analyzed information about the method, or ``None`` if
             neither a matching class nor a matching module resolves.
+
+        Note:
+            The returned callable's call sites are not resolved the way :meth:`get_callsites_for`
+            resolves them: on the Neo4j backend ``callee_signature`` is always ``None`` here; on
+            the local backend an external target keeps Jedi's raw, unaddressable dotted guess
+            instead of the resolved ``@external`` can-id. Use :meth:`get_callsites_for` for the
+            same call sites with resolved signatures.
 
         See Also:
             :meth:`get_methods_in_class`: For all methods of a class.
@@ -764,6 +778,13 @@ class PythonAnalysis:
             A dictionary mapping constructor names (typically ``"__init__"``)
             to :class:`~cldk.models.python.PyCallable` objects. Returns an
             empty dictionary if the class has no explicit constructor.
+
+        Note:
+            Returned callables' call sites are not resolved the way :meth:`get_callsites_for`
+            resolves them: on the Neo4j backend ``callee_signature`` is always ``None`` here; on
+            the local backend an external target keeps Jedi's raw, unaddressable dotted guess
+            instead of the resolved ``@external`` can-id. Use :meth:`get_callsites_for` for the
+            same call sites with resolved signatures.
 
         See Also:
             :meth:`get_method`: For any method by name.
