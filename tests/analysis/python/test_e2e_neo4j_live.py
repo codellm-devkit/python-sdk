@@ -397,7 +397,9 @@ def test_locate_resolves_to_the_enclosing_callable(analysis, sample):
     # The position was chosen to sit on a call body node, so it must resolve past the callable.
     assert result.node is not None
     assert result.node_id is not None
-    assert result.node_id.startswith(f"{sample['signature']}@")
+    # #320: the id is the graph's own ``:PyBodyNode.id``, read off the node — not composed from
+    # the dotted signature, which is a different namespace and joined to nothing.
+    assert result.node_id.startswith("can://")
 
 
 def test_locate_source_is_real_text_matching_the_file_on_disk(analysis, sample):

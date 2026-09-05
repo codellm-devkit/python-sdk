@@ -109,10 +109,12 @@ class LocateResult(BaseModel):
     Attributes:
         node: The innermost body node containing the position, if the graph has one that precise.
             ``None`` does not mean "not found" — see ``callable``/``diagnostics`` for that.
-        node_id: ``node``'s identifier for :meth:`~cldk.analysis.python.backend.PythonAnalysisBackend.get_source`
-            (``"<callable signature>@<body key>"``), or ``None`` exactly when ``node`` is ``None``.
-            A callable itself needs no such id — its own signature (``callable.signature``) already
-            names it, the same key :meth:`get_method_bodies` uses.
+        node_id: ``node``'s identifier for :meth:`~cldk.analysis.python.backend.PythonAnalysisBackend.get_source`,
+            or ``None`` exactly when ``node`` is ``None``. It is the analyzer's own id for that
+            node (``"<callable can:// id>@<body key>"``), read off the graph where the backend can
+            and composed the emitter's way where it cannot — **an opaque handle, not a string to
+            parse or build**. Treat it as something to pass back, and address a callable by its
+            ``callable.signature`` instead, the same key :meth:`get_method_bodies` uses.
         callable: The enclosing callable, or ``None`` if the position is not inside one (module
             scope) or the file isn't in the graph at all.
         type: The class owning ``callable``, or ``None`` for a module-level function/callable

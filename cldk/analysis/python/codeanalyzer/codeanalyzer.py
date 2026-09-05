@@ -906,14 +906,20 @@ class PyCodeanalyzer(PythonAnalysisBackend):
 
     def get_source(self, node_id: str) -> str:
         """Return the source text named by ``node_id`` (see
-        :meth:`PythonAnalysisBackend.get_source`) — a callable's own signature, or
-        ``"<signature>@<body key>"`` for one of its body nodes, sliced out of the owning module's
-        text by ``span.bytes`` via :func:`_slice`, the same byte-accurate helper
-        :meth:`get_method_bodies` uses for the callable case.
+        :meth:`PythonAnalysisBackend.get_source`) — a callable, or one of its body nodes, sliced
+        out of the owning module's text by ``span.bytes`` via :func:`_slice`, the same
+        byte-accurate helper :meth:`get_method_bodies` uses for the callable case.
+
+        The callable half of the id is matched against **both** of a callable's names: its
+        ``signature`` (the dotted module path, which is what every other accessor keys by and what
+        callers have passed since leg 1) and its ``id`` (the ``can://`` containment path, which is
+        what :meth:`locate` now returns inside a body-node id — #320). Accepting either is what
+        keeps ``get_source(locate(...).node_id)`` working across that change without asking the
+        caller to know which vocabulary it is holding.
         """
         sig, sep, body_key = node_id.partition("@")
         for c, _, _, source in self._iter_callables():
-            if c.signature != sig:
+            if sig not in (c.signature, c.id):
                 continue
             if not sep:
                 code = _code_of(c, source)
@@ -1089,7 +1095,13 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             )
         c, owner = found
         found_body = _find_body_node(c, line)
-        node, node_id = (found_body[1], f"{c.signature}@{found_body[0]}") if found_body else (None, None)
+        # The id is composed from ``c.id`` (the ``can://`` containment path), never ``c.signature``
+        # (the dotted module path): the emitter mints ``:PyBodyNode.id`` as
+        # ``f"{callable.id}@{local_body_key}"`` (``codeanalyzer/neo4j/project.py``'s ``_body_ref``),
+        # so this composition reproduces the graph's id exactly and the two backends' ids join
+        # (#320). ``BodyNode`` itself carries no ``id`` field to read instead
+        # (codeanalyzer-python#176), which is why this one is still composed.
+        node, node_id = (found_body[1], f"{c.id}@{found_body[0]}") if found_body else (None, None)
         return LocateResult(
             node=node,
             node_id=node_id,

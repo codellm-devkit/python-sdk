@@ -302,3 +302,47 @@ def test_unscoped_calls_are_unaffected(live_analysis):
     assert len(live_analysis.get_symbol_table()) == len(live_analysis.get_symbol_table(paths=None))
     assert len(live_analysis.get_classes()) == len(live_analysis.get_classes(module=None))
     assert live_analysis.get_call_graph().number_of_edges() == live_analysis.get_call_graph(roots=None, depth=None).number_of_edges()
+
+
+# ---------------------------------------------------------------------------------------------
+# Addressing (leg 1.5 Task 3, #320): an id the SDK hands out must name something, and the two
+# vocabularies a caller is given for "where is this" must be the same vocabulary.
+# ---------------------------------------------------------------------------------------------
+
+
+def test_locate_node_id_joins_to_the_graph(live_analysis):
+    """#320: the SDK composed ``signature@key``; the graph mints a ``can://`` path.
+
+    Composing an id from ``signature`` reimplements the analyzer's id grammar with the wrong
+    field — ``PyCallable`` carries both ``signature`` (dotted module path) and ``id`` (the
+    ``can://`` containment path), and only the latter is what ``:PyBodyNode.id`` is built from.
+    The two namespaces do not join, so a ``node_id`` from ``locate()`` named nothing.
+    """
+    r = live_analysis.locate("addons/onboarding/models/onboarding_onboarding_step.py", 51)
+    assert r.node_id, "a position inside a callable has a node id"
+    rows = live_analysis.backend._run("MATCH (b:PyBodyNode {id: $nid}) RETURN count(b) AS n", nid=r.node_id)
+    assert rows[0]["n"] == 1, f"node_id {r.node_id!r} does not name a node in the graph"
+
+
+@pytest.mark.xfail(
+    reason=(
+        "Leg 1.5 Task 3 step 4 stopped short of normalising PyCallableOverview.path: a "
+        "pre-existing test — test_e2e_neo4j_live.test_overview_path_is_absolute_unlike_locate_"
+        "and_class_overview — deliberately pins the absolute form as a recorded divergence, and "
+        "docs/agent-api-reference.md documents it as a gotcha. Normalising the path means "
+        "retiring that pin, which is a contract decision, not a test edit. Recorded here so the "
+        "defect stays visible and this turns green the day it is made."
+    ),
+    strict=True,
+)
+def test_paths_share_one_vocabulary(live_analysis):
+    """``PyCallable.path`` is absolute and host-specific; module paths are repo-relative.
+
+    An overview path carrying ``/Users/<someone>/…`` cannot be joined against
+    ``get_symbol_table()``'s keys or ``locate().module.path``, and does not exist on any machine
+    but the one the analysis ran on.
+    """
+    ov = live_analysis.get_callables_overview()[0]
+    assert not ov.path.startswith("/"), f"overview path {ov.path!r} is absolute — it embeds the analysis machine's layout"
+    st = live_analysis.get_symbol_table()
+    assert ov.path in st or any(m.endswith(ov.path) for m in st), "an overview path should address a module in the symbol table"

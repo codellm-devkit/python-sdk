@@ -896,14 +896,14 @@ class PythonAnalysis:
         """Return the source text named by ``node_id`` — a callable, or one of its body nodes.
 
         Generalises :meth:`get_method_bodies` below callable granularity: ``node_id`` is either a
-        callable's signature, or ``"<signature>@<body key>"`` for one of that callable's body
-        nodes — exactly the string :attr:`~cldk.analysis.commons.results.LocateResult.node_id`
-        hands back alongside :attr:`~cldk.analysis.commons.results.LocateResult.node`, so a
-        statement or call site :meth:`locate` found can be re-fetched precisely, not just the
-        callable enclosing it.
+        callable's signature, or the opaque body-node id
+        :attr:`~cldk.analysis.commons.results.LocateResult.node_id` hands back alongside
+        :attr:`~cldk.analysis.commons.results.LocateResult.node`, so a statement or call site
+        :meth:`locate` found can be re-fetched precisely, not just the callable enclosing it.
 
         Args:
-            node_id: A callable signature, or ``"<signature>@<body key>"``.
+            node_id: A callable signature, or a body-node id from :meth:`locate` — passed back as
+                received, not composed.
 
         Returns:
             The source text, never an ambiguous empty string.

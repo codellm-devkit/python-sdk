@@ -569,10 +569,11 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         """Source text for one node, named by ``node_id``.
 
         Generalises body access below callable granularity: ``node_id`` is either a callable's
-        signature (the same key :meth:`get_method_bodies` uses) or ``"<signature>@<body key>"``
-        for one of that callable's body nodes — exactly the string :attr:`LocateResult.node_id`
-        hands back alongside :attr:`LocateResult.node`, so a caller can re-fetch the precise
-        statement or call site :meth:`locate` found, not just its enclosing callable.
+        signature (the same key :meth:`get_method_bodies` uses) or the opaque body-node id
+        :attr:`LocateResult.node_id` hands back alongside :attr:`LocateResult.node`, so a caller
+        can re-fetch the precise statement or call site :meth:`locate` found, not just its
+        enclosing callable. The body-node form is the analyzer's own id
+        (``"<callable can:// id>@<body key>"``) — round-tripped, never composed by the caller.
 
         Raises:
             KeyError: No callable has that signature, no body node has that key, or the node

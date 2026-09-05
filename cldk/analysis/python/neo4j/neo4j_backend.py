@@ -1343,7 +1343,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             )
         cprops, clsprops = best_row["callable_props"], best_row["class_props"]
         found_body = self._innermost_body_node(rows, cprops["signature"])
-        node, node_id = (found_body[1], f"{cprops['signature']}@{found_body[0]}") if found_body else (None, None)
+        node, node_id = (found_body[1], found_body[0]) if found_body else (None, None)
         return LocateResult(
             node=node,
             node_id=node_id,
@@ -1357,9 +1357,10 @@ class PyNeo4jBackend(PythonAnalysisBackend):
 
     @staticmethod
     def _innermost_body_node(rows: List[Dict[str, Any]], signature: str) -> "Tuple[str, BodyNode] | None":
-        """The tightest ``:PyBodyNode`` of ``signature`` the query matched, plus its local body key
-        (the trailing segment of its graph ``id``), or ``None``. The key rides along so a caller can
-        build the node's ``get_source`` id (``"<signature>@<key>"``) without re-deriving it.
+        """The tightest ``:PyBodyNode`` of ``signature`` the query matched, plus its graph ``id``,
+        or ``None``. The id rides along because it *is* the node's address: it is read straight off
+        the node rather than composed here (#320 — the SDK used to build ``"<signature>@<key>"``,
+        which joined to nothing because the emitter mints ``"<callable can:// id>@<key>"``).
 
         ``None`` is a real outcome, not an error: a position on a callable's ``def`` line or on a
         blank line inside it is contained by the callable and by no body node, and the caller still
@@ -1378,8 +1379,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             return (b["end_line"] - b["start_line"], -body_key_column(key), key)
 
         best = min(matches, key=rank)
-        key = str(best.get("id", "")).rsplit("@", 1)[-1]
-        return (key, R.body_node(best))
+        return (str(best["id"]), R.body_node(best))
 
     def locate(self, path: str, line: int) -> LocateResult:
         """Resolve a source position to its enclosing callable (see
