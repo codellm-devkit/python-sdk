@@ -78,6 +78,7 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict
+from contextlib import contextmanager
 from typing import Any, Dict, List, Sequence, Tuple
 
 import networkx as nx
@@ -109,6 +110,47 @@ from cldk.models.python import (
 from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException, GraphSchemaMismatch
 
 logger = logging.getLogger(__name__)
+
+# One statement per parent->child collection, each fetching that whole collection for the *entire*
+# application in a single round trip and returning the parent's key as ``pk``. These are the bulk
+# twins of the per-parent statements inlined in ``PyNeo4jBackend._callable_full`` / ``_class_full``
+# / ``_module_full``, and reproduce those statements' row shapes exactly so either source can feed
+# the same reconstruction code (see ``PyNeo4jBackend._children``).
+#
+# Scoping: the module-level buckets key on ``m.file_key``, the rest on the parent's ``_module``
+# provenance property -- which the emitter indexes for every module-owned label (see
+# ``codeanalyzer/neo4j/schema.py``'s ``INDEXES``). Both confine the result to this backend's
+# application, which the per-parent statements do not: they match a bare ``{signature: $sig}``
+# and so would also see a same-signature node belonging to another application in a shared
+# database. The bulk path is the narrower of the two, never the wider.
+_BULK_CHILD_QUERIES: Dict[str, str] = {
+    # module -> its own top-level declarations
+    "module_classes": "MATCH (m:PyModule)-[:PY_DECLARES]->(c:PyClass) WHERE m.file_key IN $mods RETURN m.file_key AS pk, properties(c) AS p",
+    "module_functions": "MATCH (m:PyModule)-[:PY_DECLARES]->(f:PyCallable) WHERE m.file_key IN $mods RETURN m.file_key AS pk, properties(f) AS p",
+    "module_variables": (
+        "MATCH (m:PyModule)-[:PY_DECLARES_VAR]->(v:PyVariable) WHERE m.file_key IN $mods "
+        "RETURN m.file_key AS pk, properties(v) AS p ORDER BY v.start_line, v.name"
+    ),
+    "module_imports": (
+        "MATCH (m:PyModule)-[e:PY_IMPORTS]->(pkg:PyPackage) WHERE m.file_key IN $mods "
+        "RETURN m.file_key AS pk, pkg.name AS module, e.imported_names AS names"
+    ),
+    # class -> its members
+    "class_methods": "MATCH (c:PyClass)-[:PY_HAS_METHOD]->(m:PyCallable) WHERE c._module IN $mods RETURN c.signature AS pk, properties(m) AS p",
+    "class_attributes": "MATCH (c:PyClass)-[:PY_HAS_ATTRIBUTE]->(a:PyAttribute) WHERE c._module IN $mods RETURN c.signature AS pk, properties(a) AS p",
+    "class_inner_classes": "MATCH (c:PyClass)-[:PY_DECLARES]->(ic:PyClass) WHERE c._module IN $mods RETURN c.signature AS pk, properties(ic) AS p",
+    # callable -> its body and nested declarations
+    "callable_callsites": (
+        "MATCH (f:PyCallable)-[:PY_HAS_BODY_NODE]->(s:PyBodyNode {kind: 'call'}) WHERE f._module IN $mods "
+        "RETURN f.signature AS pk, properties(s) AS p ORDER BY s.start_line"
+    ),
+    "callable_inner_callables": "MATCH (f:PyCallable)-[:PY_DECLARES]->(d:PyCallable) WHERE f._module IN $mods RETURN f.signature AS pk, properties(d) AS p",
+    "callable_inner_classes": "MATCH (f:PyCallable)-[:PY_DECLARES]->(d:PyClass) WHERE f._module IN $mods RETURN f.signature AS pk, properties(d) AS p",
+    "callable_variables": (
+        "MATCH (f:PyCallable)-[:PY_DECLARES_VAR]->(v:PyVariable) WHERE f._module IN $mods "
+        "RETURN f.signature AS pk, properties(v) AS p ORDER BY v.start_line, v.name"
+    ),
+}
 
 
 class PyNeo4jBackend(PythonAnalysisBackend):
@@ -249,6 +291,12 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         return self._has_resolution_edges
 
     # -----[ lifecycle ]-----
+    # Set — to a lazily filled ``bucket -> parent key -> rows`` index — only inside
+    # :meth:`_bulk`; ``None`` means "unprimed", i.e. every child collection is fetched with
+    # its own scoped query. A class attribute rather than an ``__init__`` assignment so an
+    # instance built through the ``object.__new__`` seam the unit tests use sees it too.
+    _prefetch: Dict[str, Dict[str, List[Dict[str, Any]]]] | None = None
+
     def close(self) -> None:
         """Close the reused session (if any) and the underlying Neo4j driver."""
         self._close_session()
@@ -296,7 +344,68 @@ class PyNeo4jBackend(PythonAnalysisBackend):
 
     # =====================================================================================
     # Reconstruction helpers — fetch a node's children over Cypher, then assemble via R.
+    #
+    # Rebuilding a module walks module → class → method → nested-anything, and each child
+    # collection below used to cost one round trip **per parent node**: 73,669 of them to rebuild
+    # a 1,626-module application (45.3 per module at ~4.9 ms each, ~363 s wall clock) — a textbook
+    # N+1 against a database answering every individual query in five milliseconds. Inside
+    # :meth:`_bulk` each collection is instead fetched **once for the whole application** and
+    # served from a by-parent index (:data:`_BULK_CHILD_QUERIES`), so a bulk accessor pays one
+    # round trip per collection it actually reads — at most eleven — however many modules, classes
+    # and callables it walks.
+    #
+    # **On nesting depth:** there is none to bound. The recursion is real (an inner class has
+    # methods, a nested callable has call sites), but it never happens *in Cypher*: every bulk
+    # statement is a single flat hop scoped by the parent's ``_module`` provenance property, which
+    # every projected node carries at every nesting depth — ``codeanalyzer/neo4j/project.py``
+    # threads the module's ``file_key`` down through ``_project_class`` / ``_project_callable``'s
+    # own recursion, so a class nested five levels deep appears in the ``class_inner_classes`` rows
+    # exactly like a top-level one. The tree is then rebuilt in Python by the same recursive calls
+    # as before, to whatever depth the graph actually has. No variable-length path, no depth
+    # ceiling, and therefore no depth at which a deeply nested declaration would be silently
+    # truncated.
     # =====================================================================================
+    def _children(self, bucket: str, key: str, query: str, **params: Any) -> List[Dict[str, Any]]:
+        """The child rows of one parent node — from the bulk index when primed, one query when not.
+
+        Unprimed (the default, and what every single-node accessor pays) runs ``query``: the
+        scoped statement naming this one parent, unchanged from before the collapse. Primed
+        (inside :meth:`_bulk`) answers from ``_BULK_CHILD_QUERIES[bucket]``, fetched
+        lazily on first use so an accessor is never charged for a collection it does not read —
+        ``get_all_classes`` never touches the four module-level buckets. Both paths yield the same
+        row shape, so the reconstruction below cannot tell them apart.
+
+        A single-node accessor (``get_class``, ``get_method``, ``get_python_module``) deliberately
+        stays unprimed: prefetching an application's every call site to answer about one class
+        would trade an N+1 for a much larger constant.
+        """
+        if self._prefetch is None:
+            return self._run(query, **params)
+        index = self._prefetch.get(bucket)
+        if index is None:
+            index = self._prefetch[bucket] = self._collect(bucket)
+        return index.get(key, [])
+
+    def _collect(self, bucket: str) -> Dict[str, List[Dict[str, Any]]]:
+        """One whole child collection for this application, in one round trip, grouped by ``pk``."""
+        index: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        for row in self._run(_BULK_CHILD_QUERIES[bucket], mods=self._modules):
+            index[row["pk"]].append(row)
+        return index
+
+    @contextmanager
+    def _bulk(self) -> Any:
+        """Serve child collections from application-wide prefetches for the duration of the block.
+
+        Re-entrant: an inner block reuses (and does not discard) an outer block's index.
+        """
+        outer = self._prefetch
+        self._prefetch = {} if outer is None else outer
+        try:
+            yield
+        finally:
+            self._prefetch = outer
+
     def _callable_full(self, props: Dict[str, Any]) -> PyCallable:
         """Rebuild a full :class:`PyCallable` (call sites, inner callables/classes, locals).
 
@@ -313,23 +422,37 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         sig = props["signature"]
         call_sites = [
             R.callsite(r["p"])
-            for r in self._run(
+            for r in self._children(
+                "callable_callsites",
+                sig,
                 "MATCH (:PyCallable {signature: $sig})-[:PY_HAS_BODY_NODE]->(s:PyBodyNode {kind: 'call'}) "
                 "RETURN properties(s) AS p ORDER BY s.start_line",
                 sig=sig,
             )
         ]
         inner_callables: Dict[str, PyCallable] = {}
-        for r in self._run("MATCH (:PyCallable {signature: $sig})-[:PY_DECLARES]->(d:PyCallable) RETURN properties(d) AS p", sig=sig):
+        for r in self._children(
+            "callable_inner_callables",
+            sig,
+            "MATCH (:PyCallable {signature: $sig})-[:PY_DECLARES]->(d:PyCallable) RETURN properties(d) AS p",
+            sig=sig,
+        ):
             ic = self._callable_full(r["p"])
             inner_callables[ic.name] = ic  # inner_callables keyed by short name
         inner_classes: Dict[str, PyClass] = {}
-        for r in self._run("MATCH (:PyCallable {signature: $sig})-[:PY_DECLARES]->(d:PyClass) RETURN properties(d) AS p", sig=sig):
+        for r in self._children(
+            "callable_inner_classes",
+            sig,
+            "MATCH (:PyCallable {signature: $sig})-[:PY_DECLARES]->(d:PyClass) RETURN properties(d) AS p",
+            sig=sig,
+        ):
             ic2 = self._class_full(r["p"])
             inner_classes[ic2.signature] = ic2  # inner_classes keyed by signature
         local_variables = [
             R.variable(r["p"])
-            for r in self._run(
+            for r in self._children(
+                "callable_variables",
+                sig,
                 "MATCH (:PyCallable {signature: $sig})-[:PY_DECLARES_VAR]->(v:PyVariable) "
                 "RETURN properties(v) AS p ORDER BY v.start_line, v.name",
                 sig=sig,
@@ -341,15 +464,21 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         """Rebuild a full :class:`PyClass` (methods, attributes, inner classes)."""
         sig = props["signature"]
         methods: Dict[str, PyCallable] = {}
-        for r in self._run("MATCH (:PyClass {signature: $sig})-[:PY_HAS_METHOD]->(m:PyCallable) RETURN properties(m) AS p", sig=sig):
+        for r in self._children(
+            "class_methods", sig, "MATCH (:PyClass {signature: $sig})-[:PY_HAS_METHOD]->(m:PyCallable) RETURN properties(m) AS p", sig=sig
+        ):
             m = self._callable_full(r["p"])
             methods[m.name] = m  # methods keyed by short name
         attributes: Dict[str, PyClassAttribute] = {}
-        for r in self._run("MATCH (:PyClass {signature: $sig})-[:PY_HAS_ATTRIBUTE]->(a:PyAttribute) RETURN properties(a) AS p", sig=sig):
+        for r in self._children(
+            "class_attributes", sig, "MATCH (:PyClass {signature: $sig})-[:PY_HAS_ATTRIBUTE]->(a:PyAttribute) RETURN properties(a) AS p", sig=sig
+        ):
             a = R.attribute(r["p"])
             attributes[a.name] = a  # attributes keyed by name
         inner_classes: Dict[str, PyClass] = {}
-        for r in self._run("MATCH (:PyClass {signature: $sig})-[:PY_DECLARES]->(ic:PyClass) RETURN properties(ic) AS p", sig=sig):
+        for r in self._children(
+            "class_inner_classes", sig, "MATCH (:PyClass {signature: $sig})-[:PY_DECLARES]->(ic:PyClass) RETURN properties(ic) AS p", sig=sig
+        ):
             ic = self._class_full(r["p"])
             inner_classes[ic.signature] = ic  # inner_classes keyed by signature
         return R.class_(props, methods=methods, attributes=attributes, inner_classes=inner_classes)
@@ -358,16 +487,22 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         """Rebuild a full :class:`PyModule` (top-level classes, functions, variables, imports)."""
         file_key = props["file_key"]
         classes: Dict[str, PyClass] = {}
-        for r in self._run("MATCH (:PyModule {file_key: $fk})-[:PY_DECLARES]->(c:PyClass) RETURN properties(c) AS p", fk=file_key):
+        for r in self._children(
+            "module_classes", file_key, "MATCH (:PyModule {file_key: $fk})-[:PY_DECLARES]->(c:PyClass) RETURN properties(c) AS p", fk=file_key
+        ):
             c = self._class_full(r["p"])
             classes[c.signature] = c  # module.types keyed by signature
         functions: Dict[str, PyCallable] = {}
-        for r in self._run("MATCH (:PyModule {file_key: $fk})-[:PY_DECLARES]->(f:PyCallable) RETURN properties(f) AS p", fk=file_key):
+        for r in self._children(
+            "module_functions", file_key, "MATCH (:PyModule {file_key: $fk})-[:PY_DECLARES]->(f:PyCallable) RETURN properties(f) AS p", fk=file_key
+        ):
             fn = self._callable_full(r["p"])
             functions[fn.name] = fn  # module.functions keyed by short name
         variables = [
             R.variable(r["p"])
-            for r in self._run(
+            for r in self._children(
+                "module_variables",
+                file_key,
                 "MATCH (:PyModule {file_key: $fk})-[:PY_DECLARES_VAR]->(v:PyVariable) RETURN properties(v) AS p ORDER BY v.start_line, v.name",
                 fk=file_key,
             )
@@ -378,9 +513,10 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     def _module_imports(self, file_key: str) -> List[Any]:
         """Best-effort :class:`PyImport` list from the aggregated ``PY_IMPORTS`` edges."""
         out: List[Any] = []
-        for r in self._run(
-            "MATCH (:PyModule {file_key: $fk})-[e:PY_IMPORTS]->(p:PyPackage) "
-            "RETURN p.name AS module, e.imported_names AS names",
+        for r in self._children(
+            "module_imports",
+            file_key,
+            "MATCH (:PyModule {file_key: $fk})-[e:PY_IMPORTS]->(p:PyPackage) RETURN p.name AS module, e.imported_names AS names",
             fk=file_key,
         ):
             names = r.get("names") or []
@@ -423,12 +559,13 @@ class PyNeo4jBackend(PythonAnalysisBackend):
 
     def get_symbol_table(self) -> Dict[str, PyModule]:
         result: Dict[str, PyModule] = {}
-        for r in self._run(
-            "MATCH (:PyApplication {name: $app})-[:PY_HAS_MODULE]->(m:PyModule) RETURN properties(m) AS p",
-            app=self.application_name,
-        ):
-            mod = self._module_full(r["p"])
-            result[mod.file_path] = mod  # symbol_table keyed by file_path (== file_key)
+        with self._bulk():  # every module's children in eleven queries, not 45 per module
+            for r in self._run(
+                "MATCH (:PyApplication {name: $app})-[:PY_HAS_MODULE]->(m:PyModule) RETURN properties(m) AS p",
+                app=self.application_name,
+            ):
+                mod = self._module_full(r["p"])
+                result[mod.file_path] = mod  # symbol_table keyed by file_path (== file_key)
         return result
 
     def get_modules(self) -> List[PyModule]:
@@ -524,12 +661,13 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     # =====================================================================================
     def get_all_classes(self) -> Dict[str, PyClass]:
         result: Dict[str, PyClass] = {}
-        for r in self._run(
-            "MATCH (:PyModule)-[:PY_DECLARES]->(c:PyClass) WHERE c._module IN $mods RETURN properties(c) AS p",
-            mods=self._modules,
-        ):
-            c = self._class_full(r["p"])
-            result[c.signature] = c
+        with self._bulk():  # every class's members in seven queries, not one per child collection
+            for r in self._run(
+                "MATCH (:PyModule)-[:PY_DECLARES]->(c:PyClass) WHERE c._module IN $mods RETURN properties(c) AS p",
+                mods=self._modules,
+            ):
+                c = self._class_full(r["p"])
+                result[c.signature] = c
         return result
 
     def get_class(self, qualified_class_name: str) -> PyClass | None:

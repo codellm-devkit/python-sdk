@@ -44,18 +44,23 @@ named application is absent from it, so CI without Neo4j stays green.
 
 Three accessors are gated behind ``CLDK_TEST_NEO4J_SLOW=1``
 ----------------------------------------------------------
-``get_symbol_table()``, ``get_classes()`` and ``get_call_graph_json()`` each take **about six to
-seven minutes** on this graph (measured here: 391 s, 352 s, 422 s). The first two reconstruct every
-module / class by fanning out one Cypher query per child collection — an N+1 over 1,626 modules and
-1,642 classes; the third calls ``get_symbol_table()`` internally and so inherits its cost. That is a
-*finding*, not something to hide, so all three are tested rather than omitted; but twenty minutes
-cannot sit in a default run, so they are opt-in via an environment flag rather than a ``slow``
-marker. The flag is deliberate: this repo has no ``markers`` entry in ``pyproject.toml``, a marker
+``get_symbol_table()``, ``get_classes()`` and ``get_call_graph_json()`` are the three heaviest calls
+in the facade. They **used to** take about six to seven minutes each (recorded here: 391 s, 352 s,
+422 s), because the first two rebuilt every module / class by fanning out one Cypher query per child
+collection — an N+1 over 1,626 modules and 1,642 classes, 73,669 round trips for the symbol table
+alone — and the third calls ``get_symbol_table()`` internally and inherited the whole bill. That
+fan-out is gone (leg 1.5: the child collections are now fetched once for the application and served
+from a by-parent index), and the same three now measure **10.5 s, 11.1 s and 28.3 s** on the same
+graph.
+
+They stay behind the flag: fifty seconds is still an order of magnitude more than the rest of this
+module put together, and the gate is what lets the default run stay under a minute. The flag rather
+than a marker is deliberate: this repo has no ``markers`` entry in ``pyproject.toml``, a marker
 would raise ``PytestUnknownMarkWarning`` and would still run unless the caller remembered
 ``-m 'not slow'``, whereas ``skipif`` matches the convention already used throughout this directory
 and is off unless explicitly asked for.
 
-Without the flag the whole module runs in well under a minute.
+Without the flag the whole module runs in about twenty seconds.
 
 Fixture selection
 -----------------
@@ -987,15 +992,16 @@ def test_get_all_callers_and_callees_resolve_for_a_real_callable(analysis, busy_
     )
 
 
-@pytest.mark.skipif(not RUN_SLOW, reason="slow (~7 min, see docstring); set CLDK_TEST_NEO4J_SLOW=1")
+@pytest.mark.skipif(not RUN_SLOW, reason="slow (~28 s, see docstring); set CLDK_TEST_NEO4J_SLOW=1")
 def test_get_call_graph_json_builds_with_external_targets_resolved(analysis):
-    """The pydantic half of the same fix — and a **third** six-minute accessor.
+    """The pydantic half of the same fix — and the **third** and heaviest of these accessors.
 
     ``get_call_graph_json`` → ``get_application_view()`` → ``PyApplication(symbol_table=
     self.get_symbol_table(), call_graph=self._call_edges())``. Before the fix this paid the full
     ~390 s symbol-table reconstruction and only then hit ``PyCallEdge(dst=None)`` and threw all of
     that work away. Now ``_call_edges`` never sees a ``None`` ``dst``, so this asserts the JSON
-    actually contains resolved external call-edge targets rather than merely "did not raise".
+    actually contains resolved external call-edge targets rather than merely "did not raise" — and
+    since leg 1.5 collapsed the symbol table's N+1 the whole call costs ~28 s, not ~420 s.
     """
     payload = analysis.get_call_graph_json()
 
@@ -1011,21 +1017,27 @@ def test_get_call_graph_json_builds_with_external_targets_resolved(analysis):
 
 
 # =====================================================================================
-# The two six-minute accessors — opt-in, but recorded rather than omitted
+# The two heaviest accessors — opt-in, but recorded rather than omitted
 # =====================================================================================
 # Measured on this graph (2,364 files, 1,626 modules, 1,656 classes):
 #
-#     get_symbol_table()   ~382 s   -> 1,626 modules
-#     get_classes()        ~348 s   -> 1,642 top-level classes
+#                          before      after     round trips
+#     get_symbol_table()   ~440 s     10.5 s     73,669 -> 12   -> 1,626 modules
+#     get_classes()        ~410 s     11.1 s     62,435 ->  8   -> 1,642 top-level classes
 #
-# Both reconstruct every node's children with a query per child collection — an N+1 fan-out over
-# thousands of nodes. Six minutes is the *known current state*, not a target; the ceilings below are
-# deliberately generous (15 min) so they catch a regression to an hour without going red on a slower
-# machine or a colder page cache. If either genuinely gets fast, tighten these.
-_SLOW_CEILING_SECONDS = 900
+# "Before" is the N+1 fan-out these used to pay: one Cypher query per child collection per parent
+# node, all the way down the nesting. "After" is leg 1.5's collapse — each child collection fetched
+# once for the whole application and served from a by-parent index — verified to rebuild all 1,626
+# modules and 1,642 classes byte-identically to what the fan-out produced.
+#
+# The ceiling was 900 s while six minutes was the known state. Thirty is now the generous figure:
+# nearly 3x the measured 11 s, so a colder page cache or a busier machine does not turn it red, but
+# a regression to the fan-out (or to anything else scaling with the application) cannot hide under
+# it the way it could under fifteen minutes.
+_SLOW_CEILING_SECONDS = 30
 
 
-@pytest.mark.skipif(not RUN_SLOW, reason="slow (~6 min); set CLDK_TEST_NEO4J_SLOW=1")
+@pytest.mark.skipif(not RUN_SLOW, reason="slow (~11 s); set CLDK_TEST_NEO4J_SLOW=1")
 def test_get_symbol_table_returns_every_module(analysis, cypher):
     import time
 
@@ -1036,10 +1048,10 @@ def test_get_symbol_table_returns_every_module(analysis, cypher):
     expected = cypher("MATCH (:PyApplication {name: $n})-[:PY_HAS_MODULE]->(m:PyModule) RETURN count(m) AS c", n=APP_NAME)[0]["c"]
     assert len(table) == expected
     assert all(m is not None for m in table.values())
-    assert elapsed < _SLOW_CEILING_SECONDS, f"get_symbol_table took {elapsed:.0f}s (was ~382s when recorded)"
+    assert elapsed < _SLOW_CEILING_SECONDS, f"get_symbol_table took {elapsed:.0f}s (10.5s when recorded, from ~440s before the N+1 collapse)"
 
 
-@pytest.mark.skipif(not RUN_SLOW, reason="slow (~6 min); set CLDK_TEST_NEO4J_SLOW=1")
+@pytest.mark.skipif(not RUN_SLOW, reason="slow (~11 s); set CLDK_TEST_NEO4J_SLOW=1")
 def test_get_classes_returns_every_top_level_class(analysis, cypher):
     import time
 
@@ -1050,4 +1062,4 @@ def test_get_classes_returns_every_top_level_class(analysis, cypher):
     expected = cypher("MATCH (:PyModule)-[:PY_DECLARES]->(c:PyClass) RETURN count(DISTINCT c) AS c")[0]["c"]
     assert len(classes) == expected
     assert all(name == cls.signature for name, cls in classes.items())
-    assert elapsed < _SLOW_CEILING_SECONDS, f"get_classes took {elapsed:.0f}s (was ~348s when recorded)"
+    assert elapsed < _SLOW_CEILING_SECONDS, f"get_classes took {elapsed:.0f}s (11.1s when recorded, from ~410s before the N+1 collapse)"

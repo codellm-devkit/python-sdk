@@ -24,9 +24,13 @@ seam that exists precisely so the public ``__init__`` (a real ``bolt://`` URI + 
 never has to accept anything but a URI string.
 """
 
+import os
 from typing import Any, Callable
 
 import pytest
+
+from cldk import CLDK
+from cldk.analysis.commons.backend_config import Neo4jConnectionConfig
 
 from cldk.analysis.python.codeanalyzer.codeanalyzer import PyCodeanalyzer
 from cldk.analysis.python.neo4j import PyNeo4jBackend
@@ -530,3 +534,63 @@ def py_local(tmp_path) -> PyCodeanalyzer:
 def py_either(request, py, py_local):
     """Both backends, for the outcome tests that must hold identically on each."""
     return py if request.param == "neo4j" else py_local
+
+
+# --------------------------------------------------------------------------------------------
+# Live-graph fixtures — a facade attached to a Neo4j graph loaded OUT OF BAND, plus the
+# round-trip counter used to assert on what an accessor costs.
+#
+# The environment variable names are ``test_e2e_neo4j_live.py``'s, deliberately reused rather
+# than re-invented, so one export sets up every live-graph suite in this directory. Everything
+# here is strictly read-only: no test using these writes a node, relationship, or property.
+# --------------------------------------------------------------------------------------------
+LIVE_NEO4J_URI = os.environ.get("CLDK_TEST_NEO4J_URI", "")
+LIVE_NEO4J_USER = os.environ.get("CLDK_TEST_NEO4J_USER", "neo4j")
+LIVE_NEO4J_PASSWORD = os.environ.get("CLDK_TEST_NEO4J_PASSWORD", "neo4j")
+LIVE_NEO4J_APP = os.environ.get("CLDK_TEST_NEO4J_APP", "odoo-slim-19")
+
+
+@pytest.fixture(scope="session")
+def live_analysis():
+    """A ``PythonAnalysis`` facade over the live graph. Session-scoped: constructing one runs the
+    schema probe, the resolution probe and a full module-key load, and repeating that per test is
+    pure waste."""
+    facade = CLDK.python(
+        backend=Neo4jConnectionConfig(
+            uri=LIVE_NEO4J_URI,
+            username=LIVE_NEO4J_USER,
+            password=LIVE_NEO4J_PASSWORD,
+            application_name=LIVE_NEO4J_APP,
+        )
+    )
+    yield facade
+    facade.backend.close()
+
+
+@pytest.fixture
+def count_round_trips():
+    """Yields a helper: ``n = count_round_trips(analysis)`` wraps the backend's ``_run`` and
+    returns a live ``{"c": <round trips since the wrap>}``.
+
+    It counts genuinely executed statements — it wraps the real ``_run`` and delegates to it — so
+    it cannot go green on an accessor that quietly fires thousands of queries. Every wrap is undone
+    at teardown, which matters because ``live_analysis`` is session-scoped and would otherwise
+    accumulate one counting layer per test.
+    """
+    patched: list[tuple[Any, Any]] = []
+
+    def counted(analysis) -> dict:
+        backend = analysis.backend
+        original, n = backend._run, {"c": 0}
+
+        def counting(query, **params):
+            n["c"] += 1
+            return original(query, **params)
+
+        backend._run = counting
+        patched.append((backend, original))
+        return n
+
+    yield counted
+    for backend, original in patched:
+        backend._run = original
