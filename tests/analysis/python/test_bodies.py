@@ -31,6 +31,8 @@ in for "absent".
 
 import pytest
 
+from cldk.analysis.python.codeanalyzer.codeanalyzer import PyCodeanalyzer
+from cldk.models.python import PyApplication, PyCallable, PyModule, Span
 from tests.analysis.python.conftest import _locate_code
 
 
@@ -44,6 +46,31 @@ def test_get_source_of_a_callable(py_either):
 def test_get_source_of_an_unknown_callable_raises(py_either):
     with pytest.raises(KeyError):
         py_either.get_source("src.app.NoSuchCallable")
+
+
+def test_body_not_truncated():
+    """Spec §10 DoD: a callable long enough to matter (well over a thousand lines) returns its
+    whole body, not a truncated prefix. Local backend only -- ``_slice``'s UTF-8 byte-offset
+    slicing (see ``codeanalyzer.py``) has no length cap, but this pins that down as a standing
+    guarantee rather than an accident of the implementation.
+    """
+    n_lines = 1500
+    body = "".join(f"    x{i} = {i}\n" for i in range(n_lines))
+    source = "def big():\n" + body
+    span = Span(start=(1, 0), end=(n_lines + 1, 0), bytes=(0, len(source.encode("utf-8"))))
+
+    big = PyCallable(name="big", path="pkg/mod.py", signature="pkg.mod.big", span=span)
+    module = PyModule(file_path="pkg/mod.py", module_name="pkg.mod", source=source, functions={"big": big})
+    app = PyApplication(symbol_table={"pkg/mod.py": module})
+
+    backend = object.__new__(PyCodeanalyzer)
+    backend.application = app
+    backend.call_graph = None
+
+    got = backend.get_source("pkg.mod.big")
+    assert got == source
+    assert got.count("\n") > 1000
+    assert backend.get_method_bodies(["pkg.mod.big"])["pkg.mod.big"] == source
 
 
 # ================================================================================================
