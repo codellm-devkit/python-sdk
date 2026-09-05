@@ -40,6 +40,9 @@ from cldk.analysis.commons.backend import AnalysisBackend
 from cldk.analysis.commons.results import EntrypointCoverage, LocateResult, SliceNode
 from cldk.utils.exceptions import SelectorNotInGraph
 from cldk.models.python import (
+    CdgEdge,
+    CfgEdge,
+    DdgEdge,
     PyApplication,
     PyCallable,
     PyCallableOverview,
@@ -684,4 +687,102 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
                 no source either (see :class:`~cldk.analysis.commons.results.LocateResult`). Only
                 the local codeanalyzer backend, which holds the module's real text and byte
                 offsets, can answer for a statement or call site.
+        """
+
+    # -----[ per-callable graphs ]-----
+    # The domain of all three is ONE callable's own body nodes: an edge is returned only when both
+    # of its endpoints are body nodes of the callable named. Verified on odoo-slim-19 that the
+    # graph carries no cross-callable PY_CFG_NEXT / PY_CDG / PY_DDG edge at all (0 of 5,521,626),
+    # so the restriction states the domain rather than narrowing it -- interprocedural flow lives
+    # on PY_PARAM_IN / PY_PARAM_OUT / PY_SUMMARY, which these accessors deliberately do not follow.
+    #
+    # That is what makes them bounded by construction: no depth argument and no cap, because a
+    # callable's body is finite and already chosen by the caller. Finite is not the same as small
+    # -- measured maxima on odoo-slim-19 are 402 CFG edges, 314 CDG edges and 1,386,918 DDG edges
+    # (all three on ``Website.configurator_apply``, whose DDG is 96% ``reaching-defs``). A caller
+    # that cannot afford the largest DDG wants a slice, not a cap here.
+    #
+    # ``src`` / ``dst`` are body-node ids in the one vocabulary the rest of this contract already
+    # uses: ``<callable can:// id>@<body key>``, exactly what
+    # :attr:`~cldk.analysis.commons.results.LocateResult.node_id` returns and
+    # :meth:`get_source` accepts. Both backends emit that spelling, so an endpoint from either is
+    # an address, not an opaque token.
+    #
+    # ANALYSIS LEVEL. All three graphs are built by the analyzer only at level 3
+    # (``program_dependency_graph``) and above; ``points-to`` DDG evidence needs level 4. A
+    # backend attached to a shallower analysis MUST raise rather than return ``[]``: an empty
+    # there would be indistinguishable from a callable that genuinely has no data dependence,
+    # which is the ambiguous empty D7 rules out. An empty list from a level-3-or-deeper backend
+    # is the honest answer and stays available to mean exactly that. (The Neo4j backend is always
+    # level 4 -- ``--emit neo4j`` forces it -- so only the local backend can be below the line;
+    # the rule is stated here, once, because it is the contract and not an implementation detail.)
+    #
+    # There is no order. These are edge sets (E2), returned in whatever order the backend finds
+    # them; nothing downstream may read them as a sequence.
+    @abstractmethod
+    def get_cfg(self, callable: str, *, in_class: str | None = None) -> List[CfgEdge]:
+        """Control flow edges within one callable.
+
+        Args:
+            callable: The callable's name, resolved by :meth:`resolve_callable` -- so an ambiguous
+                name raises listing candidates rather than being guessed at.
+            in_class: Disambiguate by owning class, as in :meth:`resolve_callable`.
+
+        Returns:
+            One :class:`~cldk.models.python.CfgEdge` per control-flow edge, carrying the analyzer's
+            ``kind`` (``fallthrough``, ``true``, ``false``, ``exception``, ``return``,
+            ``loop_back``, ``break``, ``continue``, ``yield``, ``await_resume``) -- a conditional's
+            two successors stay two edges, discriminated by ``kind``.
+
+        Raises:
+            AmbiguousName: ``callable`` named more than one callable.
+            SelectorNotInGraph: Nothing matched.
+        """
+
+    @abstractmethod
+    def get_cdg(self, callable: str, *, in_class: str | None = None) -> List[CdgEdge]:
+        """Control dependence edges within one callable.
+
+        ``src`` is the branching node a ``dst`` is control dependent on -- post-dominance over the
+        CFG :meth:`get_cfg` returns, computed by the analyzer, not re-derived here.
+
+        Args:
+            callable: The callable's name, resolved by :meth:`resolve_callable`.
+            in_class: Disambiguate by owning class.
+
+        Returns:
+            One :class:`~cldk.models.python.CdgEdge` per control dependence.
+
+        Raises:
+            AmbiguousName: ``callable`` named more than one callable.
+            SelectorNotInGraph: Nothing matched.
+        """
+
+    @abstractmethod
+    def get_ddg(self, callable: str, *, in_class: str | None = None) -> List[DdgEdge]:
+        """Data dependence edges within one callable.
+
+        Each edge carries the variable it flows (``var``) and its evidence (``prov``), so a caller
+        separates syntactic from alias-aware dependence without a second call. Three provenances
+        occur, one per edge (measured over all 5,134,655 DDG edges of odoo-slim-19):
+
+        * ``ssa`` (550,316) -- def-use from the callable's SSA form.
+        * ``reaching-defs`` (3,036,102) -- the flow-sensitive reaching-definitions closure. Real,
+          and undocumented upstream; recorded in this leg's divergence register rather than
+          quietly accepted.
+        * ``points-to`` (1,548,237) -- the alias-aware delta the level-4 oracle adds beyond the
+          syntactic set. Absent at level 3, which is a narrower answer and not a wrong one.
+
+        Args:
+            callable: The callable's name, resolved by :meth:`resolve_callable`.
+            in_class: Disambiguate by owning class.
+
+        Returns:
+            One :class:`~cldk.models.python.DdgEdge` per (edge, variable, provenance): the same
+            statement pair legitimately appears more than once when it carries several variables
+            or several kinds of evidence, and collapsing those would drop dependences.
+
+        Raises:
+            AmbiguousName: ``callable`` named more than one callable.
+            SelectorNotInGraph: Nothing matched.
         """

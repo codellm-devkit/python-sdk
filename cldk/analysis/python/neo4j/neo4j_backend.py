@@ -91,6 +91,9 @@ from cldk.analysis.python.backend import PythonAnalysisBackend, body_key_column,
 from cldk.analysis.python.neo4j import reconstruct as R
 from cldk.models.python import (
     BodyNode,
+    CdgEdge,
+    CfgEdge,
+    DdgEdge,
     PyApplication,
     PyArtifact,
     PyCallEdge,
@@ -1125,6 +1128,48 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             source=None,
             ref=node_id,
         )
+
+    # -----[ per-callable graphs ]-----
+    #: Both endpoints anchored to the SAME ``c`` — the domain is one callable's own body nodes
+    #: (see :meth:`PythonAnalysisBackend.get_cfg`), which is what makes the result bounded with no
+    #: cap. It is written as a restriction rather than trusted: the emitter projects these three
+    #: relationships per callable, so an edge leaving one is impossible on a graph built that way
+    #: (verified: 0 cross-callable edges of 5,521,626 on odoo-slim-19), but a graph built some
+    #: other way must not be able to widen the answer silently.
+    _OWN_EDGES = (
+        "MATCH (c:PyCallable) WHERE c._module IN $mods AND c.signature = $sig "
+        "MATCH (c)-[:PY_HAS_BODY_NODE]->(s:PyBodyNode)-[r:{rel}]->(d:PyBodyNode)<-[:PY_HAS_BODY_NODE]-(c) "
+        "RETURN s.id AS src, d.id AS dst{projection}"
+    )
+
+    def _own_edges(self, name: str, in_class: str | None, rel: str, projection: str = "") -> List[Dict[str, Any]]:
+        """Rows for one callable's own ``rel`` edges, resolved through
+        :meth:`resolve_callable` — Task 4's resolver, so an ambiguous name raises listing
+        candidates here exactly as it does there, and there is no second resolution path to drift.
+
+        One round trip for the edges; ``resolve_callable`` costs its own, which is the price of
+        the caller naming a callable instead of quoting a signature.
+        """
+        sig = self.resolve_callable(name, in_class=in_class).callable
+        return self._run(self._OWN_EDGES.format(rel=rel, projection=projection), mods=self._modules, sig=sig)
+
+    def get_cfg(self, callable: str, *, in_class: str | None = None) -> List[CfgEdge]:
+        """Control flow within one callable (see :meth:`PythonAnalysisBackend.get_cfg`)."""
+        rows = self._own_edges(callable, in_class, "PY_CFG_NEXT", ", r.kind AS kind")
+        return [CfgEdge(src=r["src"], dst=r["dst"], kind=r["kind"]) for r in rows]
+
+    def get_cdg(self, callable: str, *, in_class: str | None = None) -> List[CdgEdge]:
+        """Control dependence within one callable (see :meth:`PythonAnalysisBackend.get_cdg`)."""
+        return [CdgEdge(src=r["src"], dst=r["dst"]) for r in self._own_edges(callable, in_class, "PY_CDG")]
+
+    def get_ddg(self, callable: str, *, in_class: str | None = None) -> List[DdgEdge]:
+        """Data dependence within one callable (see :meth:`PythonAnalysisBackend.get_ddg`).
+
+        ``prov`` is projected through ``prune``, so it is absent rather than null on an edge that
+        carries none; ``or []`` restores the model's default instead of failing validation.
+        """
+        rows = self._own_edges(callable, in_class, "PY_DDG", ", r.var AS var, r.prov AS prov")
+        return [DdgEdge(src=r["src"], dst=r["dst"], var=r["var"], prov=list(r["prov"] or [])) for r in rows]
 
     def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:
         rows = self._run(

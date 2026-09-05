@@ -59,6 +59,9 @@ from cldk.analysis.python.backend import PythonAnalysisBackend
 from cldk.analysis.python.codeanalyzer import PyCodeanalyzer
 from cldk.analysis.python.neo4j import PyNeo4jBackend
 from cldk.models.python import (
+    CdgEdge,
+    CfgEdge,
+    DdgEdge,
     PyApplication,
     PyArtifact,
     PyCallable,
@@ -923,6 +926,98 @@ class PythonAnalysis:
             :meth:`locate`: The usual way to obtain a ``node_id`` in the first place.
         """
         return self.backend.get_source(node_id)
+
+    # -----[ per-callable graphs ]-----
+    def get_cfg(self, callable: str, *, in_class: str | None = None) -> List[CfgEdge]:
+        """Return the control flow edges inside one callable.
+
+        Bounded by construction: the domain is that one callable's own body nodes, so there is no
+        depth argument and no cap to get wrong. Finite is not the same as small — the largest CFG
+        measured on a real application is 402 edges, but its DDG is over a million (see
+        :meth:`get_ddg`).
+
+        ``src`` and ``dst`` are body-node ids in the same vocabulary
+        :attr:`~cldk.analysis.commons.results.LocateResult.node_id` uses, so an endpoint can be
+        handed straight back to :meth:`get_source`. No ``can://`` URI and no ordinal appears in
+        either the argument or the result.
+
+        Args:
+            callable: The callable's name — resolved the way :meth:`locate` and the addressing
+                layer resolve names, so ``"charge"`` is enough when it is unique and an ambiguous
+                name raises listing the candidates instead of being guessed at.
+            in_class: Narrow to the class this names, when the bare name is ambiguous.
+
+        Returns:
+            A list of :class:`~cldk.models.python.CfgEdge`, each carrying the edge ``kind``
+            (``"true"``/``"false"`` on a conditional, ``"exception"``, ``"loop_back"``, ...). It
+            is a set, not a sequence: no order is implied.
+
+        Raises:
+            AmbiguousName: ``callable`` matched more than one callable.
+            SelectorNotInGraph: Nothing matched.
+            CodeanalyzerUsageException: This analysis was built below
+                ``analysis_level="program_dependency_graph"``, where the analyzer emits no control
+                or data flow at all — reported rather than returned as a misleading empty list.
+
+        See Also:
+            :meth:`get_cdg`, :meth:`get_ddg`: The other two graphs of the same callable.
+        """
+        return self.backend.get_cfg(callable, in_class=in_class)
+
+    def get_cdg(self, callable: str, *, in_class: str | None = None) -> List[CdgEdge]:
+        """Return the control dependence edges inside one callable.
+
+        ``src`` is the branch a ``dst`` is control dependent on — "this statement runs only
+        because that test went this way" — computed by the analyzer over the CFG :meth:`get_cfg`
+        returns.
+
+        Args:
+            callable: The callable's name, resolved as in :meth:`get_cfg`.
+            in_class: Narrow to the class this names.
+
+        Returns:
+            A list of :class:`~cldk.models.python.CdgEdge`, in no particular order.
+
+        Raises:
+            AmbiguousName: ``callable`` matched more than one callable.
+            SelectorNotInGraph: Nothing matched.
+            CodeanalyzerUsageException: Analysis level below ``program_dependency_graph``.
+        """
+        return self.backend.get_cdg(callable, in_class=in_class)
+
+    def get_ddg(self, callable: str, *, in_class: str | None = None) -> List[DdgEdge]:
+        """Return the data dependence edges inside one callable.
+
+        Every edge names the variable that flows (``var``) and the evidence for it (``prov``), so
+        a caller separates syntactic dependence from alias-aware dependence without asking a
+        second question. ``prov`` is one of ``"ssa"``, ``"reaching-defs"`` or ``"points-to"``;
+        ``"points-to"`` is the alias-derived delta that only a level-4 analysis carries, so a
+        level-3 answer is narrower rather than wrong.
+
+        The same statement pair appears more than once when it carries several variables or
+        several kinds of evidence — that is the point, not duplication.
+
+        This is the one accessor here whose per-callable result can be large: the maximum measured
+        on a real application is 1,386,918 edges for a single callable (96% of them
+        ``reaching-defs``). It is still bounded by construction and still uncapped — a caller who
+        cannot afford the whole dependence graph of one callable wants a slice of it.
+
+        Args:
+            callable: The callable's name, resolved as in :meth:`get_cfg`.
+            in_class: Narrow to the class this names.
+
+        Returns:
+            A list of :class:`~cldk.models.python.DdgEdge`, in no particular order. An empty list
+            from a level-3-or-deeper analysis is an honest answer: this callable has no data
+            dependence.
+
+        Raises:
+            AmbiguousName: ``callable`` matched more than one callable.
+            SelectorNotInGraph: Nothing matched.
+            CodeanalyzerUsageException: Analysis level below ``program_dependency_graph``, where an
+                empty list could not be told apart from the honest empty above.
+        """
+        return self.backend.get_ddg(callable, in_class=in_class)
 
     # -----[ repository artifacts ]-----
     def get_artifacts(self) -> Dict[str, PyArtifact]:

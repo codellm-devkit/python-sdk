@@ -62,9 +62,13 @@ from codeanalyzer.schema import Analysis, model_dump_json
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.resolve import CallableCandidate, resolve_callable_signature, resolve_value_name, resolve_within, value_candidate
 from cldk.analysis.commons.results import CallableRef, Diagnostic, EntrypointCoverage, LocateResult, ModuleRef, SliceNode, TypeRef
+from cldk.utils.exceptions import CodeanalyzerUsageException
 from cldk.analysis.python.backend import PythonAnalysisBackend, body_key_column, bounded_subgraph, call_graph_scope, resolve_module_key, scope_paths
 from cldk.models.python import (
     BodyNode,
+    CdgEdge,
+    CfgEdge,
+    DdgEdge,
     PyApplication,
     PyArtifact,
     PyCallEdge,
@@ -97,6 +101,10 @@ _ANALYZER_LEVELS = {
     AnalysisLevel.program_dependency_graph: 3,
     AnalysisLevel.system_dependency_graph: 4,
 }
+
+#: The inverse, by the member name a caller writes (``"call_graph"``, not ``"call graph"``) — so
+#: an error about the level in use names it the way it was asked for.
+_LEVEL_NAMES = {n: lvl.name for lvl, n in _ANALYZER_LEVELS.items()}
 
 
 def analyzer_level(level: "AnalysisLevel | str") -> int:
@@ -1077,6 +1085,59 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             source=None,
             ref=body_node_id(c.id, key),
         )
+
+    # -----[ per-callable graphs ]-----
+    #: The analyzer level at which ``cfg``/``cdg``/``ddg`` first exist —
+    #: ``codeanalyzer/core.py``'s ``if self.analysis_level >= 3`` block, which is the only place
+    #: that calls ``emit_l3_body``. Below it the three lists are empty on every callable.
+    _DATAFLOW_LEVEL = _ANALYZER_LEVELS[AnalysisLevel.program_dependency_graph]
+
+    def _graphs_of(self, name: str, in_class: str | None) -> PyCallable:
+        """The callable ``name`` resolves to, once this backend is deep enough to have dataflow.
+
+        The level check is here rather than in each accessor because all three graphs come from
+        the same analyzer pass and go dark together. It raises instead of returning ``[]``: at a
+        level below 3 an empty list would mean "not analysed" while looking exactly like "no
+        dependence", and a caller cannot tell those apart (D7) — the Neo4j backend has no such
+        mode because ``--emit neo4j`` forces level 4, so this is where the contract stated on
+        :meth:`PythonAnalysisBackend.get_cfg` is enforced.
+
+        Resolution is :meth:`resolve_callable`'s, not a second path.
+        """
+        level = analyzer_level(self.analysis_level)
+        if level < self._DATAFLOW_LEVEL:
+            in_use = _LEVEL_NAMES[level]
+            raise CodeanalyzerUsageException(
+                f"control and data flow need analysis_level='program_dependency_graph' or deeper "
+                f"(analyzer level {self._DATAFLOW_LEVEL}); this analysis was built at "
+                f"'{in_use}' (analyzer level {level}), where the analyzer emits no cfg/cdg/ddg at all. "
+                "Returning an empty result would be indistinguishable from a callable that has no "
+                "dependence, so this raises instead. Rebuild with "
+                "CLDK.python(..., analysis_level='system_dependency_graph')."
+            )
+        sig = self.resolve_callable(name, in_class=in_class).callable
+        return next(c for c, _, _, _, _ in self._iter_callables() if c.signature == sig)
+
+    def get_cfg(self, callable: str, *, in_class: str | None = None) -> List[CfgEdge]:
+        """Control flow within one callable (see :meth:`PythonAnalysisBackend.get_cfg`).
+
+        ``PyCallable.cfg`` keys its endpoints by the *local* body key (``"9:8"``, ``"@entry"``);
+        :func:`body_node_id` joins them to the callable id to give the same global spelling the
+        graph merges ``:PyBodyNode`` on, so an endpoint from this backend is the one the Neo4j
+        backend would return and the one :meth:`get_source` accepts.
+        """
+        c = self._graphs_of(callable, in_class)
+        return [CfgEdge(src=body_node_id(c.id, e.src), dst=body_node_id(c.id, e.dst), kind=e.kind) for e in c.cfg or []]
+
+    def get_cdg(self, callable: str, *, in_class: str | None = None) -> List[CdgEdge]:
+        """Control dependence within one callable (see :meth:`PythonAnalysisBackend.get_cdg`)."""
+        c = self._graphs_of(callable, in_class)
+        return [CdgEdge(src=body_node_id(c.id, e.src), dst=body_node_id(c.id, e.dst)) for e in c.cdg or []]
+
+    def get_ddg(self, callable: str, *, in_class: str | None = None) -> List[DdgEdge]:
+        """Data dependence within one callable (see :meth:`PythonAnalysisBackend.get_ddg`)."""
+        c = self._graphs_of(callable, in_class)
+        return [DdgEdge(src=body_node_id(c.id, e.src), dst=body_node_id(c.id, e.dst), var=e.var, prov=list(e.prov or [])) for e in c.ddg or []]
 
     def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:
         """Return overviews of callables decorated with any of ``markers``."""

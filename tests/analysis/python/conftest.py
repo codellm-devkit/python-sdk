@@ -568,6 +568,19 @@ def live_analysis():
 
 
 @pytest.fixture
+def busy_callable() -> str:
+    """A live-graph callable with a non-trivial data dependence, named the way a caller would.
+
+    ``addons.account_payment.controllers.payment.PaymentPortal.invoice_transaction`` — the same
+    callable ``test_resolve.py`` resolves values inside, so the addressing suite and the dataflow
+    suite are talking about one piece of code. Measured on odoo-slim-19: 169 DDG edges, carrying
+    all three provenances (109 ``reaching-defs``, 32 ``ssa``, 28 ``points-to``), 32 CFG edges and
+    22 CDG edges — busy enough that an empty answer is a defect, small enough to assert on.
+    """
+    return "PaymentPortal.invoice_transaction"
+
+
+@pytest.fixture
 def count_round_trips():
     """Yields a helper: ``n = count_round_trips(analysis)`` wraps the backend's ``_run`` and
     returns a live ``{"c": <round trips since the wrap>}``.
