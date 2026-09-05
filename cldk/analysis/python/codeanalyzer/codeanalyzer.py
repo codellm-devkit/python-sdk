@@ -86,8 +86,15 @@ from cldk.models.python import (
 logger = logging.getLogger(__name__)
 
 
-def _overview(c: PyCallable, class_signature: str | None, kind: str) -> PyCallableOverview:
+def _overview(c: PyCallable, class_signature: str | None, kind: str, path: str) -> PyCallableOverview:
     """Project a :class:`PyCallable` into a lightweight :class:`PyCallableOverview`.
+
+    ``path`` is the owning module's symbol-table key (threaded in by
+    :meth:`PyCodeanalyzer._iter_callables`, exactly as :func:`_class_overview` takes it), *not*
+    ``c.path``: ``PyCallable.path`` is the absolute path on whichever machine ran the analysis, so
+    projecting it handed callers a string that joins to nothing they hold -- not
+    ``locate().module.path``, not ``PyClassOverview.path``, not ``get_symbol_table()``'s keys, and
+    not any path that exists on another host.
 
     ``c.decorators`` is 1.4.0's structured ``List[PyDecorator]`` (#128 upstream), not 0.3.x's
     flat ``List[str]`` — ``PyCallableOverview.decorators`` is CLDK's own model and keeps its
@@ -103,7 +110,7 @@ def _overview(c: PyCallable, class_signature: str | None, kind: str) -> PyCallab
         name=c.name,
         class_signature=class_signature,
         kind=kind,
-        path=c.path,
+        path=path,
         start_line=c.start_line,
         end_line=c.end_line,
         decorators=[d.qualified_name or d.name for d in c.decorators],
@@ -440,7 +447,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         so edges are resolved back to that identity once here, rather than a dual-backend
         divergence where the local graph is id-keyed and the Neo4j one isn't.
         """
-        return {c.id: c.signature for c, _, _, _ in self._iter_callables()}
+        return {c.id: c.signature for c, _, _, _, _ in self._iter_callables()}
 
     @staticmethod
     def _build_call_graph(edges: List[PyCallEdge], id_to_signature: Dict[str, str]) -> nx.DiGraph:
@@ -549,7 +556,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         # call edges alone, so a declared callable in no edge is not a node in it (444 of odoo's
         # 15,549) and checking membership here would raise for a callable that plainly exists,
         # where Neo4j — matching roots by label — returns the one-node graph. See bounded_subgraph.
-        return bounded_subgraph(self.call_graph, scope, depth, (c.signature for c, _, _, _ in self._iter_callables()))
+        return bounded_subgraph(self.call_graph, scope, depth, (c.signature for c, _, _, _, _ in self._iter_callables()))
 
     def get_call_graph_json(self) -> str:
         """Return the complete application model serialized as JSON.
@@ -823,39 +830,45 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         return list(cls.attributes.values()) if cls else []
 
     # ----------------------------------------------------------- bulk / projected accessors
-    def _iter_callables(self) -> Iterator[Tuple[PyCallable, "str | None", str, str]]:
-        """Yield ``(callable, class_signature, kind, module_source)`` for every callable in the
-        application.
+    def _iter_callables(self) -> Iterator[Tuple[PyCallable, "str | None", str, str, str]]:
+        """Yield ``(callable, class_signature, kind, module_path, module_source)`` for every
+        callable in the application.
 
         Walks the in-memory symbol table the same way the Neo4j backend's ``MATCH (c:PyCallable)``
         sees nodes: a callable is a ``"method"`` only when a class declares it directly (mirroring
         ``PY_HAS_METHOD``); module-level functions and functions nested inside a callable are
         ``"function"`` with a ``None`` class signature. The two backends therefore enumerate the
-        same set. ``module_source`` (the owning module's full source text) rides along so callers
+        same set.
+
+        ``module_path`` is the symbol table's own key — the repo-relative module path, matching the
+        graph's ``_module`` property and what :meth:`_iter_classes` threads through for the same
+        reason. It is the only path this backend hands out for a callable; ``PyCallable.path`` is
+        the absolute path on the analysing machine and joins to nothing (see :func:`_overview`).
+        ``module_source`` (the owning module's full source text) rides along so callers
         needing the callable's own source can slice it via :func:`_code_of` — a callable's
         ``span`` offsets are always relative to its top-level module, however deeply nested.
         """
 
-        def from_callable(c: PyCallable, source: str):
+        def from_callable(c: PyCallable, path: str, source: str):
             for inner in c.callables.values():
-                yield inner, None, "function", source
-                yield from from_callable(inner, source)
+                yield inner, None, "function", path, source
+                yield from from_callable(inner, path, source)
             for inner_cls in c.types.values():
-                yield from from_class(inner_cls, source)
+                yield from from_class(inner_cls, path, source)
 
-        def from_class(cls: PyClass, source: str):
+        def from_class(cls: PyClass, path: str, source: str):
             for m in cls.callables.values():
-                yield m, cls.signature, "method", source
-                yield from from_callable(m, source)
+                yield m, cls.signature, "method", path, source
+                yield from from_callable(m, path, source)
             for inner_cls in cls.types.values():
-                yield from from_class(inner_cls, source)
+                yield from from_class(inner_cls, path, source)
 
-        for module in self.application.symbol_table.values():
+        for path, module in self.application.symbol_table.items():
             for cls in module.types.values():
-                yield from from_class(cls, module.source)
+                yield from from_class(cls, path, module.source)
             for fn in module.functions.values():
-                yield fn, None, "function", module.source
-                yield from from_callable(fn, module.source)
+                yield fn, None, "function", path, module.source
+                yield from from_callable(fn, path, module.source)
 
     def _iter_classes(self) -> Iterator[Tuple[PyClass, str]]:
         """Yield ``(class, module_path)`` for every class in the application, including classes
@@ -889,14 +902,14 @@ class PyCodeanalyzer(PythonAnalysisBackend):
     def get_callables_overview(self) -> List[PyCallableOverview]:
         """Return a lightweight overview of every callable in the application (see
         :meth:`PythonAnalysisBackend.get_callables_overview`)."""
-        return [_overview(c, class_sig, kind) for c, class_sig, kind, _ in self._iter_callables()]
+        return [_overview(c, class_sig, kind, path) for c, class_sig, kind, path, _ in self._iter_callables()]
 
     def get_method_bodies(self, signatures: List[str]) -> Dict[str, str]:
         """Return ``{signature: code}`` for the requested signatures that exist and have a body
         (omits callables whose ``code`` is ``None``)."""
         wanted = set(signatures)
         out: Dict[str, str] = {}
-        for c, _, _, source in self._iter_callables():
+        for c, _, _, _, source in self._iter_callables():
             if c.signature not in wanted:
                 continue
             code = _code_of(c, source)
@@ -918,7 +931,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         caller to know which vocabulary it is holding.
         """
         sig, sep, body_key = node_id.partition("@")
-        for c, _, _, source in self._iter_callables():
+        for c, _, _, _, source in self._iter_callables():
             if sig not in (c.signature, c.id):
                 continue
             if not sep:
@@ -937,15 +950,15 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         """Return overviews of callables decorated with any of ``markers``."""
         marker_set = set(markers)
         return [
-            _overview(c, class_sig, kind)
-            for c, class_sig, kind, _ in self._iter_callables()
+            _overview(c, class_sig, kind, path)
+            for c, class_sig, kind, path, _ in self._iter_callables()
             if marker_set.intersection(d.qualified_name or d.name for d in c.decorators)
         ]
 
     def get_entrypoints(self) -> List[PyCallableOverview]:
         """Return overviews of every callable marked ``is_entrypoint`` (see
         :meth:`PythonAnalysisBackend.get_entrypoints`)."""
-        return [_overview(c, class_sig, kind) for c, class_sig, kind, _ in self._iter_callables() if c.is_entrypoint]
+        return [_overview(c, class_sig, kind, path) for c, class_sig, kind, path, _ in self._iter_callables() if c.is_entrypoint]
 
     def get_entrypoint_classes(self) -> List[PyClassOverview]:
         """Return overviews of every class marked ``is_entrypoint`` (see
@@ -985,7 +998,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         }
         return {
             c.signature: [_resolve_callee(cs, c.body, id_to_sig, declared_sigs, reverse_externals) for cs in c.call_sites]
-            for c, _, _, _ in self._iter_callables()
+            for c, _, _, _, _ in self._iter_callables()
             if c.signature in wanted
         }
 
@@ -1049,7 +1062,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         reading_ids = {e.src.rsplit("@", 1)[0] for e in self.get_config_uses(key)}
         if not reading_ids:
             return []
-        return [_overview(c, class_sig, kind) for c, class_sig, kind, _ in self._iter_callables() if c.id in reading_ids]
+        return [_overview(c, class_sig, kind, path) for c, class_sig, kind, path, _ in self._iter_callables() if c.id in reading_ids]
 
     # ----------------------------------------------------------- locate
     def _not_analysed(self, path: str, line: int) -> LocateResult:

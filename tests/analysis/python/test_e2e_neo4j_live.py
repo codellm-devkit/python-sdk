@@ -309,41 +309,49 @@ def test_callables_overview_is_scoped_to_the_application(analysis, cypher):
     """Every overview row belongs to one of the application's own modules (the ``_module IN $mods``
     scoping that keeps a multi-application database from bleeding across).
 
-    Checked on the *suffix*, because ``PyCallableOverview.path`` is the absolute path the analyzer
-    read, not the project-relative ``file_key`` — see
-    :func:`test_overview_path_is_absolute_unlike_locate_and_class_overview`.
+    Checked by *equality* against ``m.file_key``: the projection reads ``c._module``, which is that
+    same key — see :func:`test_overview_path_joins_locate_and_class_overview`.
     """
     module_keys = {r["k"] for r in cypher("MATCH (:PyApplication {name: $n})-[:PY_HAS_MODULE]->(m:PyModule) RETURN m.file_key AS k", n=APP_NAME)}
     paths = {o.path for o in analysis.get_callables_overview() if o.path}
     assert paths, "no overview row carried a path"
-    unowned = [p for p in paths if not any(p == k or p.endswith("/" + k) for k in module_keys)]
+    unowned = [p for p in paths if p not in module_keys]
     assert not unowned, f"overview rows outside the application's modules: {unowned[:3]}"
 
 
-def test_overview_path_is_absolute_unlike_locate_and_class_overview(analysis, sample, cypher):
-    """Recorded divergence: this facade hands back **two different path vocabularies**.
+def test_overview_path_joins_locate_and_class_overview(analysis, sample, cypher):
+    """The facade hands back **one** path vocabulary, and this is the test that says so.
 
-    * ``PyCallableOverview.path`` is ``:PyCallable.path`` — the *absolute* path on the machine that
-      ran the analysis (all 15,549 rows here start with ``/``);
-    * ``LocateResult.module.path`` and ``PyClassOverview.path`` are the project-relative ``file_key``
-      / ``_module`` — because ``:PyClass`` carries no ``path`` property at all (verified below), so
-      the class projection had no choice.
+    Until 1.5 it handed back two. ``PyCallableOverview.path`` was ``:PyCallable.path`` — the
+    *absolute* path on the machine that ran the analysis, so all 15,549 rows started with ``/`` —
+    while ``LocateResult.module.path`` and ``PyClassOverview.path`` were the project-relative
+    ``file_key`` / ``_module``, the latter because ``:PyClass`` carries no ``path`` property at all
+    (still verified below). A caller feeding ``get_callables_overview()[i].path`` back into
+    ``locate()`` was relying on ``resolve_module_key``'s suffix fallback to save it, and one
+    comparing the two fields for equality got silently empty results.
 
-    Neither is wrong on its own, but a caller that feeds ``get_callables_overview()[i].path`` back
-    into ``locate()`` is relying on ``resolve_module_key``'s suffix fallback to save it, and one
-    that compares the two path fields for equality gets silently empty results. Pinned here so the
-    inconsistency is a known, tested property rather than a surprise at a call site.
+    The callable overview now projects ``c._module``, so the three agree exactly. This test is the
+    old divergence witness turned the right way up: it fails if either vocabulary drifts back.
     """
     assert cypher("MATCH (c:PyClass) WHERE c.path IS NOT NULL RETURN count(c) AS c")[0]["c"] == 0
 
     overview = {o.signature: o for o in analysis.get_callables_overview()}
     row = overview[sample["signature"]]
-    assert row.path.startswith("/"), "PyCallableOverview.path is expected to be absolute here"
-    assert row.path.endswith(sample["module_path"])
+    assert row.path == sample["module_path"], "the overview path is the repo-relative module key"
+    assert not row.path.startswith("/"), "an absolute path names the analysis machine, not the repo"
 
     located = analysis.locate(sample["module_path"], sample["inner_line"])
-    assert located.module.path == sample["module_path"]
-    assert located.module.path != row.path
+    assert located.module.path == row.path
+
+    # ...and the third vocabulary. ``PyClassOverview.path`` is projected from ``cl._module``; this
+    # graph has no entrypoint classes to read one back through, so the check goes to that property
+    # directly. Both projections now name a module by its ``file_key`` -- the same dictionary the
+    # callable overview draws from. (Not a subset check against the callable paths: a module can
+    # declare a class and no callable, and 66 of this application's 1,157 class-bearing modules do.)
+    module_keys = {r["k"] for r in cypher("MATCH (:PyApplication {name: $n})-[:PY_HAS_MODULE]->(m:PyModule) RETURN m.file_key AS k", n=APP_NAME)}
+    class_paths = {r["p"] for r in cypher("MATCH (cl:PyClass) WHERE cl._module IN $m RETURN DISTINCT cl._module AS p", m=list(module_keys))}
+    assert class_paths, "no classes in the graph"
+    assert row.path in module_keys and class_paths <= module_keys, "class and callable overviews disagree on path spelling"
 
 
 # =====================================================================================

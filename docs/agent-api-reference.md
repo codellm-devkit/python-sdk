@@ -132,15 +132,18 @@ class PyCallableOverview:
     name: str               # "action_validate"
     class_signature: str | None
     kind: str               # "method" | "function"
-    path: str               # ⚠ currently ABSOLUTE; repo-relative in 1.5
+    path: str               # repo-relative, e.g. "addons/onboarding/models/step.py"
     start_line: int
     end_line: int
     decorators: list[str]
 ```
 
-**Gotcha:** `PyCallableOverview.path` is an absolute path carrying the *analysis machine's*
-filesystem layout, while `locate().module.path` and `PyModule` keys are repo-relative. They do
-not join today. Fixed in 1.5 (issue #320 covers the sibling id problem).
+**Changed in 1.5:** `PyCallableOverview.path` is now the repo-relative module key — the same
+string as `locate().module.path`, `PyClassOverview.path` and the keys of `get_symbol_table()`, so
+the four join directly. Before 1.5 it was the absolute path carrying the *analysis machine's*
+filesystem layout (`/Users/…/checkout/addons/…`), which joined to none of them and did not exist
+on any other host. Code that stored these paths, or that stripped a prefix off them, sees
+different strings and should drop the stripping. (Issue #320 covers the sibling id problem.)
 
 | API | Returns | Example |
 | --- | --- | --- |

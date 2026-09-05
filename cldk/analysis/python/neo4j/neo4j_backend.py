@@ -983,10 +983,16 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     # =====================================================================================
     # Field-projected RETURNs that sidestep the per-entity reconstruction fan-out: each is a single
     # Cypher statement, not the N+1 walk get_symbol_table()/get_all_methods_in_application() pays.
+    #
+    # ``path`` comes from ``c._module``, not ``c.path``: the latter is the absolute path on the
+    # machine that ran the analysis (``/Users/…/checkout/addons/…``), which joins to nothing a
+    # caller holds -- not ``locate().module.path``, not ``PyClassOverview.path`` (already
+    # ``cl._module``), not ``get_symbol_table()``'s keys, and not any path on another host.
+    # ``_module`` is the repo-relative module key, i.e. the one vocabulary the whole facade speaks.
     _OVERVIEW_PROJECTION = (
         "OPTIONAL MATCH (owner:PyClass)-[:PY_HAS_METHOD]->(c) "
         "RETURN c.signature AS signature, c.name AS name, c.decorators AS decorators, "
-        "c.path AS path, c.start_line AS start_line, c.end_line AS end_line, "
+        "c._module AS path, c.start_line AS start_line, c.end_line AS end_line, "
         "owner.signature AS class_signature"
     )
 
@@ -1220,7 +1226,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             "MATCH (reader:PyCallable)-[:PY_HAS_BODY_NODE]->(bn) "
             "OPTIONAL MATCH (cls:PyClass)-[:PY_HAS_METHOD]->(reader) "
             "RETURN DISTINCT reader.signature AS signature, reader.name AS name, reader.decorators AS decorators, "
-            "reader.path AS path, reader.start_line AS start_line, reader.end_line AS end_line, "
+            "reader._module AS path, reader.start_line AS start_line, reader.end_line AS end_line, "
             "cls.signature AS class_signature",
             mods=self._modules,
             key=key,

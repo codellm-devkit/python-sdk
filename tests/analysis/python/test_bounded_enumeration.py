@@ -324,25 +324,19 @@ def test_locate_node_id_joins_to_the_graph(live_analysis):
     assert rows[0]["n"] == 1, f"node_id {r.node_id!r} does not name a node in the graph"
 
 
-@pytest.mark.xfail(
-    reason=(
-        "Leg 1.5 Task 3 step 4 stopped short of normalising PyCallableOverview.path: a "
-        "pre-existing test — test_e2e_neo4j_live.test_overview_path_is_absolute_unlike_locate_"
-        "and_class_overview — deliberately pins the absolute form as a recorded divergence, and "
-        "docs/agent-api-reference.md documents it as a gotcha. Normalising the path means "
-        "retiring that pin, which is a contract decision, not a test edit. Recorded here so the "
-        "defect stays visible and this turns green the day it is made."
-    ),
-    strict=True,
-)
 def test_paths_share_one_vocabulary(live_analysis):
     """``PyCallable.path`` is absolute and host-specific; module paths are repo-relative.
 
     An overview path carrying ``/Users/<someone>/…`` cannot be joined against
     ``get_symbol_table()``'s keys or ``locate().module.path``, and does not exist on any machine
-    but the one the analysis ran on.
+    but the one the analysis ran on — so the overview projects the repo-relative module key
+    instead. Checked across every row, not a sample: one module projected out of the wrong
+    property is exactly the failure this is here to catch.
     """
-    ov = live_analysis.get_callables_overview()[0]
-    assert not ov.path.startswith("/"), f"overview path {ov.path!r} is absolute — it embeds the analysis machine's layout"
     st = live_analysis.get_symbol_table()
-    assert ov.path in st or any(m.endswith(ov.path) for m in st), "an overview path should address a module in the symbol table"
+    rows = live_analysis.get_callables_overview()
+    assert rows and st
+    absolute = [o.signature for o in rows if o.path.startswith("/")]
+    assert not absolute, f"{len(absolute)} overview paths are absolute — they embed the analysis machine's layout: {absolute[:3]}"
+    unjoinable = [o.path for o in rows if o.path not in st]
+    assert not unjoinable, f"overview paths that name no module in the symbol table: {sorted(set(unjoinable))[:3]}"

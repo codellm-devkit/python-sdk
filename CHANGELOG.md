@@ -35,6 +35,18 @@ Python leg (leg 1) of the CLDK 2.0 agent-facing query facade (see
   graph (Odoo, 2,364 files): `get_classes()` 348s → 10.4s, `get_symbol_table()` 382s → 11.9s,
   `get_call_graph_json()` 422s → 26.1s. No signature, return type or result changes.
 
+- **BREAKING (value, not signature): `PyCallableOverview.path` is now repo-relative.** It used to
+  be the absolute path on whichever machine ran the analysis
+  (`/Users/someone/checkout/addons/account/models/onboarding.py`); it is now the repo-relative
+  module key (`addons/account/models/onboarding.py`) — the same string as `locate().module.path`,
+  `PyClassOverview.path` and the keys of `get_symbol_table()`, which it previously could not be
+  joined against. Both backends changed together: the Neo4j projections behind
+  `get_callables_overview()`, `get_decorated_callables()`, `get_entrypoints()` and
+  `get_config_readers()` now read `:PyCallable._module` rather than `:PyCallable.path`, and the
+  local backend projects the symbol table key rather than `PyCallable.path`.
+  **Migration:** a caller that stored or persisted these paths will see different strings for the
+  same callable, and one that stripped a project-root prefix off them must stop.
+
 #### Compatibility matrix (spec §7.1)
 
 | SDK version | Requires `codeanalyzer-python` | Graph vocabulary |
