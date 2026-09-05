@@ -282,6 +282,15 @@ class PythonAnalysis:
             analyzed structure of each file, including classes, functions,
             imports, and other symbols.
 
+        Raises:
+            TypeError: ``paths`` is a bare string. It takes a *sequence* of paths — a string is a
+                sequence of characters, and iterating it is never what you meant.
+            ValueError: ``paths`` is an empty sequence. Omit the keyword to enumerate everything;
+                the argument that means "the whole application" is the argument not passed.
+            SelectorNotInGraph: a path names no module in this application
+                (``cldk.utils.exceptions``, a ``ValueError``). A partial miss raises too, so a
+                short result can never be read as a complete one.
+
         See Also:
             :meth:`get_python_module`: For direct lookup by file path.
             :meth:`get_modules`: For a flat list without file paths.
@@ -1020,6 +1029,11 @@ class PythonAnalysis:
             A dictionary mapping fully qualified class names (strings) to
             :class:`~cldk.models.python.PyClass` objects containing class
             metadata, methods, attributes, and inheritance information.
+
+        Raises:
+            SelectorNotInGraph: ``module`` names no module in this application
+                (``cldk.utils.exceptions``, a ``ValueError``). A mistyped key used to return the
+                same ``{}`` as a module that genuinely declares no classes.
 
         See Also:
             :meth:`get_class`: For a single class by name.

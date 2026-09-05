@@ -189,13 +189,23 @@ result is the **induced** sub-graph over everything reached: every edge *among* 
 callables, not only the ones lying on a path out from a root — so `graph.predecessors(n)` never
 lies about a node you can see. `depth=` bounds it in call hops and requires `roots=`; it must be an
 `int` >= 1. Both backends return the identical graph, including a root that calls nothing, which
-comes back as a graph of one node.
+comes back as a graph of one node — and that holds for a callable with **no call edge at all**,
+2.9% of a real application (444 of odoo's 15,549), which is a node of no edge-built graph.
 
-- A root the graph does not hold raises `SelectorNotInGraph` — it is not the same answer as "this
-  callable calls nothing".
+- A root is valid if the application **declares** it, or if it is a node of the call graph (an
+  `@external` id is the second and not the first). Anything else raises `SelectorNotInGraph` — not
+  the same answer as "this callable calls nothing". Both backends check that same domain.
+- `paths=` and `roots=` take *sequences*; a bare string raises `TypeError` rather than being
+  iterated character by character. (`module=` is the single-valued one.)
+- `paths=` resolution is many-to-one: `"pkg/a.py"` and `"/abs/pkg/a.py"` are the same module, so
+  two requested paths can legitimately come back as one entry.
 - `depth=` without `roots=`, `roots=[]`, and a non-integer `depth` all raise `ValueError`.
 - Over Neo4j this compiles to one query, scoped to the application at every hop, and needs
-  **Neo4j 5.9+**.
+  **Neo4j 5.9+** — checked against the version read when the backend attached, and raised only by
+  this call, so an older server still serves every other accessor. A mistyped root is only visible
+  *after* that query runs, so a partial miss costs the surviving roots' traversal first (5.11s for
+  an unbounded walk out of odoo's busiest callable) rather than failing instantly (0.02s) the way
+  an all-miss request does.
 
 **Gotcha:** `PyCallsite.callee_signature` may be `None`. Check `has_resolution_edges()` first — if
 it is `False`, the graph carries no resolution data at all and *every* callee is `None` for that

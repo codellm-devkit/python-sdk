@@ -77,11 +77,17 @@ Python leg (leg 1) of the CLDK 2.0 agent-facing query facade (see
   out-of-project target. `get_call_graph(roots=…)` returns the **induced** sub-graph over the
   callables reached — every edge among them, not only those on a path out from a root — so
   `predecessors()` cannot lie about a node in the graph it just returned; a root that calls nothing
-  comes back as a graph of one node. `depth=` bounds the walk in call hops, requires `roots=`, and
-  must be an `int` >= 1. The Neo4j backend pushes all of it into Cypher, including the prefetch
-  scope, so one module or one root costs well under a second instead of a full fetch filtered in
-  Python; the bounded call graph is a quantified path pattern scoped to the application at every
-  hop and therefore **requires Neo4j 5.9+**.
+  comes back as a graph of one node, **including one that appears in no call edge at all** — a root
+  is validated against the callables the application declares (plus the graph's own nodes, which is
+  what makes an `@external` id a valid root), never against edge participation, so the two backends
+  judge the same domain. `depth=` bounds the walk in call hops, requires `roots=`, and must be an
+  `int` >= 1; `paths=`/`roots=` take sequences and reject a bare string with `TypeError` rather than
+  iterating its characters; `paths=` resolution is many-to-one and de-duplicated, so two spellings
+  of one module are one entry. The Neo4j backend pushes all of it into Cypher, including the
+  prefetch scope, so one module or one root costs well under a second instead of a full fetch
+  filtered in Python; the bounded call graph is a quantified path pattern scoped to the application
+  at every hop and therefore **requires Neo4j 5.9+** — the server version is read when the backend
+  attaches and enforced by that one accessor, so an older server keeps serving all the others.
 - **`SelectorNotInGraph`** (`cldk.utils.exceptions`, a `ValueError`) — a value passed to `paths=`,
   `module=` or `roots=` that names nothing in the analysed application now raises, naming the
   values that matched nothing and how many were asked for (`1 of 2 paths not in graph: 'gone.py'`),
