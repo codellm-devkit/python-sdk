@@ -36,6 +36,13 @@ from cldk.models.python import BodyNode, PyApplication, PyCallable, PyClass, PyM
 # .py's module docstring / the leg-1 brief) — a reasonable "healthy v2 graph" default so fixtures
 # that don't care about the schema probe (e.g. a future round-trip-counting test) don't have to set
 # rel_types themselves.
+#
+# PY_EXTENDS is documented (schema/neo4j_backend.py's module docstring) as the class-inheritance
+# edge type, but is NOT observed on a real emitted graph: the live 1.4.0 Odoo application used for
+# the e2e suite has 0 PY_EXTENDS edges across 1,656 classes, and `CALL db.relationshipTypes()`
+# there doesn't even register the type. Kept here as the *documented* vocabulary the schema probe
+# would accept, not as evidence codeanalyzer-python 1.4.0 actually emits it -- if you need a fixture
+# graph that matches a real emitted one, drop PY_EXTENDS.
 _V2_RELATIONSHIP_TYPES = frozenset(
     {
         "PY_CALLS",

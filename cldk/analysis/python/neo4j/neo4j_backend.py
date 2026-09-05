@@ -388,10 +388,20 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         sufficient and cheaper than matching on the shared secondary label 1.4.0 also stamps these
         nodes with (a declared symbol is id-keyed there, not signature-keyed, so this Cypher
         doesn't depend on it at all).
+
+        ``t`` may land on a ``:PyExternal`` ghost (a call to a builtin or a library member), and
+        ``:PyExternal`` carries no ``signature`` property at all -- only ``id``/``name``/``module``.
+        ``coalesce(t.signature, t.id)`` resolves it to its addressable ``@external`` can-id instead
+        of projecting ``None``, same idiom ``get_callsites_for`` already uses for the identical
+        situation one screen below. ``s`` is never external here: ``:PyExternal`` carries no
+        ``_module`` property, so ``s._module IN $mods`` is already false for it -- a call
+        *originating* at an external ghost exists in the raw graph (5,307 edges on the live Odoo
+        graph) but is filtered out by this scoping before it ever reaches the RETURN, so ``s``
+        needs no coalesce.
         """
         return self._run(
             "MATCH (s:PyCallable|PyExternal)-[r:PY_CALLS]->(t:PyCallable|PyExternal) WHERE s._module IN $mods "
-            "RETURN s.signature AS src, t.signature AS tgt, properties(r) AS p",
+            "RETURN s.signature AS src, coalesce(t.signature, t.id) AS tgt, properties(r) AS p",
             mods=self._modules,
         )
 

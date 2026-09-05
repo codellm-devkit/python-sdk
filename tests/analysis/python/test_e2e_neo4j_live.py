@@ -881,30 +881,27 @@ def test_get_all_classes_returns_top_level_classes_only(analysis, cypher):
 
 
 # =====================================================================================
-# KNOWN DEFECT — the call-graph accessors are unusable on any graph with external calls
+# FIXED — the call-graph accessors used to be unusable on any graph with external calls
+# (#see PyNeo4jBackend._call_rows: coalesce(t.signature, t.id))
 # =====================================================================================
 def test_call_graph_projection_reads_a_property_py_external_does_not_have(cypher):
-    """Characterisation test for a **live bug** this suite found (cheap half, always runs).
+    """Pins the graph *fact* the fix is grounded on (cheap, always runs).
 
-    ``PyNeo4jBackend._call_rows`` projects ``t.signature`` for the target of every ``PY_CALLS`` edge,
-    but ``PY_CALLS`` also targets ``:PyExternal`` ghosts, and ``:PyExternal`` carries **no**
-    ``signature`` property — only ``id``/``name``/``module``. Measured on this graph: of the 364,752
-    in-scope ``PY_CALLS`` rows, **38,585 (10.6%) come back with ``tgt = None``**. Downstream both
-    consumers of those rows fail, in two different ways:
+    ``:PyExternal`` carries no ``signature`` property at all — only ``id``/``name``/``module`` — and
+    ``PY_CALLS`` targets it for every call to a builtin or a library member. Measured on this graph:
+    of the 364,752 in-scope ``PY_CALLS`` rows, **38,585 (10.6%) target a signature-less node**.
 
-    * ``_build_call_graph`` calls ``nx.DiGraph.add_edge(src, None)`` → ``ValueError: None cannot be
-      a node``, taking down ``get_call_graph``, ``get_callers``, ``get_callees`` and
-      ``get_class_call_graph``;
-    * ``_call_edges`` builds ``PyCallEdge(dst=None)`` → pydantic ``ValidationError``, taking down
-      ``get_application_view`` and ``get_call_graph_json``.
+    ``PyNeo4jBackend._call_rows`` used to project bare ``t.signature`` for the edge target, so those
+    38,585 rows came back with ``tgt = None`` and broke two ways downstream: ``_build_call_graph``
+    calling ``nx.DiGraph.add_edge(src, None)`` (``ValueError: None cannot be a node`` — took down
+    ``get_call_graph``, ``get_all_callers``, ``get_all_callees`` and ``get_class_call_graph``), and
+    ``_call_edges`` building ``PyCallEdge(dst=None)`` (pydantic ``ValidationError`` — took down
+    ``get_application_view`` and ``get_call_graph_json``). The fix is
+    ``coalesce(t.signature, t.id)`` — the identical idiom ``get_callsites_for`` already used one
+    screen away — so an external target resolves to its addressable ``@external`` can-id instead.
 
-    ``get_callsites_for`` gets the identical situation right one screen away, with
-    ``coalesce(t.signature, t.id)`` — which is also the fix here.
-
-    This is the same failure mode as the ``:PyModule.source`` incident: an absent property that a
-    fake driver will always happily supply. Asserted as *current behaviour* so the defect is pinned
-    as executable evidence; when the fix lands these tests fail and should be replaced by positive
-    call-graph tests.
+    Kept as a standing regression guard for the *cause*: if this ever reads 0, the coalesce is dead
+    code and the "external targets are addressable nodes" tests below are not exercising anything.
     """
     externals_with_signature = cypher("MATCH (e:PyExternal) WHERE e.signature IS NOT NULL RETURN count(e) AS c")[0]["c"]
     assert externals_with_signature == 0, ":PyExternal now carries a signature; re-check the call-graph projection"
@@ -917,41 +914,100 @@ def test_call_graph_projection_reads_a_property_py_external_does_not_have(cypher
         """
     )[0]["c"]
     assert null_targets > 0, (
-        "no PY_CALLS edge targets a signature-less node here, so the call-graph defect is not "
-        "reproducible on this graph"
+        "no PY_CALLS edge targets a signature-less node here, so the coalesce fix is not exercised "
+        "on this graph"
     )
 
 
-def test_get_call_graph_currently_raises_on_this_graph(analysis):
-    """The crash itself, end to end through the facade — the networkx half.
+@pytest.fixture(scope="module")
+def module_keys(cypher) -> set:
+    return {r["k"] for r in cypher("MATCH (:PyApplication {name: $n})-[:PY_HAS_MODULE]->(m:PyModule) RETURN m.file_key AS k", n=APP_NAME)}
 
-    Not gated: fetching all 364,752 in-scope ``PY_CALLS`` rows measures at ~11 s, and the failure is
-    raised right after, so the whole reproduction is well inside a normal test run.
 
-    ``get_callers`` / ``get_callees`` / ``get_class_call_graph`` route through this same builder, so
-    they are not re-asserted (each repetition costs another full edge fetch).
+@pytest.fixture(scope="module")
+def busy_callable(cypher, module_keys) -> Dict[str, Any]:
+    """A real, top-level module function that both has a real caller *and* calls an external —
+    one fixture doubling for ``get_all_callers`` and ``get_all_callees`` ("external target is a
+    node, not a dropped edge") without a second full-graph traversal.
     """
-    with pytest.raises(ValueError, match="cannot be a node"):
-        analysis.get_call_graph()
+    rows = cypher(
+        """
+        MATCH (m:PyModule)-[:PY_DECLARES]->(c:PyCallable) WHERE c._module IN $mods
+        MATCH (caller:PyCallable)-[:PY_CALLS]->(c) WHERE caller._module IN $mods
+        WITH m, c, count(caller) AS n_callers
+        WHERE n_callers > 0
+        MATCH (c)-[:PY_CALLS]->(ext:PyExternal)
+        WITH m, c, n_callers, collect(DISTINCT ext.id)[0] AS external_callee_id
+        RETURN m.module_name AS module_name, c.name AS name, c.signature AS signature, external_callee_id
+        ORDER BY c.signature LIMIT 1
+        """,
+        mods=list(module_keys),
+    )
+    assert rows, "no top-level module function here has both a real caller and an external callee"
+    return dict(rows[0])
+
+
+def test_get_call_graph_builds_with_external_targets_resolved(analysis, cypher, module_keys):
+    """The fix, end to end through the facade — the networkx half.
+
+    Not gated: fetching all 364,752 in-scope ``PY_CALLS`` rows measures at ~11 s. Node/edge counts
+    are checked exactly (not just "some"), and a real ``@external`` can-id is confirmed present as a
+    graph node rather than silently dropped — dropping the edge instead of crashing would be a worse
+    bug than the crash (a missing call edge makes a reachable sink look unreachable).
+    """
+    graph = analysis.get_call_graph()
+
+    expected_edges = cypher(
+        "MATCH (s:PyCallable|PyExternal)-[r:PY_CALLS]->(t:PyCallable|PyExternal) WHERE s._module IN $mods RETURN count(r) AS c",
+        mods=list(module_keys),
+    )[0]["c"]
+    assert graph.number_of_edges() == expected_edges
+    assert graph.number_of_nodes() > 0
+
+    external_ids = {r["id"] for r in cypher("MATCH (e:PyExternal) RETURN e.id AS id")}
+    assert external_ids & set(graph.nodes), "no @external can-id landed as a call-graph node"
+
+
+def test_get_all_callers_and_callees_resolve_for_a_real_callable(analysis, busy_callable):
+    """``get_callers``/``get_callees`` (the facade names for backend ``get_all_callers``/
+    ``get_all_callees``) route through the same ``get_call_graph()`` builder as the test above, so
+    this is the facade-shaped proof rather than a re-derivation: a real caller comes back for a
+    callable known to have one, and the external callee is keyed by its ``@external`` can-id rather
+    than missing or ``None``.
+    """
+    callers = analysis.get_callers(busy_callable["module_name"], busy_callable["name"])
+    assert callers["target_method"] == busy_callable["signature"]
+    assert callers["caller_details"], "expected at least one caller (fixture guarantees n_callers > 0)"
+
+    callees = analysis.get_callees(busy_callable["module_name"], busy_callable["name"])
+    assert callees["source_method"] == busy_callable["signature"]
+    callee_signatures = {c["callee_signature"] for c in callees["callee_details"]}
+    assert busy_callable["external_callee_id"] in callee_signatures, (
+        "external callee missing or dropped instead of appearing as its @external can-id"
+    )
 
 
 @pytest.mark.skipif(not RUN_SLOW, reason="slow (~7 min, see docstring); set CLDK_TEST_NEO4J_SLOW=1")
-def test_get_call_graph_json_currently_raises_on_this_graph(analysis):
-    """The pydantic half of the same defect — and a **third** six-minute accessor.
+def test_get_call_graph_json_builds_with_external_targets_resolved(analysis):
+    """The pydantic half of the same fix — and a **third** six-minute accessor.
 
     ``get_call_graph_json`` → ``get_application_view()`` → ``PyApplication(symbol_table=
-    self.get_symbol_table(), call_graph=self._call_edges())``. So it pays the full ~390 s symbol-table
-    reconstruction *first* (see the slow-accessor section below), and only then hits
-    ``PyCallEdge(dst=None)`` and throws all of that work away. Measured here at 422 s.
-
-    Gated for the runtime, not because the failure is in doubt: the same ``t.signature`` projection
-    is the cause, and ``_call_edges`` fails pydantic validation rather than networkx because a
-    ``PyCallEdge.dst`` must be a ``str``.
+    self.get_symbol_table(), call_graph=self._call_edges())``. Before the fix this paid the full
+    ~390 s symbol-table reconstruction and only then hit ``PyCallEdge(dst=None)`` and threw all of
+    that work away. Now ``_call_edges`` never sees a ``None`` ``dst``, so this asserts the JSON
+    actually contains resolved external call-edge targets rather than merely "did not raise".
     """
-    from pydantic import ValidationError
+    payload = analysis.get_call_graph_json()
 
-    with pytest.raises(ValidationError, match="dst"):
-        analysis.get_call_graph_json()
+    import json
+
+    data = json.loads(payload)
+    call_graph = data["call_graph"]
+    assert call_graph, "call_graph is empty on a 364,752-edge application"
+    assert all(edge["dst"] is not None for edge in call_graph)
+    assert any(edge["dst"].startswith("can://") and "/@external/" in edge["dst"] for edge in call_graph), (
+        "no external @external can-id target found in the serialized call graph"
+    )
 
 
 # =====================================================================================
