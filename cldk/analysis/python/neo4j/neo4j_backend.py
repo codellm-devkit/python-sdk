@@ -125,13 +125,9 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         application_name: The ``:PyApplication`` anchor name to scope every query to. Matches the
             ``--app-name`` the graph was loaded with (defaults to the project directory name).
 
-    Attributes:
-        has_resolution_edges: ``True`` iff this application's graph has at least one
-            ``PY_RESOLVES_TO`` edge — probed once at construction (see
-            :meth:`_probe_resolution_edges`). ``False`` means :meth:`get_callsites_for` cannot
-            resolve *any* call site here (the graph was populated at an analysis level below the
-            one where the defuse-linker backfill runs), so every ``None`` it returns is explained
-            by that, not by individual call sites failing to resolve.
+    ``has_resolution_edges`` (see :meth:`PythonAnalysisBackend.has_resolution_edges`) is ``True``
+    iff this application's graph has at least one ``PY_RESOLVES_TO`` edge — probed once at
+    construction (see :meth:`_probe_resolution_edges`).
     """
 
     #: Neo4j relationship-type and node-label prefixes for codeanalyzer-python's graph vocabulary
@@ -194,7 +190,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         self._modules: List[str] = self._load_module_keys()
         # Whether this application's graph carries any per-callsite resolution data at all --
         # probed once here, same pattern as _probe_schema (see _probe_resolution_edges).
-        self.has_resolution_edges: bool = self._probe_resolution_edges()
+        self._has_resolution_edges: bool = self._probe_resolution_edges()
         # Lazily-built call graph cache (mirrors PyCodeanalyzer.call_graph).
         self._call_graph: nx.DiGraph | None = None
 
@@ -237,6 +233,12 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             mods=self._modules,
         )
         return bool(rows)
+
+    @property
+    def has_resolution_edges(self) -> bool:
+        """See :meth:`PythonAnalysisBackend.has_resolution_edges`. Fixed at construction by
+        :meth:`_probe_resolution_edges`."""
+        return self._has_resolution_edges
 
     # -----[ lifecycle ]-----
     def close(self) -> None:

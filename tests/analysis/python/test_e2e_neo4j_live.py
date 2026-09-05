@@ -821,7 +821,7 @@ def test_has_resolution_edges_is_true_on_this_graph(analysis, cypher):
     """
     edges = cypher("MATCH (:PyBodyNode)-[r:PY_RESOLVES_TO]->() RETURN count(r) AS c")[0]["c"]
     assert edges > 0, "fixture graph is expected to carry resolution edges"
-    assert analysis.backend.has_resolution_edges is True
+    assert analysis.has_resolution_edges is True
 
 
 def test_callsites_resolve_through_to_external_symbol_ids(analysis, cypher):

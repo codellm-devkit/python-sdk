@@ -642,6 +642,22 @@ class PythonAnalysis:
         """
         return self.backend.get_entrypoint_coverage()
 
+    @property
+    def has_resolution_edges(self) -> bool:
+        """Whether :meth:`get_callsites_for` can resolve call sites on this backend right now.
+
+        ``False`` is only possible on the Neo4j backend, and only when the attached graph has no
+        ``PY_RESOLVES_TO`` edge anywhere (populated at an analysis level below the one where the
+        defuse-linker backfill runs) — in that case every ``callee_signature=None`` from
+        :meth:`get_callsites_for` is explained by the graph's analysis level, not by individual
+        call sites failing to resolve. The local backend is always ``True`` here: it attempts
+        Jedi resolution on every call site regardless of analysis level.
+
+        See Also:
+            :meth:`get_callsites_for`: The accessor whose ``None`` this disambiguates.
+        """
+        return self.backend.has_resolution_edges
+
     def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:
         """Return the call sites of the given callables, keyed by signature, in one bulk read.
 
@@ -655,6 +671,10 @@ class PythonAnalysis:
             A dict mapping each existing signature to its list of
             :class:`~cldk.models.python.PyCallsite` (empty if the callable has no call sites).
             Signatures with no matching callable are omitted.
+
+        See Also:
+            :attr:`has_resolution_edges`: Distinguishes a genuinely unresolved call site from a
+                graph with no resolution data at all.
         """
         return self.backend.get_callsites_for(signatures)
 

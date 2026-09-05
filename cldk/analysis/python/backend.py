@@ -226,6 +226,25 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         report at all; that backend answers with a ``diagnostics``-only result rather than
         fabricating empty-but-clean-looking coverage fields)."""
 
+    @property
+    @abstractmethod
+    def has_resolution_edges(self) -> bool:
+        """Whether this backend can resolve call-site ``callee_signature`` at all right now.
+
+        ``get_callsites_for``'s per-site ``callee_signature`` is ``None`` both for "genuinely
+        unresolved" and, on the Neo4j backend, for "this graph was populated at an analysis level
+        below the one where the defuse-linker backfill runs, so ``PY_RESOLVES_TO`` doesn't exist
+        at all" — ``PyCallsite`` is the analyzer's own frozen model with no field to carry that
+        distinction. This is the disambiguator: ``False`` means every ``None`` from
+        ``get_callsites_for`` is explained by that, not by individual call sites failing to
+        resolve.
+
+        The local backend always attempts resolution via Jedi regardless of analysis level (see
+        :meth:`get_callsites_for`'s local-vs-Neo4j caveat), so it is unconditionally ``True``
+        there. The Neo4j backend probes for at least one ``PY_RESOLVES_TO`` edge once at
+        connection time.
+        """
+
     @abstractmethod
     def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:
         """Call sites of the given callable signatures, keyed by owning signature. Each existing
@@ -249,11 +268,11 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         higher). A ``None`` from the Neo4j backend can therefore mean either "genuinely
         unresolved" or "this graph doesn't carry per-site resolution at all" — ``PyCallsite`` is
         the analyzer's own frozen model with no field to carry that distinction, so it cannot be
-        disambiguated here the way an accessor's own empty return could be. Partial mitigation on
-        the Neo4j backend: :attr:`~cldk.analysis.python.neo4j.PyNeo4jBackend.has_resolution_edges`
-        is probed once at construction and is ``False`` exactly when the attached graph has *no*
-        ``PY_RESOLVES_TO`` edge anywhere — in that case every ``None`` here is explained by the
-        graph's analysis level, not by individual call sites failing to resolve.
+        disambiguated here the way an accessor's own empty return could be. Partial mitigation:
+        :attr:`has_resolution_edges` is ``False`` exactly when the Neo4j backend's attached graph
+        has *no* ``PY_RESOLVES_TO`` edge anywhere — in that case every ``None`` here is explained
+        by the graph's analysis level, not by individual call sites failing to resolve. (The
+        local backend is always ``True`` here — see :attr:`has_resolution_edges`.)
         """
 
     @abstractmethod

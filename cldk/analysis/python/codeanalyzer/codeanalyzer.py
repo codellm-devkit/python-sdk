@@ -915,6 +915,14 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             errors=list(r.errors),
         )
 
+    @property
+    def has_resolution_edges(self) -> bool:
+        """See :meth:`PythonAnalysisBackend.has_resolution_edges`. Unconditionally ``True``: the
+        local backend attempts Jedi resolution on every call site regardless of analysis level,
+        unlike the Neo4j backend's ``PY_RESOLVES_TO`` edge, which is only backfilled at higher
+        analysis levels."""
+        return True
+
     def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:
         """Return ``{signature: call_sites}`` for the requested signatures that exist, with each
         call site's ``callee_signature`` resolved (see :meth:`PythonAnalysisBackend.get_callsites_for`
