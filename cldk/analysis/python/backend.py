@@ -91,6 +91,21 @@ def body_key_column(key: str) -> int:
     return int(col) if col.isdigit() else -1
 
 
+def reject_bare_string(kind: str, values: object) -> None:
+    """Refuse a single string where a sequence of names is required.
+
+    ``paths='pkg/mod.py'`` is not a type error to Python — a string *is* a sequence, of ten
+    characters — so it used to reach :func:`check_selector` as ten requested paths and come back as
+    ``10 of 10 paths not in graph: 'p', 'k', 'g', '/', …``. The mistake is the likely one because
+    the sibling keyword ``module=`` genuinely is single-valued, so both spellings look plausible.
+
+    Raises:
+        TypeError: ``values`` is a ``str``.
+    """
+    if isinstance(values, str):
+        raise TypeError(f"{kind}= takes a sequence of names, not a string; pass [{values!r}] to select just that one")
+
+
 def check_selector(kind: str, requested: Sequence[str], missing: Sequence[str]) -> None:
     """The one place a scoping keyword's *selection* is judged, for both backends.
 
@@ -144,16 +159,25 @@ def scope_paths(paths: Sequence[str] | None, keys: Iterable[str], kind: str = "p
         kind: The keyword's name for the error message; ``"module"`` for ``get_classes``, whose
             single-valued keyword routes through here as a one-element sequence.
 
+    **Resolution is many-to-one, and the result is de-duplicated.** Leniency is the whole point of
+    :func:`resolve_module_key` — ``"pkg/a.py"`` and ``"/abs/pkg/a.py"`` are two spellings a scanner
+    may plausibly hand over for the *same* module — so two requested paths legitimately collapse to
+    one key and the caller gets one entry back. Raising on the collapse would punish the very
+    caller the leniency exists for; de-duplicating explicitly is what keeps the returned list from
+    naming the same module twice and asking both backends to fetch it twice.
+
     Raises:
+        TypeError: ``paths`` is a bare string (see :func:`reject_bare_string`).
         ValueError: ``paths`` is an empty sequence.
         SelectorNotInGraph: a path names no module in this application.
     """
+    reject_bare_string(kind, paths)
     if paths is None:
         return None
     known = list(keys)
     resolved = [resolve_module_key(p, known) for p in paths]
     check_selector(kind, list(paths), [p for p, r in zip(paths, resolved) if r not in known])
-    return resolved
+    return list(dict.fromkeys(resolved))
 
 
 def call_graph_scope(roots: Sequence[str] | None, depth: int | None) -> List[str] | None:
@@ -168,6 +192,7 @@ def call_graph_scope(roots: Sequence[str] | None, depth: int | None) -> List[str
     through the same :func:`check_selector` — see :func:`bounded_subgraph`.
 
     Raises:
+        TypeError: ``roots`` is a bare string (see :func:`reject_bare_string`).
         ValueError: ``depth`` that is not a positive ``int``, ``depth`` without ``roots``, or an
             empty ``roots``. A hop budget with no origin to count from has no meaning, and quietly
             returning all 364,752 edges would be the worst of the available answers — the caller
@@ -179,6 +204,7 @@ def call_graph_scope(roots: Sequence[str] | None, depth: int | None) -> List[str
     """
     if depth is not None and (not isinstance(depth, int) or isinstance(depth, bool) or depth < 1):
         raise ValueError(f"depth must be an int >= 1, got {depth!r}")
+    reject_bare_string("roots", roots)
     if roots is None:
         if depth is not None:
             raise ValueError("depth= requires roots=; a hop budget needs an origin to count from")
@@ -187,7 +213,7 @@ def call_graph_scope(roots: Sequence[str] | None, depth: int | None) -> List[str
     return list(roots)
 
 
-def bounded_subgraph(graph: nx.DiGraph, roots: List[str], depth: int | None) -> nx.DiGraph:
+def bounded_subgraph(graph: nx.DiGraph, roots: List[str], depth: int | None, declared: Iterable[str]) -> nx.DiGraph:
     """The sub-call-graph reachable from ``roots``, within ``depth`` hops when given.
 
     **Induced**, not path-only: every edge between two reached nodes is kept, including one
@@ -196,19 +222,41 @@ def bounded_subgraph(graph: nx.DiGraph, roots: List[str], depth: int | None) -> 
     backend's Cypher is written to produce the same induced shape rather than the cheaper
     edges-along-the-path shape, for exactly this reason.
 
-    A root the graph does not hold raises (:func:`check_selector`) rather than contributing
-    nothing: "no such callable" and "a callable that calls nothing" are different answers, and
-    before this they were the same empty graph. The Neo4j backend runs the identical check against
-    the graph its Cypher returned, so a mistyped root fails the same way on both.
+    **The domain a root is judged against — stated here because both backends must judge against
+    the same one — is the callable inventory, not this graph.** ``graph`` is built from call
+    *edges* alone, so a callable that neither calls nor is called by anything is not a node in it:
+    444 of the live odoo application's 15,549 in-scope callables, 2.9%. Checking membership of
+    ``graph`` therefore raised for a callable that plainly exists, while the Neo4j backend — whose
+    Cypher matches a root by node *label*, not by edge participation — returned the one-node graph
+    it is. ``declared`` closes that gap: it carries every callable the application declares, and a
+    root is valid when it is **in the inventory or is a node of the graph**. The second disjunct is
+    not redundant — an ``@external`` ghost is a legitimate root, is a graph node, and is not a
+    declared callable — and the union is exactly what the Neo4j root match accepts (a
+    ``:PyCallable`` of this application, or a ``:PyExternal``).
+
+    A root outside that domain raises (:func:`check_selector`) rather than contributing nothing:
+    "no such callable" and "a callable that calls nothing" are different answers, and before this
+    they were the same empty graph.
+
+    The returned graph stays **edge-induced**. An isolated root is added back as a lone node —
+    which is the answer, and the one Neo4j gives — but nothing else the inventory knows about is
+    seeded into it. Seeding all declared callables would make the unbounded local graph disagree
+    with Neo4j's node-for-node, trading one parity defect for a larger one.
     """
-    check_selector("roots", roots, [r for r in roots if r not in graph])
+    inventory = set(declared)
+    check_selector("roots", roots, [r for r in roots if r not in graph and r not in inventory])
     nodes: set = set()
+    isolated: set = set()
     for root in roots:
-        if depth is None:
+        if root not in graph:
+            isolated.add(root)  # declared, but in no call edge: its own one-node graph
+        elif depth is None:
             nodes |= nx.descendants(graph, root) | {root}
         else:
             nodes |= set(nx.ego_graph(graph, root, radius=depth).nodes)
-    return graph.subgraph(nodes).copy()
+    sub = graph.subgraph(nodes).copy()
+    sub.add_nodes_from(isolated)
+    return sub
 
 
 class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, PyCallable, PyClassAttribute, str]):
@@ -270,8 +318,11 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         Raises:
             ValueError: ``depth`` that is not an ``int`` >= 1, ``depth`` given without ``roots``,
                 or an empty ``roots`` (see :func:`call_graph_scope`).
-            SelectorNotInGraph: a root the graph does not hold. "No such callable" and "a callable
-                that calls nothing" are different answers; the second is a graph of one node.
+            SelectorNotInGraph: a root that is neither a callable this application declares nor a
+                node of the call graph. "No such callable" and "a callable that calls nothing" are
+                different answers; the second is a graph of one node, including when the callable
+                has no call edge at all (see :func:`bounded_subgraph` for the domain both backends
+                validate against).
         """
 
     @abstractmethod

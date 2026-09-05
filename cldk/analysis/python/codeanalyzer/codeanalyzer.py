@@ -537,11 +537,19 @@ class PyCodeanalyzer(PythonAnalysisBackend):
 
         Raises:
             ValueError: ``depth`` below 1, or ``depth`` without ``roots``.
+            SelectorNotInGraph: a root that is neither declared by this application nor a node of
+                the call graph.
         """
         scope = call_graph_scope(roots, depth)
         if self.call_graph is None:
             self.call_graph = self._build_call_graph(self.application.call_graph, self._id_to_signature())
-        return self.call_graph if scope is None else bounded_subgraph(self.call_graph, scope, depth)
+        if scope is None:
+            return self.call_graph
+        # The inventory, not the graph, is what a root is checked against: the graph is built from
+        # call edges alone, so a declared callable in no edge is not a node in it (444 of odoo's
+        # 15,549) and checking membership here would raise for a callable that plainly exists,
+        # where Neo4j — matching roots by label — returns the one-node graph. See bounded_subgraph.
+        return bounded_subgraph(self.call_graph, scope, depth, (c.signature for c, _, _, _ in self._iter_callables()))
 
     def get_call_graph_json(self) -> str:
         """Return the complete application model serialized as JSON.

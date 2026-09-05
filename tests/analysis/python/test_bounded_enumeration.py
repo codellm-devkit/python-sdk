@@ -262,12 +262,32 @@ def test_call_graph_root_that_calls_nothing_is_a_graph_of_one_node(live_analysis
     assert scoped.number_of_edges() == 0
 
 
+def test_a_declared_callable_in_no_call_edge_is_still_a_valid_root(live_analysis):
+    """A root is judged against the callable *inventory*, not against edge participation.
+
+    2.9% of this application's callables — 444 of 15,549 — appear in no ``PY_CALLS`` edge in either
+    direction, so they are not nodes of a graph built from edges. Validating a root against that
+    graph made ``roots=[declared_but_edgeless]`` raise ``SelectorNotInGraph`` for a callable the
+    same connection will happily describe, which is the previous fix round's mirror image of the
+    ambiguous empty it set out to remove.
+    """
+    full = live_analysis.get_call_graph()
+    isolated = next(o.signature for o in live_analysis.get_callables_overview() if o.signature not in full)
+
+    scoped = live_analysis.get_call_graph(roots=[isolated])
+
+    assert set(scoped.nodes) == {isolated}
+    assert scoped.number_of_edges() == 0
+
+
 def test_call_graph_bounded_answer_is_the_induced_subgraph_of_the_unbounded_one(live_analysis):
     """The whole-graph agreement, asserted against the graph itself rather than a recorded number:
     whatever the walk reaches, the edges among the reached set must be exactly the unbounded
-    graph's. This is what fails if the walk leaves the application through an external ghost —
-    ``:PyExternal`` carries no ``_module`` anchor and has 5,307 outgoing ``PY_CALLS`` edges here,
-    and a node reached only through one would appear with no edge to justify it."""
+    graph's. This is what fails if the walk continues *through* the external-ghost layer —
+    ``:PyExternal`` carries no ``_module`` for a per-hop predicate to anchor on, and has 5,307
+    outgoing ``PY_CALLS`` edges here, 5,108 of them to another ghost — because a node reached only
+    through a ghost would appear with no edge to justify it. (Not a leak into a *neighbouring*
+    application: every ghost id embeds the application name, so ghosts are not shared.)"""
     full = live_analysis.get_call_graph()
     root = max(full.nodes, key=full.out_degree)
 

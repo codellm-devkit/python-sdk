@@ -231,6 +231,10 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         # fan-out, so reopening a session per query added real per-call overhead. Created lazily.
         self._session_obj: Any | None = None
 
+        # The attached server's version, filled in by _probe_schema; None means "not readable",
+        # which blocks nothing (see _read_server_version).
+        self._server_version: Tuple[int, ...] | None = None
+
         # Fail fast if the attached graph doesn't speak this backend's vocabulary — one round
         # trip, run once per connection, before any query can silently come back empty.
         self._probe_schema()
@@ -243,8 +247,15 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         # Lazily-built call graph cache (mirrors PyCodeanalyzer.call_graph).
         self._call_graph: nx.DiGraph | None = None
 
+    # The Cypher generation the bounded call graph needs. A quantified path pattern —
+    # ``(a)-[:R]->(b) WHERE ...){0,n}``, the only way to put a predicate on *every* hop of a walk —
+    # arrives in Neo4j 5.9. Recorded at attach (below), enforced at the one call that needs it
+    # (:meth:`_bounded_call_rows`), so an older server keeps serving every other accessor.
+    _QUANTIFIED_PATH_MIN_SERVER = (5, 9)
+
     def _probe_schema(self) -> None:
-        """Verify the connected graph's vocabulary once, at connection time.
+        """Verify the connected graph's vocabulary once, at connection time, and record the
+        server's version while the connection is already open.
 
         A graph built by a different ``codeanalyzer-python`` generation (or an empty/asset-only
         database) answers every one of this backend's Cypher queries with zero rows — no error,
@@ -252,11 +263,35 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         ``CALL db.relationshipTypes()`` (one round trip, read-only) and compares the result
         against :attr:`_REQUIRED_RELATIONSHIP_TYPES`, raising :class:`GraphSchemaMismatch` if any
         are absent.
+
+        The server version is read here for the same reason — attach is the one place already
+        talking to the server before any accessor runs — but is deliberately **not** acted on here:
+        see :attr:`_QUANTIFIED_PATH_MIN_SERVER`.
         """
         found = {r["relationshipType"] for r in self._run("CALL db.relationshipTypes()")}
         missing = self._REQUIRED_RELATIONSHIP_TYPES - found
         if missing:
             raise GraphSchemaMismatch(expected=set(self._REQUIRED_RELATIONSHIP_TYPES), found=found, missing=missing)
+        self._server_version = self._read_server_version()
+
+    def _read_server_version(self) -> Tuple[int, ...] | None:
+        """The attached server's version as an int tuple, or ``None`` when it cannot be read.
+
+        ``None`` means *unknown*, and an unknown version blocks nothing: a server that will not
+        answer ``dbms.components()`` (a stub driver in a test, a deployment that restricts the
+        procedure) is not evidence of an old one, and refusing to run on that basis would be a
+        guess dressed as a check. If such a server really is pre-5.9, its own parser reports the
+        syntax error, which is the same outcome as before this check existed.
+        """
+        try:
+            rows = self._run("CALL dbms.components() YIELD versions RETURN versions[0] AS v")
+        except Exception:  # noqa: BLE001 - an unreadable version is "unknown", never fatal
+            return None
+        raw = rows[0].get("v") if rows else None
+        if not isinstance(raw, str):
+            return None
+        parts = raw.split("-", 1)[0].split(".")
+        return tuple(int(x) for x in parts if x.isdigit()) or None
 
     def _probe_resolution_edges(self) -> bool:
         """Whether this application's graph carries any ``PY_RESOLVES_TO`` edge at all — probed
@@ -618,9 +653,13 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         The walk is **application-scoped at every hop**, which is why it is a quantified path
         pattern (Cypher 5.9+) rather than a ``*0..n`` variable-length one: a variable-length
         pattern can constrain only its endpoint, so the walk could step out through an external
-        ghost — ``:PyExternal`` carries no ``_module``, is shared between applications, and has
-        5,307 outgoing ``PY_CALLS`` edges on this graph -- and spend the rest of its hop budget in
-        a neighbouring application. Requiring ``a._module IN $mods`` of every hop's *source* makes
+        ghost. ``:PyExternal`` carries no ``_module``, so no per-hop module predicate can be
+        expressed about it, and it has 5,307 outgoing ``PY_CALLS`` edges on this graph, 5,108 of
+        them landing on another ghost. The leak is traversal **through** the ghost layer *inside*
+        this one application — a two-hop budget spent walking ghost-to-ghost instead of through the
+        application's own callables — not a hop into a neighbouring application: every ghost id
+        embeds the application name (``can://python/odoo-slim-19/@external/IPython/start_ipython``),
+        so a ghost is not in fact shared. Requiring ``a._module IN $mods`` of every hop's *source* makes
         the traversed edge set exactly :meth:`_call_rows`'s, so a ghost is still reached (it is a
         legitimate callee, and the local backend has it too) but is never traversed *through*, and
         the two backends agree node-for-node and edge-for-edge. The node labels repeat
@@ -637,9 +676,30 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         caller-controlled reaches the statement as text; ``roots`` stays a parameter.
 
         The quantifier starts at ``0``, so a root with no outgoing calls still contributes itself.
-        A root the graph does not hold contributes no row at all, which :meth:`get_call_graph`
-        turns into :class:`~cldk.utils.exceptions.SelectorNotInGraph` — see there.
+        The first ``MATCH`` is therefore also what defines the **domain a root is validated
+        against**: a ``:PyCallable`` this application declares (by signature) or a ``:PyExternal``
+        ghost (by id) — *declaration*, not edge participation, which is why a callable in no
+        ``PY_CALLS`` edge at all (444 of this graph's 15,549 in-scope callables) comes back as the
+        one-node graph it is. :func:`~cldk.analysis.python.backend.bounded_subgraph` validates
+        against that same union on the local backend, where it has to be passed in explicitly
+        because the local call graph is built from edges alone. Anything outside the domain
+        contributes no row at all, which :meth:`get_call_graph` turns into
+        :class:`~cldk.utils.exceptions.SelectorNotInGraph` — see there.
+
+        Raises:
+            CodeanalyzerExecutionException: the attached server is older than Neo4j 5.9, which is
+                where the quantified path pattern below arrives. Recorded at attach by
+                :meth:`_probe_schema` and enforced here rather than there, so a caller who never
+                asks for a bounded call graph keeps working against an older server — every other
+                accessor on this backend runs on any 5.x.
         """
+        if self._server_version is not None and self._server_version < self._QUANTIFIED_PATH_MIN_SERVER:
+            got = ".".join(str(n) for n in self._server_version)
+            raise CodeanalyzerExecutionException(
+                f"get_call_graph(roots=...) compiles to a quantified path pattern, which needs Neo4j server "
+                f"5.9 or newer; the attached server reports {got}. Every other accessor on this backend runs "
+                f"on any 5.x — only the bounded call graph needs the newer pattern."
+            )
         hops = "" if depth is None else str(int(depth))
         return self._run(
             "MATCH (root:PyCallable|PyExternal) WHERE coalesce(root.signature, root.id) IN $roots "
@@ -748,9 +808,13 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         scope = call_graph_scope(roots, depth)
         if scope is not None:
             graph = self._build_call_graph(self._bounded_call_rows(scope, depth))
-            # Every root the graph holds contributes at least its own row (the quantifier starts at
-            # 0), so absence from the result is exactly absence from the graph — the same check
-            # bounded_subgraph() makes locally, through the same function, for free.
+            # Every root the domain holds contributes at least its own row (the quantifier starts
+            # at 0), so absence from the result is exactly absence from the domain — the same check
+            # bounded_subgraph() makes locally, through the same function, against the same set.
+            # Not free: the miss is only visible *after* the traversal, so a caller who mistypes
+            # one of two roots pays for the surviving root's whole walk first. Measured on the odoo
+            # graph: 5.11s for an unbounded walk out of its busiest callable plus one typo, against
+            # 0.02s when every root misses and there is nothing left to expand.
             check_selector("roots", scope, [r for r in scope if r not in graph])
             return graph
         if self._call_graph is None:

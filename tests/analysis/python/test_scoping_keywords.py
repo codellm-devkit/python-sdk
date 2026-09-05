@@ -37,7 +37,7 @@ from codeanalyzer.schema.py_schema import PyApplication, PyCallable, PyClass, Py
 from cldk.analysis.python.backend import bounded_subgraph, call_graph_scope, scope_paths
 from cldk.analysis.python.codeanalyzer.codeanalyzer import PyCodeanalyzer
 from cldk.analysis.python.neo4j import PyNeo4jBackend
-from cldk.utils.exceptions import SelectorNotInGraph
+from cldk.utils.exceptions import CodeanalyzerExecutionException, SelectorNotInGraph
 
 # ----------------------------------------------------------------------------------------------
 # call_graph_scope — the semantics both backends share
@@ -131,6 +131,30 @@ def test_a_lenient_match_is_not_a_miss():
 # ----------------------------------------------------------------------------------------------
 # bounded_subgraph — the shape both backends must produce
 # ----------------------------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: call_graph_scope("pkg.mod.fn", None),
+        lambda: scope_paths("pkg/mod.py", ["pkg/mod.py"]),
+    ],
+    ids=["roots", "paths"],
+)
+def test_a_bare_string_selector_is_rejected_rather_than_iterated(call):
+    """A string is a sequence — of characters — so ``paths='pkg/mod.py'`` used to come back as
+    ``10 of 10 paths not in graph: 'p', 'k', 'g', '/', ...``. It is the likely mistake because the
+    sibling keyword ``module=`` genuinely is single-valued."""
+    with pytest.raises(TypeError, match="not a string"):
+        call()
+
+
+# ---- Fix 7: resolution is many-to-one ----------------------------------------------------------
+def test_two_spellings_of_one_module_resolve_to_one_key_once():
+    """Leniency is the point of :func:`resolve_module_key`, so two spellings of the same file are
+    not a caller error — but the resolved list must not name that module twice and ask both
+    backends to fetch it twice."""
+    assert scope_paths(["pkg/a.py", "/abs/pkg/a.py"], ["pkg/a.py", "pkg/b.py"]) == ["pkg/a.py"]
+
+
 def _diamond() -> nx.DiGraph:
     """a -> b -> d, a -> c -> d, plus c -> b (a back-edge between two nodes at the same depth)
     and an unrelated x -> y component."""
@@ -140,15 +164,15 @@ def _diamond() -> nx.DiGraph:
 
 
 def test_depth_one_is_exactly_the_direct_callees():
-    assert set(bounded_subgraph(_diamond(), ["a"], 1).nodes) == {"a", "b", "c"}
+    assert set(bounded_subgraph(_diamond(), ["a"], 1, ()).nodes) == {"a", "b", "c"}
 
 
 def test_depth_bounds_the_walk():
-    assert set(bounded_subgraph(_diamond(), ["a"], 2).nodes) == {"a", "b", "c", "d"}
+    assert set(bounded_subgraph(_diamond(), ["a"], 2, ()).nodes) == {"a", "b", "c", "d"}
 
 
 def test_unbounded_depth_is_everything_reachable():
-    g = bounded_subgraph(_diamond(), ["a"], None)
+    g = bounded_subgraph(_diamond(), ["a"], None, ())
     assert set(g.nodes) == {"a", "b", "c", "d"}
     assert "x" not in g, "an unrelated component leaked in"
 
@@ -160,7 +184,7 @@ def test_the_subgraph_is_induced_not_path_only():
     ``graph.predecessors("b")`` would lie about a graph it had just returned. This is the exact
     shape the Neo4j backend's two-step Cypher is written to reproduce.
     """
-    assert ("c", "b") in bounded_subgraph(_diamond(), ["a"], 1).edges
+    assert ("c", "b") in bounded_subgraph(_diamond(), ["a"], 1, ()).edges
 
 
 def test_a_root_absent_from_the_graph_raises_rather_than_returning_an_empty_graph():
@@ -168,24 +192,51 @@ def test_a_root_absent_from_the_graph_raises_rather_than_returning_an_empty_grap
     nothing" the same empty graph — the ambiguous empty D7 calls a defect. A partial miss raises
     too, so a caller cannot read a short answer as a complete one."""
     with pytest.raises(SelectorNotInGraph, match=r"roots not in graph: 'nope'"):
-        bounded_subgraph(_diamond(), ["nope"], 3)
+        bounded_subgraph(_diamond(), ["nope"], 3, ())
     with pytest.raises(SelectorNotInGraph, match=r"1 of 2 roots not in graph"):
-        bounded_subgraph(_diamond(), ["nope", "x"], 1)
+        bounded_subgraph(_diamond(), ["nope", "x"], 1, ())
 
 
 def test_a_root_that_calls_nothing_is_a_graph_of_one_node():
     """The answer an unknown root no longer collides with: ``d`` is a real callable with no
     outgoing edges, and the honest answer is the one node it is, not nothing."""
-    assert set(bounded_subgraph(_diamond(), ["d"], 3).nodes) == {"d"}
+    assert set(bounded_subgraph(_diamond(), ["d"], 3, ()).nodes) == {"d"}
+
+
+def test_a_declared_callable_in_no_edge_is_still_a_valid_root():
+    """The mirror image of the bug above, and the one the previous fix round introduced.
+
+    ``_diamond()`` has no such node, because a graph built from edges cannot have one — which is
+    precisely why nothing caught this. ``lonely`` is declared by the application and appears in no
+    ``PY_CALLS`` edge in either direction (444 of the live graph's 15,549 in-scope callables), so
+    validating against the graph raised for a callable that plainly exists, while the Neo4j
+    backend — matching roots by node label — returned the one-node graph.
+    """
+    g = bounded_subgraph(_diamond(), ["lonely"], 3, {"lonely"})
+    assert set(g.nodes) == {"lonely"}
+    assert g.number_of_edges() == 0
+
+
+def test_the_inventory_does_not_leak_into_the_returned_graph():
+    """The graph stays edge-induced: only the roots asked for are added back, never the whole
+    inventory. Seeding all declared callables would make the unbounded local graph disagree with
+    Neo4j's node-for-node — a bigger parity defect than the one being fixed."""
+    g = bounded_subgraph(_diamond(), ["a"], 1, {"lonely", "other", "a"})
+    assert set(g.nodes) == {"a", "b", "c"}
+
+
+def test_a_root_in_neither_the_graph_nor_the_inventory_still_raises():
+    with pytest.raises(SelectorNotInGraph, match=r"roots not in graph: 'nope'"):
+        bounded_subgraph(_diamond(), ["nope"], 3, {"lonely"})
 
 
 def test_several_roots_union():
-    assert set(bounded_subgraph(_diamond(), ["b", "x"], 1).nodes) == {"b", "d", "x", "y"}
+    assert set(bounded_subgraph(_diamond(), ["b", "x"], 1, ()).nodes) == {"b", "d", "x", "y"}
 
 
 def test_the_source_graph_is_not_mutated():
     g = _diamond()
-    bounded_subgraph(g, ["a"], 1)
+    bounded_subgraph(g, ["a"], 1, ())
     assert g.number_of_nodes() == 6
 
 
@@ -200,7 +251,12 @@ def _local_backend() -> PyCodeanalyzer:
             file_path=path,
             module_name=name,
             types={cls: PyClass(name=cls.rsplit(".", 1)[-1], signature=cls, path=path)},
-            functions={"go": PyCallable(name="go", path=path, signature=f"{name}.go")},
+            functions={
+                "go": PyCallable(name="go", path=path, signature=f"{name}.go"),
+                # Declared, and in no call edge in either direction — the 2.9% case (444 of the
+                # live graph's 15,549 callables) that the edge-induced call graph has no node for.
+                "lonely": PyCallable(name="lonely", path=path, signature=f"{name}.lonely"),
+            },
         )
 
     backend = object.__new__(PyCodeanalyzer)
@@ -249,6 +305,29 @@ def test_local_call_graph_scoped_to_roots():
     assert set(backend.get_call_graph(roots=["pkg.a.go"]).nodes) == {"pkg.a.go", "pkg.b.go", "pkg.c.go"}
 
 
+def test_an_isolated_declared_callable_is_one_node_on_both_backends():
+    """The parity this leg's previous fix round broke, asserted end to end rather than on the
+    shared helper: ``pkg.a.lonely`` is declared, is in no call edge, and must come back as itself.
+
+    The Neo4j half replays the row its Cypher really produces for such a root — the quantifier
+    starts at 0, so the root matches by label and the ``OPTIONAL MATCH`` yields a null ``tgt``.
+    """
+    local = _local_backend().get_call_graph(roots=["pkg.a.lonely"])
+    neo, _ = _rows_backend([{"src": "pkg.a.lonely", "tgt": None, "p": None}], ["pkg/a.py"])
+    remote = neo.get_call_graph(roots=["pkg.a.lonely"])
+    assert set(local.nodes) == set(remote.nodes) == {"pkg.a.lonely"}
+    assert local.number_of_edges() == remote.number_of_edges() == 0
+
+
+def test_an_undeclared_root_fails_identically_on_both_backends():
+    """The other half of the same domain: a name neither backend knows raises the same way, with
+    the same message. Only the *set* being checked changed, not the check."""
+    neo, _ = _rows_backend([], ["pkg/a.py"])
+    for call in (lambda: _local_backend().get_call_graph(roots=["pkg.a.nope"]), lambda: neo.get_call_graph(roots=["pkg.a.nope"])):
+        with pytest.raises(SelectorNotInGraph, match=r"1 of 1 roots not in graph: 'pkg\.a\.nope'"):
+            call()
+
+
 def test_local_unscoped_call_graph_is_still_the_cached_object():
     """The unscoped call must keep returning the graph itself, not a copy — ``get_all_callers`` and
     friends read it, and a scoped call must not have replaced the cache with a subgraph."""
@@ -276,6 +355,7 @@ def _recording_backend(modules: List[str]) -> tuple[PyNeo4jBackend, List[Dict[st
     backend._session_obj = None
     backend._modules = list(modules)
     backend._call_graph = None
+    backend._server_version = None  # unknown: _bounded_call_rows must not gate on a version it never read
     backend._run = run
     return backend, seen
 
@@ -355,9 +435,11 @@ def test_neo4j_unbounded_depth_leaves_the_upper_bound_open():
 
 def test_neo4j_walk_is_scoped_to_the_application_at_every_hop():
     """Not just at the endpoint. A ``*0..n`` variable-length pattern can only constrain where it
-    lands, so the walk could step out through a shared ``:PyExternal`` ghost — which carries no
-    ``_module`` and has 5,307 outgoing ``PY_CALLS`` edges on the live graph — and spend the rest of
-    its hop budget in a neighbouring application."""
+    lands, so the walk could step out through a ``:PyExternal`` ghost — which carries no
+    ``_module`` for a per-hop predicate to test, and has 5,307 outgoing ``PY_CALLS`` edges on the
+    live graph, 5,108 of them to another ghost — and spend the rest of its hop budget walking the
+    ghost layer instead of this application's own callables. Not a hop into a *neighbouring*
+    application: every ghost id embeds the application name, so ghosts are not shared."""
     backend, seen = _recording_backend(["pkg/a.py"])
     with pytest.raises(SelectorNotInGraph):
         backend.get_call_graph(roots=["pkg.a.go"], depth=2)
@@ -397,6 +479,27 @@ def test_neo4j_unknown_module_raises_naming_the_module_keyword():
     backend, _ = _recording_backend(["pkg/a.py"])
     with pytest.raises(SelectorNotInGraph, match="module not in graph"):
         backend.get_all_classes(module="pkg/nope.py")
+
+
+def test_an_old_server_fails_at_the_call_that_needs_5_9_not_at_attach():
+    """The quantified path pattern is the *only* thing on this backend needing 5.9, so an older
+    server is recorded at attach and refused here — a caller that never asks for a bounded call
+    graph keeps working."""
+    backend, seen = _recording_backend(["pkg/a.py"])
+    backend._server_version = (5, 8, 0)
+    with pytest.raises(CodeanalyzerExecutionException, match="5.9 or newer.*reports 5.8.0"):
+        backend.get_call_graph(roots=["pkg.a.go"])
+    assert seen == [], "the version gate must refuse before issuing the statement"
+
+
+def test_an_unreadable_server_version_blocks_nothing():
+    """``None`` means *unknown*, not *old*: a server that will not answer ``dbms.components()`` is
+    not evidence of a pre-5.9 one, and refusing on that basis would be a guess dressed as a check.
+    If it really is old, its own parser says so."""
+    backend, seen = _rows_backend([{"src": "pkg.a.go", "tgt": None, "p": None}], ["pkg/a.py"])
+    backend._server_version = None
+    assert set(backend.get_call_graph(roots=["pkg.a.go"]).nodes) == {"pkg.a.go"}
+    assert seen, "the statement should have been issued"
 
 
 def test_neo4j_scoped_call_graph_does_not_poison_the_cache():
