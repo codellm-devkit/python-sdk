@@ -598,6 +598,9 @@ class PythonAnalysis:
             :meth:`get_decorated_callables`: The same projection filtered by decorator instead.
             :meth:`get_entrypoint_classes`: The class-level sibling this walk never sees.
             :meth:`get_entrypoint_coverage`: Whether the detection pass itself had gaps.
+            :meth:`get_entry_point_methods`: Not this. Differs by a space and an underscore in
+                the name and raises ``NotImplementedError`` — a pre-existing, unrelated accessor.
+                Use this method instead.
         """
         return self.backend.get_entrypoints()
 
@@ -615,6 +618,9 @@ class PythonAnalysis:
 
         See Also:
             :meth:`get_entrypoints`: The callable-level projection.
+            :meth:`get_entry_point_classes`: Not this. Differs by one space in the name and
+                raises ``NotImplementedError`` — a pre-existing, unrelated accessor. Use this
+                method instead.
         """
         return self.backend.get_entrypoint_classes()
 
@@ -1209,6 +1215,11 @@ class PythonAnalysis:
         Raises:
             NotImplementedError: This functionality is not yet implemented
                 for Python analysis.
+
+        See Also:
+            :meth:`get_entrypoint_classes`: Not this. Differs by one space in the name and
+                actually works — returns :class:`~cldk.models.python.PyClassOverview` objects
+                for every entrypoint class. Use that instead.
         """
         raise NotImplementedError(
             "Support for this functionality has not been implemented yet."
@@ -1227,6 +1238,11 @@ class PythonAnalysis:
         Raises:
             NotImplementedError: This functionality is not yet implemented
                 for Python analysis.
+
+        See Also:
+            :meth:`get_entrypoints`: Not this. Differs by a space and an underscore in the name
+                and actually works — returns :class:`~cldk.models.python.PyCallableOverview`
+                objects for every entrypoint callable. Use that instead.
         """
         raise NotImplementedError(
             "Support for this functionality has not been implemented yet."
