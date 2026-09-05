@@ -69,6 +69,16 @@ Python leg (leg 1) of the CLDK 2.0 agent-facing query facade (see
   had no analyzer to grow one. `clang`, `libclang`, `tree-sitter-c`, and `tree-sitter-go` are
   dropped as dependencies along with it. `CLDK.java()`, `CLDK.python()`, and `CLDK.typescript()`
   are unaffected.
+- **BREAKING: fifteen `PythonAnalysis` accessors that only raised `NotImplementedError`** —
+  `get_class_hierarchy`, `get_service_entry_point_classes`, `get_service_entry_point_methods`,
+  `get_entry_point_classes`, `get_entry_point_methods`, `get_implemented_interfaces`,
+  `get_methods_with_decorators`, `get_test_methods`, `get_calling_lines`, `get_call_targets`,
+  `get_all_crud_operations`, `get_all_create_operations`, `get_all_read_operations`,
+  `get_all_update_operations`, `get_all_delete_operations`. Every one raised unconditionally, so no
+  caller could have depended on behaviour — only on the name existing. This also removes the
+  `get_entrypoint_classes` (works) / `get_entry_point_classes` (raised) name collision one space
+  apart; `See Also` cross-links pointing at the deleted half are removed too. `CLDK.java()` and
+  `CLDK.typescript()` keep their same-named accessors, which do work.
 
 ## [v1.5.0] - 2026-07-27
 

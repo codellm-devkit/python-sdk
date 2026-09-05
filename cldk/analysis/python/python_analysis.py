@@ -47,7 +47,7 @@ See Also:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Sequence, Set, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 import networkx as nx
 from tree_sitter import Tree
@@ -598,9 +598,6 @@ class PythonAnalysis:
             :meth:`get_decorated_callables`: The same projection filtered by decorator instead.
             :meth:`get_entrypoint_classes`: The class-level sibling this walk never sees.
             :meth:`get_entrypoint_coverage`: Whether the detection pass itself had gaps.
-            :meth:`get_entry_point_methods`: Not this. Differs by a space and an underscore in
-                the name and raises ``NotImplementedError`` — a pre-existing, unrelated accessor.
-                Use this method instead.
         """
         return self.backend.get_entrypoints()
 
@@ -618,9 +615,6 @@ class PythonAnalysis:
 
         See Also:
             :meth:`get_entrypoints`: The callable-level projection.
-            :meth:`get_entry_point_classes`: Not this. Differs by one space in the name and
-                raises ``NotImplementedError`` — a pre-existing, unrelated accessor. Use this
-                method instead.
         """
         return self.backend.get_entrypoint_classes()
 
@@ -1125,7 +1119,6 @@ class PythonAnalysis:
 
         See Also:
             :meth:`get_extended_classes`: For the reverse (what a class extends).
-            :meth:`get_class_hierarchy`: For the full inheritance graph (not implemented).
         """
         return self.backend.get_all_sub_classes(qualified_class_name)
 
@@ -1145,310 +1138,10 @@ class PythonAnalysis:
 
         Note:
             Python does not distinguish between classes and interfaces,
-            so all base types are returned here. Use this method instead
-            of :meth:`get_implemented_interfaces`.
+            so all base types are returned here.
 
         See Also:
             :meth:`get_sub_classes`: For finding classes that extend this class.
         """
         return self.backend.get_extended_classes(qualified_class_name)
 
-    # -----[ unsupported ]-----
-    def get_class_hierarchy(self) -> nx.DiGraph:
-        """Return the complete class inheritance hierarchy as a graph.
-
-        This method is intended to return a NetworkX directed graph representing
-        the full class inheritance relationships in the project.
-
-        Returns:
-            Would return a ``networkx.DiGraph`` with classes as nodes and
-            inheritance edges from subclass to superclass.
-
-        Raises:
-            NotImplementedError: This functionality is not yet implemented
-                for Python analysis.
-
-        See Also:
-            :meth:`get_sub_classes`: For finding subclasses of a specific class.
-            :meth:`get_extended_classes`: For finding base classes of a class.
-        """
-        raise NotImplementedError("Class hierarchy is not implemented yet.")
-
-    def get_service_entry_point_classes(self, **kwargs) -> Dict[str, PyClass]:
-        """Return classes that serve as service entry points.
-
-        This method is intended to identify classes that act as entry points
-        for services, such as Flask views, Django views, FastAPI endpoints,
-        or other framework-specific entry points.
-
-        Args:
-            **kwargs: Framework-specific filtering options.
-
-        Returns:
-            Would return a dictionary of class names to :class:`PyClass` objects.
-
-        Raises:
-            NotImplementedError: This functionality is not yet implemented
-                for Python analysis.
-
-        See Also:
-            :meth:`get_entry_point_classes`: Related entry point detection.
-        """
-        raise NotImplementedError(
-            "Support for this functionality has not been implemented yet."
-        )
-
-    def get_service_entry_point_methods(self, **kwargs) -> Dict[str, Dict[str, PyCallable]]:
-        """Return methods that serve as service entry points.
-
-        This method is intended to identify methods decorated with framework-
-        specific decorators like ``@app.route``, ``@api_view``, etc.
-
-        Args:
-            **kwargs: Framework-specific filtering options.
-
-        Returns:
-            Would return a nested dictionary of class names to method names
-            to :class:`PyCallable` objects.
-
-        Raises:
-            NotImplementedError: This functionality is not yet implemented
-                for Python analysis.
-
-        See Also:
-            :meth:`get_methods_with_decorators`: For finding decorated methods.
-        """
-        raise NotImplementedError(
-            "Support for this functionality has not been implemented yet."
-        )
-
-    def get_entry_point_classes(self) -> Dict[str, PyClass]:
-        """Return classes identified as application entry points.
-
-        This method is intended to identify main application classes,
-        CLI entry points, and other classes that serve as program starting
-        points.
-
-        Returns:
-            Would return a dictionary of class names to :class:`PyClass` objects.
-
-        Raises:
-            NotImplementedError: This functionality is not yet implemented
-                for Python analysis.
-
-        See Also:
-            :meth:`get_entrypoint_classes`: Not this. Differs by one space in the name and
-                actually works — returns :class:`~cldk.models.python.PyClassOverview` objects
-                for every entrypoint class. Use that instead.
-        """
-        raise NotImplementedError(
-            "Support for this functionality has not been implemented yet."
-        )
-
-    def get_entry_point_methods(self) -> Dict[str, Dict[str, PyCallable]]:
-        """Return methods identified as application entry points.
-
-        This method is intended to identify main functions, CLI commands,
-        and other methods that serve as program starting points.
-
-        Returns:
-            Would return a nested dictionary of class names to method names
-            to :class:`PyCallable` objects.
-
-        Raises:
-            NotImplementedError: This functionality is not yet implemented
-                for Python analysis.
-
-        See Also:
-            :meth:`get_entrypoints`: Not this. Differs by a space and an underscore in the name
-                and actually works — returns :class:`~cldk.models.python.PyCallableOverview`
-                objects for every entrypoint callable. Use that instead.
-        """
-        raise NotImplementedError(
-            "Support for this functionality has not been implemented yet."
-        )
-
-    def get_implemented_interfaces(self, qualified_class_name: str) -> List[str]:
-        """Return interfaces implemented by a class.
-
-        This method exists for API parity with Java analysis. In Python,
-        there is no syntactic distinction between classes and interfaces;
-        abstract base classes (ABCs) and protocols serve similar purposes
-        but are syntactically identical to regular classes.
-
-        Args:
-            qualified_class_name: The class to query.
-
-        Raises:
-            NotImplementedError: Always raised. Use :meth:`get_extended_classes`
-                instead to get all base classes, which may include ABCs or
-                Protocol classes.
-
-        See Also:
-            :meth:`get_extended_classes`: The correct method for Python
-                to get parent classes including abstract base classes.
-        """
-        raise NotImplementedError(
-            "Python does not distinguish interfaces from base classes; use get_extended_classes."
-        )
-
-    def get_methods_with_decorators(
-        self, decorators: List[str]
-    ) -> Dict[str, List[Dict]]:
-        """Return methods decorated with specific decorators.
-
-        This method is intended to find all methods that have any of the
-        specified decorators applied, such as ``@property``, ``@staticmethod``,
-        ``@classmethod``, or custom decorators.
-
-        Args:
-            decorators: List of decorator names to search for (e.g.,
-                ``["property", "staticmethod", "app.route"]``).
-
-        Returns:
-            Would return a dictionary mapping decorator names to lists of
-            method information dictionaries.
-
-        Raises:
-            NotImplementedError: This functionality is not yet implemented
-                for Python analysis.
-
-        See Also:
-            :meth:`get_methods`: To manually filter methods by decorators.
-        """
-        raise NotImplementedError(
-            "Support for this functionality has not been implemented yet."
-        )
-
-    def get_test_methods(self) -> Dict[str, str]:
-        """Return methods identified as test methods.
-
-        This method is intended to find all test methods in the project,
-        typically methods starting with ``test_`` or decorated with
-        ``@pytest.mark`` or similar test framework decorators.
-
-        Returns:
-            Would return a dictionary mapping test method identifiers to
-            their source code or signatures.
-
-        Raises:
-            NotImplementedError: This functionality is not yet implemented
-                for Python analysis.
-
-        See Also:
-            :meth:`get_methods_with_decorators`: Alternative approach to
-                find pytest-decorated methods.
-        """
-        raise NotImplementedError(
-            "Support for this functionality has not been implemented yet."
-        )
-
-    def get_calling_lines(self, target_method_name: str) -> List[int]:
-        """Return line numbers where a method is called.
-
-        This method is intended to find all line numbers in the project
-        where the specified method is invoked.
-
-        Args:
-            target_method_name: The name of the method to find calls to.
-
-        Returns:
-            Would return a list of line numbers (integers).
-
-        Raises:
-            NotImplementedError: This functionality is not yet implemented
-                for Python analysis.
-
-        See Also:
-            :meth:`get_callers`: For finding caller methods instead of lines.
-        """
-        raise NotImplementedError(
-            "Support for this functionality has not been implemented yet."
-        )
-
-    def get_call_targets(self, declared_methods: dict) -> Set[str]:
-        """Return call targets using simple name resolution.
-
-        This method is intended to find all methods that could be called
-        based on simple name matching, without full semantic analysis.
-
-        Args:
-            declared_methods: Dictionary of declared method names and signatures.
-
-        Returns:
-            Would return a set of method names that are call targets.
-
-        Raises:
-            NotImplementedError: This functionality is not yet implemented
-                for Python analysis.
-
-        See Also:
-            :meth:`get_call_graph`: For full semantic call resolution.
-        """
-        raise NotImplementedError(
-            "Support for this functionality has not been implemented yet."
-        )
-
-    def get_all_crud_operations(self) -> Dict:
-        """Return all CRUD (Create, Read, Update, Delete) operations.
-
-        This method is intended for web application analysis to identify
-        database operations and REST API endpoints.
-
-        Returns:
-            Would return a dictionary of CRUD operations categorized by type.
-
-        Raises:
-            NotImplementedError: CRUD analysis is not supported for Python.
-                This feature is primarily designed for Java enterprise
-                applications with JPA/Hibernate.
-
-        See Also:
-            :meth:`get_all_create_operations`: For create operations only.
-            :meth:`get_all_read_operations`: For read operations only.
-        """
-        raise NotImplementedError("CRUD analysis is not supported for Python.")
-
-    def get_all_create_operations(self) -> Dict:
-        """Return all Create operations from CRUD analysis.
-
-        Returns:
-            Would return a dictionary of create/insert operations.
-
-        Raises:
-            NotImplementedError: CRUD analysis is not supported for Python.
-        """
-        raise NotImplementedError("CRUD analysis is not supported for Python.")
-
-    def get_all_read_operations(self) -> Dict:
-        """Return all Read operations from CRUD analysis.
-
-        Returns:
-            Would return a dictionary of read/select operations.
-
-        Raises:
-            NotImplementedError: CRUD analysis is not supported for Python.
-        """
-        raise NotImplementedError("CRUD analysis is not supported for Python.")
-
-    def get_all_update_operations(self) -> Dict:
-        """Return all Update operations from CRUD analysis.
-
-        Returns:
-            Would return a dictionary of update operations.
-
-        Raises:
-            NotImplementedError: CRUD analysis is not supported for Python.
-        """
-        raise NotImplementedError("CRUD analysis is not supported for Python.")
-
-    def get_all_delete_operations(self) -> Dict:
-        """Return all Delete operations from CRUD analysis.
-
-        Returns:
-            Would return a dictionary of delete operations.
-
-        Raises:
-            NotImplementedError: CRUD analysis is not supported for Python.
-        """
-        raise NotImplementedError("CRUD analysis is not supported for Python.")
