@@ -38,6 +38,7 @@ import networkx as nx
 
 from cldk.analysis.commons.backend import AnalysisBackend
 from cldk.analysis.commons.results import EntrypointCoverage, LocateResult
+from cldk.utils.exceptions import SelectorNotInGraph
 from cldk.models.python import (
     PyApplication,
     PyCallable,
@@ -90,6 +91,71 @@ def body_key_column(key: str) -> int:
     return int(col) if col.isdigit() else -1
 
 
+def check_selector(kind: str, requested: Sequence[str], missing: Sequence[str]) -> None:
+    """The one place a scoping keyword's *selection* is judged, for both backends.
+
+    Every scoped accessor — ``get_symbol_table(paths=)``, ``get_classes(module=)``,
+    ``get_call_graph(roots=)`` — narrows a whole-application enumeration to what the caller named.
+    Two ways of naming nothing must not both come back as an empty result:
+
+    * **an empty sequence** (``paths=[]``, ``roots=[]``) selected nothing while missing nothing. It
+      is a caller bug — the argument to omit is the argument that means "everything" — and it
+      raises the same :class:`ValueError` ``depth=`` without ``roots=`` already does.
+    * **values that match nothing** are the ambiguous empty the parent spec's D7 calls a defect:
+      a mistyped path and a module that genuinely declares no classes were the same ``{}``. They
+      raise :class:`~cldk.utils.exceptions.SelectorNotInGraph`, which names them and stops. It
+      offers no near-miss candidates on purpose — leg 1.5's E8 puts typo-tolerant matching out of
+      scope "not in the resolver, not in the error path".
+
+    A **partial** miss raises too. Returning the values that did match would make a result whose
+    size the caller cannot check against what it asked for, which is the same silence one step
+    quieter.
+
+    Args:
+        kind: The keyword's name, as it appears in the caller's own call — ``"paths"``,
+            ``"module"`` or ``"roots"``.
+        requested: Everything the keyword named, in the caller's spelling.
+        missing: The subset of ``requested`` that matched nothing. Callers with no membership
+            information to bring (``call_graph_scope``, which has not seen the graph yet) pass an
+            empty sequence and get only the empty-selection check.
+
+    Raises:
+        ValueError: ``requested`` is empty.
+        SelectorNotInGraph: ``missing`` is non-empty.
+    """
+    if not requested:
+        raise ValueError(f"{kind}= selected nothing; omit it to enumerate the whole application")
+    if missing:
+        raise SelectorNotInGraph(kind, list(missing), len(requested))
+
+
+def scope_paths(paths: Sequence[str] | None, keys: Iterable[str], kind: str = "paths") -> List[str] | None:
+    """Resolve requested module paths to symbol-table keys, or ``None`` for "the whole application".
+
+    Both backends route their ``paths=`` / ``module=`` keywords through here, so the lenient
+    resolution (:func:`resolve_module_key` — an absolute path or one with native separators finds
+    its module) and the strictness (:func:`check_selector` — a path naming no module raises) cannot
+    drift apart between them.
+
+    Args:
+        paths: What the caller named, or ``None`` for the unscoped call.
+        keys: The symbol-table keys that exist — ``symbol_table.keys()`` locally, the
+            application's module ``file_key``s over Neo4j.
+        kind: The keyword's name for the error message; ``"module"`` for ``get_classes``, whose
+            single-valued keyword routes through here as a one-element sequence.
+
+    Raises:
+        ValueError: ``paths`` is an empty sequence.
+        SelectorNotInGraph: a path names no module in this application.
+    """
+    if paths is None:
+        return None
+    known = list(keys)
+    resolved = [resolve_module_key(p, known) for p in paths]
+    check_selector(kind, list(paths), [p for p, r in zip(paths, resolved) if r not in known])
+    return resolved
+
+
 def call_graph_scope(roots: Sequence[str] | None, depth: int | None) -> List[str] | None:
     """Normalise :meth:`PythonAnalysisBackend.get_call_graph`'s scoping keywords.
 
@@ -98,19 +164,26 @@ def call_graph_scope(roots: Sequence[str] | None, depth: int | None) -> List[str
 
     Both backends route through this so the two cannot drift apart on what a keyword combination
     means (the failure mode Fix 1 of leg 1.5 had to go back and repair on the child-fetch paths).
+    Whether each root *exists* is checked later, by whichever backend has the graph in hand, but
+    through the same :func:`check_selector` — see :func:`bounded_subgraph`.
 
     Raises:
-        ValueError: ``depth`` below 1, or ``depth`` without ``roots``. A hop budget with no origin
-            to count from has no meaning, and quietly returning all 364,752 edges would be the
-            worst of the available answers — the caller asked for a bounded graph and would be
-            handed an unbounded one with no signal.
+        ValueError: ``depth`` that is not a positive ``int``, ``depth`` without ``roots``, or an
+            empty ``roots``. A hop budget with no origin to count from has no meaning, and quietly
+            returning all 364,752 edges would be the worst of the available answers — the caller
+            asked for a bounded graph and would be handed an unbounded one with no signal.
+            ``depth`` is type-checked rather than merely range-checked because the two ways of
+            getting it wrong are silent otherwise: ``depth="2"`` raised ``TypeError`` from the
+            comparison, and ``depth=2.5`` was accepted and truncated to 2 by the Cypher/ego-graph
+            radius. ``bool`` is rejected for the same reason — ``depth=True`` is ``1`` by accident.
     """
-    if depth is not None and depth < 1:
-        raise ValueError(f"depth must be >= 1, got {depth!r}")
+    if depth is not None and (not isinstance(depth, int) or isinstance(depth, bool) or depth < 1):
+        raise ValueError(f"depth must be an int >= 1, got {depth!r}")
     if roots is None:
         if depth is not None:
             raise ValueError("depth= requires roots=; a hop budget needs an origin to count from")
         return None
+    check_selector("roots", list(roots), ())
     return list(roots)
 
 
@@ -123,13 +196,14 @@ def bounded_subgraph(graph: nx.DiGraph, roots: List[str], depth: int | None) -> 
     backend's Cypher is written to produce the same induced shape rather than the cheaper
     edges-along-the-path shape, for exactly this reason.
 
-    A root absent from the graph contributes nothing — a callable with no call edges at all is not
-    an error, it is an isolated node the projection never recorded.
+    A root the graph does not hold raises (:func:`check_selector`) rather than contributing
+    nothing: "no such callable" and "a callable that calls nothing" are different answers, and
+    before this they were the same empty graph. The Neo4j backend runs the identical check against
+    the graph its Cypher returned, so a mistyped root fails the same way on both.
     """
+    check_selector("roots", roots, [r for r in roots if r not in graph])
     nodes: set = set()
     for root in roots:
-        if root not in graph:
-            continue
         if depth is None:
             nodes |= nx.descendants(graph, root) | {root}
         else:
@@ -163,9 +237,10 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         Args:
             paths: Restrict to these modules, named by symbol-table key (equivalently, the module's
                 file path). Resolved leniently through :func:`resolve_module_key`, so an absolute
-                path or one with native separators finds its module. A path naming no module in the
-                application contributes nothing rather than raising. ``None`` (the default) returns
-                every module.
+                path or one with native separators finds its module. A path naming no module in
+                the application raises :class:`~cldk.utils.exceptions.SelectorNotInGraph`, and an
+                empty sequence raises ``ValueError`` — see :func:`scope_paths`. ``None`` (the
+                default) returns every module.
         """
 
     @abstractmethod
@@ -175,7 +250,8 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         Args:
             module: Restrict to the classes declared by one module, named the same way
                 :meth:`get_symbol_table`'s ``paths`` names one — a symbol-table key, not a dotted
-                module name. ``None`` (the default) returns the whole application's classes.
+                module name, and a key naming no module raises the same way. ``None`` (the default)
+                returns the whole application's classes.
         """
 
     @abstractmethod
@@ -192,8 +268,10 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         :func:`bounded_subgraph`), identically on both backends.
 
         Raises:
-            ValueError: ``depth`` below 1, or ``depth`` given without ``roots``
-                (see :func:`call_graph_scope`).
+            ValueError: ``depth`` that is not an ``int`` >= 1, ``depth`` given without ``roots``,
+                or an empty ``roots`` (see :func:`call_graph_scope`).
+            SelectorNotInGraph: a root the graph does not hold. "No such callable" and "a callable
+                that calls nothing" are different answers; the second is a graph of one node.
         """
 
     @abstractmethod

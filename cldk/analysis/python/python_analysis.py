@@ -272,8 +272,9 @@ class PythonAnalysis:
         Args:
             paths: Restrict the result to these modules, named by symbol-table key (the module's
                 file path). Absolute paths and native separators are accepted; a path naming no
-                module contributes nothing. ``None`` (the default) returns the whole application —
-                on a large graph that is thousands of modules, so prefer naming the ones you need.
+                module raises rather than contributing nothing. ``None`` (the default) returns the
+                whole application — on a large graph that is thousands of modules, so prefer naming
+                the ones you need.
 
         Returns:
             A dictionary where keys are file paths (as strings) and values are
@@ -383,13 +384,16 @@ class PythonAnalysis:
         Args:
             roots: Restrict the result to the sub-graph reachable from these callables, named by
                 signature. ``None`` (the default) returns the whole application's call graph.
-            depth: Maximum number of call hops from a root; ``None`` is unbounded. Requires
-                ``roots``.
+            depth: Maximum number of call hops from a root, an ``int`` >= 1; ``None`` is
+                unbounded. Requires ``roots``.
 
         The unscoped graph on a real application runs to hundreds of thousands of edges, which is
         not an answer to a question about one function — ``roots=`` and ``depth=`` are how you ask
         the question you actually have. The result is the *induced* sub-graph over the reached
-        nodes, so an edge between two nodes you can see is never silently absent.
+        nodes, so an edge between two nodes you can see is never silently absent, and a root that
+        calls nothing is a graph of one node rather than an empty one. A root the graph does not
+        hold raises :class:`~cldk.utils.exceptions.SelectorNotInGraph` instead of quietly
+        contributing nothing.
 
         The call graph is built using:
             - Jedi for semantic call resolution
@@ -1009,8 +1013,8 @@ class PythonAnalysis:
         Args:
             module: Restrict the result to one module's classes, named by symbol-table key (the
                 module's file path — *not* a dotted module name, so it reads the same way as
-                :meth:`get_symbol_table`'s ``paths``). ``None`` (the default) returns every class
-                in the application.
+                :meth:`get_symbol_table`'s ``paths``). A key naming no module raises. ``None``
+                (the default) returns every class in the application.
 
         Returns:
             A dictionary mapping fully qualified class names (strings) to

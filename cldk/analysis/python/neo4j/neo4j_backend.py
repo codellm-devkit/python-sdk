@@ -86,7 +86,7 @@ from codeanalyzer.schema import model_dump_json
 from codeanalyzer.schema.ids import application_id
 
 from cldk.analysis.commons.results import CallableRef, Diagnostic, EntrypointCoverage, LocateResult, ModuleRef, TypeRef
-from cldk.analysis.python.backend import PythonAnalysisBackend, body_key_column, call_graph_scope, resolve_module_key
+from cldk.analysis.python.backend import PythonAnalysisBackend, body_key_column, call_graph_scope, check_selector, resolve_module_key, scope_paths
 from cldk.analysis.python.neo4j import reconstruct as R
 from cldk.models.python import (
     BodyNode,
@@ -173,6 +173,10 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     ``has_resolution_edges`` (see :meth:`PythonAnalysisBackend.has_resolution_edges`) is ``True``
     iff this application's graph has at least one ``PY_RESOLVES_TO`` edge — probed once at
     construction (see :meth:`_probe_resolution_edges`).
+
+    **Server version:** ``get_call_graph(roots=...)`` compiles to a quantified path pattern, so it
+    needs **Neo4j 5.9 or newer**; every other accessor here runs on any 5.x. See
+    :meth:`_bounded_call_rows` for why the walk cannot be expressed as a variable-length pattern.
     """
 
     #: Neo4j relationship-type and node-label prefixes for codeanalyzer-python's graph vocabulary
@@ -602,25 +606,49 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         induced shape is what :func:`~cldk.analysis.python.backend.bounded_subgraph` gives on the
         local backend, so this is also what keeps the two backends answering identically.
 
+        The second match is an ``OPTIONAL MATCH``, which is what puts a **reached but isolated**
+        node in the result. Built from edge rows alone, the answer silently dropped every node with
+        no outgoing call edge inside the reached set -- 5,302 of this graph's 19,549 call-graph
+        nodes have out-degree 0, so a root that is itself a leaf came back as an *empty graph*,
+        while the local backend's ``graph.subgraph(nodes)`` returned the one node it is. Empty and
+        one-isolated-node are different answers to "what does this call?", and the null ``tgt`` row
+        an ``OPTIONAL MATCH`` produces is how the reconstruction (:meth:`_build_call_graph`) tells
+        them apart.
+
+        The walk is **application-scoped at every hop**, which is why it is a quantified path
+        pattern (Cypher 5.9+) rather than a ``*0..n`` variable-length one: a variable-length
+        pattern can constrain only its endpoint, so the walk could step out through an external
+        ghost — ``:PyExternal`` carries no ``_module``, is shared between applications, and has
+        5,307 outgoing ``PY_CALLS`` edges on this graph -- and spend the rest of its hop budget in
+        a neighbouring application. Requiring ``a._module IN $mods`` of every hop's *source* makes
+        the traversed edge set exactly :meth:`_call_rows`'s, so a ghost is still reached (it is a
+        legitimate callee, and the local backend has it too) but is never traversed *through*, and
+        the two backends agree node-for-node and edge-for-edge. The node labels repeat
+        :meth:`_call_rows`'s for the same reason: ``PY_CALLS`` also lands on 51 ``:PyClass`` nodes
+        on this graph, which the unscoped call graph does not contain.
+
+        (Expressing the same constraint as ``all(x IN nodes(p) ...)`` over a bound path is correct
+        and unusable: binding the path defeats Neo4j's pruning expansion, and an unbounded walk
+        that answers in 0.2s as written did not finish in three minutes that way.)
+
         ``depth`` is interpolated into the pattern because Cypher does not accept a parameter as a
-        variable-length bound. It is an ``int`` validated by
+        quantifier bound. It is an ``int`` validated by
         :func:`~cldk.analysis.python.backend.call_graph_scope` and re-coerced here, so nothing
         caller-controlled reaches the statement as text; ``roots`` stays a parameter.
 
-        The traversal starts at ``*0``, so a root with no outgoing calls still contributes itself
-        and any edges among the roots — a root absent from the graph entirely contributes nothing,
-        which is not an error (a callable the projection recorded no call edges for is isolated,
-        not missing).
+        The quantifier starts at ``0``, so a root with no outgoing calls still contributes itself.
+        A root the graph does not hold contributes no row at all, which :meth:`get_call_graph`
+        turns into :class:`~cldk.utils.exceptions.SelectorNotInGraph` — see there.
         """
         hops = "" if depth is None else str(int(depth))
         return self._run(
             "MATCH (root:PyCallable|PyExternal) WHERE coalesce(root.signature, root.id) IN $roots "
             "AND (root._module IS NULL OR root._module IN $mods) "
-            f"MATCH (root)-[:PY_CALLS*0..{hops}]->(n) "
+            f"MATCH (root) ((a:PyCallable|PyExternal)-[:PY_CALLS]->(b:PyCallable|PyExternal) WHERE a._module IN $mods){{0,{hops}}} (n) "
             "WITH collect(DISTINCT n) AS ns "
             "UNWIND ns AS s "
-            "MATCH (s)-[r:PY_CALLS]->(t) WHERE t IN ns AND s._module IN $mods "
-            "RETURN s.signature AS src, coalesce(t.signature, t.id) AS tgt, properties(r) AS p",
+            "OPTIONAL MATCH (s)-[r:PY_CALLS]->(t) WHERE t IN ns AND s._module IN $mods "
+            "RETURN coalesce(s.signature, s.id) AS src, coalesce(t.signature, t.id) AS tgt, properties(r) AS p",
             roots=list(roots),
             mods=self._modules,
         )
@@ -648,14 +676,16 @@ class PyNeo4jBackend(PythonAnalysisBackend):
                 result[mod.file_path] = mod  # symbol_table keyed by file_path (== file_key)
         return result
 
-    def _resolve_paths(self, paths: Sequence[str] | None) -> List[str] | None:
+    def _resolve_paths(self, paths: Sequence[str] | None, kind: str = "paths") -> List[str] | None:
         """Requested module paths as graph ``file_key``s — ``None`` passes through as "everything".
 
-        Leniently, via the same :func:`resolve_module_key` the local backend uses, so an absolute
-        path or one with native separators finds its module and the two backends accept the same
-        strings. A path matching nothing is kept as-is and simply selects no rows.
+        Delegates to :func:`~cldk.analysis.python.backend.scope_paths`, which is also what the
+        local backend calls, so the lenient resolution (an absolute path or one with native
+        separators finds its module) and the strictness (a path naming no module raises
+        :class:`~cldk.utils.exceptions.SelectorNotInGraph` rather than quietly selecting no rows)
+        are the same on both.
         """
-        return None if paths is None else [resolve_module_key(p, self._modules) for p in paths]
+        return scope_paths(paths, self._modules, kind)
 
     def get_modules(self) -> List[PyModule]:
         return list(self.get_symbol_table().values())
@@ -699,8 +729,14 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         ]
 
     def _build_call_graph(self, rows: List[Dict[str, Any]] | None = None) -> nx.DiGraph:
+        # A null ``tgt`` is a node the bounded walk reached that has no outgoing call edge inside
+        # the reached set (see _bounded_call_rows). It is a node, not an edge, and dropping it is
+        # what made a leaf root return an empty graph. _call_rows() never produces one.
         graph = nx.DiGraph()
         for r in self._call_rows() if rows is None else rows:
+            if r["tgt"] is None:
+                graph.add_node(r["src"])
+                continue
             p = r["p"]
             graph.add_edge(r["src"], r["tgt"], type="CALL_DEP", weight=p.get("weight", 1), provenance=tuple(p.get("prov", []) or []))
         return graph
@@ -711,7 +747,12 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         # under the same attribute would hand the next unscoped caller a subgraph.
         scope = call_graph_scope(roots, depth)
         if scope is not None:
-            return self._build_call_graph(self._bounded_call_rows(scope, depth))
+            graph = self._build_call_graph(self._bounded_call_rows(scope, depth))
+            # Every root the graph holds contributes at least its own row (the quantifier starts at
+            # 0), so absence from the result is exactly absence from the graph — the same check
+            # bounded_subgraph() makes locally, through the same function, for free.
+            check_selector("roots", scope, [r for r in scope if r not in graph])
+            return graph
         if self._call_graph is None:
             self._call_graph = self._build_call_graph()
         return self._call_graph
@@ -758,7 +799,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         # The statement was already scoped by ``$mods``, so narrowing to one module is just a
         # shorter list -- and the same list narrows the prefetch, so the seven bulk statements
         # fetch one module's members instead of the application's.
-        scope = self._resolve_paths(None if module is None else [module]) or self._modules
+        scope = self._resolve_paths(None if module is None else [module], kind="module") or self._modules
         result: Dict[str, PyClass] = {}
         with self._bulk(scope):  # every class's members in seven queries, not one per child collection
             for r in self._run(

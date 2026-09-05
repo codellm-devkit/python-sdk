@@ -34,9 +34,10 @@ import networkx as nx
 import pytest
 from codeanalyzer.schema.py_schema import PyApplication, PyCallable, PyClass, PyModule
 
-from cldk.analysis.python.backend import bounded_subgraph, call_graph_scope
+from cldk.analysis.python.backend import bounded_subgraph, call_graph_scope, scope_paths
 from cldk.analysis.python.codeanalyzer.codeanalyzer import PyCodeanalyzer
 from cldk.analysis.python.neo4j import PyNeo4jBackend
+from cldk.utils.exceptions import SelectorNotInGraph
 
 # ----------------------------------------------------------------------------------------------
 # call_graph_scope — the semantics both backends share
@@ -60,6 +61,71 @@ def test_depth_without_roots_is_rejected_rather_than_ignored():
 def test_depth_below_one_is_rejected(depth):
     with pytest.raises(ValueError, match="depth must be"):
         call_graph_scope(["a"], depth)
+
+
+@pytest.mark.parametrize("depth", ["2", 2.5, 2.0, True, None.__class__])
+def test_depth_that_is_not_an_int_is_rejected_as_a_value_error(depth):
+    """``depth`` is range-checked *and* type-checked, and both failures read the same way.
+
+    ``"2"`` used to raise ``TypeError`` from the ``<`` comparison — an error the accessor does not
+    document — and ``2.5`` used to be accepted and silently truncated to 2 by the ego-graph radius
+    and the Cypher quantifier alike, which is a bound the caller did not ask for. ``True`` is an
+    ``int`` to Python and would have meant ``depth=1`` by accident.
+    """
+    with pytest.raises(ValueError, match="depth must be"):
+        call_graph_scope(["a"], depth)
+
+
+# ----------------------------------------------------------------------------------------------
+# check_selector — an unresolvable selector raises on both backends, and names what missed
+# ----------------------------------------------------------------------------------------------
+def test_an_empty_roots_sequence_is_a_caller_bug_not_the_whole_application():
+    """``roots=[]`` selected nothing while missing nothing; the argument that means "everything"
+    is the argument omitted. Same ruling as ``depth=`` without ``roots=``."""
+    with pytest.raises(ValueError, match="omit it"):
+        call_graph_scope([], None)
+
+
+def test_an_empty_paths_sequence_is_a_caller_bug_too():
+    with pytest.raises(ValueError, match="omit it"):
+        scope_paths([], ["pkg/a.py"])
+
+
+def test_an_unknown_path_raises_naming_it():
+    with pytest.raises(SelectorNotInGraph, match=r"1 of 1 paths not in graph: 'pkg/nope\.py'"):
+        scope_paths(["pkg/nope.py"], ["pkg/a.py"])
+
+
+def test_a_partial_miss_raises_and_says_which_of_how_many():
+    """The strict reading: returning the half that matched makes a result whose size the caller
+    cannot check against what it asked for."""
+    with pytest.raises(SelectorNotInGraph, match=r"1 of 2 paths not in graph: 'gone\.py'"):
+        scope_paths(["pkg/a.py", "gone.py"], ["pkg/a.py"])
+
+
+def test_the_error_reports_the_keyword_the_caller_actually_wrote():
+    """``get_classes(module=...)`` resolves through the path machinery but is not ``paths=``."""
+    with pytest.raises(SelectorNotInGraph, match="module not in graph"):
+        scope_paths(["nope"], ["pkg/a.py"], kind="module")
+
+
+def test_the_error_carries_the_miss_as_data_not_only_as_prose():
+    with pytest.raises(SelectorNotInGraph) as excinfo:
+        scope_paths(["pkg/a.py", "gone.py"], ["pkg/a.py"])
+    assert (excinfo.value.kind, excinfo.value.missing, excinfo.value.requested) == ("paths", ["gone.py"], 2)
+
+
+def test_the_error_offers_no_near_miss_suggestions():
+    """E8 puts typo-tolerant matching out of scope "not in the resolver, not in the error path" —
+    a suggestion is a guess, and a guess presented as a correction is the failure mode this design
+    exists to prevent. ``pkg/a.py`` is one character from the miss and must not be mentioned."""
+    with pytest.raises(SelectorNotInGraph) as excinfo:
+        scope_paths(["pkg/b.py"], ["pkg/a.py"])
+    assert "pkg/a.py" not in str(excinfo.value)
+
+
+def test_a_lenient_match_is_not_a_miss():
+    assert scope_paths(["/abs/prefix/pkg/a.py"], ["pkg/a.py"]) == ["pkg/a.py"]
 
 
 # ----------------------------------------------------------------------------------------------
@@ -97,9 +163,20 @@ def test_the_subgraph_is_induced_not_path_only():
     assert ("c", "b") in bounded_subgraph(_diamond(), ["a"], 1).edges
 
 
-def test_a_root_absent_from_the_graph_contributes_nothing():
-    assert bounded_subgraph(_diamond(), ["nope"], 3).number_of_nodes() == 0
-    assert set(bounded_subgraph(_diamond(), ["nope", "x"], 1).nodes) == {"x", "y"}
+def test_a_root_absent_from_the_graph_raises_rather_than_returning_an_empty_graph():
+    """It used to contribute nothing, which made "no such callable" and "a callable that calls
+    nothing" the same empty graph — the ambiguous empty D7 calls a defect. A partial miss raises
+    too, so a caller cannot read a short answer as a complete one."""
+    with pytest.raises(SelectorNotInGraph, match=r"roots not in graph: 'nope'"):
+        bounded_subgraph(_diamond(), ["nope"], 3)
+    with pytest.raises(SelectorNotInGraph, match=r"1 of 2 roots not in graph"):
+        bounded_subgraph(_diamond(), ["nope", "x"], 1)
+
+
+def test_a_root_that_calls_nothing_is_a_graph_of_one_node():
+    """The answer an unknown root no longer collides with: ``d`` is a real callable with no
+    outgoing edges, and the honest answer is the one node it is, not nothing."""
+    assert set(bounded_subgraph(_diamond(), ["d"], 3).nodes) == {"d"}
 
 
 def test_several_roots_union():
@@ -150,8 +227,14 @@ def test_local_symbol_table_resolves_a_path_leniently():
     assert set(_local_backend().get_symbol_table(paths=["/abs/prefix/pkg/b.py"])) == {"pkg/b.py"}
 
 
-def test_local_symbol_table_unknown_path_is_empty():
-    assert _local_backend().get_symbol_table(paths=["pkg/nope.py"]) == {}
+def test_local_symbol_table_unknown_path_raises():
+    with pytest.raises(SelectorNotInGraph, match="paths not in graph"):
+        _local_backend().get_symbol_table(paths=["pkg/nope.py"])
+
+
+def test_local_classes_unknown_module_raises_naming_the_module_keyword():
+    with pytest.raises(SelectorNotInGraph, match="module not in graph"):
+        _local_backend().get_all_classes(module="pkg/nope.py")
 
 
 def test_local_classes_scoped_to_a_module():
@@ -240,21 +323,83 @@ def test_neo4j_nested_bulk_keeps_the_outer_scope():
     assert seen[0]["mods"] == ["pkg/a.py", "pkg/b.py"]
 
 
+def _rows_backend(rows: List[Dict[str, Any]], modules: List[str]) -> tuple[PyNeo4jBackend, List[Dict[str, Any]]]:
+    """A bare backend whose ``_run`` records every statement and replays ``rows`` for the bounded
+    call-graph query (recognised by its ``$roots`` parameter)."""
+    backend, seen = _recording_backend(modules)
+    recording = backend._run
+
+    def run(query: str, **params: Any) -> List[Dict[str, Any]]:
+        recording(query, **params)
+        return rows if "roots" in params else []
+
+    backend._run = run
+    return backend, seen
+
+
 def test_neo4j_bounded_call_rows_interpolate_only_an_int():
     backend, seen = _recording_backend(["pkg/a.py"])
-    backend.get_call_graph(roots=["pkg.a.go"], depth=3)
+    with pytest.raises(SelectorNotInGraph):  # the fake driver returns no rows, so the root missed
+        backend.get_call_graph(roots=["pkg.a.go"], depth=3)
     query = seen[0]["query"]
-    assert "[:PY_CALLS*0..3]" in query
+    assert "{0,3}" in query
     assert seen[0]["roots"] == ["pkg.a.go"], "roots must stay a parameter, never interpolated"
 
 
 def test_neo4j_unbounded_depth_leaves_the_upper_bound_open():
     backend, seen = _recording_backend(["pkg/a.py"])
-    backend.get_call_graph(roots=["pkg.a.go"])
-    assert "[:PY_CALLS*0..]" in seen[0]["query"]
+    with pytest.raises(SelectorNotInGraph):
+        backend.get_call_graph(roots=["pkg.a.go"])
+    assert "{0,}" in seen[0]["query"]
+
+
+def test_neo4j_walk_is_scoped_to_the_application_at_every_hop():
+    """Not just at the endpoint. A ``*0..n`` variable-length pattern can only constrain where it
+    lands, so the walk could step out through a shared ``:PyExternal`` ghost — which carries no
+    ``_module`` and has 5,307 outgoing ``PY_CALLS`` edges on the live graph — and spend the rest of
+    its hop budget in a neighbouring application."""
+    backend, seen = _recording_backend(["pkg/a.py"])
+    with pytest.raises(SelectorNotInGraph):
+        backend.get_call_graph(roots=["pkg.a.go"], depth=2)
+    query = seen[0]["query"]
+    assert "(a:PyCallable|PyExternal)-[:PY_CALLS]->(b:PyCallable|PyExternal) WHERE a._module IN $mods" in query
+    assert "*0.." not in query, "a variable-length hop cannot carry a per-hop scope predicate"
+
+
+def test_neo4j_returns_a_reached_node_that_has_no_outgoing_edge():
+    """Built from edge rows alone the answer dropped every isolated node — 5,302 of the live
+    graph's 19,549 call-graph nodes have out-degree 0 — so a leaf root came back as an *empty*
+    graph while the local backend returned the one node it is. The ``OPTIONAL MATCH`` emits a null
+    ``tgt`` row for such a node, and that row is what must become a node."""
+    backend, _ = _rows_backend([{"src": "pkg.a.go", "tgt": None, "p": None}], ["pkg/a.py"])
+    graph = backend.get_call_graph(roots=["pkg.a.go"], depth=1)
+    assert set(graph.nodes) == {"pkg.a.go"}
+    assert graph.number_of_edges() == 0
+
+
+def test_neo4j_unknown_root_raises_rather_than_returning_an_empty_graph():
+    """The same ruling as the local backend's, reached through the same ``check_selector``: a root
+    the graph does not hold contributes no row at all, and no row is now distinguishable from an
+    isolated node."""
+    backend, _ = _rows_backend([], ["pkg/a.py"])
+    with pytest.raises(SelectorNotInGraph, match=r"roots not in graph: 'no\.such\.callable'"):
+        backend.get_call_graph(roots=["no.such.callable"], depth=1)
+
+
+def test_neo4j_unknown_path_raises_before_any_query_is_issued():
+    backend, seen = _recording_backend(["pkg/a.py"])
+    with pytest.raises(SelectorNotInGraph, match="paths not in graph"):
+        backend.get_symbol_table(paths=["pkg/nope.py"])
+    assert seen == [], "the miss should be caught by the shared normaliser, not by an empty result"
+
+
+def test_neo4j_unknown_module_raises_naming_the_module_keyword():
+    backend, _ = _recording_backend(["pkg/a.py"])
+    with pytest.raises(SelectorNotInGraph, match="module not in graph"):
+        backend.get_all_classes(module="pkg/nope.py")
 
 
 def test_neo4j_scoped_call_graph_does_not_poison_the_cache():
-    backend, _ = _recording_backend(["pkg/a.py"])
+    backend, _ = _rows_backend([{"src": "pkg.a.go", "tgt": None, "p": None}], ["pkg/a.py"])
     backend.get_call_graph(roots=["pkg.a.go"], depth=1)
     assert backend._call_graph is None, "a scoped result was cached as if it were the whole graph"

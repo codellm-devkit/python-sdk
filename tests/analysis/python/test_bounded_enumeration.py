@@ -52,6 +52,7 @@ from typing import Iterator, List
 import pytest
 
 from cldk.models.python import PyCallable, PyClass
+from cldk.utils.exceptions import SelectorNotInGraph
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("CLDK_TEST_NEO4J_URI"),
@@ -188,8 +189,23 @@ def test_symbol_table_accepts_an_absolute_path(live_analysis):
     assert set(live_analysis.get_symbol_table(paths=["/somewhere/else/" + one])) == {one}
 
 
-def test_symbol_table_scoped_to_an_unknown_path_is_empty(live_analysis):
-    assert live_analysis.get_symbol_table(paths=["no/such/module.py"]) == {}
+def test_symbol_table_scoped_to_an_unknown_path_raises(live_analysis):
+    """It used to come back ``{}``, which is also what a real-but-empty selection looks like — the
+    ambiguous empty the parent spec's D7 calls a defect. The message names the path and stops:
+    E8 puts near-miss suggestions out of scope, in the error path as much as in the resolver."""
+    with pytest.raises(SelectorNotInGraph, match=r"paths not in graph: 'no/such/module\.py'"):
+        live_analysis.get_symbol_table(paths=["no/such/module.py"])
+
+
+def test_symbol_table_partial_miss_raises_even_though_the_rest_matched(live_analysis):
+    one = next(iter(live_analysis.get_symbol_table()))
+    with pytest.raises(SelectorNotInGraph, match=r"1 of 2 paths not in graph"):
+        live_analysis.get_symbol_table(paths=[one, "no/such/module.py"])
+
+
+def test_classes_scoped_to_an_unknown_module_raises(live_analysis):
+    with pytest.raises(SelectorNotInGraph, match="module not in graph"):
+        live_analysis.get_classes(module="no/such/module.py")
 
 
 def test_classes_scoped_to_a_module(live_analysis):
@@ -226,8 +242,39 @@ def test_call_graph_depth_is_a_real_bound(live_analysis):
     assert set(one.nodes) == {root} | set(full.successors(root)), "depth=1 is not exactly the root's direct callees"
 
 
-def test_call_graph_unknown_root_is_empty_not_an_error(live_analysis):
-    assert live_analysis.get_call_graph(roots=["no.such.callable"], depth=3).number_of_nodes() == 0
+def test_call_graph_unknown_root_raises(live_analysis):
+    """An empty graph is now a *meaningful* answer — a root that calls nothing (see below) — so an
+    unknown root can no longer be allowed to share it."""
+    with pytest.raises(SelectorNotInGraph, match=r"roots not in graph: 'no\.such\.callable'"):
+        live_analysis.get_call_graph(roots=["no.such.callable"], depth=3)
+
+
+def test_call_graph_root_that_calls_nothing_is_a_graph_of_one_node(live_analysis):
+    """5,302 of this graph's 19,549 call-graph nodes have out-degree 0. Built from edge rows alone
+    the Neo4j answer dropped every one of them, so a leaf root came back as an empty graph while
+    the local backend returned the single node it is."""
+    full = live_analysis.get_call_graph()
+    leaf = next(n for n in full.nodes if full.out_degree(n) == 0)
+
+    scoped = live_analysis.get_call_graph(roots=[leaf], depth=1)
+
+    assert set(scoped.nodes) == {leaf}
+    assert scoped.number_of_edges() == 0
+
+
+def test_call_graph_bounded_answer_is_the_induced_subgraph_of_the_unbounded_one(live_analysis):
+    """The whole-graph agreement, asserted against the graph itself rather than a recorded number:
+    whatever the walk reaches, the edges among the reached set must be exactly the unbounded
+    graph's. This is what fails if the walk leaves the application through an external ghost —
+    ``:PyExternal`` carries no ``_module`` anchor and has 5,307 outgoing ``PY_CALLS`` edges here,
+    and a node reached only through one would appear with no edge to justify it."""
+    full = live_analysis.get_call_graph()
+    root = max(full.nodes, key=full.out_degree)
+
+    for depth in (1, 2):
+        scoped = live_analysis.get_call_graph(roots=[root], depth=depth)
+        induced = full.subgraph(scoped.nodes)
+        assert set(scoped.edges) == set(induced.edges), f"depth={depth} is not the induced sub-graph"
 
 
 def test_unscoped_calls_are_unaffected(live_analysis):

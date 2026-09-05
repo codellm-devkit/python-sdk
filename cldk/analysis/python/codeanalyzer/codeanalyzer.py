@@ -61,7 +61,7 @@ from codeanalyzer.schema import Analysis, model_dump_json
 
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.results import CallableRef, Diagnostic, EntrypointCoverage, LocateResult, ModuleRef, TypeRef
-from cldk.analysis.python.backend import PythonAnalysisBackend, body_key_column, bounded_subgraph, call_graph_scope, resolve_module_key
+from cldk.analysis.python.backend import PythonAnalysisBackend, body_key_column, bounded_subgraph, call_graph_scope, resolve_module_key, scope_paths
 from cldk.models.python import (
     BodyNode,
     PyApplication,
@@ -498,12 +498,15 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         Returns:
             A dictionary where keys are file paths (strings) and values
             are :class:`~cldk.models.python.PyModule` objects.
+
+        Raises:
+            ValueError: ``paths`` is an empty sequence — omit it to enumerate everything.
+            SelectorNotInGraph: a path names no module in this application
+                (see :func:`~cldk.analysis.python.backend.scope_paths`).
         """
         table = self.application.symbol_table
-        if paths is None:
-            return table
-        keys = [resolve_module_key(p, table.keys()) for p in paths]
-        return {k: table[k] for k in keys if k in table}
+        keys = scope_paths(paths, table.keys())
+        return table if keys is None else {k: table[k] for k in keys}
 
     def get_modules(self) -> List[PyModule]:
         """Return all analyzed modules as a list.
@@ -586,9 +589,16 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         Returns:
             A dictionary mapping qualified class names to
             :class:`~cldk.models.python.PyClass` objects.
+
+        Raises:
+            SelectorNotInGraph: ``module`` names no module in this application. It resolves
+                through the same :func:`~cldk.analysis.python.backend.scope_paths` as ``paths=``
+                but reports itself as ``module``, so the error names the keyword the caller wrote.
         """
+        table = self.application.symbol_table
+        keys = scope_paths(None if module is None else [module], table.keys(), kind="module")
         result: Dict[str, PyClass] = {}
-        for mod in self.get_symbol_table(paths=None if module is None else [module]).values():
+        for mod in table.values() if keys is None else (table[k] for k in keys):
             result.update(mod.types)
         return result
 

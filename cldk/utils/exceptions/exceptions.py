@@ -138,6 +138,47 @@ class GraphSchemaMismatch(RuntimeError):
         return f"Graph schema mismatch: expected relationship types {sorted(expected)}, missing {sorted(missing)}. Found on the graph: {sorted(found)}. {generation}"
 
 
+class SelectorNotInGraph(ValueError):
+    """Raised when a scoping keyword names something the analysed application does not hold.
+
+    ``get_symbol_table(paths=...)``, ``get_classes(module=...)`` and ``get_call_graph(roots=...)``
+    all narrow a whole-application enumeration to a caller-supplied selection. A value in that
+    selection which matches nothing used to contribute nothing, so a typo'd path and a module that
+    genuinely declares no classes were the *same* empty dict — the ambiguous-empty defect the
+    query facade exists to remove (D7). Raising makes them different answers.
+
+    The message names the values that matched nothing and stops there. It deliberately offers no
+    near-miss candidates: leg 1.5's E8 puts typo-tolerant matching out of scope "not in the
+    resolver, not in the error path", because a suggestion is a guess, and a guess presented as a
+    correction is the confident-wrong-answer failure this design exists to prevent.
+
+    Subclasses :class:`ValueError` because that is what these accessors already document raising
+    for a malformed scoping keyword (an empty selection, a ``depth`` below 1) — an unmatched value
+    is the same class of caller error, not a new one, and a caller catching ``ValueError`` around a
+    scoped call keeps working.
+
+    Attributes:
+        kind (str): Which keyword named them — ``"paths"``, ``"module"`` or ``"roots"``.
+        missing (list[str]): The values, as the caller wrote them, that matched nothing.
+        requested (int): How many values the keyword carried in total, so a partial miss is
+            visible as a partial miss.
+    """
+
+    def __init__(self, kind: str, missing: list[str], requested: int) -> None:
+        """Initialize with the keyword, the values that missed, and how many were asked for.
+
+        Args:
+            kind: The scoping keyword's name (``"paths"`` / ``"module"`` / ``"roots"``).
+            missing: The unmatched values, in the caller's own spelling.
+            requested: The total number of values the keyword carried.
+        """
+        self.kind = kind
+        self.missing = list(missing)
+        self.requested = requested
+        self.message = f"{len(self.missing)} of {requested} {kind} not in graph: " + ", ".join(repr(m) for m in self.missing)
+        super().__init__(self.message)
+
+
 class CodeanalyzerUsageException(Exception):
     """Exception raised for incorrect CodeAnalyzer usage.
 

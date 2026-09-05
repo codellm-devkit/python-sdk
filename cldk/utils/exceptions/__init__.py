@@ -22,10 +22,12 @@ from .exceptions import (
     CldkInitializationException,
     CodeanalyzerExecutionException,
     GraphSchemaMismatch,
+    SelectorNotInGraph,
 )
 
 __all__ = [
     "CodeanalyzerExecutionException",
     "CldkInitializationException",
     "GraphSchemaMismatch",
+    "SelectorNotInGraph",
 ]
