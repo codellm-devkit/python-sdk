@@ -30,7 +30,14 @@ The policy, in full (leg 1.5, E8):
   ``db.cursor.execute``; ``"cursor.execute"`` narrows it; ``"ute"`` matches neither. This is
   segment matching on a hierarchical name, not a similarity heuristic.
 * **One survivor resolves. More than one raises** :class:`~cldk.utils.exceptions.AmbiguousName`
-  carrying every match. **None raises** :class:`~cldk.utils.exceptions.SelectorNotInGraph`.
+  carrying every match, and names only the ways out still open to *that* caller — never a keyword
+  it already used or one its method does not accept. **None raises**
+  :class:`~cldk.utils.exceptions.SelectorNotInGraph`.
+* **The candidate names are the caller's, not the analyzer's.** :func:`value_candidate` is where a
+  ``formal_in`` vertex stops being ``"<global>:payment::AccessError"`` and becomes a ``"global"``
+  named ``AccessError``, defined in ``payment`` and addressable as either ``"AccessError"`` or
+  ``"payment.AccessError"``. Both backends translate through it, so neither can label a vertex the
+  other would label differently.
 
 There is **no similarity scoring anywhere in this module** — no edit distance, no ``difflib``, no
 "did you mean". E8 puts typo-tolerant matching out of scope "not in the resolver, not in the error
@@ -40,9 +47,20 @@ addressing layer exists to prevent. Every string in an ``AmbiguousName`` genuine
 
 from __future__ import annotations
 
-from typing import List, NamedTuple, Optional, Sequence
+from typing import Callable, List, NamedTuple, Optional, Sequence, TypeVar
 
 from cldk.utils.exceptions import AmbiguousName, SelectorNotInGraph
+
+T = TypeVar("T")
+
+#: The analyzer's own markers on a ``formal_in`` vertex's ``var``
+#: (``codeanalyzer/dataflow/sdg.py``): a captured module global is
+#: ``"<global>:<module_name>::<name>"`` and a closure capture is ``"<capture>:<name>"``. They are
+#: internal vocabulary and must never reach a caller (E6) — :func:`value_candidate` is the one
+#: place that reads them, and both backends route through it so they cannot label the same vertex
+#: differently.
+GLOBAL_PREFIX = "<global>:"
+CAPTURE_PREFIX = "<capture>:"
 
 
 class CallableCandidate(NamedTuple):
@@ -64,6 +82,55 @@ class CallableCandidate(NamedTuple):
     signature: str
     class_signature: Optional[str]
     path: str
+
+
+class ValueCandidate(NamedTuple):
+    """One value entering a callable, translated out of the analyzer's vocabulary into the
+    caller's.
+
+    A ``formal_in`` vertex is not always a parameter: on a real application 84% of them are
+    captured module globals and a further fraction are closure captures, and labelling all three
+    ``kind="parameter"`` with the analyzer's raw ``var`` in ``name`` put internal strings like
+    ``"<global>:payment::AccessError"`` in a field E6 reserves for the caller's vocabulary.
+
+    Attributes:
+        name: What the caller matches against. A parameter or a capture is its bare name; a global
+            is ``"<module_name>.<name>"``, so :func:`segment_match` narrows it the same way it
+            narrows a dotted callable signature. This is the *only* place value names stop being
+            flat: measured on a real application, 14,432 (callable, leaf name) pairs carry more
+            than one global, and the dotted form is what makes those an ambiguity a caller can
+            actually resolve rather than a dead end.
+        kind: ``"parameter"``, ``"global"`` or ``"capture"`` — what
+            :attr:`~cldk.analysis.commons.results.SliceNode.kind` reports.
+        leaf: The readable identifier as it is written in the source (``AccessError``) — what
+            :attr:`~cldk.analysis.commons.results.SliceNode.name` reports.
+        defined_in: The module the global is defined in, or ``None`` for a parameter or a capture.
+    """
+
+    name: str
+    kind: str
+    leaf: str
+    defined_in: Optional[str]
+
+
+def value_candidate(var: str) -> ValueCandidate:
+    """Translate one ``formal_in`` vertex's ``var`` into the caller's vocabulary.
+
+    Adopts the analyzer's own grammar rather than re-deriving it: ``GLOBAL_PREFIX + module + "::"
+    + name`` and ``CAPTURE_PREFIX + name`` are minted by ``codeanalyzer/dataflow/sdg.py``, whose
+    module qualifier is the module's ``module_name`` — the same string
+    :attr:`~cldk.analysis.commons.results.ModuleRef.module_name` already hands callers. **This must
+    track that grammar**; a marker the analyzer adds and this does not would surface verbatim.
+    """
+    if var.startswith(GLOBAL_PREFIX):
+        module, sep, name = var[len(GLOBAL_PREFIX) :].partition("::")
+        if sep:
+            return ValueCandidate(f"{module}.{name}", "global", name, module)
+        return ValueCandidate(module, "global", module, None)
+    if var.startswith(CAPTURE_PREFIX):
+        name = var[len(CAPTURE_PREFIX) :]
+        return ValueCandidate(name, "capture", name, None)
+    return ValueCandidate(var, "parameter", var, None)
 
 
 def segment_match(query: str, candidate: str, sep: str = ".") -> bool:
@@ -141,20 +208,46 @@ def resolve_callable_signature(
         candidates = [c for c in candidates if c.class_signature and segment_match(in_class, c.class_signature)]
     if in_module is not None:
         candidates = [c for c in candidates if segment_match(in_module, c.path, sep="/")]
-    return resolve_name(name, [c.signature for c in candidates], kind="callable", narrow_with="in_class= or in_module=, or by naming more of the dotted path")
+    # Only offer the keywords the caller has *not* already used: telling someone who wrote
+    # ``in_class="ResPartner"`` to "narrow it with in_class=" is advice they have already taken.
+    unused = [kw for kw, given in (("in_class=", in_class), ("in_module=", in_module)) if given is None]
+    narrow_with = " or ".join(unused + ["by naming more of the dotted path"]) if unused else "by naming more of the dotted path"
+    return resolve_name(name, [c.signature for c in candidates], kind="callable", narrow_with=narrow_with)
+
+
+def resolve_within(resolve_callable: Callable[[str], "T"], within: str) -> "T":
+    """Resolve a ``within=`` argument, re-raising an ambiguity in terms the caller can act on.
+
+    ``resolve_value(name, *, within)`` takes no ``in_class=`` / ``in_module=``, so the advice
+    :func:`resolve_callable_signature` gives — the keywords *its own* caller could pass — names
+    two keywords this one does not accept. The way out that does exist is naming more of the dotted
+    path in ``within=`` itself, and that is what the re-raise says.
+
+    Passthrough keywords were the alternative; they were rejected because they would add two
+    parameters that buy nothing ``within="AccountMove.write"`` does not already buy — ``within`` is
+    matched segment-wise against the full signature, so it narrows by class and by module already.
+    """
+    try:
+        return resolve_callable(within)
+    except AmbiguousName as e:
+        raise AmbiguousName(within, e.candidates, kind=e.kind, narrow_with="a longer within= (name more of the dotted path)") from None
 
 
 def resolve_value_name(name: str, values: Sequence[str], *, within: str) -> str:
     """The one value of ``within`` that ``name`` names.
 
-    Value names are flat, so :func:`segment_match` degenerates to equality here — the shared policy
-    is used anyway rather than a second, subtly different one. ``within`` is already-resolved and
-    appears only in the messages, so a caller reading the error sees the callable it actually
-    searched, not the abbreviation it typed.
+    ``values`` are :attr:`ValueCandidate.name`s: a parameter or a capture is flat, but a captured
+    global is ``"<module_name>.<name>"``, so :func:`segment_match` is *live* here rather than
+    degenerating to equality the way it did when every value was assumed to be a parameter.
+    ``"AccessError"`` names ``payment.AccessError``; ``"payment.AccessError"`` narrows when several
+    modules define one. ``within`` is already-resolved and appears only in the messages, so a
+    caller reading the error sees the callable it actually searched, not the abbreviation it typed.
 
     Raises:
-        AmbiguousName: More than one value matched. Parameter names are unique within a callable on
-            a real application (measured: max duplication 1), so this is the guard, not the path.
+        AmbiguousName: More than one value matched — a bare leaf name where the callable captures
+            that global from several modules (measured on a real application: 14,432 such pairs,
+            and **no** two values whose full names collide, so writing the qualified name always
+            resolves). The message says so; the way out is in the candidates it carries.
         SelectorNotInGraph: No value of ``within`` carries that name.
     """
-    return resolve_name(name, values, kind="value", narrow_with=f"a different within= (currently {within!r})")
+    return resolve_name(name, values, kind="value", narrow_with=f"the fuller name of one of the candidates, or a different within= (currently {within!r})")

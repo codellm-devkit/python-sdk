@@ -129,10 +129,14 @@ class PythonAnalysis:
                 (``*.py``). Required for the in-process backend (``source_code``
                 mode is not supported); optional for the Neo4j backend, whose
                 graph is populated out of band.
-            analysis_level: The depth of analysis to perform. Controls which
-                analysis artifacts are generated. Common values include
-                ``"symbol_table"`` and ``"call_graph"``. See
-                :class:`~cldk.analysis.AnalysisLevel` for options.
+            analysis_level: The depth of analysis to perform, and what the in-process
+                backend actually asks the analyzer for: ``"symbol_table"``,
+                ``"call_graph"``, ``"program_dependency_graph"`` (intraprocedural
+                CFG/CDG/DDG) or ``"system_dependency_graph"`` (interprocedural, the
+                level that produces the ``formal_in`` vertices ``resolve_value``
+                addresses). Deeper levels cost more analysis time. Ignored by the
+                Neo4j backend, whose graph is always emitted at full depth. See
+                :class:`~cldk.analysis.AnalysisLevel`.
             target_files: Optional list of specific file paths (relative to
                 ``project_dir``) to include in the analysis. When provided,
                 only these files are analyzed, which can significantly improve

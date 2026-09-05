@@ -592,7 +592,9 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
 
         Returns:
             A :class:`~cldk.analysis.commons.results.SliceNode` with ``kind="callable"``, the
-            callable's dotted signature in ``callable``, and its opaque graph id in ``ref``.
+            callable's dotted signature in ``callable``, and its opaque graph id in ``ref``. That
+            ``ref`` round-trips through :meth:`get_source` on either backend -- the one sanctioned
+            use of an opaque id.
 
         Raises:
             AmbiguousName: More than one callable matched, listing every match. The resolver never
@@ -610,27 +612,54 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         itself resolved by :meth:`resolve_callable` -- ``within="PaymentPortal.invoice_transaction"``
         is enough; the full signature is not needed.
 
-        The **candidate domain is the resolved callable's ``formal_in`` vertices**: the named values
-        entering it, which is what a backward slice seeds from. That is the analyzer's own model of
-        a parameter, and it is why the answer comes back as ``kind="parameter"`` addressed by name
-        with no ordinal anywhere in it (E7). The domain is deliberately *not* every body node
-        carrying a variable: the same name also appears on the callable's ``formal_out`` vertex and
-        at each of its call sites' actuals, and collapsing those into one namespace would make
-        every parameter ambiguous with its own exit value.
+        The **candidate domain is the resolved callable's ``formal_in`` vertices**: every named
+        value that *enters* it, which is what a backward slice seeds from. Three things do, and
+        they are not all parameters -- on a real application 84% of them are captured module
+        globals, with a small tail of closure captures -- so the answer carries
+        ``kind="parameter"``, ``"global"`` or ``"capture"``, always addressed by name with no
+        ordinal anywhere in it (E7).
+
+        The domain is deliberately *not* every body node carrying a variable. Two reasons, both
+        measured: the same name also appears on the callable's ``formal_out`` vertex and at each of
+        its call sites' actuals, so collapsing those into one namespace would make every mutated
+        parameter ambiguous with its own exit value; and **a local variable has no address here at
+        all** -- ``var`` is non-null only on the four parameter-passing kinds (``formal_in``,
+        ``formal_out``, ``actual_in``, ``actual_out``: 680,321 vertices on a real application, all
+        with a ``var``), while every other kind carries ``var = NULL`` without exception
+        (``statement``, ``call``, ``return``, ``branch``, ``loop``, ``raise``, ``handler``,
+        ``entry``, ``exit``: 204,897 vertices, none with one). A name that is only ever assigned
+        and read inside the body is not resolvable through this method; ``locate(path, line)`` is
+        what addresses those positions.
+
+        A parameter or a capture is named by its bare name. A **global** is named
+        ``"<module_name>.<name>"``, matched by the same segment rule as a callable signature, so
+        ``"AccessError"`` names it and ``"payment.AccessError"`` narrows when the callable captures
+        that name from several modules (measured: 14,432 such (callable, leaf name) pairs, and no
+        two values whose qualified names collide -- so the qualified spelling always resolves).
 
         Args:
-            name: The value's name, as written in the source.
-            within: The callable to look inside, resolved as in :meth:`resolve_callable`.
+            name: The value's name, as written in the source; for a global, optionally qualified
+                by its defining module.
+            within: The callable to look inside, resolved as in :meth:`resolve_callable`. It takes
+                no ``in_class=`` / ``in_module=``: ``within`` is matched segment-wise against the
+                whole signature, so naming more of the dotted path narrows by class and module
+                already, and that is what an ambiguity raised here advises.
 
         Returns:
-            A :class:`~cldk.analysis.commons.results.SliceNode` with ``kind="parameter"``,
-            ``name`` set, ``file``/``line`` pointing at the callable's definition (a parameter is a
-            dataflow vertex with no span of its own), and the vertex's opaque graph id in ``ref``.
+            A :class:`~cldk.analysis.commons.results.SliceNode` with ``kind`` one of
+            ``"parameter"`` / ``"global"`` / ``"capture"``, ``name`` set to the readable identifier
+            (never the analyzer's ``"<global>:payment::AccessError"`` spelling), ``defined_in`` set
+            to the defining module for a global, ``file``/``line`` pointing at the *callable's*
+            definition (these are dataflow vertices with no span of their own), and the vertex's
+            opaque graph id in ``ref``.
+
+        Note:
+            Because these vertices have no span, ``ref`` does **not** round-trip through
+            :meth:`get_source` on either backend -- there is no source text to return. Only a
+            :meth:`resolve_callable` ``ref`` does.
 
         Raises:
-            AmbiguousName: ``within`` named more than one callable, or -- not observed on a real
-                application, where parameter names are unique within a callable -- more than one
-                value matched.
+            AmbiguousName: ``within`` named more than one callable, or more than one value matched.
             SelectorNotInGraph: No such callable, or no such value in it.
         """
 

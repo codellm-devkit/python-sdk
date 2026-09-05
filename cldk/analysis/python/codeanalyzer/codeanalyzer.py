@@ -60,7 +60,7 @@ from codeanalyzer.options import AnalysisOptions, EmitTarget
 from codeanalyzer.schema import Analysis, model_dump_json
 
 from cldk.analysis import AnalysisLevel
-from cldk.analysis.commons.resolve import CallableCandidate, resolve_callable_signature, resolve_value_name
+from cldk.analysis.commons.resolve import CallableCandidate, resolve_callable_signature, resolve_value_name, resolve_within, value_candidate
 from cldk.analysis.commons.results import CallableRef, Diagnostic, EntrypointCoverage, LocateResult, ModuleRef, SliceNode, TypeRef
 from cldk.analysis.python.backend import PythonAnalysisBackend, body_key_column, bounded_subgraph, call_graph_scope, resolve_module_key, scope_paths
 from cldk.models.python import (
@@ -85,6 +85,59 @@ from cldk.models.python import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: The SDK's :class:`~cldk.analysis.AnalysisLevel` vocabulary → codeanalyzer-python's integer
+#: ``--analysis-level``. The analyzer's own ladder (``codeanalyzer/__main__.py``): 1 = symbol
+#: table + Jedi call graph, 2 = + defuse-linker call graph, 3 = + intraprocedural dataflow
+#: (CFG/CDG/DDG), 4 = + interprocedural SDG (``formal_in``/``formal_out`` vertices, alias-aware
+#: DDG). The four SDK names line up with those four integers in order.
+_ANALYZER_LEVELS = {
+    AnalysisLevel.symbol_table: 1,
+    AnalysisLevel.call_graph: 2,
+    AnalysisLevel.program_dependency_graph: 3,
+    AnalysisLevel.system_dependency_graph: 4,
+}
+
+
+def analyzer_level(level: "AnalysisLevel | str") -> int:
+    """The analyzer's integer level for one of the SDK's :class:`~cldk.analysis.AnalysisLevel`
+    names.
+
+    Accepts the enum, its value (``"call graph"``) and its member name (``"call_graph"``): the
+    facade's parameter is typed ``str``, and the underscore spelling is what a caller writing
+    ``analysis_level="system_dependency_graph"`` produces. An unrecognised name raises rather than
+    falling back to a default — a level that silently becomes 1 is the defect this function exists
+    to close.
+
+    ``AnalysisOptions``'s other two dataflow knobs are left at their defaults on purpose:
+    ``graphs="cfg,dfg,pdg,sdg"`` already selects every section the SDK can surface (``sdg`` is
+    inert below level 4, where it only widens a ``want_pdg`` that ``pdg`` already sets), and
+    ``graph_field_depth=3`` is the analyzer's own access-path k-limit, which the SDK exposes no
+    parameter for.
+    """
+    key = str(getattr(level, "value", level)).replace("_", " ")
+    try:
+        return _ANALYZER_LEVELS[AnalysisLevel(key)]
+    except ValueError:
+        raise ValueError(f"unknown analysis_level {level!r}; expected one of {[lvl.name for lvl in AnalysisLevel]}") from None
+
+
+def body_node_id(callable_id: str, body_key: str) -> str:
+    """The analyzer's own global id for one of a callable's body nodes.
+
+    This is the emitter's rule, adopted rather than re-derived — ``codeanalyzer/neo4j/project.py``'s
+    ``_global_ordinal``, whose own docstring says it must agree with ``IdentityMap.global_id``::
+
+        return (f"{callable_id}{local_key}" if local_key.startswith("@")
+                else f"{callable_id}@{local_key}")
+
+    **It must keep tracking that function.** The leading ``@`` is already part of every synthetic
+    key (``"@entry"``, ``"@exit"``, ``"@formal_in:1"``, ``"@formal_out:0"``) and absent from the
+    bare ``"line:col"`` statement keys; joining with an unconditional ``"@"`` produced
+    ``…charge(self,invoice_id)@@formal_in:1``, which names nothing in the graph and nothing in
+    ``PyCallable.body``.
+    """
+    return f"{callable_id}{body_key}" if body_key.startswith("@") else f"{callable_id}@{body_key}"
 
 
 def _overview(c: PyCallable, class_signature: str | None, kind: str, path: str) -> PyCallableOverview:
@@ -393,7 +446,9 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             for class_sig in module.types:
                 self._class_to_file[class_sig] = file_path
 
-        if analysis_level == AnalysisLevel.call_graph:
+        # ``>=``, not ``==``: every level from ``call_graph`` up produces a call graph, so asking
+        # for a *deeper* analysis than the one that builds it must not hand back ``None``.
+        if analyzer_level(analysis_level) >= _ANALYZER_LEVELS[AnalysisLevel.call_graph]:
             self.call_graph: nx.DiGraph | None = self._build_call_graph(self.application.call_graph, self._id_to_signature())
         else:
             self.call_graph = None
@@ -427,6 +482,11 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             input=self.project_dir,
             output=self.analysis_json_path,
             emit=EmitTarget.JSON,
+            # Without this the analyzer ran at its own default (1) whatever the caller
+            # asked for, so ``cfg``/``cdg``/``ddg`` were always empty and no ``formal_in`` vertex
+            # ever existed. ``graphs`` / ``graph_field_depth`` stay at their defaults — see
+            # :func:`analyzer_level`.
+            analysis_level=analyzer_level(self.analysis_level),
             using_ray=self.use_ray,
             rebuild_analysis=self.eager_analysis,
             skip_tests=True,
@@ -938,7 +998,11 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             if not sep:
                 code = _code_of(c, source)
             else:
-                node = (c.body or {}).get(body_key)
+                # The inverse of :func:`body_node_id`: ``partition("@")`` strips the joining ``@``,
+                # but a synthetic key owns a leading ``@`` of its own, so ``"…@@formal_in:1"``
+                # splits to ``"@formal_in:1"`` and ``"…@9:8"`` to ``"9:8"``. Try both spellings
+                # rather than reimplementing the split.
+                node = (c.body or {}).get(body_key) or (c.body or {}).get("@" + body_key)
                 if node is None:
                     raise KeyError(f"{sig!r} has no body node keyed {body_key!r} (from node_id {node_id!r})")
                 code = _slice(node.span, source)
@@ -960,32 +1024,58 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         by pre-narrowing, and handing the policy the unfiltered domain is the strongest form of
         "both backends resolve over the same set".
         """
-        found = {c.signature: (c, class_sig, path) for c, class_sig, _, path, _ in self._iter_callables()}
+        # Two callables sharing a signature collapse into one entry here, and the resolver would
+        # then hand back whichever won with no signal -- so record the collisions and raise if the
+        # name resolves onto one. Not reachable on a real application (measured: 15,549
+        # signatures, all distinct), which is why it is checked on the answer rather than eagerly
+        # over the whole domain: a duplicate elsewhere must not break every unrelated resolution.
+        found: Dict[str, Tuple[PyCallable, str | None, str]] = {}
+        collisions: set[str] = set()
+        for c, class_sig, _, path, _ in self._iter_callables():
+            if c.signature in found:
+                collisions.add(c.signature)
+            found[c.signature] = (c, class_sig, path)
         candidates = [CallableCandidate(sig, class_sig, path) for sig, (_, class_sig, path) in found.items()]
-        c, _, path = found[resolve_callable_signature(name, candidates, in_class=in_class, in_module=in_module)]
+        sig = resolve_callable_signature(name, candidates, in_class=in_class, in_module=in_module)
+        if sig in collisions:
+            raise ValueError(f"{sig!r} is carried by more than one analysed callable; neither can be addressed unambiguously")
+        c, _, path = found[sig]
+        # ``PyCallable.id`` defaults to ``""`` and ``start_line`` to ``-1``; both are addresses a
+        # caller is meant to be able to use, and a sentinel is worse than an error because it fails
+        # somewhere else, later.
+        if not c.id or c.start_line < 0:
+            raise KeyError(f"{c.signature!r} carries no usable address (id={c.id!r}, start_line={c.start_line})")
         return SliceNode(file=path, line=c.start_line, callable=c.signature, kind="callable", name=c.name, source=None, ref=c.id)
 
     def resolve_value(self, name: str, *, within: str) -> SliceNode:
         """Resolve a value name inside a callable (see :meth:`PythonAnalysisBackend.resolve_value`).
 
-        ``c.body`` is keyed by the *local* half of a node's id (``"formal_in:1"``), and ``BodyNode.of``
-        carries the variable it stands for — the same fact the graph projects as ``b.var``. The
-        ``ref`` handed back is the node's full id, composed the emitter's way
-        (``"<callable can:// id>@<body key>"``, #320) so it is the very string the Neo4j backend
+        ``c.body`` is keyed by the *local* half of a node's id — ``"@formal_in:1"`` for a synthetic
+        vertex, a bare ``"line:col"`` for a statement — and ``BodyNode.of`` carries the variable it
+        stands for, the same fact the graph projects as ``b.var``. The ``ref`` handed back is the
+        node's full id, joined by :func:`body_node_id`, so it is the very string the Neo4j backend
         reads off ``b.id``.
+
+        ``of`` is the analyzer's vocabulary, not the caller's: :func:`~cldk.analysis.commons.resolve.value_candidate`
+        translates it, so a captured global comes back ``kind="global"``, ``name="AccessError"``,
+        ``defined_in="payment"`` rather than ``kind="parameter"``, ``name="<global>:payment::AccessError"``.
         """
-        owner = self.resolve_callable(within)
+        owner = resolve_within(self.resolve_callable, within)
         c = next(c for c, _, _, _, _ in self._iter_callables() if c.signature == owner.callable)
-        by_var = {node.of: key for key, node in (c.body or {}).items() if node.kind == "formal_in" and node.of}
-        var = resolve_value_name(name, list(by_var), within=owner.callable)
+        # A list, not a dict keyed by name: two values that resolve to the same name are a genuine
+        # ambiguity the policy must see and raise on, and a dict would silently keep the last.
+        entries = [(key, value_candidate(node.of)) for key, node in (c.body or {}).items() if node.kind == "formal_in" and node.of]
+        chosen = resolve_value_name(name, [v.name for _, v in entries], within=owner.callable)
+        key, value = next((k, v) for k, v in entries if v.name == chosen)
         return SliceNode(
             file=owner.file,
             line=owner.line,
             callable=owner.callable,
-            kind="parameter",
-            name=var,
+            kind=value.kind,
+            name=value.leaf,
+            defined_in=value.defined_in,
             source=None,
-            ref=f"{c.id}@{by_var[var]}",
+            ref=body_node_id(c.id, key),
         )
 
     def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:
@@ -1151,12 +1241,13 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         c, owner = found
         found_body = _find_body_node(c, line)
         # The id is composed from ``c.id`` (the ``can://`` containment path), never ``c.signature``
-        # (the dotted module path): the emitter mints ``:PyBodyNode.id`` as
-        # ``f"{callable.id}@{local_body_key}"`` (``codeanalyzer/neo4j/project.py``'s ``_body_ref``),
-        # so this composition reproduces the graph's id exactly and the two backends' ids join
-        # (#320). ``BodyNode`` itself carries no ``id`` field to read instead
-        # (codeanalyzer-python#176), which is why this one is still composed.
-        node, node_id = (found_body[1], f"{c.id}@{found_body[0]}") if found_body else (None, None)
+        # (the dotted module path), and joined by :func:`body_node_id`, which is the emitter's own
+        # rule -- ``codeanalyzer/neo4j/project.py``'s ``_global_ordinal`` (#320). ``BodyNode``
+        # itself carries no ``id`` field to read instead (codeanalyzer-python#176), which is why
+        # this one is still composed. ``locate`` only ever finds a span-bearing node, whose key is
+        # a bare ``"line:col"``, so this path was already right; it routes through the shared
+        # helper so it stays right if that ever changes.
+        node, node_id = (found_body[1], body_node_id(c.id, found_body[0])) if found_body else (None, None)
         return LocateResult(
             node=node,
             node_id=node_id,

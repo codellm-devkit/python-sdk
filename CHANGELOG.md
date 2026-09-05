@@ -109,8 +109,63 @@ Python leg (leg 1) of the CLDK 2.0 agent-facing query facade (see
   no near-miss suggestions, per the leg's E8. An **empty** sequence (`paths=[]`, `roots=[]`) raises
   plain `ValueError` instead: nothing missed, but the argument that means "everything" is the
   argument omitted.
+- **Name-based addressing: `resolve_callable(name, in_class=, in_module=)` and
+  `resolve_value(name, within=)`** (both Python backends) — a caller names a callable or one of the
+  values entering it the way it already thinks of it, and gets back a `SliceNode`; nothing in the
+  surface takes, returns, or requires assembling a `can://` URI, and nothing takes an ordinal.
+  Names match whole or as a dotted suffix on segment boundaries, with an exact match winning
+  outright; more than one match raises `AmbiguousName` carrying every candidate rather than
+  picking one, and there is no typo-tolerant matching anywhere — not in the resolver, not in the
+  error path. Both backends route through one policy module (`cldk.analysis.commons.resolve`), so
+  they cannot drift on what "ambiguous" means.
+  A `resolve_callable` `ref` round-trips through `get_source()` on either backend. A
+  `resolve_value` `ref` does **not**, on either: `parameter` / `global` / `capture` are dataflow
+  vertices with no source span, so there is no text to return (the local backend raises `KeyError:
+  … (no span)`, the Neo4j backend `NotImplementedError`). Local variables have no address through
+  `resolve_value` at all — only values that *enter* a callable do; `locate(path, line)` addresses
+  positions inside a body.
+  `SliceNode` gains **`defined_in`**, the defining module of a captured global.
+
 - **`GraphSchemaMismatch`** (`cldk.utils.exceptions`) — raised by the Neo4j backend's one-time
   schema probe at attach time; see the breaking-change note above.
+
+### Fixed
+- **`analysis_level=` now reaches the analyzer.** `PythonAnalysis` / `PyCodeanalyzer` accepted the
+  parameter, stored it, and then built `codeanalyzer-python`'s `AnalysisOptions` without it, so
+  every in-process analysis ran at the analyzer's own default (level 1) whatever the caller asked
+  for: `cfg` / `cdg` / `ddg` were always empty and no `formal_in` vertex ever existed, which is
+  also exactly what a correct level-1 run looks like. The four `AnalysisLevel` names now map to the
+  analyzer's levels 1–4, so `analysis_level="program_dependency_graph"` produces intraprocedural
+  dataflow and `"system_dependency_graph"` produces the interprocedural vertices `resolve_value`
+  addresses. `AnalysisLevel` member-name spellings (`"call_graph"`) are accepted alongside the
+  enum's values (`"call graph"`); an unrecognised name now raises instead of silently becoming
+  level 1. `call_graph` is also built at every level at or above `"call_graph"`, not only exactly
+  at it. **Deeper levels cost more analysis time** — callers who relied on the parameter being
+  inert will now pay for the level they asked for.
+- **Body-node ids no longer double the `@`.** The local backend composed a body node's id as
+  `f"{callable.id}@{body_key}"`, but the analyzer's synthetic body keys already carry a leading
+  `@` (`"@formal_in:1"`, `"@entry"`), so `resolve_value` produced
+  `…charge(self,invoice_id)@@formal_in:1` — a string naming nothing in the graph and nothing in
+  `PyCallable.body`. Composition now follows the emitter's own rule (`_global_ordinal`), and
+  `get_source()` accepts both spellings of a body key when splitting one back apart.
+- **A captured global is no longer reported as a parameter.** 84% of the `formal_in` vertices on a
+  real application are module globals the callable reads, and both backends labelled them
+  `kind="parameter"` with the analyzer's internal `"<global>:payment::AccessError"` in
+  `SliceNode.name`. They now come back `kind="global"` (or `"capture"` for a closure capture) with
+  the readable identifier in `name` and the defining module in `defined_in`, and are addressable
+  as `"AccessError"` or, where several modules supply that name to one callable, as
+  `"payment.AccessError"`.
+- **Ambiguity messages name only keywords the caller can actually use.** `resolve_callable` no
+  longer advises narrowing with `in_class=` to someone who already passed `in_class=`, and an
+  ambiguous `within=` inside `resolve_value` — which accepts neither `in_class=` nor `in_module=` —
+  now advises naming more of the dotted path in `within=`, which resolves.
+- **A signature carried by two analysed callables raises instead of resolving arbitrarily.** Both
+  backends keyed their candidate map by signature, silently collapsing a collision. Not reachable
+  on a real application (15,549 distinct signatures), and a duplicate elsewhere does not break
+  unrelated resolutions — the check is on the answer.
+- **`resolve_callable` no longer hands back a sentinel as an address.** `PyCallable.id` defaults to
+  `""` and `start_line` to `-1`; the local backend copied both into `SliceNode`, yielding `ref=""`
+  and `line=-1`. It now raises.
 
 ### Removed
 - **C analysis support** (`CLDK.c()`, `cldk.analysis.c`, `cldk.models.c`) — libclang-backed and

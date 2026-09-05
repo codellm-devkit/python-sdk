@@ -49,8 +49,14 @@ class Diagnostic(BaseModel):
     Attributes:
         code: The fixed vocabulary of reasons a query can fail to produce a definite answer.
         message: A human-readable explanation, safe to surface directly to an agent or user.
-        suggestions: Optional near-miss candidates (e.g. for ``did_you_mean``); empty when none
-            apply.
+        suggestions: Declared by the leg-1 spec for a ``did_you_mean`` diagnostic and **never
+            populated**. E8 (leg 1.5) put typo-tolerant matching out of scope "not in the
+            resolver, not in the error path", so nothing in the SDK constructs a ``Diagnostic``
+            with suggestions or with ``code="did_you_mean"``; the codes actually emitted are
+            ``file_not_in_graph``, ``module_scope``, ``module_source_unavailable`` and
+            ``entrypoint_report_unavailable``. The field and the code stay because both are part
+            of a published model contract (``docs/agent-api-reference.md``) that a caller may
+            already destructure; removing either is a separate, breaking change.
     """
 
     code: Literal[
@@ -175,16 +181,28 @@ class SliceNode(BaseModel):
             dataflow vertex, not a span in the file — this is the enclosing callable's first line,
             which is where a reader would go looking for it.
         callable: The enclosing callable's dotted signature. Never a ``can://`` id.
-        kind: What kind of position this is: ``parameter``, ``argument``, ``statement``, ``call``,
-            ``return`` or ``callable`` (the callable itself, what
+        kind: What kind of position this is: ``parameter``, ``global``, ``capture``, ``argument``,
+            ``statement``, ``call``, ``return`` or ``callable`` (the callable itself, what
             :meth:`~cldk.analysis.python.backend.PythonAnalysisBackend.resolve_callable` returns).
-        name: The value's name where it has one (a parameter, an argument), ``None`` where it does
-            not (a statement).
+            ``global`` and ``capture`` are the two values that *enter* a callable without being
+            parameters — a module global the callable reads and a name closed over from an
+            enclosing scope. On a real application 84% of the values entering a callable are
+            globals, so collapsing them into ``parameter`` mislabelled most of the domain.
+        name: The value's name where it has one (a parameter, a global, an argument), ``None``
+            where it does not (a statement). Always the readable identifier as written in the
+            source — never the analyzer's internal spelling of it.
+        defined_in: For a ``global``, the module it is defined in (``"payment"``) — the same
+            vocabulary as :attr:`ModuleRef.module_name`. ``None`` for everything else, whose
+            defining scope is the enclosing callable in :attr:`callable`.
         source: The text, when the backend can produce it; ``None`` when it cannot. The Neo4j graph
             carries no text below callable granularity (see :class:`LocateResult`), so it is
             ``None`` there for anything finer.
         ref: The analyzer's own id for this node — **opaque**. Pass it back; do not parse it, and
-            do not build one.
+            do not build one. The one sanctioned use is
+            :meth:`~cldk.analysis.python.backend.PythonAnalysisBackend.get_source`, and that
+            round-trips for a ``kind="callable"`` ref on either backend. A value's ref does **not**:
+            ``parameter`` / ``global`` / ``capture`` are dataflow vertices with no source span, so
+            neither backend has text to return for one.
     """
 
     file: str
@@ -192,6 +210,7 @@ class SliceNode(BaseModel):
     callable: str
     kind: str
     name: str | None
+    defined_in: str | None = None
     source: str | None = None
     ref: str
 

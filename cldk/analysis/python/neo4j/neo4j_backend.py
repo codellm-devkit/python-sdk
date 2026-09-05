@@ -85,7 +85,7 @@ import networkx as nx
 from codeanalyzer.schema import model_dump_json
 from codeanalyzer.schema.ids import application_id
 
-from cldk.analysis.commons.resolve import CallableCandidate, resolve_callable_signature, resolve_value_name
+from cldk.analysis.commons.resolve import CallableCandidate, resolve_callable_signature, resolve_value_name, resolve_within, value_candidate
 from cldk.analysis.commons.results import CallableRef, Diagnostic, EntrypointCoverage, LocateResult, ModuleRef, SliceNode, TypeRef
 from cldk.analysis.python.backend import PythonAnalysisBackend, body_key_column, call_graph_scope, check_selector, resolve_module_key, scope_paths
 from cldk.analysis.python.neo4j import reconstruct as R
@@ -1066,9 +1066,20 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         twice (once in Cypher, once in the shared policy) is the cheap price of avoiding it.
         """
         rows = self._run(self._RESOLVE_CALLABLE_QUERY, mods=self._modules, name=name, dotted="." + name)
-        by_sig = {r["signature"]: r for r in rows}
+        # Two callables sharing a signature would collapse into one entry and resolve arbitrarily;
+        # recorded and raised on only if the name lands on one, so an unrelated duplicate cannot
+        # break every resolution. Not reachable on a real application (15,549 distinct signatures).
+        by_sig: dict = {}
+        collisions: set[str] = set()
+        for r in rows:
+            if r["signature"] in by_sig:
+                collisions.add(r["signature"])
+            by_sig[r["signature"]] = r
         candidates = [CallableCandidate(r["signature"], r["class_signature"], r["path"]) for r in by_sig.values()]
-        row = by_sig[resolve_callable_signature(name, candidates, in_class=in_class, in_module=in_module)]
+        sig = resolve_callable_signature(name, candidates, in_class=in_class, in_module=in_module)
+        if sig in collisions:
+            raise ValueError(f"{sig!r} is carried by more than one analysed callable; neither can be addressed unambiguously")
+        row = by_sig[sig]
         return SliceNode(
             file=row["path"],
             line=row["start_line"],
@@ -1083,9 +1094,15 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         """Resolve a value name inside a callable (see :meth:`PythonAnalysisBackend.resolve_value`).
 
         Two round trips, not one: the callable is resolved first, because an ambiguous ``within``
-        must raise naming *callables*, not fail obscurely on a value search over a set of them.
+        must raise naming *callables*, not fail obscurely on a value search over a set of them —
+        through :func:`~cldk.analysis.commons.resolve.resolve_within`, so the advice it gives names
+        a keyword ``resolve_value`` actually accepts.
+
+        ``b.var`` is the analyzer's vocabulary, not the caller's:
+        :func:`~cldk.analysis.commons.resolve.value_candidate` translates it, the same function the
+        local backend uses, so the two cannot label the same vertex differently.
         """
-        owner = self.resolve_callable(within)
+        owner = resolve_within(self.resolve_callable, within)
         rows = self._run(
             "MATCH (c:PyCallable) WHERE c._module IN $mods AND c.signature = $sig "
             "MATCH (c)-[:PY_HAS_BODY_NODE]->(b:PyBodyNode) WHERE b.kind = 'formal_in' "
@@ -1093,16 +1110,20 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             mods=self._modules,
             sig=owner.callable,
         )
-        by_var = {r["var"]: r["id"] for r in rows}
-        var = resolve_value_name(name, list(by_var), within=owner.callable)
+        # A list, not a dict keyed by name: two values resolving to the same name are a genuine
+        # ambiguity the policy must see, and a dict would silently keep the last row.
+        entries = [(r["id"], value_candidate(r["var"])) for r in rows if r["var"]]
+        chosen = resolve_value_name(name, [v.name for _, v in entries], within=owner.callable)
+        node_id, value = next((i, v) for i, v in entries if v.name == chosen)
         return SliceNode(
             file=owner.file,
             line=owner.line,
             callable=owner.callable,
-            kind="parameter",
-            name=var,
+            kind=value.kind,
+            name=value.leaf,
+            defined_in=value.defined_in,
             source=None,
-            ref=by_var[var],
+            ref=node_id,
         )
 
     def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:

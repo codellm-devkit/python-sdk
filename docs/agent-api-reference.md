@@ -339,8 +339,14 @@ for n in py.describe(sl.nodes):
     print(f"{n.file}:{n.line} {n.kind:<9} {n.name or ''}\n    {n.source}")
 ```
 
-`SliceNode.kind` is `parameter | argument | statement | call | return` — your vocabulary, not the
-schema's `formal_in`/`actual_out`. `ref` is an opaque handle; do not read it.
+`SliceNode.kind` is `parameter | global | capture | argument | statement | call | return` — your
+vocabulary, not the schema's `formal_in`/`actual_out`. A `global` is a module global the callable
+reads (84% of the values entering a callable on a real application are these); its `name` is the
+identifier as written (`AccessError`) and `defined_in` is the module it comes from, so you can also
+address it as `payment.AccessError` when one callable captures that name from several modules.
+`ref` is an opaque handle; do not read it — the one thing you may do with it is hand it back to
+`get_source()`, and that returns text only for a `kind="callable"` ref. `parameter` / `global` /
+`capture` are dataflow vertices with no source span, so neither backend has text for one.
 
 ---
 
@@ -357,7 +363,7 @@ Any accessor may attach these. They exist so an empty result is never ambiguous.
 | `level_too_low` | the graph lacks the analysis level this question needs — *unanswerable, not negative* |
 | `graph_schema_mismatch` | analyzer/graph generation mismatch (raised, not attached) |
 | — | a scoping keyword naming nothing raises `SelectorNotInGraph`; it is an error, not a diagnostic |
-| `no_match`, `ambiguous`, `unknown_callable`, `unknown_param`, `did_you_mean` | resolution failures |
+| `no_match`, `ambiguous`, `unknown_callable`, `unknown_param`, `did_you_mean` | declared in the `Diagnostic` code vocabulary, but **nothing emits them**: resolution failures are raised (`AmbiguousName` / `SelectorNotInGraph`), not attached, and `did_you_mean` in particular can never fire — E8 puts typo-tolerant matching out of scope in the error path as much as in the resolver |
 | `unresolved_dispatch` | an edge the traversal could not follow |
 
 **The rule behind all of them:** an empty result that could mean two things is a defect. When you
