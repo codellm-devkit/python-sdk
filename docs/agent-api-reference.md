@@ -173,6 +173,22 @@ reason, not because those particular call sites are unresolvable.
 even when the data exists. `get_callsites_for` resolves the same call sites. Use it when you care
 about callees.
 
+**Gotcha:** `prov` on a call edge can mislabel its source. Edges resolved by CodeQL are reported as
+`jedi` (codeanalyzer-python#28, open). Treat `prov` as "something resolved this", not as a reliable
+attribution of *which* resolver.
+
+**Stability note — `PyCallsite` may converge away.** Python emits call-site facts **twice**: as
+`call_sites[]` on the callable *and* as `call` nodes in `body{}`. TypeScript emits only the body
+nodes. codeanalyzer-python#120 records the plan to converge them and is parked pending a
+cross-repo spec. The lists survive today because they carry detail the body nodes lack —
+structured `arguments` (`ast_kind`, `inferred_type`), `receiver_expr`, `receiver_type`,
+`is_constructor_call`.
+
+If you only need *which callee*, prefer reading `body{}` `call` nodes (via `locate()` or the
+per-callable graphs), which is the representation both languages agree on and the one that
+survives convergence. Reach for `PyCallsite` when you specifically need the argument or receiver
+detail — and know that shape is the one under review.
+
 ---
 
 ## Entrypoints
