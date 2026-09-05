@@ -100,15 +100,31 @@ work on both backends.
 | API | Returns | Cost | Example |
 | --- | --- | --- | --- |
 | `get_callables_overview()` | `List[PyCallableOverview]` | **0.6s** ✓ | `py.get_callables_overview()` |
-| `get_symbol_table()` | `Dict[str, PyModule]` | **382s** ⚠ | `py.get_symbol_table()` |
-| `get_classes()` | `Dict[str, PyClass]` | **348s** ⚠ | `py.get_classes()` |
-| `get_modules()` | `List[PyModule]` | ⚠ | `py.get_modules()` |
-| `get_application_view()` | `PyApplication` | ⚠ | `py.get_application_view()` |
+| `get_symbol_table(paths=None)` | `Dict[str, PyModule]` | **12s** | `py.get_symbol_table(paths=["addons/account/models/account_move.py"])` |
+| `get_classes(module=None)` | `Dict[str, PyClass]` | **10s** | `py.get_classes(module="addons/account/models/account_move.py")` |
+| `get_modules()` | `List[PyModule]` | **14s** | `py.get_modules()` |
+| `get_application_view()` | `PyApplication` | **28s** | `py.get_application_view()` |
 | `get_imports()` | `Dict[str, List]` | | `py.get_imports()` |
 
-**Prefer the projection.** `PyCallableOverview` carries what you usually need and costs a single
-query; the full reconstruction costs minutes on a real application (measured on Odoo: 1,626
-modules, 73,669 round trips). Leg 1.5 collapses this — until then, reach for overviews.
+**Scope it.** `paths=` (a sequence of symbol-table keys) and `module=` (one key) narrow the query
+in the database, not afterwards — one module comes back in well under a second. Absolute paths and
+native separators resolve too. Omit the keyword to enumerate the whole application.
+
+```python
+py.get_symbol_table(paths=["addons/account/models/account_move.py"])   # one module
+py.get_classes(module="addons/account/models/account_move.py")         # that module's classes
+```
+
+**A selector that matches nothing raises** `SelectorNotInGraph` (`cldk.utils.exceptions`, a
+`ValueError`), naming the values that missed — `1 of 2 paths not in graph: 'gone.py'`. A mistyped
+path used to return `{}`, indistinguishable from a module that genuinely declares no classes. The
+message lists what missed and stops: no "did you mean", by design. An **empty** sequence
+(`paths=[]`) is a different error — plain `ValueError`, because the argument that means
+"everything" is the argument omitted.
+
+**Prefer the projection anyway.** `PyCallableOverview` carries what you usually need and costs a
+single query; a whole-application reconstruction is ten seconds and a large object graph even now
+that the per-node fan-out is gone (it was 73,669 round trips and ~6 minutes).
 
 ```python
 class PyCallableOverview:
@@ -152,8 +168,8 @@ not join today. Fixed in 1.5 (issue #320 covers the sibling id problem).
 | `get_callsites_for(signatures)` | `Dict[str, List[PyCallsite]]` | | `py.get_callsites_for(["…invoice_transaction"])` |
 | `get_external_symbols()` | `Dict[str, PyExternalSymbol]` | | out-of-project call targets |
 | `has_resolution_edges()` | `bool` | | can this graph resolve callees at all |
-| `get_call_graph()` | `nx.DiGraph` | 12s, **364,752 edges** | rarely what you want whole |
-| `get_call_graph_json()` | `str` | **422s** ⚠ | |
+| `get_call_graph(roots=None, depth=None)` | `nx.DiGraph` | 12s whole (**364,752 edges**); < 1s scoped | `py.get_call_graph(roots=["…invoice_transaction"], depth=2)` |
+| `get_call_graph_json()` | `str` | **26s**, ~144 MB of JSON | the whole application, serialised |
 
 **Node keys are signatures**, except out-of-project targets, which keep their `@external` id:
 
@@ -162,8 +178,24 @@ addons.account_payment.controllers.payment.PaymentPortal.invoice_transaction
 can://python/odoo-slim-19/@external/logging.Logger/info
 ```
 
-**Gotcha:** call the whole call graph only if you truly need it. 364,752 edges is not an answer to
-a question about one function. Leg 1.5 adds `get_call_graph(roots=…, depth=…)`.
+**Scope it.** 364,752 edges is not an answer to a question about one function.
+
+```python
+py.get_call_graph(roots=["…PaymentPortal.invoice_transaction"], depth=2)
+```
+
+`roots=` names callables the same way the graph does (a signature, or an `@external` id), and the
+result is the **induced** sub-graph over everything reached: every edge *among* the reached
+callables, not only the ones lying on a path out from a root — so `graph.predecessors(n)` never
+lies about a node you can see. `depth=` bounds it in call hops and requires `roots=`; it must be an
+`int` >= 1. Both backends return the identical graph, including a root that calls nothing, which
+comes back as a graph of one node.
+
+- A root the graph does not hold raises `SelectorNotInGraph` — it is not the same answer as "this
+  callable calls nothing".
+- `depth=` without `roots=`, `roots=[]`, and a non-integer `depth` all raise `ValueError`.
+- Over Neo4j this compiles to one query, scoped to the application at every hop, and needs
+  **Neo4j 5.9+**.
 
 **Gotcha:** `PyCallsite.callee_signature` may be `None`. Check `has_resolution_edges()` first — if
 it is `False`, the graph carries no resolution data at all and *every* callee is `None` for that
@@ -311,6 +343,7 @@ Any accessor may attach these. They exist so an empty result is never ambiguous.
 | `entrypoint_report_unavailable` | **you cannot tell whether an empty entrypoint list is real** |
 | `level_too_low` | the graph lacks the analysis level this question needs — *unanswerable, not negative* |
 | `graph_schema_mismatch` | analyzer/graph generation mismatch (raised, not attached) |
+| — | a scoping keyword naming nothing raises `SelectorNotInGraph`; it is an error, not a diagnostic |
 | `no_match`, `ambiguous`, `unknown_callable`, `unknown_param`, `did_you_mean` | resolution failures |
 | `unresolved_dispatch` | an edge the traversal could not follow |
 
@@ -321,9 +354,11 @@ get nothing back, check the diagnostics before concluding the answer is "no".
 
 ## Cost summary
 
-| Fast (< 1s) | Slow (minutes) ⚠ |
+| Fast (< 1s) | Seconds |
 | --- | --- |
-| `get_callables_overview`, `get_artifacts`, `get_dependencies`, `get_config_keys`, `locate`, `locate_many`, `get_source`, `get_entrypoints`, `get_method_bodies` | `get_symbol_table` (382s), `get_classes` (348s), `get_call_graph_json` (422s) |
+| `get_callables_overview`, `get_artifacts`, `get_dependencies`, `get_config_keys`, `locate`, `locate_many`, `get_source`, `get_entrypoints`, `get_method_bodies`, **any scoped enumeration** (`paths=` / `module=` / `roots=`) | `get_classes` (10s), `get_symbol_table` (12s), `get_call_graph` (12s), `get_call_graph_json` (26s) |
 
-Measured on a 970k-node graph (Odoo, 2,364 files). The slow three are N+1 fan-outs that leg 1.5
-collapses; until then, prefer projections and scoped queries.
+Measured on a 970k-node graph (Odoo, 2,364 files). The whole-application four were minutes each
+until the per-node fan-out was collapsed to one query per child collection; there is no
+minutes-long accessor left. Scope with `paths=` / `module=` / `roots=` and they cost under a
+second — a whole-application enumeration should be something you asked for, not the default shape.

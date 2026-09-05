@@ -26,6 +26,15 @@ Python leg (leg 1) of the CLDK 2.0 agent-facing query facade (see
   migration above. The in-process (local) backend picks this up automatically; only the Neo4j
   backend needs a re-ingested graph.
 
+- **Neo4j enumeration is no longer an N+1 fan-out.** `get_symbol_table()`, `get_classes()` and
+  everything built on them (`get_modules()`, `get_application_view()`, `get_call_graph_json()`)
+  used to rebuild each declaration with one query per child collection *per parent node* — 73,669
+  round trips to describe a 1,626-module application, at ~5 ms each. Each collection is now fetched
+  once for the scope being read and served from a by-parent index, so a bulk accessor pays at most
+  eleven round trips however many modules, classes and callables it walks. Measured on a 970k-node
+  graph (Odoo, 2,364 files): `get_classes()` 348s → 10.4s, `get_symbol_table()` 382s → 11.9s,
+  `get_call_graph_json()` 422s → 26.1s. No signature, return type or result changes.
+
 #### Compatibility matrix (spec §7.1)
 
 | SDK version | Requires `codeanalyzer-python` | Graph vocabulary |
@@ -60,6 +69,28 @@ Python leg (leg 1) of the CLDK 2.0 agent-facing query facade (see
   on the Neo4j backend it is probed once at connection time and is `False` only when the attached
   graph carries no `PY_RESOLVES_TO` edge anywhere, which disambiguates a genuinely unresolved call
   site from a graph with no resolution data.
+- **Scoping keywords on the enumerating accessors** — `get_symbol_table(paths=…)`,
+  `get_classes(module=…)` and `get_call_graph(roots=…, depth=…)`, on both backends. All are
+  keyword-only and default to the whole-application behaviour they had before, so no existing call
+  site changes. `paths=` / `module=` name modules by symbol-table key (absolute paths and native
+  separators resolve too); `roots=` names callables by signature, or by `@external` id for an
+  out-of-project target. `get_call_graph(roots=…)` returns the **induced** sub-graph over the
+  callables reached — every edge among them, not only those on a path out from a root — so
+  `predecessors()` cannot lie about a node in the graph it just returned; a root that calls nothing
+  comes back as a graph of one node. `depth=` bounds the walk in call hops, requires `roots=`, and
+  must be an `int` >= 1. The Neo4j backend pushes all of it into Cypher, including the prefetch
+  scope, so one module or one root costs well under a second instead of a full fetch filtered in
+  Python; the bounded call graph is a quantified path pattern scoped to the application at every
+  hop and therefore **requires Neo4j 5.9+**.
+- **`SelectorNotInGraph`** (`cldk.utils.exceptions`, a `ValueError`) — a value passed to `paths=`,
+  `module=` or `roots=` that names nothing in the analysed application now raises, naming the
+  values that matched nothing and how many were asked for (`1 of 2 paths not in graph: 'gone.py'`),
+  including when only some of them missed. Previously each contributed nothing, so a mistyped path
+  and a module that genuinely declares no classes were the same `{}`, and an unknown root and a
+  callable that calls nothing were the same empty graph. The message lists what missed and stops —
+  no near-miss suggestions, per the leg's E8. An **empty** sequence (`paths=[]`, `roots=[]`) raises
+  plain `ValueError` instead: nothing missed, but the argument that means "everything" is the
+  argument omitted.
 - **`GraphSchemaMismatch`** (`cldk.utils.exceptions`) — raised by the Neo4j backend's one-time
   schema probe at attach time; see the breaking-change note above.
 
