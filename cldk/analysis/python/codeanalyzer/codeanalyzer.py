@@ -60,7 +60,8 @@ from codeanalyzer.options import AnalysisOptions, EmitTarget
 from codeanalyzer.schema import Analysis, model_dump_json
 
 from cldk.analysis import AnalysisLevel
-from cldk.analysis.commons.results import CallableRef, Diagnostic, EntrypointCoverage, LocateResult, ModuleRef, TypeRef
+from cldk.analysis.commons.resolve import CallableCandidate, resolve_callable_signature, resolve_value_name
+from cldk.analysis.commons.results import CallableRef, Diagnostic, EntrypointCoverage, LocateResult, ModuleRef, SliceNode, TypeRef
 from cldk.analysis.python.backend import PythonAnalysisBackend, body_key_column, bounded_subgraph, call_graph_scope, resolve_module_key, scope_paths
 from cldk.models.python import (
     BodyNode,
@@ -945,6 +946,47 @@ class PyCodeanalyzer(PythonAnalysisBackend):
                 raise KeyError(f"no recoverable source for node_id {node_id!r} (no span)")
             return code
         raise KeyError(f"no callable with signature {sig!r} (from node_id {node_id!r})")
+
+    # -----[ addressing ]-----
+    def resolve_callable(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> SliceNode:
+        """Resolve a callable name against the in-memory symbol table (see
+        :meth:`PythonAnalysisBackend.resolve_callable`).
+
+        The candidate domain is :meth:`_iter_callables` — module functions, class methods and
+        anything nested inside either — which is the same set :meth:`get_callables_overview`
+        reports and the same set the Neo4j backend resolves against (there it is
+        ``(c:PyCallable) WHERE c._module IN $mods``). Nothing is filtered before the shared policy
+        runs: this backend has the whole list in memory already, so there is no round trip to save
+        by pre-narrowing, and handing the policy the unfiltered domain is the strongest form of
+        "both backends resolve over the same set".
+        """
+        found = {c.signature: (c, class_sig, path) for c, class_sig, _, path, _ in self._iter_callables()}
+        candidates = [CallableCandidate(sig, class_sig, path) for sig, (_, class_sig, path) in found.items()]
+        c, _, path = found[resolve_callable_signature(name, candidates, in_class=in_class, in_module=in_module)]
+        return SliceNode(file=path, line=c.start_line, callable=c.signature, kind="callable", name=c.name, source=None, ref=c.id)
+
+    def resolve_value(self, name: str, *, within: str) -> SliceNode:
+        """Resolve a value name inside a callable (see :meth:`PythonAnalysisBackend.resolve_value`).
+
+        ``c.body`` is keyed by the *local* half of a node's id (``"formal_in:1"``), and ``BodyNode.of``
+        carries the variable it stands for — the same fact the graph projects as ``b.var``. The
+        ``ref`` handed back is the node's full id, composed the emitter's way
+        (``"<callable can:// id>@<body key>"``, #320) so it is the very string the Neo4j backend
+        reads off ``b.id``.
+        """
+        owner = self.resolve_callable(within)
+        c = next(c for c, _, _, _, _ in self._iter_callables() if c.signature == owner.callable)
+        by_var = {node.of: key for key, node in (c.body or {}).items() if node.kind == "formal_in" and node.of}
+        var = resolve_value_name(name, list(by_var), within=owner.callable)
+        return SliceNode(
+            file=owner.file,
+            line=owner.line,
+            callable=owner.callable,
+            kind="parameter",
+            name=var,
+            source=None,
+            ref=f"{c.id}@{by_var[var]}",
+        )
 
     def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:
         """Return overviews of callables decorated with any of ``markers``."""

@@ -85,7 +85,8 @@ import networkx as nx
 from codeanalyzer.schema import model_dump_json
 from codeanalyzer.schema.ids import application_id
 
-from cldk.analysis.commons.results import CallableRef, Diagnostic, EntrypointCoverage, LocateResult, ModuleRef, TypeRef
+from cldk.analysis.commons.resolve import CallableCandidate, resolve_callable_signature, resolve_value_name
+from cldk.analysis.commons.results import CallableRef, Diagnostic, EntrypointCoverage, LocateResult, ModuleRef, SliceNode, TypeRef
 from cldk.analysis.python.backend import PythonAnalysisBackend, body_key_column, call_graph_scope, check_selector, resolve_module_key, scope_paths
 from cldk.analysis.python.neo4j import reconstruct as R
 from cldk.models.python import (
@@ -1017,7 +1018,10 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         :meth:`PythonAnalysisBackend.get_source`).
 
         Only a callable-granularity ``node_id`` (no ``"@"``) is answerable here: ``:PyCallable.code``
-        is a real, precomputed property. A body-node id names something the graph structurally
+        is a real, precomputed property. It is matched against **both** of a callable's names — its
+        ``signature`` and its ``can://`` ``id`` — exactly as the local backend does, so the opaque
+        ``ref`` a ``SliceNode`` carries round-trips through ``get_source`` on either backend rather
+        than only on the one that happens to hold the sources. A body-node id names something the graph structurally
         cannot supply text for — no per-statement ``code`` property exists, and ``:PyModule`` has no
         source to slice one out of either — so that case raises rather than silently substituting
         the enclosing callable's (too much) text.
@@ -1031,7 +1035,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
                 "for a statement or call site."
             )
         rows = self._run(
-            "MATCH (c:PyCallable) WHERE c._module IN $mods AND c.signature = $sig AND c.code IS NOT NULL "
+            "MATCH (c:PyCallable) WHERE c._module IN $mods AND (c.signature = $sig OR c.id = $sig) AND c.code IS NOT NULL "
             "RETURN c.code AS code",
             mods=self._modules,
             sig=sig,
@@ -1039,6 +1043,67 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         if not rows:
             raise KeyError(f"no callable with signature {sig!r} (or it has no code)")
         return rows[0]["code"]
+
+    # -----[ addressing ]-----
+    _RESOLVE_CALLABLE_QUERY = (
+        "MATCH (c:PyCallable) WHERE c._module IN $mods AND (c.signature = $name OR c.signature ENDS WITH $dotted) "
+        "OPTIONAL MATCH (owner:PyClass)-[:PY_HAS_METHOD]->(c) "
+        "RETURN c.signature AS signature, c.name AS name, c.id AS id, c._module AS path, "
+        "c.start_line AS start_line, owner.signature AS class_signature"
+    )
+
+    def resolve_callable(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> SliceNode:
+        """Resolve a callable name against the graph (see :meth:`PythonAnalysisBackend.resolve_callable`).
+
+        The ``WHERE`` clause is the resolver's own predicate, not a coarse pre-filter that happens
+        to be close to it: ``segment_match`` is *exactly* "equal, or ends with the separator plus
+        the name", so ``c.signature = $name OR c.signature ENDS WITH $dotted`` keeps precisely the
+        rows :func:`~cldk.analysis.commons.resolve.resolve_callable_signature` would keep. Pushing
+        it into Cypher is therefore a narrowing of the *round trip*, not of the *domain* — the
+        candidate set this resolves over is the same one the local backend, which filters an
+        in-memory list, resolves over. Two backends agreeing on a predicate while running it
+        against different sets is the defect this construction avoids; running the same predicate
+        twice (once in Cypher, once in the shared policy) is the cheap price of avoiding it.
+        """
+        rows = self._run(self._RESOLVE_CALLABLE_QUERY, mods=self._modules, name=name, dotted="." + name)
+        by_sig = {r["signature"]: r for r in rows}
+        candidates = [CallableCandidate(r["signature"], r["class_signature"], r["path"]) for r in by_sig.values()]
+        row = by_sig[resolve_callable_signature(name, candidates, in_class=in_class, in_module=in_module)]
+        return SliceNode(
+            file=row["path"],
+            line=row["start_line"],
+            callable=row["signature"],
+            kind="callable",
+            name=row["name"],
+            source=None,
+            ref=row["id"],
+        )
+
+    def resolve_value(self, name: str, *, within: str) -> SliceNode:
+        """Resolve a value name inside a callable (see :meth:`PythonAnalysisBackend.resolve_value`).
+
+        Two round trips, not one: the callable is resolved first, because an ambiguous ``within``
+        must raise naming *callables*, not fail obscurely on a value search over a set of them.
+        """
+        owner = self.resolve_callable(within)
+        rows = self._run(
+            "MATCH (c:PyCallable) WHERE c._module IN $mods AND c.signature = $sig "
+            "MATCH (c)-[:PY_HAS_BODY_NODE]->(b:PyBodyNode) WHERE b.kind = 'formal_in' "
+            "RETURN b.var AS var, b.id AS id",
+            mods=self._modules,
+            sig=owner.callable,
+        )
+        by_var = {r["var"]: r["id"] for r in rows}
+        var = resolve_value_name(name, list(by_var), within=owner.callable)
+        return SliceNode(
+            file=owner.file,
+            line=owner.line,
+            callable=owner.callable,
+            kind="parameter",
+            name=var,
+            source=None,
+            ref=by_var[var],
+        )
 
     def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:
         rows = self._run(

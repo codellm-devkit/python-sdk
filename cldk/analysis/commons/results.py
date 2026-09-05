@@ -151,6 +151,51 @@ class LocateResult(BaseModel):
     diagnostics: list[Diagnostic] = []
 
 
+class SliceNode(BaseModel):
+    """One addressed position in a program: what a name resolved to, in the caller's vocabulary.
+
+    The unit the addressing layer (leg 1.5, E6-E8) hands back, and the unit the traversals built on
+    it will carry. Every field is something a person or an agent already understands — a path, a
+    line, a dotted callable name, a variable name. Nothing here requires knowing the analyzer's id
+    grammar, and nothing here carries an ordinal: a parameter is ``kind="parameter"`` with
+    ``name="invoice_id"``, never ``formal_in:1`` (E7 — "an interface requiring the caller to know
+    that ``self`` occupies slot 0 will be got wrong by a model and misread by a person").
+
+    ``ref`` is the one exception, and it is deliberately opaque. The graph addresses nodes by a
+    ``can://`` id; the caller must never have to read, parse or assemble one (E6), because that
+    would mean reimplementing the analyzer's id grammar in the SDK and breaking silently the day it
+    changes. So the id rides here, in the same vocabulary as
+    :attr:`LocateResult.node_id` — the analyzer's own id, read off the graph, joinable back to the
+    node it names — and is documented as something to *pass back*, not to read.
+
+    Attributes:
+        file: The module's repo-relative path, the same vocabulary as ``locate().module.path``,
+            ``PyCallableOverview.path`` and the symbol table's keys.
+        line: 1-based. For a position with no source region of its own — a parameter is a synthetic
+            dataflow vertex, not a span in the file — this is the enclosing callable's first line,
+            which is where a reader would go looking for it.
+        callable: The enclosing callable's dotted signature. Never a ``can://`` id.
+        kind: What kind of position this is: ``parameter``, ``argument``, ``statement``, ``call``,
+            ``return`` or ``callable`` (the callable itself, what
+            :meth:`~cldk.analysis.python.backend.PythonAnalysisBackend.resolve_callable` returns).
+        name: The value's name where it has one (a parameter, an argument), ``None`` where it does
+            not (a statement).
+        source: The text, when the backend can produce it; ``None`` when it cannot. The Neo4j graph
+            carries no text below callable granularity (see :class:`LocateResult`), so it is
+            ``None`` there for anything finer.
+        ref: The analyzer's own id for this node — **opaque**. Pass it back; do not parse it, and
+            do not build one.
+    """
+
+    file: str
+    line: int
+    callable: str
+    kind: str
+    name: str | None
+    source: str | None = None
+    ref: str
+
+
 class EntrypointCoverage(BaseModel):
     """Coverage and failure record for ``codeanalyzer-python``'s entrypoint-detection pass —
     surfaces its ``PyEntrypointReport`` (``schema/py_schema.py``) so

@@ -37,7 +37,7 @@ from typing import Dict, Iterable, List, Sequence, Tuple
 import networkx as nx
 
 from cldk.analysis.commons.backend import AnalysisBackend
-from cldk.analysis.commons.results import EntrypointCoverage, LocateResult
+from cldk.analysis.commons.results import EntrypointCoverage, LocateResult, SliceNode
 from cldk.utils.exceptions import SelectorNotInGraph
 from cldk.models.python import (
     PyApplication,
@@ -561,6 +561,77 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
 
         The bulk form, not an optimisation over :meth:`locate`: a scanner hands over a whole alert
         set at once, and round trips cost latency for a person and context for an agent.
+        """
+
+    # -----[ addressing ]-----
+    # A caller names things the way it already thinks of them; the SDK resolves. Nothing here takes
+    # or returns a ``can://`` URI (E6), and nothing takes an ordinal (E7). The resolution *policy*
+    # is not implemented per backend -- both route through
+    # :mod:`cldk.analysis.commons.resolve`, so they cannot drift on what "ambiguous" means. What a
+    # backend implements is only how it produces the candidates.
+    @abstractmethod
+    def resolve_callable(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> SliceNode:
+        """Resolve a callable name to the callable it names.
+
+        The **candidate domain is every callable in the analysed application** -- exactly the set
+        :meth:`get_callables_overview` reports: module-level functions, class methods, and
+        callables nested inside either, in the modules belonging to this application. Both backends
+        must resolve against that same domain; a shared *predicate* over different *sets* is not
+        parity.
+
+        ``name`` is matched whole or as a dotted suffix on segment boundaries (``"execute"`` names
+        any ``….execute``; ``"cursor.execute"`` narrows), with an exact match winning outright.
+        ``in_class`` / ``in_module`` disambiguate rather than scope -- a callable is the unit of
+        address, so there is nothing to scope it *to* -- and are matched the same segment-wise way
+        against the owning class's signature and the module's repo-relative path.
+
+        Args:
+            name: The callable name, whole or a dotted suffix of its signature.
+            in_class: Keep only callables owned by the class this names.
+            in_module: Keep only callables in the module this names.
+
+        Returns:
+            A :class:`~cldk.analysis.commons.results.SliceNode` with ``kind="callable"``, the
+            callable's dotted signature in ``callable``, and its opaque graph id in ``ref``.
+
+        Raises:
+            AmbiguousName: More than one callable matched, listing every match. The resolver never
+                picks: 86% of leaf names in a real application are unique and the rest are
+                framework methods, where a guess is a confident wrong answer.
+            SelectorNotInGraph: Nothing matched. No near-miss suggestions -- E8 puts typo-tolerant
+                matching out of scope in the error path as much as in the resolver.
+        """
+
+    @abstractmethod
+    def resolve_value(self, name: str, *, within: str) -> SliceNode:
+        """Resolve a value name inside a callable to the position that carries it.
+
+        A value name is scoped by its callable (spec § 5.2), so ``within`` is required and is
+        itself resolved by :meth:`resolve_callable` -- ``within="PaymentPortal.invoice_transaction"``
+        is enough; the full signature is not needed.
+
+        The **candidate domain is the resolved callable's ``formal_in`` vertices**: the named values
+        entering it, which is what a backward slice seeds from. That is the analyzer's own model of
+        a parameter, and it is why the answer comes back as ``kind="parameter"`` addressed by name
+        with no ordinal anywhere in it (E7). The domain is deliberately *not* every body node
+        carrying a variable: the same name also appears on the callable's ``formal_out`` vertex and
+        at each of its call sites' actuals, and collapsing those into one namespace would make
+        every parameter ambiguous with its own exit value.
+
+        Args:
+            name: The value's name, as written in the source.
+            within: The callable to look inside, resolved as in :meth:`resolve_callable`.
+
+        Returns:
+            A :class:`~cldk.analysis.commons.results.SliceNode` with ``kind="parameter"``,
+            ``name`` set, ``file``/``line`` pointing at the callable's definition (a parameter is a
+            dataflow vertex with no span of its own), and the vertex's opaque graph id in ``ref``.
+
+        Raises:
+            AmbiguousName: ``within`` named more than one callable, or -- not observed on a real
+                application, where parameter names are unique within a callable -- more than one
+                value matched.
+            SelectorNotInGraph: No such callable, or no such value in it.
         """
 
     # -----[ source access ]-----

@@ -19,6 +19,7 @@ Exceptions package
 """
 
 from .exceptions import (
+    AmbiguousName,
     CldkInitializationException,
     CodeanalyzerExecutionException,
     GraphSchemaMismatch,
@@ -26,6 +27,7 @@ from .exceptions import (
 )
 
 __all__ = [
+    "AmbiguousName",
     "CodeanalyzerExecutionException",
     "CldkInitializationException",
     "GraphSchemaMismatch",

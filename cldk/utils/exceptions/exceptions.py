@@ -179,6 +179,58 @@ class SelectorNotInGraph(ValueError):
         super().__init__(self.message)
 
 
+class AmbiguousName(ValueError):
+    """Raised when a name the caller wrote matches more than one thing, listing every match.
+
+    The addressing layer (leg 1.5, E6-E8) lets a caller name a callable or a value the way it
+    already thinks of it rather than assembling the analyzer's ``can://`` id. Names are a viable
+    address -- 86% of this application's leaf callable names are unique -- but the remainder are
+    framework methods (``__init__`` 238, ``write`` 220, ``create`` 214), and there picking one is a
+    confident wrong answer with no signal to the caller. So the resolver never picks: it raises,
+    and hands back the matches as data.
+
+    Like :class:`SelectorNotInGraph`, it offers no near-miss suggestions -- every string in
+    ``candidates`` genuinely matched the name as written. E8 puts typo-tolerant matching out of
+    scope "not in the resolver, not in the error path", so there is no scoring, no edit distance,
+    and nothing here that was not a real match.
+
+    ``candidates`` carries **all** of them, because that is the data a caller may want to filter
+    programmatically; ``message`` shows only the first few plus a total, because two hundred
+    strings in a traceback is not an error message a person can act on. The message also names the
+    keyword that narrows it -- an error that says what to do next costs nothing extra to write.
+
+    Subclasses :class:`ValueError` for the same reason :class:`SelectorNotInGraph` does: an
+    unusable name is a caller error, and a caller already catching ``ValueError`` around a
+    resolution keeps working.
+
+    Attributes:
+        name (str): The name as the caller wrote it.
+        candidates (list[str]): Every match, in a deterministic (sorted) order.
+        kind (str): What was being resolved -- ``"callable"`` or ``"value"``.
+    """
+
+    #: How many candidates the message shows before falling back to a count.
+    SHOWN = 5
+
+    def __init__(self, name: str, candidates: list[str], *, kind: str = "callable", narrow_with: str = "in_class= or in_module=") -> None:
+        """Initialize with the name, every match, and how a caller narrows it.
+
+        Args:
+            name: The name as the caller wrote it.
+            candidates: Every candidate that matched it.
+            kind: What was being resolved (``"callable"`` / ``"value"``), for the message.
+            narrow_with: The keyword(s) that would disambiguate, named in the message.
+        """
+        self.name = name
+        self.candidates = sorted(candidates)
+        self.kind = kind
+        shown = self.candidates[: self.SHOWN]
+        more = len(self.candidates) - len(shown)
+        listed = "; ".join(repr(c) for c in shown) + (f"; ... and {more} more" if more else "")
+        self.message = f"{name!r} is ambiguous: {len(self.candidates)} {kind}s match. Narrow it with {narrow_with}. Matches: {listed}"
+        super().__init__(self.message)
+
+
 class CodeanalyzerUsageException(Exception):
     """Exception raised for incorrect CodeAnalyzer usage.
 
