@@ -124,6 +124,14 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         neo4j_database: Database name (None ⇒ server default).
         application_name: The ``:PyApplication`` anchor name to scope every query to. Matches the
             ``--app-name`` the graph was loaded with (defaults to the project directory name).
+
+    Attributes:
+        has_resolution_edges: ``True`` iff this application's graph has at least one
+            ``PY_RESOLVES_TO`` edge — probed once at construction (see
+            :meth:`_probe_resolution_edges`). ``False`` means :meth:`get_callsites_for` cannot
+            resolve *any* call site here (the graph was populated at an analysis level below the
+            one where the defuse-linker backfill runs), so every ``None`` it returns is explained
+            by that, not by individual call sites failing to resolve.
     """
 
     #: Neo4j relationship-type and node-label prefixes for codeanalyzer-python's graph vocabulary
@@ -184,6 +192,9 @@ class PyNeo4jBackend(PythonAnalysisBackend):
 
         # The application's module file_keys, used to scope every query to this app.
         self._modules: List[str] = self._load_module_keys()
+        # Whether this application's graph carries any per-callsite resolution data at all --
+        # probed once here, same pattern as _probe_schema (see _probe_resolution_edges).
+        self.has_resolution_edges: bool = self._probe_resolution_edges()
         # Lazily-built call graph cache (mirrors PyCodeanalyzer.call_graph).
         self._call_graph: nx.DiGraph | None = None
 
@@ -201,6 +212,31 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         missing = self._REQUIRED_RELATIONSHIP_TYPES - found
         if missing:
             raise GraphSchemaMismatch(expected=set(self._REQUIRED_RELATIONSHIP_TYPES), found=found, missing=missing)
+
+    def _probe_resolution_edges(self) -> bool:
+        """Whether this application's graph carries any ``PY_RESOLVES_TO`` edge at all — probed
+        once here, same "one round trip at construction" pattern as :meth:`_probe_schema`.
+
+        ``get_callsites_for``'s per-site ``callee_signature`` is ``None`` both for "genuinely
+        unresolved" and for "this graph was populated at an analysis level below the one where the
+        defuse-linker backfill runs, so ``PY_RESOLVES_TO`` doesn't exist at all" — ``PyCallsite`` is
+        the analyzer's own frozen model with no field to carry that distinction (see
+        :meth:`PythonAnalysisBackend.get_callsites_for`). ``:PyApplication`` carries no
+        ``max_level``/provenance marker either (its projected properties are ``name``,
+        ``schema_version``, ``analyzer_name``, ``analyzer_version``, ``repo_uri``,
+        ``source_revision``, ``repo_dirty`` — verified against ``codeanalyzer/neo4j/schema.py``,
+        nothing else), so this probe is the *only* way this backend can learn which situation a
+        caller is in: zero edges anywhere in this application's scope means every ``None`` from
+        ``get_callsites_for`` is explained by the graph's analysis level, not by per-site failure.
+
+        This is information, not an error — a level-1 graph with no resolution edges is legitimate,
+        working output, so this never raises the way :meth:`_probe_schema` does.
+        """
+        rows = self._run(
+            "MATCH (s:PyBodyNode)-[:PY_RESOLVES_TO]->() WHERE s._module IN $mods RETURN s LIMIT 1",
+            mods=self._modules,
+        )
+        return bool(rows)
 
     # -----[ lifecycle ]-----
     def close(self) -> None:
@@ -252,7 +288,18 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     # Reconstruction helpers — fetch a node's children over Cypher, then assemble via R.
     # =====================================================================================
     def _callable_full(self, props: Dict[str, Any]) -> PyCallable:
-        """Rebuild a full :class:`PyCallable` (call sites, inner callables/classes, locals)."""
+        """Rebuild a full :class:`PyCallable` (call sites, inner callables/classes, locals).
+
+        Call sites are built with ``R.callsite(r["p"])`` — no ``callee_signature`` keyword — so
+        every call site reconstructed this way carries ``callee_signature=None`` *forever*, not
+        merely for the genuinely-unresolved case: this method never follows ``PY_RESOLVES_TO`` at
+        all. Every public accessor that bottoms out here (directly or via :meth:`_class_full` /
+        :meth:`_module_full`) inherits that — ``get_method``, ``get_all_methods_in_class``,
+        ``get_all_constructors``, ``get_all_methods_in_application``, ``get_class`` /
+        ``get_all_classes`` and their siblings, ``get_symbol_table`` / ``get_python_module``.
+        :meth:`get_callsites_for` is the only accessor on this backend that resolves the identical
+        underlying call site — use it when a caller needs ``callee_signature`` populated.
+        """
         sig = props["signature"]
         call_sites = [
             R.callsite(r["p"])
@@ -510,6 +557,12 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         return result
 
     def get_all_methods_in_class(self, qualified_class_name: str) -> Dict[str, PyCallable]:
+        """The methods of a class (see :meth:`~cldk.analysis.commons.backend.AnalysisBackend.get_all_methods_in_class`).
+
+        Every returned ``PyCallable``'s call sites have ``callee_signature=None`` — this
+        reconstruction never follows ``PY_RESOLVES_TO`` (see :meth:`_callable_full`). Use
+        :meth:`get_callsites_for` for the identical call sites with resolved signatures.
+        """
         cls = self.get_class(qualified_class_name)
         return dict(cls.callables) if cls else {}
 
@@ -533,6 +586,10 @@ class PyNeo4jBackend(PythonAnalysisBackend):
 
         ``qualified_class_name`` resolves as a class signature first; if no such class exists it
         is treated as a module name and resolved against that module's top-level functions.
+
+        The returned ``PyCallable``'s call sites have ``callee_signature=None`` — this
+        reconstruction never follows ``PY_RESOLVES_TO`` (see :meth:`_callable_full`). Use
+        :meth:`get_callsites_for` for the identical call sites with resolved signatures.
         """
         cls = self.get_class(qualified_class_name)
         methods = dict(cls.callables) if cls is not None else self._get_module_functions(qualified_class_name)
@@ -548,6 +605,11 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         return [p.name for p in method.parameters] if method else []
 
     def get_all_constructors(self, qualified_class_name: str) -> Dict[str, PyCallable]:
+        """The constructors of a class (see :meth:`~cldk.analysis.python.backend.PythonAnalysisBackend.get_all_constructors`).
+
+        Routed through :meth:`get_all_methods_in_class`, so the same caveat applies: call sites
+        have ``callee_signature=None`` here. Use :meth:`get_callsites_for` for resolved signatures.
+        """
         return {sig: c for sig, c in self.get_all_methods_in_class(qualified_class_name).items() if c.name == "__init__"}
 
     def get_all_fields(self, qualified_class_name: str) -> List[PyClassAttribute]:

@@ -149,7 +149,17 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
 
     @abstractmethod
     def get_all_constructors(self, qualified_class_name: str) -> Dict[str, PyCallable]:
-        """The constructors of a class."""
+        """The constructors of a class.
+
+        Note:
+            This accessor (and :meth:`~cldk.analysis.commons.backend.AnalysisBackend.get_method`
+            / :meth:`~cldk.analysis.commons.backend.AnalysisBackend.get_all_methods_in_class`)
+            does not resolve call-site ``callee_signature`` the way :meth:`get_callsites_for`
+            does for the identical call sites: over the Neo4j backend it is always ``None`` here
+            (that reconstruction never follows ``PY_RESOLVES_TO``); over the local backend an
+            external target keeps Jedi's raw, unaddressable dotted guess instead of the resolved
+            ``@external`` can-id. Use :meth:`get_callsites_for` when resolved call sites matter.
+        """
 
     # -----[ bulk / projected accessors ]-----
     # Set-at-a-time, field-projected reads — one round-trip on the Neo4j backend, one symbol-table
@@ -239,7 +249,11 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         higher). A ``None`` from the Neo4j backend can therefore mean either "genuinely
         unresolved" or "this graph doesn't carry per-site resolution at all" — ``PyCallsite`` is
         the analyzer's own frozen model with no field to carry that distinction, so it cannot be
-        disambiguated here the way an accessor's own empty return could be.
+        disambiguated here the way an accessor's own empty return could be. Partial mitigation on
+        the Neo4j backend: :attr:`~cldk.analysis.python.neo4j.PyNeo4jBackend.has_resolution_edges`
+        is probed once at construction and is ``False`` exactly when the attached graph has *no*
+        ``PY_RESOLVES_TO`` edge anywhere — in that case every ``None`` here is explained by the
+        graph's analysis level, not by individual call sites failing to resolve.
         """
 
     @abstractmethod
