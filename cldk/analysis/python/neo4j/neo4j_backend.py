@@ -120,9 +120,12 @@ logger = logging.getLogger(__name__)
 # Scoping: the module-level buckets key on ``m.file_key``, the rest on the parent's ``_module``
 # provenance property -- which the emitter indexes for every module-owned label (see
 # ``codeanalyzer/neo4j/schema.py``'s ``INDEXES``). Both confine the result to this backend's
-# application, which the per-parent statements do not: they match a bare ``{signature: $sig}``
-# and so would also see a same-signature node belonging to another application in a shared
-# database. The bulk path is the narrower of the two, never the wider.
+# application. The per-parent statements carry the *same* ``IN $mods`` predicate on the parent
+# (``PyNeo4jBackend._children`` supplies ``mods`` to every unprimed run), because a bare
+# ``{signature: $sig}`` would also match a same-signature node belonging to another application
+# in a shared database -- and a Unified Knowledge Graph holding several applications is the
+# expected deployment. Without it the two paths provably disagree there: ``get_class`` would
+# merge another application's methods while ``get_all_classes`` would not.
 _BULK_CHILD_QUERIES: Dict[str, str] = {
     # module -> its own top-level declarations
     "module_classes": "MATCH (m:PyModule)-[:PY_DECLARES]->(c:PyClass) WHERE m.file_key IN $mods RETURN m.file_key AS pk, properties(c) AS p",
@@ -369,7 +372,8 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         """The child rows of one parent node — from the bulk index when primed, one query when not.
 
         Unprimed (the default, and what every single-node accessor pays) runs ``query``: the
-        scoped statement naming this one parent, unchanged from before the collapse. Primed
+        statement naming this one parent, application-scoped by the ``mods`` parameter this
+        method supplies, exactly as its bulk twin is scoped. Primed
         (inside :meth:`_bulk`) answers from ``_BULK_CHILD_QUERIES[bucket]``, fetched
         lazily on first use so an accessor is never charged for a collection it does not read —
         ``get_all_classes`` never touches the four module-level buckets. Both paths yield the same
@@ -380,7 +384,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         would trade an N+1 for a much larger constant.
         """
         if self._prefetch is None:
-            return self._run(query, **params)
+            return self._run(query, mods=self._modules, **params)
         index = self._prefetch.get(bucket)
         if index is None:
             index = self._prefetch[bucket] = self._collect(bucket)
@@ -425,8 +429,8 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             for r in self._children(
                 "callable_callsites",
                 sig,
-                "MATCH (:PyCallable {signature: $sig})-[:PY_HAS_BODY_NODE]->(s:PyBodyNode {kind: 'call'}) "
-                "RETURN properties(s) AS p ORDER BY s.start_line",
+                "MATCH (par:PyCallable {signature: $sig})-[:PY_HAS_BODY_NODE]->(s:PyBodyNode {kind: 'call'}) "
+                "WHERE par._module IN $mods RETURN properties(s) AS p ORDER BY s.start_line",
                 sig=sig,
             )
         ]
@@ -434,7 +438,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         for r in self._children(
             "callable_inner_callables",
             sig,
-            "MATCH (:PyCallable {signature: $sig})-[:PY_DECLARES]->(d:PyCallable) RETURN properties(d) AS p",
+            "MATCH (par:PyCallable {signature: $sig})-[:PY_DECLARES]->(d:PyCallable) WHERE par._module IN $mods RETURN properties(d) AS p",
             sig=sig,
         ):
             ic = self._callable_full(r["p"])
@@ -443,7 +447,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         for r in self._children(
             "callable_inner_classes",
             sig,
-            "MATCH (:PyCallable {signature: $sig})-[:PY_DECLARES]->(d:PyClass) RETURN properties(d) AS p",
+            "MATCH (par:PyCallable {signature: $sig})-[:PY_DECLARES]->(d:PyClass) WHERE par._module IN $mods RETURN properties(d) AS p",
             sig=sig,
         ):
             ic2 = self._class_full(r["p"])
@@ -453,8 +457,8 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             for r in self._children(
                 "callable_variables",
                 sig,
-                "MATCH (:PyCallable {signature: $sig})-[:PY_DECLARES_VAR]->(v:PyVariable) "
-                "RETURN properties(v) AS p ORDER BY v.start_line, v.name",
+                "MATCH (par:PyCallable {signature: $sig})-[:PY_DECLARES_VAR]->(v:PyVariable) "
+                "WHERE par._module IN $mods RETURN properties(v) AS p ORDER BY v.start_line, v.name",
                 sig=sig,
             )
         ]
@@ -465,19 +469,28 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         sig = props["signature"]
         methods: Dict[str, PyCallable] = {}
         for r in self._children(
-            "class_methods", sig, "MATCH (:PyClass {signature: $sig})-[:PY_HAS_METHOD]->(m:PyCallable) RETURN properties(m) AS p", sig=sig
+            "class_methods",
+            sig,
+            "MATCH (par:PyClass {signature: $sig})-[:PY_HAS_METHOD]->(m:PyCallable) WHERE par._module IN $mods RETURN properties(m) AS p",
+            sig=sig,
         ):
             m = self._callable_full(r["p"])
             methods[m.name] = m  # methods keyed by short name
         attributes: Dict[str, PyClassAttribute] = {}
         for r in self._children(
-            "class_attributes", sig, "MATCH (:PyClass {signature: $sig})-[:PY_HAS_ATTRIBUTE]->(a:PyAttribute) RETURN properties(a) AS p", sig=sig
+            "class_attributes",
+            sig,
+            "MATCH (par:PyClass {signature: $sig})-[:PY_HAS_ATTRIBUTE]->(a:PyAttribute) WHERE par._module IN $mods RETURN properties(a) AS p",
+            sig=sig,
         ):
             a = R.attribute(r["p"])
             attributes[a.name] = a  # attributes keyed by name
         inner_classes: Dict[str, PyClass] = {}
         for r in self._children(
-            "class_inner_classes", sig, "MATCH (:PyClass {signature: $sig})-[:PY_DECLARES]->(ic:PyClass) RETURN properties(ic) AS p", sig=sig
+            "class_inner_classes",
+            sig,
+            "MATCH (par:PyClass {signature: $sig})-[:PY_DECLARES]->(ic:PyClass) WHERE par._module IN $mods RETURN properties(ic) AS p",
+            sig=sig,
         ):
             ic = self._class_full(r["p"])
             inner_classes[ic.signature] = ic  # inner_classes keyed by signature
@@ -488,13 +501,19 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         file_key = props["file_key"]
         classes: Dict[str, PyClass] = {}
         for r in self._children(
-            "module_classes", file_key, "MATCH (:PyModule {file_key: $fk})-[:PY_DECLARES]->(c:PyClass) RETURN properties(c) AS p", fk=file_key
+            "module_classes",
+            file_key,
+            "MATCH (par:PyModule {file_key: $fk})-[:PY_DECLARES]->(c:PyClass) WHERE par.file_key IN $mods RETURN properties(c) AS p",
+            fk=file_key,
         ):
             c = self._class_full(r["p"])
             classes[c.signature] = c  # module.types keyed by signature
         functions: Dict[str, PyCallable] = {}
         for r in self._children(
-            "module_functions", file_key, "MATCH (:PyModule {file_key: $fk})-[:PY_DECLARES]->(f:PyCallable) RETURN properties(f) AS p", fk=file_key
+            "module_functions",
+            file_key,
+            "MATCH (par:PyModule {file_key: $fk})-[:PY_DECLARES]->(f:PyCallable) WHERE par.file_key IN $mods RETURN properties(f) AS p",
+            fk=file_key,
         ):
             fn = self._callable_full(r["p"])
             functions[fn.name] = fn  # module.functions keyed by short name
@@ -503,7 +522,8 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             for r in self._children(
                 "module_variables",
                 file_key,
-                "MATCH (:PyModule {file_key: $fk})-[:PY_DECLARES_VAR]->(v:PyVariable) RETURN properties(v) AS p ORDER BY v.start_line, v.name",
+                "MATCH (par:PyModule {file_key: $fk})-[:PY_DECLARES_VAR]->(v:PyVariable) "
+                "WHERE par.file_key IN $mods RETURN properties(v) AS p ORDER BY v.start_line, v.name",
                 fk=file_key,
             )
         ]
@@ -516,7 +536,8 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         for r in self._children(
             "module_imports",
             file_key,
-            "MATCH (:PyModule {file_key: $fk})-[e:PY_IMPORTS]->(p:PyPackage) RETURN p.name AS module, e.imported_names AS names",
+            "MATCH (par:PyModule {file_key: $fk})-[e:PY_IMPORTS]->(pkg:PyPackage) "
+            "WHERE par.file_key IN $mods RETURN pkg.name AS module, e.imported_names AS names",
             fk=file_key,
         ):
             names = r.get("names") or []

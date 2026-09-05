@@ -52,10 +52,18 @@ def test_stub_accessor_is_gone(name):
 
 def test_no_public_accessor_only_raises():
     """Every remaining public accessor must do something."""
+    import ast
     import inspect
+    import textwrap
+
     for name, fn in inspect.getmembers(PythonAnalysis, inspect.isfunction):
         if name.startswith("_"):
             continue
-        src = inspect.getsource(fn)
-        body = src.split(":", 1)[1]
+        # Parse rather than split on ":" — the first colon in ``def f(self, x: int)`` is an
+        # annotation, not the signature terminator, so the naive split left the signature (and,
+        # worse, the docstring) inside the searched text and would flag a docstring that merely
+        # mentions ``raise NotImplementedError``. This is the statements of the body, no more.
+        node = ast.parse(textwrap.dedent(inspect.getsource(fn))).body[0]
+        statements = node.body[1:] if ast.get_docstring(node) else node.body
+        body = "\n".join(ast.unparse(s) for s in statements)
         assert "raise NotImplementedError" not in body, f"{name} only raises"

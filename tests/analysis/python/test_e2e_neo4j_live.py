@@ -42,8 +42,8 @@ application name it loads itself; this suite attaches to a graph it did not buil
 to be an input). The whole module skips — cleanly, never fails — when no server answers or when the
 named application is absent from it, so CI without Neo4j stays green.
 
-Three accessors are gated behind ``CLDK_TEST_NEO4J_SLOW=1``
-----------------------------------------------------------
+The three heaviest accessors run by default
+-------------------------------------------
 ``get_symbol_table()``, ``get_classes()`` and ``get_call_graph_json()`` are the three heaviest calls
 in the facade. They **used to** take about six to seven minutes each (recorded here: 391 s, 352 s,
 422 s), because the first two rebuilt every module / class by fanning out one Cypher query per child
@@ -53,14 +53,14 @@ fan-out is gone (leg 1.5: the child collections are now fetched once for the app
 from a by-parent index), and the same three now measure **10.5 s, 11.1 s and 28.3 s** on the same
 graph.
 
-They stay behind the flag: fifty seconds is still an order of magnitude more than the rest of this
-module put together, and the gate is what lets the default run stay under a minute. The flag rather
-than a marker is deliberate: this repo has no ``markers`` entry in ``pyproject.toml``, a marker
-would raise ``PytestUnknownMarkWarning`` and would still run unless the caller remembered
-``-m 'not slow'``, whereas ``skipif`` matches the convention already used throughout this directory
-and is off unless explicitly asked for.
+They were gated behind ``CLDK_TEST_NEO4J_SLOW=1`` while twenty minutes was the known state. That
+gate is gone: it now guards about fifty seconds, and it was buying that back at the cost of the
+only end-to-end proof that the collapse holds — a regression to the fan-out would have gone unseen
+in every default run. Fifty seconds against a live graph you had to stand up on purpose is a price
+worth paying for the assertion that the collapse is still in force. ``CLDK_TEST_NEO4J_SLOW`` is no
+longer read anywhere.
 
-Without the flag the whole module runs in about twenty seconds.
+The whole module now runs in about seventy seconds.
 
 Fixture selection
 -----------------
@@ -89,8 +89,6 @@ NEO4J_URI = os.environ.get("CLDK_TEST_NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = os.environ.get("CLDK_TEST_NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.environ.get("CLDK_TEST_NEO4J_PASSWORD", "neo4j")
 APP_NAME = os.environ.get("CLDK_TEST_NEO4J_APP", "odoo-slim-19")
-
-RUN_SLOW = os.environ.get("CLDK_TEST_NEO4J_SLOW") == "1"
 
 # The four relationship types PyNeo4jBackend._probe_schema insists on. Duplicated here on purpose:
 # a test that imports the constant it is checking cannot catch the constant changing.
@@ -992,7 +990,6 @@ def test_get_all_callers_and_callees_resolve_for_a_real_callable(analysis, busy_
     )
 
 
-@pytest.mark.skipif(not RUN_SLOW, reason="slow (~28 s, see docstring); set CLDK_TEST_NEO4J_SLOW=1")
 def test_get_call_graph_json_builds_with_external_targets_resolved(analysis):
     """The pydantic half of the same fix — and the **third** and heaviest of these accessors.
 
@@ -1017,7 +1014,7 @@ def test_get_call_graph_json_builds_with_external_targets_resolved(analysis):
 
 
 # =====================================================================================
-# The two heaviest accessors — opt-in, but recorded rather than omitted
+# The two heaviest accessors — no longer opt-in
 # =====================================================================================
 # Measured on this graph (2,364 files, 1,626 modules, 1,656 classes):
 #
@@ -1037,7 +1034,6 @@ def test_get_call_graph_json_builds_with_external_targets_resolved(analysis):
 _SLOW_CEILING_SECONDS = 30
 
 
-@pytest.mark.skipif(not RUN_SLOW, reason="slow (~11 s); set CLDK_TEST_NEO4J_SLOW=1")
 def test_get_symbol_table_returns_every_module(analysis, cypher):
     import time
 
@@ -1051,7 +1047,6 @@ def test_get_symbol_table_returns_every_module(analysis, cypher):
     assert elapsed < _SLOW_CEILING_SECONDS, f"get_symbol_table took {elapsed:.0f}s (10.5s when recorded, from ~440s before the N+1 collapse)"
 
 
-@pytest.mark.skipif(not RUN_SLOW, reason="slow (~11 s); set CLDK_TEST_NEO4J_SLOW=1")
 def test_get_classes_returns_every_top_level_class(analysis, cypher):
     import time
 
