@@ -7,6 +7,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Python leg (leg 1) of the CLDK 2.0 agent-facing query facade (see
+`docs/design/specs/2026-09-03-agent-facing-query-facade.md`). Targets `2.0.0-rc.1`.
+
+### Changed
+- **BREAKING: Neo4j graph vocabulary migration.** The Python Neo4j backend
+  (`cldk.analysis.python.neo4j.PyNeo4jBackend`) now queries `PyBodyNode` / `PY_HAS_BODY_NODE`
+  instead of the pre-1.4.0 `PyCallSite` / `PY_HAS_CALLSITE` / `PySymbol` vocabulary, matching what
+  `codeanalyzer-python` >=1.4.0 actually emits.
+  **Signature-level backwards compatibility does not extend to graph generation.** A graph built
+  by `codeanalyzer-python` 0.3.x that used to answer every query with zero rows (silently,
+  indistinguishable from "this codebase has no callables") now raises `GraphSchemaMismatch` at
+  attach time instead, naming the expected/found/missing relationship types and the analyzer
+  generation implied. **Migration:** re-ingest the project with `codeanalyzer-python>=1.4.0`
+  (`codeanalyzer-python --emit neo4j`) before attaching this SDK version to it; there is no
+  in-place graph upgrade.
+- **Pinned `codeanalyzer-python` 0.3.1 → 1.4.0** (`pyproject.toml`), the source of the vocabulary
+  migration above. The in-process (local) backend picks this up automatically; only the Neo4j
+  backend needs a re-ingested graph.
+
+#### Compatibility matrix (spec §7.1)
+
+| SDK version | Requires `codeanalyzer-python` | Graph vocabulary |
+| --- | --- | --- |
+| <= 1.5.0 | 0.3.x | `PyCallSite` / `PY_HAS_CALLSITE` / `PySymbol` |
+| 2.0.0-rc.1 (this) | >= 1.4.0 | `PyBodyNode` / `PY_HAS_BODY_NODE` |
+
+### Added
+- **`locate(path, line)` / `locate_many(positions)`** — resolve a source position to its enclosing
+  callable (or `module_scope` / `file_not_in_graph` when there isn't one), with the callable's
+  source text attached. Backed by the new `LocateResult` model
+  (`cldk.analysis.commons.results`).
+- **`get_source(node_id)`** — the source text named by a callable's signature or by
+  `LocateResult.node_id` (a body-node id), byte-accurate against non-ASCII source. Below-callable
+  granularity is local-backend-only; the Neo4j backend raises `NotImplementedError` rather than
+  substituting the enclosing callable's text.
+- **Entrypoint detection surface**: `get_entrypoints()` (callable-level), `get_entrypoint_classes()`
+  (class-level, new `PyClassOverview` model), and `get_entrypoint_coverage()` (the detection pass's
+  own coverage/failure record via the new `EntrypointCoverage` result, so an empty result can be
+  told apart from a pass that had gaps).
+- **Repository-artifact / dependency / config layer**: `get_artifacts()`, `get_dependencies()`,
+  `get_config_keys()`, `get_config_uses()`, `get_unresolved_config_reads()`, and
+  `get_config_readers(key)`.
+- **External call resolution**: `get_external_symbols()` returns every call-graph endpoint outside
+  the analyzed project, keyed by its `can://…/@external/…` id. `get_callsites_for()` and the call
+  graph accessors (`get_call_graph()`/`get_callers()`/`get_callees()`/`get_class_call_graph()`) now
+  resolve a call landing on such a target to that id instead of leaving `callee_signature`/the
+  graph node as `None` (previously 602 recorded incidents for the former, 38,585 of 364,752 in-scope
+  `PY_CALLS` edges on a live graph for the latter).
+- **`has_resolution_edges`** (property) — whether the current backend can resolve call-site callees
+  at all right now. Always `True` on the local backend (it always attempts Jedi resolution);
+  on the Neo4j backend it is probed once at connection time and is `False` only when the attached
+  graph carries no `PY_RESOLVES_TO` edge anywhere, which disambiguates a genuinely unresolved call
+  site from a graph with no resolution data.
+- **`GraphSchemaMismatch`** (`cldk.utils.exceptions`) — raised by the Neo4j backend's one-time
+  schema probe at attach time; see the breaking-change note above.
+
 ### Removed
 - **C analysis support** (`CLDK.c()`, `cldk.analysis.c`, `cldk.models.c`) — libclang-backed and
   syntactic-only, it emitted none of the 2.0 code-property graph the query surface is built on and
