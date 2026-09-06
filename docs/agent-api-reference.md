@@ -266,9 +266,10 @@ checkout it detects **zero** entrypoints across 15,549 callables, in a framework
 from HTTP routes.
 
 So an empty `get_entrypoints()` means either "no entrypoints" or "the pass found nothing", and you
-cannot tell from the list. `get_entrypoint_coverage()` is how you ask. Over Neo4j it reports
-`entrypoint_report_unavailable` — the graph does not carry the report — which is itself the answer:
-*you cannot trust the zero*.
+cannot tell from the list. `get_entrypoint_coverage()` is how you ask. Over a Neo4j graph emitted
+by codeanalyzer-python 1.4.0 it reports `entrypoint_report_unavailable` — that graph does not carry
+the report — which is itself the answer: *you cannot trust the zero*. From 1.4.1 the graph carries
+it and the answer is the pass's own report, same as the local backend.
 
 Concluding "this application has no attack surface" from an empty list is the single worst mistake
 available in this API.

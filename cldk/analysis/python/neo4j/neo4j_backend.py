@@ -86,6 +86,7 @@ from typing import Any, Callable, Dict, FrozenSet, List, Sequence, Tuple
 import networkx as nx
 from codeanalyzer.schema import model_dump_json
 from codeanalyzer.schema.ids import application_id, module_id
+from codeanalyzer.schema.py_schema import PyEntrypointReport
 
 from cldk.analysis.commons.resolve import CallableCandidate, body_node_kind, resolve_callable_signature, resolve_value_name, resolve_within, value_candidate
 from cldk.analysis.commons.results import CallableRef, Diagnostic, EdgePage, EntrypointCoverage, FlowPath, FlowPaths, LocateResult, ModuleRef, PathHop, Slice, SliceNode, TypeRef
@@ -1695,12 +1696,27 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         return [R.class_overview({**r, "path": self._module_key(r["id"])}) for r in rows]
 
     def get_entrypoint_coverage(self) -> EntrypointCoverage:
-        # codeanalyzer-python's neo4j/project.py projects only the derived is_entrypoint /
-        # entrypoint_frameworks properties onto :PyCallable/:PyClass -- it never projects
-        # PyApplication.entrypoint_report (frameworks_detected/rulesets/unresolved/errors) onto the
-        # graph at all (confirmed: no such property or node anywhere in neo4j/project.py). Say so
-        # rather than fabricate empty-but-clean-looking coverage fields -- same precedent as
-        # LocateResult's module_source_unavailable for the module-text gap.
+        """The entrypoint pass's coverage record, read off ``:PyApplication.entrypoint_report_json``.
+
+        codeanalyzer-python 1.4.1 (#182, ``neo4j/project.py``) projects ``PyApplication.entrypoint_report``
+        onto the application node as the sorted-key JSON of the whole ``PyEntrypointReport`` --
+        ``frameworks_detected``, ``rulesets``, ``unresolved``, ``errors`` -- so this parses the same
+        model the local backend passes through and there is no lossiness between the two. (The
+        sibling ``entrypoint_frameworks`` property is that report's ``frameworks_detected`` and is
+        not read separately.) A 1.4.0 graph has no such property: that absence is reported with
+        ``entrypoint_report_unavailable`` rather than fabricated as empty-but-clean-looking fields
+        -- same precedent as ``LocateResult``'s ``module_source_unavailable`` for the module-text gap.
+        """
+        rows = self._run("MATCH (a:PyApplication {name: $app}) RETURN a.entrypoint_report_json AS j", app=self.application_name)
+        raw = rows[0].get("j") if rows else None
+        if raw is not None:
+            r = PyEntrypointReport.model_validate_json(raw)
+            return EntrypointCoverage(
+                frameworks_detected=list(r.frameworks_detected),
+                rulesets=list(r.rulesets),
+                unresolved=dict(r.unresolved),
+                errors=list(r.errors),
+            )
         return EntrypointCoverage(
             diagnostics=[
                 Diagnostic(

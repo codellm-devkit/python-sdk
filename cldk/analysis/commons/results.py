@@ -263,9 +263,10 @@ class EntrypointCoverage(BaseModel):
         unresolved: Count of near-misses, keyed by rule/framework, that could not be resolved to a
             definite entrypoint — non-zero counts are exactly the under-approximation gap.
         errors: Hard failures the detection pass hit while running.
-        diagnostics: Non-empty when a backend cannot supply this report at all: the Neo4j
-            projection does not carry ``PyApplication.entrypoint_report`` on the graph (only the
-            derived ``is_entrypoint``/``entrypoint_frameworks`` per-node properties), so it returns
+        diagnostics: Non-empty when a backend cannot supply this report at all: a Neo4j graph
+            emitted by codeanalyzer-python 1.4.0 does not carry ``PyApplication.entrypoint_report``
+            (only the derived ``is_entrypoint``/``entrypoint_frameworks`` per-node properties;
+            1.4.1 projects it onto ``:PyApplication``), so the Neo4j backend returns
             ``entrypoint_report_unavailable`` here instead of fabricating empty-but-clean-looking
             fields — the same "say so honestly" precedent as ``LocateResult``'s
             ``module_source_unavailable``. When ``diagnostics`` is non-empty, the other fields are

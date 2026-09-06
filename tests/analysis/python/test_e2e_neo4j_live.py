@@ -72,6 +72,7 @@ rebuilt graph does not turn this suite red for the wrong reason.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -790,31 +791,45 @@ def test_entrypoints_faithfully_report_what_the_graph_says(analysis, cypher):
     assert len(analysis.get_entrypoint_classes()) == flagged_classes
 
 
-def test_entrypoint_coverage_reports_that_it_cannot_tell(analysis):
-    """The honest "I cannot tell you whether that zero is real".
+def test_entrypoint_coverage_is_the_graphs_report_or_says_why_it_cannot_tell(analysis, cypher):
+    """Whether a caller can trust ``get_entrypoints() == []`` depends on the analyzer generation.
 
-    This diagnostic is the only thing standing between a caller and concluding, from
-    ``get_entrypoints() == []``, that this application has no attack surface. The Neo4j projection
-    never carries ``PyApplication.entrypoint_report``, so empty coverage fields here mean *unknown*,
-    not *none* — and the caller has to be able to see the difference.
+    From 1.4.1 (#182) ``:PyApplication`` carries the pass's own report, and the answer is that
+    report verbatim — the same fields the local backend returns. A 1.4.0 graph never carried it,
+    and there the diagnostic is the only thing standing between a caller and concluding, from an
+    empty list, that this application has no attack surface: empty coverage fields mean *unknown*,
+    not *none*. Which branch runs is read off the graph, so this is the back-compat gate on 7688
+    and the parity check on 7689.
     """
+    row = cypher("MATCH (a:PyApplication {name: $n}) RETURN a.analyzer_version AS v, a.entrypoint_report_json AS j", n=APP_NAME)[0]
     coverage = analysis.get_entrypoint_coverage()
-    codes = {d.code for d in coverage.diagnostics}
-    assert "entrypoint_report_unavailable" in codes
+    if row["v"] == "1.4.0":
+        assert [d.code for d in coverage.diagnostics] == ["entrypoint_report_unavailable"]
+        assert "entrypoint_report" in coverage.diagnostics[0].message
+        # The clean-looking empties are exactly what the diagnostic is there to qualify.
+        assert coverage.frameworks_detected == []
+        assert coverage.rulesets == []
+    else:
+        assert coverage.diagnostics == [], f"a {row['v']} graph carries the report; the diagnostic is stale"
+        assert coverage.model_dump(exclude={"diagnostics"}) == json.loads(row["j"])
+        assert coverage.frameworks_detected, "the 1.4.1 pass detects Odoo; an empty list here is a regression, not a clean run"
 
-    message = next(d.message for d in coverage.diagnostics if d.code == "entrypoint_report_unavailable")
-    assert "entrypoint_report" in message
-    # The clean-looking empties are exactly what the diagnostic is there to qualify.
-    assert coverage.frameworks_detected == []
-    assert coverage.rulesets == []
 
-
-def test_entrypoint_report_is_genuinely_absent_from_the_graph(cypher):
-    """Ground truth for the diagnostic above: no node anywhere carries an entrypoint report."""
+def test_entrypoint_report_presence_matches_the_analyzer_generation(cypher):
+    """Ground truth for the branch above: 1.4.0 projected no report anywhere; 1.4.1 writes
+    ``entrypoint_frameworks`` and ``entrypoint_report_json`` onto ``:PyApplication``, the latter
+    being the analyzer's own ``PyEntrypointReport`` with all four fields — nothing is dropped."""
     rows = cypher("MATCH (a:PyApplication {name: $n}) RETURN properties(a) AS p", n=APP_NAME)
     assert rows, f"application {APP_NAME!r} vanished"
-    props = set(rows[0]["p"])
-    assert not any("entrypoint" in p for p in props), f"the projection now carries {props}; the diagnostic is stale"
+    props = rows[0]["p"]
+    entrypoint_props = {p for p in props if "entrypoint" in p}
+    if props["analyzer_version"] == "1.4.0":
+        assert not entrypoint_props, f"the 1.4.0 projection now carries {entrypoint_props}; the diagnostic branch is stale"
+    else:
+        assert entrypoint_props == {"entrypoint_frameworks", "entrypoint_report_json"}
+        report = json.loads(props["entrypoint_report_json"])
+        assert set(report) == {"frameworks_detected", "rulesets", "unresolved", "errors"}
+        assert report["frameworks_detected"] == props["entrypoint_frameworks"]
 
 
 # =====================================================================================

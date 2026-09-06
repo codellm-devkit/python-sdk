@@ -34,11 +34,12 @@ Two gaps found in review, both fixed with new sibling accessors rather than wide
 * **Finding 1** -- an empty ``get_entrypoints()`` cannot distinguish "ran clean, found none" from
   "the detection pass had gaps" (its own ``PyEntrypointReport`` docstring: "under-approximates by
   design, so silence is its failure mode"). ``get_entrypoint_coverage()`` surfaces that report.
-  Verified against ``codeanalyzer/neo4j/project.py``: the Neo4j projection never emits
-  ``PyApplication.entrypoint_report`` (frameworks_detected/rulesets/unresolved/errors) onto the
-  graph at all -- only the derived ``is_entrypoint``/``entrypoint_frameworks`` per-node properties
-  exist there -- so the Neo4j backend answers with a ``diagnostics``-only
-  ``entrypoint_report_unavailable`` result rather than fabricating a clean-looking empty report.
+  Over Neo4j the report is read off ``:PyApplication.entrypoint_report_json``, which
+  codeanalyzer-python projects from 1.4.1 (#182) as the sorted-key JSON of the very same
+  ``PyEntrypointReport`` the local backend passes through. A 1.4.0 graph has no such property
+  (only the derived ``is_entrypoint``/``entrypoint_frameworks`` per-node marks), and there the
+  Neo4j backend answers with a ``diagnostics``-only ``entrypoint_report_unavailable`` result
+  rather than fabricating a clean-looking empty report.
 
 The local backend is built the same way ``test_python_bulk_accessors.py`` builds its fixture
 (``object.__new__`` + a hand-assembled ``PyApplication``); the Neo4j backend is built the same way
@@ -46,6 +47,7 @@ The local backend is built the same way ``test_python_bulk_accessors.py`` builds
 no live server, no FakeDriver machinery needed for a single filtered projection query.
 """
 
+import json
 from unittest.mock import patch
 
 from codeanalyzer.schema.py_schema import PyApplication, PyCallable, PyClass, PyEntrypointReport, PyModule
@@ -258,13 +260,32 @@ def test_entrypoint_coverage_surfaces_the_report_locally():
     assert coverage.diagnostics == []
 
 
-def test_entrypoint_coverage_over_neo4j_says_it_cannot_answer():
-    """The Neo4j projection never emits PyApplication.entrypoint_report onto the graph (verified
-    against codeanalyzer/neo4j/project.py: only the derived is_entrypoint/entrypoint_frameworks
-    per-node properties exist there) -- say so via a diagnostic rather than fabricate a
+def test_entrypoint_coverage_over_neo4j_is_read_from_the_application_node():
+    """A 1.4.1 graph carries the report as ``:PyApplication.entrypoint_report_json`` -- the same
+    ``PyEntrypointReport`` the local backend passes through, dumped as sorted-key JSON
+    (codeanalyzer/neo4j/project.py, #182) -- so both backends answer identically from one analysis."""
+    report = PyEntrypointReport(
+        frameworks_detected=["flask"],
+        rulesets=["shipped"],
+        unresolved={"flask": 2},
+        errors=["timeout scanning svc/legacy.py"],
+    )
+    local = object.__new__(PyCodeanalyzer)
+    local.application = PyApplication(symbol_table={}, entrypoint_report=report)
+    row = {"j": json.dumps(report.model_dump(mode="json"), sort_keys=True)}
+    backend = _neo4j_backend()
+    with patch.object(PyNeo4jBackend, "_run", side_effect=_run_keyed({"a.entrypoint_report_json AS j": [row]})):
+        coverage = backend.get_entrypoint_coverage()
+    assert coverage == local.get_entrypoint_coverage()
+    assert coverage.diagnostics == []
+
+
+def test_entrypoint_coverage_over_a_graph_without_the_report_says_it_cannot_answer():
+    """A 1.4.0 graph never had the property -- say so via a diagnostic rather than fabricate a
     clean-looking empty report."""
     backend = _neo4j_backend()
-    coverage = backend.get_entrypoint_coverage()
+    with patch.object(PyNeo4jBackend, "_run", side_effect=_run_keyed({"a.entrypoint_report_json AS j": [{"j": None}]})):
+        coverage = backend.get_entrypoint_coverage()
     assert len(coverage.diagnostics) == 1
     assert coverage.diagnostics[0].code == "entrypoint_report_unavailable"
     assert coverage.frameworks_detected == []

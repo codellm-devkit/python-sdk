@@ -894,9 +894,9 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         so a caller can tell "the pass ran clean and found nothing" apart from "the pass had gaps"
         — a distinction :meth:`get_entrypoints`'s empty list alone cannot make. See
         :class:`~cldk.analysis.commons.results.EntrypointCoverage` for the field-by-field contract,
-        including the per-backend availability caveat (the Neo4j projection does not carry this
-        report at all; that backend answers with a ``diagnostics``-only result rather than
-        fabricating empty-but-clean-looking coverage fields)."""
+        including the per-backend availability caveat (a Neo4j graph emitted by codeanalyzer-python
+        1.4.0 does not carry this report; that backend then answers with a ``diagnostics``-only
+        result rather than fabricating empty-but-clean-looking coverage fields)."""
 
     @property
     @abstractmethod
