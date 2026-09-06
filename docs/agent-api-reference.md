@@ -651,6 +651,15 @@ Any accessor may attach these. They exist so an empty result is never ambiguous.
 **The rule behind all of them:** an empty result that could mean two things is a defect. When you
 get nothing back, check the diagnostics before concluding the answer is "no".
 
+**Java `program_dependency_graph` / `system_dependency_graph` need compiled classes.**
+codeanalyzer-java builds the project itself, and when that build cannot run it degrades rather than
+failing: exit 0, `max_level` still the level you asked for, but a call graph of `declared` edges
+only and no `points-to` provenance anywhere. The SDK keeps the analyzer's own warning sentences,
+logs each at `WARNING`, and records them on the backend as `level_too_low` diagnostics —
+`analysis.backend.analyzer_diagnostics` is a non-empty list when the analyzer declared a
+degradation, `[]` when it declared none, and `None` when no verdict is recorded, which is *unknown*
+and not clean. The graph is still returned; nothing raises.
+
 ---
 
 ## Cost summary

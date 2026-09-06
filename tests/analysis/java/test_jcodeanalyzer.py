@@ -79,12 +79,13 @@ def _analyzer(payload: str, level=AnalysisLevel.symbol_table, project_dir=".", a
 
 @pytest.mark.parametrize("level, a", [(AnalysisLevel.symbol_table, "1"), (AnalysisLevel.call_graph, "2"), (AnalysisLevel.program_dependency_graph, "3"), (AnalysisLevel.system_dependency_graph, "4")])
 def test_argv_is_the_analyzer_command_line(test_fixture, analysis_json, tmp_path, level, a):
-    """``-a`` carries the requested level (3 and 4 are new to Java); ``-o``/``-c`` only with a cache dir;
-    ``--app-name`` is the project directory's name, which the analyzer stamps into every id."""
+    """``-a`` carries the requested level (3 and 4 are new to Java); ``-o``/``-c``/``-v`` only with a
+    cache dir; ``--app-name`` is the project directory's name, which the analyzer stamps into every
+    id. ``-v`` is what puts the analyzer's degradation warnings on stdout (#341)."""
     analyzer, run_mock = _analyzer(analysis_json, level=level, project_dir=test_fixture, analysis_json_path=tmp_path, target_files=["a.java", "b.java"])
     argv = run_mock.call_args[0][0]
     assert argv[:3] == codeanalyzer_java.command()
-    assert argv[3:] == ["-i", str(test_fixture), "-a", a, "-o", str(tmp_path), "-c", str(tmp_path / "cache"), "--app-name", test_fixture.name, "-t", "a.java", "-t", "b.java"]
+    assert argv[3:] == ["-i", str(test_fixture), "-a", a, "-o", str(tmp_path), "-c", str(tmp_path / "cache"), "-v", "--app-name", test_fixture.name, "-t", "a.java", "-t", "b.java"]
     assert isinstance(analyzer.application, JApplication)
 
 

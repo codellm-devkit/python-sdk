@@ -290,6 +290,18 @@ paths, entrypoints) is 2.5b, on codeanalyzer-typescript 1.3.0 when it is cut.
   it has always returned; the 1.x annotation said `List[str]`. Behaviour is unchanged — the
   annotation was the bug. Off the Neo4j backend the list round-trips exactly, parameter annotations
   included: `:JCallable.parameters_json` is the analyzer's own serialisation of it.
+- **A Java `program_dependency_graph`/`system_dependency_graph` run that the analyzer could not
+  fully compute is no longer silent** (#341). Those levels need compiled classes; when
+  codeanalyzer-java's build cannot run it degrades rather than failing — exit 0, `max_level` still
+  the level asked for, but a call graph of `declared` edges only and no `points-to` provenance
+  anywhere. The SDK now runs the analyzer with `-v`, keeps the analyzer's own warning sentences,
+  logs each at `WARNING`, records them on the backend as `JCodeanalyzer.analyzer_diagnostics`
+  (`level_too_low` diagnostics), and persists them as `<cache>/java/analyzer_diagnostics.json` so a
+  cache hit still knows. Three distinguishable states: a non-empty list (degraded), `[]` (the
+  analyzer reported none), `None` (no verdict recorded — *unknown*, not clean; a pre-#341 cache, an
+  `analysis.json` from elsewhere, or stdout-pipe mode). **Nothing is raised and nothing is
+  withheld:** the graph is returned exactly as before, because a declared-only call graph is still
+  a real answer.
 
 ## [v2.0.0-rc.2] - 2026-09-06
 Python legs 1, 1.5 and 1.6 of the CLDK 2.0 agent-facing query facade (see

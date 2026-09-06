@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import subprocess
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -35,7 +36,8 @@ from typing import Dict, Iterable, List, Tuple, Union
 
 import networkx as nx
 
-from cldk.analysis.commons.levels import analyzer_level
+from cldk.analysis.commons.levels import LEVEL_NAMES, analyzer_level
+from cldk.analysis.commons.results import Diagnostic
 from cldk.analysis.commons.treesitter import TreesitterJava
 from cldk.analysis.java.backend import CRUD_UNAVAILABLE, CRUDRow, JavaAnalysisBackend, duplicate_type_name, unhomed_endpoint
 from cldk.models.java import JGraphEdges
@@ -44,6 +46,63 @@ from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUs
 from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 
 logger = logging.getLogger(__name__)
+
+#: The SDK's record of what the analyzer said about its own run, written **beside**
+#: ``analysis.json`` in the cache directory the SDK owns. Never a field inside the payload: that
+#: file's shape is codeanalyzer-java's schema, not ours.
+VERDICT_FILE = "analyzer_diagnostics.json"
+
+#: ANSI colour, which the analyzer's console appender writes around the timestamp and the level.
+#: Stripped before matching so it is never read as content and never lands in a message.
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+#: The shape codeanalyzer-java uses to declare that something it was asked for did not run: a WARN
+#: line naming the capability that is ``unavailable`` and what it is ``emitting … only`` instead
+#: (``RTA call graph unavailable (NullPointerException: null); emitting declared edges only``,
+#: ``L4 semantic ddg unavailable (WALA build failed); emitting the derived SDG vertices and param
+#: edges only``). Matched on that shape, not on the cause inside the parentheses, which differs per
+#: failure and is the analyzer's to word.
+_DEGRADED_LINE = re.compile(r"\[WARN\]\s*(?P<message>\S.*?\bunavailable\b.*\bemitting\b.*\bonly\b)\s*$")
+
+
+def _degradations(log: str) -> List[Diagnostic]:
+    """The analyzer's own degradation sentences, as :class:`Diagnostic`s, in the order it logged them.
+
+    The analyzer degrades rather than failing — a build it cannot run costs it the RTA call graph
+    and the points-to half of the SDG, and it still exits 0 and stamps ``max_level`` with the level
+    it was asked for — so its log is the only authoritative signal (#341). The sentence is kept
+    verbatim as the message: it names the cause (``NullPointerException: null``, ``WALA build
+    failed``) better than a paraphrase would.
+
+    ``code`` is ``level_too_low`` because that is what happened: the level actually computed is
+    below the level the envelope reports. The payload's own proxies — no ``rta`` provenance on any
+    call edge, no ``points-to`` provenance on any ddg edge — are **not** consulted, here or
+    anywhere: a small project can legitimately have neither, so their absence is corroboration for
+    a verdict that was recorded, never a substitute for one.
+    """
+    messages: Dict[str, None] = {}
+    for line in log.splitlines():
+        match = _DEGRADED_LINE.search(_ANSI.sub("", line))
+        if match:
+            messages[match.group("message")] = None
+    return [Diagnostic(code="level_too_low", message=message) for message in messages]
+
+
+def _recorded_verdict(verdict_file: Path) -> List[Diagnostic] | None:
+    """The verdict recorded beside a cached ``analysis.json``, or ``None`` when there is none.
+
+    ``None`` is a third state and not a synonym for "the analyzer reported no degradation": a cache
+    written before this file existed, or an ``analysis.json`` dropped into the cache directory by
+    something other than this backend, carries no verdict at all. Reporting that as clean is the
+    ambiguous-empty defect (#341), so it stays distinguishable from ``[]``.
+    """
+    try:
+        recorded = json.loads(verdict_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(recorded, list):
+        return None
+    return [Diagnostic.model_validate(entry) for entry in recorded]
 
 
 class JCodeanalyzer(JavaAnalysisBackend):
@@ -62,6 +121,14 @@ class JCodeanalyzer(JavaAnalysisBackend):
         analysis: The whole ``analysis.json`` envelope — ``schema_version``, ``max_level``,
             ``analyzer.version`` — for callers that need to know what produced the view.
         application: ``analysis.application``, the queried view.
+        analyzer_diagnostics: What the analyzer said about its own run, in three distinguishable
+            states (#341): a **non-empty** list — it declared a degradation, one
+            :class:`~cldk.analysis.commons.results.Diagnostic` per sentence it logged;
+            **empty** — it declared none; **``None``** — no verdict is recorded, so whether the
+            requested level was fully computed is *unknown*. ``None`` happens on a cache written
+            before this backend recorded verdicts, on an ``analysis.json`` put in the cache
+            directory from elsewhere, and in stdout-pipe mode (no ``analysis_json_path``), where the
+            payload occupies the same pipe the log would.
     """
 
     def __init__(
@@ -77,7 +144,9 @@ class JCodeanalyzer(JavaAnalysisBackend):
         self.analysis_level = analysis_level
         self.eager_analysis = eager_analysis
         self.target_files = target_files
+        self.analyzer_diagnostics: List[Diagnostic] | None = None
         self.analysis: JAnalysis = self._init_codeanalyzer(analysis_level=analyzer_level(analysis_level))
+        self._report_analyzer_diagnostics(analyzer_level(analysis_level))
         self.application: JApplication = self.analysis.application
         self._call_graph: nx.DiGraph | None = None
         self._index()
@@ -101,16 +170,21 @@ class JCodeanalyzer(JavaAnalysisBackend):
         return codeanalyzer_java.command()
 
     def _argv(self, analysis_level: int, output_dir: Path | None) -> List[str]:
-        """The 3.0.x command line: ``-i <project> -a <1..4> [-o <dir> -c <dir>/cache] --app-name
+        """The 3.0.x command line: ``-i <project> -a <1..4> [-o <dir> -c <dir>/cache -v] --app-name
         <project.name> [-t <file>]...``. The application name is what the analyzer stamps into every
-        ``can://java/<app>/...`` id; without ``-o`` the analyzer prints the JSON to stdout."""
+        ``can://java/<app>/...`` id; without ``-o`` the analyzer prints the JSON to stdout.
+
+        ``-v`` ("print logs to console") rides along with ``-o`` because the analyzer's log is the
+        only place it declares that a capability it was asked for did not run (#341) — and only
+        with ``-o``, since without it the payload occupies the same stdout the log would.
+        """
         if self.project_dir is None:
             raise CodeanalyzerExecutionException("Cannot run codeanalyzer-java: no project directory.")
         args = self._get_codeanalyzer_exec()
         project = Path(self.project_dir)
         args += ["-i", str(project), "-a", str(analysis_level)]
         if output_dir is not None:
-            args += ["-o", str(output_dir), "-c", str(output_dir / "cache")]
+            args += ["-o", str(output_dir), "-c", str(output_dir / "cache"), "-v"]
         args += ["--app-name", project.name]
         for tf in self.target_files or []:
             args += ["-t", str(tf).strip()]
@@ -150,17 +224,43 @@ class JCodeanalyzer(JavaAnalysisBackend):
 
         output_dir = Path(self.analysis_json_path)
         analysis_json_file = output_dir / "analysis.json"
+        verdict_file = output_dir / VERDICT_FILE
         needs_run = self.eager_analysis or bool(self.target_files) or not self.check_exisiting_analysis_file_level(analysis_json_file, analysis_level)
         if needs_run:
             args = self._argv(analysis_level, output_dir)
             try:
                 logger.info(f"Running codeanalyzer-java: {' '.join(args)}")
-                subprocess.run(args, capture_output=True, text=True, check=True)
+                console_out: CompletedProcess[str] = subprocess.run(args, capture_output=True, text=True, check=True)
                 if not analysis_json_file.exists():
                     raise CodeanalyzerExecutionException("codeanalyzer-java did not generate analysis.json.")
             except Exception as e:  # noqa: BLE001
                 raise CodeanalyzerExecutionException(str(e)) from e
+            # Persisted beside the payload, because the point of the cache is that the next run does
+            # not invoke the analyzer — and a cached payload has no log to read the verdict off.
+            self.analyzer_diagnostics = _degradations(console_out.stdout)
+            verdict_file.write_text(json.dumps([d.model_dump() for d in self.analyzer_diagnostics]), encoding="utf-8")
+        else:
+            self.analyzer_diagnostics = _recorded_verdict(verdict_file)
         return JAnalysis.model_validate_json(analysis_json_file.read_text(encoding="utf-8"))
+
+    def _report_analyzer_diagnostics(self, analysis_level: int) -> None:
+        """Say, once per analysis and at ``WARNING``, what the analyzer said about its own run — or
+        that nothing is recorded, which is *unknown* and never "fine".
+
+        Never raises. A declared-only call graph is still the call graph, and every caller content
+        with that answer keeps working; the caller who is not needs to be told, not stopped.
+
+        Silent below the call graph: nothing the analyzer can degrade runs at ``-a 1``, so a
+        verdict-less symbol table is not an unknown worth a warning.
+        """
+        if analysis_level < analyzer_level("call_graph"):
+            return
+        level_name = LEVEL_NAMES[analysis_level]
+        if self.analyzer_diagnostics is None:
+            logger.warning(f"codeanalyzer-java recorded no degradation verdict for this analysis: whether analysis_level={level_name} was fully computed is unknown")
+            return
+        for diagnostic in self.analyzer_diagnostics:
+            logger.warning(f"codeanalyzer-java did not fully compute analysis_level={level_name}: {diagnostic.message}")
 
     # -----[ indexing ]-----
     def _index(self) -> None:
