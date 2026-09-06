@@ -111,6 +111,11 @@ class JCodeanalyzer(JavaAnalysisBackend):
         # analysis_json_path IS the java cache subdir (cache_subdir(cache_dir, project, "java"));
         # fall back to the same helper in source/pipe mode where it is None.
         java_cache = Path(self.analysis_json_path) if self.analysis_json_path else cache_subdir(None, self.project_dir, "java")
+        if java_cache is None:
+            raise CodeanalyzerExecutionException(
+                "Cannot resolve a JDK cache directory: no cache directory and no project directory "
+                "-- single-file source mode cannot host a JDK (unsupported, see #256)."
+            )
         java_home = ensure_jdk(java_cache)
         # ScopeUtils reads the JAVA_HOME env var (not java.home); child procs inherit os.environ.
         os.environ["JAVA_HOME"] = str(java_home)
