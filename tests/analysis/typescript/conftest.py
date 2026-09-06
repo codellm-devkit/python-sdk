@@ -58,6 +58,6 @@ def typescript_application() -> Path:
 @pytest.fixture(scope="session")
 def typescript_analysis_json() -> str:
     """The pre-computed analysis.json contents (as a JSON string) for the sample TS app."""
-    path = _repo_root() / _testing_cfg()["sample-typescript-analysis-json"] / "slim" / "analysis.json"
+    path = _repo_root() / _testing_cfg()["sample-typescript-analysis-json"] / "v2" / "a4" / "analysis.json"
     with open(path, encoding="utf-8") as f:
         return json.dumps(json.load(f))
