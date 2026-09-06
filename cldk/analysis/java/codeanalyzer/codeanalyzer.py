@@ -13,82 +13,88 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 ################################################################################
+
+"""Java Codeanalyzer backend.
+
+Subprocess wrapper around the bundled ``codeanalyzer-java`` jar (pinned in ``pyproject.toml``
+under ``[tool.backend-versions]``), run on a JDK with ``jmods`` that :func:`ensure_jdk` provisions.
+Reads the schema-v2 ``analysis.json`` envelope (:class:`JAnalysis`), keeps its ``application`` as
+the queried :class:`JApplication`, and owns all query/indexing logic; the :class:`JavaAnalysis`
+facade is a thin delegating shell over it.
+"""
+
+from __future__ import annotations
+
 import json
 import logging
 import os
-import re
-import shlex
 import subprocess
-from itertools import chain, groupby
 from pathlib import Path
 from subprocess import CompletedProcess
-from typing import Dict, List, Tuple
-from typing import Union
+from typing import Dict, Iterable, List, Tuple, Union
 
 import networkx as nx
 
-from cldk.analysis import AnalysisLevel
-from cldk.analysis.java.backend import JavaAnalysisBackend
-from cldk.analysis.commons.treesitter import TreesitterJava
-from cldk.models.java import JGraphEdges
-from cldk.models.java.enums import CRUDOperationType
-from cldk.models.java.models import JApplication, JCRUDOperation, JCallable, JCallableParameter, JComment, JField, JMethodDetail, JType, JCompilationUnit, JGraphEdgesST
-from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
-from cldk.analysis.java.codeanalyzer._jdk import ensure_jdk
 from cldk.analysis.commons.backend_config import cache_subdir
+from cldk.analysis.commons.levels import analyzer_level
+from cldk.analysis.commons.treesitter import TreesitterJava
+from cldk.analysis.java.backend import CRUD_UNAVAILABLE, CRUDRow, JavaAnalysisBackend
+from cldk.analysis.java.codeanalyzer._jdk import ensure_jdk
+from cldk.models.java import JGraphEdges
+from cldk.models.java.models import JAnalysis, JApplication, JCallable, JCallableParameter, JCallSite, JComment, JCompilationUnit, JField, JMethodDetail, JType
+from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
+from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 
 logger = logging.getLogger(__name__)
 
 
 class JCodeanalyzer(JavaAnalysisBackend):
-    """A class for building the application view of a Java application using Codeanalyzer.
+    """Build and query the application view of a Java project by invoking codeanalyzer-java.
 
     Args:
-        project_dir (str or Path): The path to the root of the Java project.
-        source_code (str, optional): The source code of a single Java file to analyze. Defaults to None.
-        analysis_json_path (str or Path, optional): The path to save the intermediate code analysis outputs.
-            If None, the analysis will be read from the pipe.
-        analysis_level (str): The level of analysis ('symbol_table' or 'call_graph').
-        eager_analysis (bool): If True, the analysis will be performed every time the object is created.
+        project_dir: Path to the root of the Java project.
+        analysis_json_path: Directory to persist ``analysis.json`` (the language-keyed cache dir,
+            ``<cache>/java``). If None, the envelope is read from the subprocess stdout pipe.
+        analysis_level: Any :class:`~cldk.analysis.AnalysisLevel` (or its name); sent to the
+            analyzer as ``-a 1..4`` — the backend requests what the caller asked for.
+        eager_analysis: If True, re-run the analyzer even if a compatible ``analysis.json`` is cached.
+        target_files: Restrict analysis to these files (``-t``); always re-runs.
+
+    Attributes:
+        analysis: The whole ``analysis.json`` envelope — ``schema_version``, ``max_level``,
+            ``analyzer.version`` — for callers that need to know what produced the view.
+        application: ``analysis.application``, the queried view.
     """
 
     def __init__(
         self,
-        project_dir: Union[str, Path],
-        source_code: str | None,
+        project_dir: Union[str, Path, None],
         analysis_json_path: Union[str, Path, None],
         analysis_level: str,
         eager_analysis: bool,
         target_files: List[str] | None,
     ) -> None:
         self.project_dir = project_dir
-        self.source_code = source_code
         self.analysis_json_path = analysis_json_path
-        self.eager_analysis = eager_analysis
         self.analysis_level = analysis_level
+        self.eager_analysis = eager_analysis
         self.target_files = target_files
-        if self.source_code is None:
-            self.application = self._init_codeanalyzer(analysis_level=1 if analysis_level == AnalysisLevel.symbol_table else 2)
-        else:
-            self.application = self._codeanalyzer_single_file()
-        # Attributes related the Java code analysis...
-        if analysis_level == AnalysisLevel.call_graph:
-            self.call_graph: nx.DiGraph = self._generate_call_graph(using_symbol_table=False)
-        else:
-            self.call_graph: nx.DiGraph | None = None
+        self.analysis: JAnalysis = self._init_codeanalyzer(analysis_level=analyzer_level(analysis_level))
+        self.application: JApplication = self.analysis.application
+        self._call_graph: nx.DiGraph | None = None
+        self._index()
 
-    def _get_application(self) -> JApplication:
-        """Should return  the application view of the Java code.
-
-        Returns:
-            JApplication: The application view of the Java code.
-        """
-        if self.application is None:
-            self.application = self._init_codeanalyzer()
-        return self.application
-
+    # -----[ driving the analyzer ]-----
     def _locate_jar(self) -> Path:
-        """The bundled codeanalyzer jar (placed under ``codeanalyzer/jar/`` at build time)."""
+        """The codeanalyzer jar: ``$CLDK_CODEANALYZER_JAVA_JAR`` when set (a test/dev seam — the
+        e2e runs a release jar that is not committed), else the one bundled under
+        ``codeanalyzer/jar/`` at build time."""
+        override = os.environ.get("CLDK_CODEANALYZER_JAVA_JAR")
+        if override:
+            jar = Path(override)
+            if not jar.is_file():
+                raise CodeanalyzerExecutionException(f"CLDK_CODEANALYZER_JAVA_JAR={override!r} is not a file")
+            return jar
         jar_dir = Path(__file__).resolve().parent / "jar"
         jar = next(iter(sorted(jar_dir.glob("codeanalyzer*.jar"))), None)
         if jar is None:
@@ -96,1056 +102,428 @@ class JCodeanalyzer(JavaAnalysisBackend):
         return jar
 
     def _get_codeanalyzer_exec(self) -> List[str]:
-        """Return the command that runs codeanalyzer.jar on a bundled-fidelity JVM.
+        """``[<jdk>/bin/java, -jar, <codeanalyzer.jar>]`` on a JDK with ``jmods``.
 
-        Resolves (and on first use downloads + caches) a Temurin JDK with ``jmods``
-        under the backend's existing java cache dir (``<cache_dir>/java/jdk/``;
-        ``cache_dir`` defaults to ``<project>/.codeanalyzer``) and runs the bundled
-        jar with it. ``JAVA_HOME`` is exported so the analyzer's WALA scope (call
-        graph / ``-a 2``) can read ``$JAVA_HOME/jmods``. Running on a real HotSpot JVM
-        gives full analysis fidelity (unlike the GraalVM native image).
-
-        Returns:
-            List[str]: ``[<jdk>/bin/java, -jar, <codeanalyzer.jar>]``.
+        Resolves (and on first use downloads + caches) a Temurin JDK under the backend's java cache
+        dir (``analysis_json_path``, else ``<project>/.codeanalyzer/java``). ``JAVA_HOME`` is
+        exported so the analyzer's WALA scope can read ``$JAVA_HOME/jmods``.
         """
-        # analysis_json_path IS the java cache subdir (cache_subdir(cache_dir, project, "java"));
-        # fall back to the same helper in source/pipe mode where it is None.
         java_cache = Path(self.analysis_json_path) if self.analysis_json_path else cache_subdir(None, self.project_dir, "java")
         if java_cache is None:
-            raise CodeanalyzerExecutionException(
-                "Cannot resolve a JDK cache directory: no cache directory and no project directory "
-                "-- single-file source mode cannot host a JDK (unsupported, see #256)."
-            )
+            raise CodeanalyzerExecutionException("Cannot resolve a JDK cache directory: no cache directory and no project directory.")
         java_home = ensure_jdk(java_cache)
         # ScopeUtils reads the JAVA_HOME env var (not java.home); child procs inherit os.environ.
         os.environ["JAVA_HOME"] = str(java_home)
         java_bin = java_home / "bin" / ("java.exe" if os.name == "nt" else "java")
         return [str(java_bin), "-jar", str(self._locate_jar())]
 
-    @staticmethod
-    def _init_japplication(data: str) -> JApplication:
-        """Should return JApplication giving the stringified JSON as input.
-        Returns
-        -------
-        JApplication
-            The application view of the Java code with the analysis results.
-        """
-        # from ipdb import set_trace
-
-        # set_trace()
-        return JApplication(**json.loads(data))
+    def _argv(self, analysis_level: int, output_dir: Path | None) -> List[str]:
+        """The 3.0.1 command line: ``-i <project> -a <1..4> [-o <dir> -c <dir>/cache] --app-name
+        <project.name> [-t <file>]...``. The application name is what the analyzer stamps into every
+        ``can://java/<app>/...`` id; without ``-o`` the analyzer prints the JSON to stdout."""
+        args = self._get_codeanalyzer_exec()  # first: it is what refuses a run with no cache dir and no project dir
+        project = Path(self.project_dir)
+        args += ["-i", str(project), "-a", str(analysis_level)]
+        if output_dir is not None:
+            args += ["-o", str(output_dir), "-c", str(output_dir / "cache")]
+        args += ["--app-name", project.name]
+        for tf in self.target_files or []:
+            args += ["-t", str(tf).strip()]
+        return args
 
     @staticmethod
     def check_exisiting_analysis_file_level(analysis_json_path_file: Path, analysis_level: int) -> bool:
-        """Validate whether a cached analysis file is compatible with the current model.
+        """Whether a cached ``analysis.json`` can serve a request at ``analysis_level``.
 
-        Args:
-            analysis_json_path_file (Path): Path to the cached ``analysis.json`` file.
-            analysis_level (int): Requested analysis level (1=symbol table, 2=call graph).
-
-        Returns:
-            bool: True if the cached file is compatible; otherwise False.
+        ``False`` (re-run) when the file is missing, unparsable, or was computed at a lower
+        ``max_level`` than requested. A file without ``schema_version`` is a pre-v2 (2.x) artifact
+        and is refused outright (J-9): the v2 models cannot read it and a silent re-run would hide
+        that the cache directory holds a stale generation.
         """
-        analysis_file_compatible = True
         if not analysis_json_path_file.exists():
-            analysis_file_compatible = False
-        else:
-            try:
-                with open(analysis_json_path_file) as f:
-                    data = json.load(f)
-                    if analysis_level == 2 and "call_graph" not in data:
-                        analysis_file_compatible = False
-                    elif analysis_level == 1 and "symbol_table" not in data:
-                        analysis_file_compatible = False
-            except (json.JSONDecodeError, OSError):
-                analysis_file_compatible = False
-        return analysis_file_compatible
-
-    def _init_codeanalyzer(self, analysis_level=1) -> JApplication:
-        """Should initialize the Codeanalyzer.
-
-        Args:
-            analysis_level (int): The level of analysis to be performed (1 for symbol table, 2 for call graph).
-
-        Returns:
-            JApplication: The application view of the Java code with the analysis results.
-
-        Raises:
-            CodeanalyzerExecutionException: If there is an error running Codeanalyzer.
-        """
-        codeanalyzer_exec = self._get_codeanalyzer_exec()
-        codeanalyzer_args = ""
-        if self.analysis_json_path is None:
-            logger.info("Reading analysis from the pipe.")
-            # If target file is provided, the input is merged into a single string and passed to codeanalyzer
-            if self.target_files:
-                target_file_options = " -t ".join([s.strip() for s in self.target_files])
-                codeanalyzer_args = codeanalyzer_exec + shlex.split(f"-i {Path(self.project_dir)} --analysis-level={analysis_level} -t {target_file_options}")
-            else:
-                codeanalyzer_args = codeanalyzer_exec + shlex.split(f"-i {Path(self.project_dir)} --analysis-level={analysis_level}")
-            try:
-                logger.info(f"Running codeanalyzer: {' '.join(codeanalyzer_args)}")
-                console_out: CompletedProcess[str] = subprocess.run(
-                    codeanalyzer_args,
-                    capture_output=True,
-                    text=True,
-                    check=True,
-                )
-                return self._init_japplication(console_out.stdout)
-            except Exception as e:
-                raise CodeanalyzerExecutionException(str(e)) from e
-        else:
-            # Check if the code analyzer needs to be run
-            is_run_code_analyzer = False
-            analysis_json_path_file = Path(self.analysis_json_path).joinpath("analysis.json")
-            # If target file is provided, the input is merged into a single string and passed to codeanalyzer
-            if self.target_files:
-                target_file_options = " -t ".join([s.strip() for s in self.target_files])
-                codeanalyzer_args = codeanalyzer_exec + shlex.split(
-                    f"-i {Path(self.project_dir)} --analysis-level={analysis_level}" f" -o {self.analysis_json_path} -t {target_file_options}"
-                )
-                is_run_code_analyzer = True
-            else:
-                if not self.check_exisiting_analysis_file_level(analysis_json_path_file, analysis_level) or self.eager_analysis:
-                    # If the analysis file does not exist, we'll run the analysis. Alternately, if the eager_analysis
-                    # flag is set, we'll run the analysis every time the object is created. This will happen regradless
-                    # of the existence of the analysis file.
-                    # Create the executable command for codeanalyzer.
-                    codeanalyzer_args = codeanalyzer_exec + shlex.split(f"-i {Path(self.project_dir)} --analysis-level={analysis_level} -o {self.analysis_json_path} -v")
-                    is_run_code_analyzer = True
-
-            if is_run_code_analyzer:
-                try:
-                    logger.info(f"Running codeanalyzer subprocess with args {codeanalyzer_args}")
-                    subprocess.run(
-                        codeanalyzer_args,
-                        capture_output=True,
-                        text=True,
-                        check=True,
-                    )
-                    if not analysis_json_path_file.exists():
-                        raise CodeanalyzerExecutionException("Codeanalyzer did not generate the analysis file.")
-
-                except Exception as e:
-                    raise CodeanalyzerExecutionException(str(e)) from e
-            with open(analysis_json_path_file) as f:
-                data = json.load(f)
-                return self._init_japplication(json.dumps(data))
-
-    def _codeanalyzer_single_file(self) -> JApplication:
-        """Invokes codeanalyzer in a single file mode.
-
-        Returns:
-            JApplication: The application view of the Java code with the analysis results.
-        """
-        codeanalyzer_exec = self._get_codeanalyzer_exec()
-        codeanalyzer_args = ["--source-analysis", self.source_code]
-        codeanalyzer_cmd = codeanalyzer_exec + codeanalyzer_args
+            return False
         try:
-            logger.info(f"Running {' '.join(codeanalyzer_cmd)}")
-            console_out: CompletedProcess[str] = subprocess.run(codeanalyzer_cmd, capture_output=True, text=True, check=True)
-            if console_out.returncode != 0:
-                raise CodeanalyzerExecutionException(console_out.stderr)
-            return self._init_japplication(console_out.stdout)
-        except Exception as e:
-            raise CodeanalyzerExecutionException(str(e)) from e
+            data = json.loads(analysis_json_path_file.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return False
+        if not isinstance(data, dict):
+            return False
+        if "schema_version" not in data:
+            raise CodeanalyzerExecutionException(f"cached analysis.json at {analysis_json_path_file} predates schema v2 (no schema_version); delete it or pass eager_analysis=True")
+        return int(data.get("max_level", 0)) >= analysis_level
+
+    def _init_codeanalyzer(self, analysis_level: int) -> JAnalysis:
+        """Run the analyzer (or reuse a compatible cache) and return the validated envelope."""
+        if self.analysis_json_path is None:
+            args = self._argv(analysis_level, None)
+            try:
+                logger.info(f"Running codeanalyzer-java: {' '.join(args)}")
+                console_out: CompletedProcess[str] = subprocess.run(args, capture_output=True, text=True, check=True)
+                return JAnalysis.model_validate_json(console_out.stdout)
+            except Exception as e:  # noqa: BLE001
+                raise CodeanalyzerExecutionException(str(e)) from e
+
+        output_dir = Path(self.analysis_json_path)
+        analysis_json_file = output_dir / "analysis.json"
+        needs_run = self.eager_analysis or bool(self.target_files) or not self.check_exisiting_analysis_file_level(analysis_json_file, analysis_level)
+        if needs_run:
+            args = self._argv(analysis_level, output_dir)
+            try:
+                logger.info(f"Running codeanalyzer-java: {' '.join(args)}")
+                subprocess.run(args, capture_output=True, text=True, check=True)
+                if not analysis_json_file.exists():
+                    raise CodeanalyzerExecutionException("codeanalyzer-java did not generate analysis.json.")
+            except Exception as e:  # noqa: BLE001
+                raise CodeanalyzerExecutionException(str(e)) from e
+        return JAnalysis.model_validate_json(analysis_json_file.read_text(encoding="utf-8"))
+
+    # -----[ indexing ]-----
+    def _index(self) -> None:
+        """Flatten the containment tree once: every type (top-level, nested, local/anonymous) by
+        its source-spelled qualified name, its file, and every callable by its ``can://`` id — the
+        join that turns a wire call-graph endpoint into the ``"<type fqn>.<signature>"`` node key."""
+        self._types: Dict[str, JType] = {}
+        self._file_of: Dict[str, str] = {}
+        self._callables: Dict[str, Tuple[JType, JCallable]] = {}
+        for path, unit in self.application.symbol_table.items():
+            for t in unit.types.values():
+                self._add_type(t, path)
+
+    def _add_type(self, t: JType, path: str) -> None:
+        name = t.qualified_name
+        if name in self._types:
+            # Two declarations spelling the same qualified name would make the node key ambiguous;
+            # surfaced rather than letting the second silently shadow the first.
+            raise CodeanalyzerExecutionException(f"type qualified name {name!r} is declared twice: {self._types[name].id!r} and {t.id!r}")
+        self._types[name] = t
+        self._file_of[name] = path
+        for c in t.callables.values():
+            self._callables[c.id] = (t, c)
+            for lt in c.types.values():
+                self._add_type(lt, path)
+        for nt in t.types.values():
+            self._add_type(nt, path)
+
+    @staticmethod
+    def _detail(klass: str, c: JCallable) -> JMethodDetail:
+        return JMethodDetail(method_declaration=c.declaration, klass=klass, method=c)
+
+    def _node_of(self, node_id: str) -> Tuple[str, JMethodDetail]:
+        """The (node key, method detail) a call-graph endpoint id resolves to. Every endpoint the
+        analyzer emits is homed on the tree; one that is not is the analyzer's defect, surfaced
+        rather than skipped or keyed by a raw id."""
+        try:
+            t, c = self._callables[node_id]
+        except KeyError:
+            raise CodeanalyzerExecutionException(
+                f"call-graph endpoint {node_id!r} is not a callable of application {self.application.id!r}: " f"codeanalyzer-java {self.analysis.analyzer.version} emitted an unhomed endpoint"
+            ) from None
+        return f"{t.qualified_name}.{c.signature}", self._detail(t.qualified_name, c)
+
+    def _is_external(self, node_id: str) -> bool:
+        """An ``@external/…`` endpoint (a call target outside the project). 3a keeps the 1.x
+        callable-only graph and drops edges to them; ``get_external_symbols`` arrives in 3b."""
+        return "@external/" in node_id or node_id in (self.application.external_symbols or {})
+
+    @staticmethod
+    def _calling_lines(tsu: TreesitterJava, source: JCallable, target: JCallable) -> List[int]:
+        return tsu.get_calling_lines(source.code, target.signature) if source.code else []
+
+    # -----[ application / whole-program ]-----
+    def get_application_view(self) -> JApplication:
+        return self.application
 
     def get_symbol_table(self) -> Dict[str, JCompilationUnit]:
-        """Should return  the symbol table of the Java code.
-
-        Returns:
-            Dict[str, JCompilationUnit]: The symbol table of the Java code.
-        """
-        if self.application is None:
-            self.application = self._init_codeanalyzer()
         return self.application.symbol_table
 
-    def get_application_view(self) -> JApplication:
-        """Should return  the application view of the Java code.
-
-        Returns:
-            JApplication: The application view of the Java code.
-        """
-        if self.source_code:
-            # This branch is triggered when a single file is being analyzed.
-            self.application = self._codeanalyzer_single_file()
-            return self.application
-        else:
-            if self.application is None:
-                self.application = self._init_codeanalyzer()
-            return self.application
-
-    def get_system_dependency_graph(self) -> list[JGraphEdges]:
-        """Runs the codeanalyzer to get the system dependency graph.
-
-        Returns:
-            list[JGraphEdges]: The system dependency graph.
-        """
-        if self.application.system_dependency_graph is None or self.application.call_graph is None:
-            self.application = self._init_codeanalyzer(analysis_level=2)
-
-        logger.warning("System dependency graph is not yet implemented. Returning the call graph instead.")
-        return self.application.call_graph
-
-    def _generate_call_graph(self, using_symbol_table) -> nx.DiGraph:
-        """Generates the call graph of the Java code.
-
-        Args:
-            using_symbol_table (bool): Whether to use the symbol table for generating the call graph.
-
-        Returns:
-            nx.DiGraph: The call graph of the Java code.
-        """
-        cg = nx.DiGraph()
-        if using_symbol_table:
-            NotImplementedError("Call graph generation using symbol table is not implemented yet.")
-        else:
-            sdg = self.get_system_dependency_graph()
-            tsu = TreesitterJava()
-            edge_list = [
-                (
-                    (jge.source.method.signature, jge.source.klass),
-                    (jge.target.method.signature, jge.target.klass),
-                    {
-                        "type": jge.type,
-                        "weight": jge.weight,
-                        "calling_lines": (
-                            tsu.get_calling_lines(jge.source.method.code, jge.target.method.signature)
-                            if not jge.source.method.is_implicit or not jge.target.method.is_implicit
-                            else []
-                        ),
-                    },
-                )
-                for jge in sdg
-                if jge.type == "CALL_DEP"  # or jge.type == "CONTROL_DEP"
-            ]
-            for jge in sdg:
-                cg.add_node(
-                    (jge.source.method.signature, jge.source.klass),
-                    method_detail=jge.source,
-                )
-                cg.add_node(
-                    (jge.target.method.signature, jge.target.klass),
-                    method_detail=jge.target,
-                )
-            cg.add_edges_from(edge_list)
-        return cg
-
-    def get_class_hierarchy(self) -> nx.DiGraph:
-        """Should return  the class hierarchy of the Java code.
-
-        Returns:
-            nx.DiGraph: The class hierarchy of the Java code.
-        """
-
-    def get_call_graph(self) -> nx.DiGraph:
-        """Should return  the call graph of the Java code.
-
-        Returns:
-            nx.DiGraph: The call graph of the Java code.
-        """
-        if self.analysis_level == "symbol_table":
-            self.call_graph = self._generate_call_graph(using_symbol_table=True)
-        if self.call_graph is None:
-            self.call_graph = self._generate_call_graph(using_symbol_table=False)
-        return self.call_graph
-
-    def get_call_graph_json(self) -> str:
-        """Get call graph in serialized json format.
-
-        Returns:
-            str: Call graph in json.
-        """
-        callgraph_list = []
-        edges = list(self.call_graph.edges.data("calling_lines"))
-        for edge in edges:
-            callgraph_dict = {}
-            callgraph_dict["source_method_signature"] = edge[0][0]
-            callgraph_dict["source_method_body"] = self.call_graph.nodes[edge[0]]["method_detail"].method.code
-            callgraph_dict["source_class"] = edge[0][1]
-            callgraph_dict["target_method_signature"] = edge[1][0]
-            callgraph_dict["target_method_body"] = self.call_graph.nodes[edge[1]]["method_detail"].method.code
-            callgraph_dict["target_class"] = edge[1][1]
-            callgraph_dict["calling_lines"] = edge[2]
-            callgraph_list.append(callgraph_dict)
-        return json.dumps(callgraph_list)
-
-    def get_all_callers(self, target_class_name: str, target_method_signature: str, using_symbol_table: bool) -> Dict:
-        """Get all the caller details for a given Java method.
-
-        Args:
-            target_class_name (str): The qualified class name of the target method.
-            target_method_signature (str): The signature of the target method.
-            using_symbol_table (bool): Whether to use the symbol table to generate the call graph.
-
-        Returns:
-            Dict: A dictionary containing caller details.
-        """
-
-        caller_detail_dict = {}
-        call_graph = None
-        if using_symbol_table:
-            call_graph = self.__call_graph_using_symbol_table(qualified_class_name=target_class_name, method_signature=target_method_signature, is_target_method=True)
-        else:
-            call_graph = self.call_graph
-        if (target_method_signature, target_class_name) not in call_graph.nodes():
-            return caller_detail_dict
-
-        in_edge_view = call_graph.in_edges(
-            nbunch=(
-                target_method_signature,
-                target_class_name,
-            ),
-            data=True,
-        )
-        caller_detail_dict["caller_details"] = []
-        caller_detail_dict["target_method"] = call_graph.nodes[(target_method_signature, target_class_name)]["method_detail"]
-
-        for source, target, data in in_edge_view:
-            cm = {"caller_method": call_graph.nodes[source]["method_detail"], "calling_lines": data["calling_lines"]}
-            caller_detail_dict["caller_details"].append(cm)
-        return caller_detail_dict
-
-    def get_all_callees(self, source_class_name: str, source_method_signature: str, using_symbol_table: bool) -> Dict:
-        """Get all the callee details for a given Java method.
-
-        Args:
-            source_class_name (str): The qualified class name of the source method.
-            source_method_signature (str): The signature of the source method.
-            using_symbol_table (bool): Whether to use the symbol table to generate the call graph.
-
-        Returns:
-            Dict: A dictionary containing callee details.
-        """
-        callee_detail_dict = {}
-        call_graph = None
-        if using_symbol_table:
-            call_graph = self.__call_graph_using_symbol_table(qualified_class_name=source_class_name, method_signature=source_method_signature)
-        else:
-            call_graph = self.call_graph
-        if (source_method_signature, source_class_name) not in call_graph.nodes():
-            return callee_detail_dict
-
-        out_edge_view = call_graph.out_edges(nbunch=(source_method_signature, source_class_name), data=True)
-
-        callee_detail_dict["callee_details"] = []
-        callee_detail_dict["source_method"] = call_graph.nodes[(source_method_signature, source_class_name)]["method_detail"]
-        for source, target, data in out_edge_view:
-            cm = {"callee_method": call_graph.nodes[target]["method_detail"]}
-            cm["calling_lines"] = data["calling_lines"]
-            callee_detail_dict["callee_details"].append(cm)
-        return callee_detail_dict
-
-    def get_all_methods_in_application(self) -> Dict[str, Dict[str, JCallable]]:
-        """Should return  a dictionary of all methods in the Java code with qualified class name as the key
-            and a dictionary of methods in that class as the value.
-
-        Returns:
-            Dict[str, Dict[str, JCallable]]: A dictionary of dictionaries of all methods in the Java code.
-        """
-
-        class_method_dict = {}
-        class_dict = self.get_all_classes()
-        for k, v in class_dict.items():
-            class_method_dict[k] = v.callable_declarations
-        return class_method_dict
-
-    def get_all_classes(self) -> Dict[str, JType]:
-        """Should return  a dictionary of all classes in the Java code.
-
-        Returns:
-            Dict[str, JType]: A dictionary of all classes in the Java code, with qualified class names as keys.
-        """
-
-        class_dict = {}
-        symtab = self.get_symbol_table()
-        for v in symtab.values():
-            class_dict.update(v.type_declarations)
-        return class_dict
-
-    def get_class(self, qualified_class_name) -> JType | None:
-        """Should return  a class given the qualified class name.
-
-        Args:
-            qualified_class_name (str): The qualified name of the class.
-
-        Returns:
-            JType | None: A class for the given qualified class name, or None if not found.
-        """
-        symtab = self.get_symbol_table()
-        for _, v in symtab.items():
-            if qualified_class_name in v.type_declarations.keys():
-                return v.type_declarations.get(qualified_class_name)
-        return None
-
-    def get_method(self, qualified_class_name, method_signature) -> JCallable | None:
-        """Should return  a method given the qualified method name.
-
-        Args:
-            qualified_class_name (str): The qualified name of the class.
-            method_signature (str): The signature of the method.
-
-        Returns:
-            JCallable | None: A method for the given qualified method name, or None if not found.
-        """
-        symtab = self.get_symbol_table()
-        for v in symtab.values():
-            if qualified_class_name in v.type_declarations.keys():
-                ci = v.type_declarations[qualified_class_name]
-                for cd in ci.callable_declarations.keys():
-                    if cd == method_signature:
-                        return ci.callable_declarations[cd]
-        return None
-
-    def get_method_parameters(self, qualified_class_name, method_signature) -> List[JCallableParameter]:
-        """Should return  a dictionary of method parameters given the qualified class name and method signature.
-
-        Args:
-            qualified_class_name (str): The qualified name of the class.
-            method_signature (str): The signature of the method.
-
-        Returns:
-            List[JCallableParameter]: The method parameters for the given qualified class name and method
-            signature. Empty list if the method is not found.
-        """
-        method = self.get_method(qualified_class_name, method_signature)
-        return method.parameters if method is not None else []
-
-    def get_parameters_from_callable(self, callable: JCallable) -> List[JCallableParameter]:
-        """Should return  a dictionary of method parameters given the callable.
-
-        Args:
-            callable (JCallable): The callable object.
-
-        Returns:
-            Dict[str, str]: A dictionary of method parameters for the given callable.
-        """
-        return callable.parameters
-
-    def get_java_file(self, qualified_class_name) -> str | None:
-        """Should return  java file name given the qualified class name.
-
-        Args:
-            qualified_class_name (str): The qualified name of the class.
-
-        Returns:
-            str | None: Java file name containing the given qualified class, or None if not found.
-        """
-        symtab = self.get_symbol_table()
-        for k, v in symtab.items():
-            if (qualified_class_name) in v.type_declarations.keys():
-                return k
-        return None
-
     def get_compilation_units(self) -> List[JCompilationUnit]:
-        """Get all the compilation units in the symbol table.
+        return list(self.application.symbol_table.values())
 
-        Returns:
-            List[JCompilationUnit]: A list of compilation units.
-        """
-        if self.application is None:
-            self.application = self._init_codeanalyzer()
-        return self.get_symbol_table().values()
+    def get_java_file(self, qualified_class_name: str) -> str | None:
+        return self._file_of.get(qualified_class_name)
 
     def get_java_compilation_unit(self, file_path: str) -> JCompilationUnit:
-        """Given the path of a Java source file, returns the compilation unit object from the symbol table.
-
-        Args:
-            file_path (str): Absolute path to the Java source file.
-
-        Returns:
-            JCompilationUnit: Compilation unit object for the Java source file.
-        """
-
-        if self.application is None:
-            self.application = self._init_codeanalyzer()
         return self.application.symbol_table[file_path]
 
-    def get_all_methods_in_class(self, qualified_class_name) -> Dict[str, JCallable]:
-        """Should return  a dictionary of all methods in the given class.
+    def get_system_dependency_graph(self) -> list[JGraphEdges]:
+        """The wire call graph (``JApplication.call_graph``), one :class:`JCallGraphEdge` per edge."""
+        return self.application.call_graph
 
-        Args:
-            qualified_class_name (str): The qualified name of the class.
-
-        Returns:
-            Dict[str, JCallable]: A dictionary of all methods in the given class.
-        """
-        ci = self.get_class(qualified_class_name)
-        if ci is None:
-            return {}
-        methods = {k: v for (k, v) in ci.callable_declarations.items() if v.is_constructor is False}
-        return methods
-
-    def get_all_constructors(self, qualified_class_name) -> Dict[str, JCallable]:
-        """Should return  a dictionary of all constructors of the given class.
-
-        Args:
-            qualified_class_name (str): The qualified name of the class.
-
-        Returns:
-            Dict[str, JCallable]: A dictionary of all constructors of the given class.
-        """
-        ci = self.get_class(qualified_class_name)
-        if ci is None:
-            return {}
-        constructors = {k: v for (k, v) in ci.callable_declarations.items() if v.is_constructor is True}
-        return constructors
-
-    def get_all_sub_classes(self, qualified_class_name) -> Dict[str, JType]:
-        """Should return  a dictionary of all sub-classes of the given class.
-
-        Args:
-            qualified_class_name (str): The qualified name of the class.
-
-        Returns:
-            Dict[str, JType]: A dictionary of all sub-classes of the given class, and class details.
-        """
-
-        all_classes = self.get_all_classes()
-        sub_classes = {}
-        for cls in all_classes:
-            if qualified_class_name in all_classes[cls].implements_list or qualified_class_name in all_classes[cls].extends_list:
-                sub_classes[cls] = all_classes[cls]
-        return sub_classes
-
-    def get_all_fields(self, qualified_class_name) -> List[JField]:
-        """Should return  a list of all fields of the given class.
-
-        Args:
-            qualified_class_name (str): The qualified name of the class.
-
-        Returns:
-            List[JField]: A list of all fields of the given class.
-        """
-        ci = self.get_class(qualified_class_name)
-        if ci is None:
-            logging.warning(f"Class {qualified_class_name} not found in the application view.")
-            return list()
-        return ci.field_declarations
-
-    def get_all_nested_classes(self, qualified_class_name) -> List[JType]:
-        """Should return  a list of all nested classes for the given class.
-
-        Args:
-            qualified_class_name (str): The qualified name of the class.
-
-        Returns:
-            List[JType]: A list of nested classes for the given class.
-        """
-        ci = self.get_class(qualified_class_name)
-        if ci is None:
-            logging.warning(f"Class {qualified_class_name} not found in the application view.")
-            return list()
-        nested_classes = ci.nested_type_declarations
-        return [self.get_class(c) for c in nested_classes]  # Assuming qualified nested class names
-
-    def get_extended_classes(self, qualified_class_name) -> List[str]:
-        """Should return  a list of all extended classes for the given class.
-
-        Args:
-            qualified_class_name (str): The qualified name of the class.
-
-        Returns:
-            List[str]: A list of extended classes for the given class.
-        """
-        ci = self.get_class(qualified_class_name)
-        if ci is None:
-            logging.warning(f"Class {qualified_class_name} not found in the application view.")
-            return list()
-        return ci.extends_list
-
-    def get_implemented_interfaces(self, qualified_class_name) -> List[str]:
-        """Should return  a list of all implemented interfaces for the given class.
-
-        Args:
-            qualified_class_name (str): The qualified name of the class.
-
-        Returns:
-            List[str]: A list of implemented interfaces for the given class.
-        """
-        ci = self.get_class(qualified_class_name)
-        if ci is None:
-            logging.warning(f"Class {qualified_class_name} not found in the application view.")
-            return list()
-        return ci.implements_list
-
-    def get_class_call_graph_using_symbol_table(self, qualified_class_name: str, method_signature: str | None = None) -> (List)[Tuple[JMethodDetail, JMethodDetail]]:
-        """Should return  call graph using symbol table. The analysis will not be
-        complete as symbol table has known limitation of resolving types
-        Args:
-            qualified_class_name: qualified name of the class
-            method_signature: method signature of the starting point of the call graph
-
-        Returns: List[Tuple[JMethodDetail, JMethodDetail]]
-            List of edges
-        """
-        call_graph = self.__call_graph_using_symbol_table(qualified_class_name, method_signature)
-        if method_signature is None:
-            filter_criteria = {node for node in call_graph.nodes if node[1] == qualified_class_name}
-        else:
-            filter_criteria = {node for node in call_graph.nodes if tuple(node) == (method_signature, qualified_class_name)}
-
-        graph_edges: List[Tuple[JMethodDetail, JMethodDetail]] = list()
-        for edge in call_graph.edges(nbunch=filter_criteria):
-            source: JMethodDetail = call_graph.nodes[edge[0]]["method_detail"]
-            target: JMethodDetail = call_graph.nodes[edge[1]]["method_detail"]
-            graph_edges.append((source, target))
-        return graph_edges
-
-    def __call_graph_using_symbol_table(self, qualified_class_name: str, method_signature: str, is_target_method: bool = False) -> nx.DiGraph:
-        """Should generate call graph using symbol table
-        Args:
-            qualified_class_name: qualified class name
-            method_signature: method signature
-            is_target_method: is the input method is a target method. By default, it is the source method
-
-        Returns:
-            nx.DiGraph: call graph
-        """
+    # -----[ call graph ]-----
+    def get_call_graph(self) -> nx.DiGraph:
+        """Build (and cache) the call graph keyed by ``"<type fqn>.<signature>"`` (J-1): node attrs
+        ``method_detail`` / ``kind="callable"``; edge attrs ``type="CALL_DEP"``, ``weight``,
+        ``calling_lines``. Empty below level 2 (the wire carries no ``call_graph`` there)."""
+        if self._call_graph is not None:
+            return self._call_graph
         cg = nx.DiGraph()
-        sdg = None
-        if is_target_method:
-            sdg = self.__raw_call_graph_using_symbol_table_target_method(target_class_name=qualified_class_name, target_method_signature=method_signature)
-        else:
-            sdg = self.__raw_call_graph_using_symbol_table(qualified_class_name=qualified_class_name, method_signature=method_signature)
         tsu = TreesitterJava()
-        edge_list = [
-            (
-                (jge.source.method.signature, jge.source.klass),
-                (jge.target.method.signature, jge.target.klass),
+        for edge in self.application.call_graph:
+            if self._is_external(edge.src) or self._is_external(edge.dst):
+                continue
+            src, src_detail = self._node_of(edge.src)
+            dst, dst_detail = self._node_of(edge.dst)
+            cg.add_node(src, method_detail=src_detail, kind="callable")
+            cg.add_node(dst, method_detail=dst_detail, kind="callable")
+            cg.add_edge(src, dst, type="CALL_DEP", weight=edge.weight, calling_lines=self._calling_lines(tsu, src_detail.method, dst_detail.method))
+        self._call_graph = cg
+        return cg
+
+    def get_call_graph_json(self) -> str:
+        cg = self.get_call_graph()
+        rows = []
+        for source, target, calling_lines in cg.edges.data("calling_lines"):
+            s: JMethodDetail = cg.nodes[source]["method_detail"]
+            t: JMethodDetail = cg.nodes[target]["method_detail"]
+            rows.append(
                 {
-                    "type": jge.type,
-                    "weight": jge.weight,
-                    "calling_lines": tsu.get_calling_lines(jge.source.method.code, jge.target.method.signature),
-                },
+                    "source_method_signature": s.method.signature,
+                    "source_method_body": s.method.code,
+                    "source_class": s.klass,
+                    "target_method_signature": t.method.signature,
+                    "target_method_body": t.method.code,
+                    "target_class": t.klass,
+                    "calling_lines": calling_lines,
+                }
             )
-            for jge in sdg
-        ]
-        for jge in sdg:
-            cg.add_node(
-                (jge.source.method.signature, jge.source.klass),
-                method_detail=jge.source,
-            )
-            cg.add_node(
-                (jge.target.method.signature, jge.target.klass),
-                method_detail=jge.target,
-            )
-        cg.add_edges_from(edge_list)
-        return cg
+        return json.dumps(rows)
 
-    def __raw_call_graph_using_symbol_table_target_method(self, target_class_name: str, target_method_signature: str, cg=None) -> list[JGraphEdgesST]:
-        """Generates call graph using symbol table information given the target method and target class
-        Args:
-            qualified_class_name: qualified class name
-            method_signature: source method signature
-            cg: call graph
+    def get_all_callers(self, target_class_name: str, target_method_signature: str, using_symbol_table: bool) -> Dict:
+        cg = self._symbol_table_call_graph(target_class_name, target_method_signature, is_target=True) if using_symbol_table else self.get_call_graph()
+        key = f"{target_class_name}.{target_method_signature}"
+        if key not in cg:
+            return {}
+        return {
+            "caller_details": [{"caller_method": cg.nodes[s]["method_detail"], "calling_lines": d["calling_lines"]} for s, _, d in cg.in_edges(key, data=True)],
+            "target_method": cg.nodes[key]["method_detail"],
+        }
 
-        Returns:
-            list[JGraphEdgesST]: list of call edges
-        """
-        if cg is None:
-            cg = []
-        target_method_details = self.get_method(qualified_class_name=target_class_name, method_signature=target_method_signature)
-        if target_method_details is None:
-            # The target method doesn't exist, so no edges into it can be constructed.
-            return cg
-        for class_name in self.get_all_classes():
-            for method in self.get_all_methods_in_class(qualified_class_name=class_name):
-                method_details = self.get_method(qualified_class_name=class_name, method_signature=method)
-                if method_details is None:
-                    # The symbol table momentarily disagreed with itself; skip this entry.
-                    continue
-                for call_site in method_details.call_sites:
-                    source_method_details = None
-                    source_class = ""
-                    callee_signature = ""
-                    if call_site.callee_signature != "":
-                        # pattern = r"\b(?:[a-zA-Z_][\w\.]*\.)+([a-zA-Z_][\w]*)\b|<[^>]*>"
-                        #
-                        # # Find the part within the parentheses
-                        # start = call_site.callee_signature.find("(") + 1
-                        # end = call_site.callee_signature.rfind(")")
-                        #
-                        # # Extract the elements inside the parentheses
-                        # elements = call_site.callee_signature[start:end].split(",")
-                        #
-                        # # Apply the regex to each element
-                        # simplified_elements = [re.sub(pattern, r"\1", element.strip()) for element in elements]
-                        #
-                        # # Reconstruct the string with simplified elements
-                        # callee_signature = f"{call_site.callee_signature[:start]}{', '.join(simplified_elements)}{call_site.callee_signature[end:]}"
-                        callee_signature = call_site.callee_signature
+    def get_all_callees(self, source_class_name: str, source_method_signature: str, using_symbol_table: bool) -> Dict:
+        cg = self._symbol_table_call_graph(source_class_name, source_method_signature) if using_symbol_table else self.get_call_graph()
+        key = f"{source_class_name}.{source_method_signature}"
+        if key not in cg:
+            return {}
+        return {
+            "callee_details": [{"callee_method": cg.nodes[t]["method_detail"], "calling_lines": d["calling_lines"]} for _, t, d in cg.out_edges(key, data=True)],
+            "source_method": cg.nodes[key]["method_detail"],
+        }
 
-                    if call_site.receiver_type != "":
-                        # call to any class - check if the target method exists in receiver type hierarchy
-                        if self.get_class(qualified_class_name=call_site.receiver_type):
-                            # Use hierarchy search to find the method (including inherited methods)
-                            found_method, found_class = self.__find_method_in_hierarchy(call_site.receiver_type, callee_signature)
-                            if found_method is not None and callee_signature == target_method_signature and found_class == target_class_name:
-                                source_method_details = self.get_method(method_signature=method, qualified_class_name=class_name)
-                                source_class = class_name
-                    else:
-                        # check if any method exists with the signature in the class (including inherited) even if the receiver type is blank
-                        found_method, found_class = self.__find_method_in_hierarchy(class_name, callee_signature)
-                        if found_method is not None and callee_signature == target_method_signature and found_class == target_class_name:
-                            source_method_details = self.get_method(method_signature=method, qualified_class_name=class_name)
-                            source_class = class_name
-
-                    if source_class != "" and source_method_details is not None:
-                        source: JMethodDetail
-                        target: JMethodDetail
-                        type: str
-                        weight: str
-                        call_edge = JGraphEdgesST(
-                            source=JMethodDetail(method_declaration=source_method_details.declaration, klass=source_class, method=source_method_details),
-                            target=JMethodDetail(method_declaration=target_method_details.declaration, klass=target_class_name, method=target_method_details),
-                            type="CALL_DEP",
-                            weight="1",
-                        )
-                        if call_edge not in cg:
-                            cg.append(call_edge)
-        return cg
-
-    def __find_method_in_hierarchy(self, qualified_class_name: str, method_signature: str) -> Tuple[JCallable | None, str]:
-        """Finds a method in the class hierarchy (including inherited methods).
-        
-        Ignores interface methods and only returns concrete implementations.
-
-        Args:
-            qualified_class_name (str): The qualified class name to start searching from.
-            method_signature (str): The method signature to find.
-
-        Returns:
-            Tuple[JCallable | None, str]: A tuple of (method_details, declaring_class).
-                Returns (None, "") if the method is not found.
-        """
-        # First, check if the method exists in the current class
-        klass = self.get_class(qualified_class_name=qualified_class_name)
-        method_details = self.get_method(method_signature=method_signature, qualified_class_name=qualified_class_name)
-        
-        # If found and it's not an interface, return it (concrete implementation)
-        if method_details is not None and klass is not None and not klass.is_interface:
-            return method_details, qualified_class_name
-
-        # If not found or is an interface, check parent classes (extends) first
-        # This ensures we find concrete implementations before interface methods
-        if klass is not None:
-            # Check extended classes (these are more likely to have concrete implementations)
-            for parent_class in klass.extends_list:
-                parent_method, found_class = self.__find_method_in_hierarchy(parent_class, method_signature)
-                if parent_method is not None:
-                    return parent_method, found_class
-
-            # Only check implemented interfaces if no concrete implementation was found
-            # This is a fallback for cases where only the interface method exists
-            # for interface in klass.implements_list:
-            #     interface_method, found_class = self.__find_method_in_hierarchy(interface, method_signature)
-            #     if interface_method is not None:
-            #         return interface_method, found_class
-
-        # Do not return interface methods - only concrete implementations are included in call graph
-        return None, ""
-
-    def __raw_call_graph_using_symbol_table(self, qualified_class_name: str, method_signature: str, cg=None) -> list[JGraphEdgesST]:
-        """Generates a call graph using symbol table information.
-
-        Args:
-            qualified_class_name (str): The qualified class name.
-            method_signature (str): The source method signature.
-            cg (list[JGraphEdgesST], optional): Existing call graph edges. Defaults to None.
-
-        Returns:
-            list[JGraphEdgesST]: A list of call edges.
-        """
-        if cg is None:
-            cg = []
-        source_method_details = self.get_method(qualified_class_name=qualified_class_name, method_signature=method_signature)
-        # If the provided classname and method signature combination do not exist
-        if source_method_details is None:
-            return cg
-        for call_site in source_method_details.call_sites:
-            target_method_details = None
-            target_class = ""
-            callee_signature = ""
-            if call_site.callee_signature != "":
-                # Currently the callee signature returns the fully qualified type, whereas
-                # the key for JCallable does not. The below logic converts the fully qualified signature
-                # to the desider format. Only limitation is the nested generic type.
-                # pattern = r"\b(?:[a-zA-Z_][\w\.]*\.)+([a-zA-Z_][\w]*)\b|<[^>]*>"
-                #
-                # # Find the part within the parentheses
-                # start = call_site.callee_signature.find("(") + 1
-                # end = call_site.callee_signature.rfind(")")
-                #
-                # # Extract the elements inside the parentheses
-                # elements = call_site.callee_signature[start:end].split(",")
-                #
-                # # Apply the regex to each element
-                # simplified_elements = [re.sub(pattern, r"\1", element.strip()) for element in elements]
-                #
-                # # Reconstruct the string with simplified elements
-                # callee_signature = f"{call_site.callee_signature[:start]}{', '.join(simplified_elements)}{call_site.callee_signature[end:]}"
-                callee_signature = call_site.callee_signature
-
-            if call_site.receiver_type != "":
-                # call to any class
-                if self.get_class(qualified_class_name=call_site.receiver_type):
-                    # Check for method in the receiver type and its hierarchy
-                    tmd, found_class = self.__find_method_in_hierarchy(call_site.receiver_type, callee_signature)
-                    if tmd is not None:
-                        target_method_details = tmd
-                        target_class = found_class
-            else:
-                # check if any method exists with the signature in the class (including inherited) even if the receiver type is blank
-                tmd, found_class = self.__find_method_in_hierarchy(qualified_class_name, callee_signature)
-                if tmd is not None:
-                    target_method_details = tmd
-                    target_class = found_class
-
-            if target_class != "" and target_method_details is not None:
-                source: JMethodDetail
-                target: JMethodDetail
-                type: str
-                weight: str
-                call_edge = JGraphEdgesST(
-                    source=JMethodDetail(method_declaration=source_method_details.declaration, klass=qualified_class_name, method=source_method_details),
-                    target=JMethodDetail(method_declaration=target_method_details.declaration, klass=target_class, method=target_method_details),
-                    type="CALL_DEP",
-                    weight="1",
-                )
-                if call_edge not in cg:
-                    cg.append(call_edge)
-                # cg = self.__raw_call_graph_using_symbol_table(qualified_class_name=target_class, method_signature=target_method_details.signature, cg=cg)
-        return cg
+    @staticmethod
+    def _edges_out_of(cg: nx.DiGraph, qualified_class_name: str, method_signature: str | None) -> List[Tuple[JMethodDetail, JMethodDetail]]:
+        if method_signature is None:
+            seeds = [n for n, a in cg.nodes(data=True) if a["method_detail"].klass == qualified_class_name]
+        else:
+            key = f"{qualified_class_name}.{method_signature}"
+            seeds = [key] if key in cg else []
+        return [(cg.nodes[s]["method_detail"], cg.nodes[t]["method_detail"]) for s, t in cg.edges(seeds)]
 
     def get_class_call_graph(self, qualified_class_name: str, method_name: str | None = None) -> List[Tuple[JMethodDetail, JMethodDetail]]:
-        """Generates a call graph for a given class and (optionally) filters by a given method.
+        return self._edges_out_of(self.get_call_graph(), qualified_class_name, method_name)
 
-        Args:
-            qualified_class_name (str): The qualified name of the class.
-            method_name (str, optional): The name of the method in the class.
+    def get_class_call_graph_using_symbol_table(self, qualified_class_name: str, method_signature: str | None = None) -> List[Tuple[JMethodDetail, JMethodDetail]]:
+        """Edges out of a class (or one method) resolved from its call sites through the symbol
+        table alone — incomplete by construction: only receivers the symbol table can see, only
+        concrete implementations up the ``extends`` chain."""
+        return self._edges_out_of(self._symbol_table_call_graph(qualified_class_name, method_signature), qualified_class_name, method_signature)
 
-        Returns:
-            List[Tuple[JMethodDetail, JMethodDetail]]: An edge list of the call graph
-            for the given class and method.
+    # -----[ symbol-table call graph (call sites → declarations) ]-----
+    def _symbol_table_call_graph(self, qualified_class_name: str, method_signature: str | None, is_target: bool = False) -> nx.DiGraph:
+        cg = nx.DiGraph()
+        tsu = TreesitterJava()
+        edges = self._st_edges_into(qualified_class_name, method_signature) if is_target else self._st_edges_from(qualified_class_name, method_signature)
+        for source, target in edges:
+            src, dst = f"{source.klass}.{source.method.signature}", f"{target.klass}.{target.method.signature}"
+            cg.add_node(src, method_detail=source, kind="callable")
+            cg.add_node(dst, method_detail=target, kind="callable")
+            cg.add_edge(src, dst, type="CALL_DEP", weight=1, calling_lines=self._calling_lines(tsu, source.method, target.method))
+        return cg
 
-        Notes:
-            The class name must be fully qualified, e.g., "org.example.MyClass" and not "MyClass".
-        """
-        # If the method name is not provided, we'll get the call graph for the entire class.
-
-        if method_name is None:
-            filter_criteria = {node for node in self.call_graph.nodes if node[1] == qualified_class_name}
+    def _st_edges_from(self, qualified_class_name: str, method_signature: str | None) -> Iterable[Tuple[JMethodDetail, JMethodDetail]]:
+        klass = self.get_class(qualified_class_name)
+        if klass is None:
+            return
+        if method_signature is None:
+            sources = list(klass.callables.values())
         else:
-            filter_criteria = {node for node in self.call_graph.nodes if tuple(node) == (method_name, qualified_class_name)}
+            source = self.get_method(qualified_class_name, method_signature)
+            sources = [source] if source is not None else []
+        for source in sources:
+            for call_site in source.call_sites:
+                target, target_class = self._resolve_call_site(qualified_class_name, call_site)
+                if target is not None:
+                    yield self._detail(qualified_class_name, source), self._detail(target_class, target)
 
-        graph_edges: List[Tuple[JMethodDetail, JMethodDetail]] = list()
-        for edge in self.call_graph.edges(nbunch=filter_criteria):
-            source: JMethodDetail = self.call_graph.nodes[edge[0]]["method_detail"]
-            target: JMethodDetail = self.call_graph.nodes[edge[1]]["method_detail"]
-            graph_edges.append((source, target))
+    def _st_edges_into(self, target_class_name: str, target_method_signature: str) -> Iterable[Tuple[JMethodDetail, JMethodDetail]]:
+        target = self.get_method(target_class_name, target_method_signature)
+        if target is None:
+            return
+        for owner, source in self._callables.values():
+            for call_site in source.call_sites:
+                found, found_class = self._resolve_call_site(owner.qualified_name, call_site)
+                if found is not None and found_class == target_class_name and call_site.callee_signature == target_method_signature:
+                    yield self._detail(owner.qualified_name, source), self._detail(target_class_name, target)
 
-        return graph_edges
+    def _resolve_call_site(self, owner_class_name: str, call_site: JCallSite) -> Tuple[JCallable | None, str]:
+        """The (declaration, declaring class) a call site names, or ``(None, "")``: an explicit
+        receiver type is followed only when it is a project class; an implicit receiver means the
+        owning class (and its ``extends`` chain)."""
+        if not call_site.callee_signature:
+            return None, ""
+        if call_site.receiver_type:
+            if self.get_class(call_site.receiver_type) is None:
+                return None, ""
+            return self._find_in_hierarchy(call_site.receiver_type, call_site.callee_signature)
+        return self._find_in_hierarchy(owner_class_name, call_site.callee_signature)
 
-    def remove_all_comments(self, src_code: str) -> str:
-        """Remove all comments in the source code.
+    def _find_in_hierarchy(self, qualified_class_name: str, method_signature: str) -> Tuple[JCallable | None, str]:
+        """The concrete declaration of ``method_signature`` on the class or up its ``extends``
+        chain; interface declarations are not call-graph targets and are skipped."""
+        klass = self.get_class(qualified_class_name)
+        method = self.get_method(qualified_class_name, method_signature)
+        if method is not None and klass is not None and not klass.is_interface:
+            return method, qualified_class_name
+        if klass is not None:
+            for parent in klass.extends_list:
+                found, found_class = self._find_in_hierarchy(parent, method_signature)
+                if found is not None:
+                    return found, found_class
+        return None, ""
 
-        Args:
-            src_code (str): Original source code.
+    # -----[ classes / methods / fields ]-----
+    def get_all_classes(self) -> Dict[str, JType]:
+        return dict(self._types)
 
-        Returns:
-            str: The same source code without comments.
-        """
-        raise NotImplementedError("This function is not implemented yet.")
+    def get_class(self, qualified_class_name: str) -> JType | None:
+        return self._types.get(qualified_class_name)
 
+    def get_all_methods_in_application(self) -> Dict[str, Dict[str, JCallable]]:
+        return {name: t.callable_declarations for name, t in self._types.items()}
+
+    def get_all_methods_in_class(self, qualified_class_name: str) -> Dict[str, JCallable]:
+        klass = self.get_class(qualified_class_name)
+        if klass is None:
+            return {}
+        return {sig: c for sig, c in klass.callables.items() if not c.is_constructor}
+
+    def get_all_constructors(self, qualified_class_name: str) -> Dict[str, JCallable]:
+        klass = self.get_class(qualified_class_name)
+        if klass is None:
+            return {}
+        return {sig: c for sig, c in klass.callables.items() if c.is_constructor}
+
+    def get_method(self, qualified_class_name: str, qualified_method_name: str) -> JCallable | None:
+        klass = self.get_class(qualified_class_name)
+        return klass.callables.get(qualified_method_name) if klass is not None else None
+
+    def get_method_parameters(self, qualified_class_name: str, qualified_method_name: str) -> List[JCallableParameter]:
+        method = self.get_method(qualified_class_name, qualified_method_name)
+        return method.parameters if method is not None else []
+
+    def get_all_sub_classes(self, qualified_class_name: str) -> Dict[str, JType]:
+        return {name: t for name, t in self._types.items() if qualified_class_name in t.extends_list or qualified_class_name in t.implements_list}
+
+    def get_all_fields(self, qualified_class_name: str) -> List[JField]:
+        klass = self.get_class(qualified_class_name)
+        return klass.field_declarations if klass is not None else []
+
+    def get_all_nested_classes(self, qualified_class_name: str) -> List[JType]:
+        klass = self.get_class(qualified_class_name)
+        return list(klass.types.values()) if klass is not None else []
+
+    def get_extended_classes(self, qualified_class_name: str) -> List[str]:
+        klass = self.get_class(qualified_class_name)
+        return klass.extends_list if klass is not None else []
+
+    def get_implemented_interfaces(self, qualified_class_name: str) -> List[str]:
+        klass = self.get_class(qualified_class_name)
+        return klass.implements_list if klass is not None else []
+
+    # -----[ entry points ]-----
     def get_all_entry_point_methods(self) -> Dict[str, Dict[str, JCallable]]:
-        """Should return  a dictionary of all entry point methods in the Java code.
-
-        Returns:
-            Dict[str, Dict[str, JCallable]]: A dictionary of all entry point methods in the Java code.
-        """
-        methods = chain.from_iterable(
-            ((typename, method, callable) for method, callable in methods.items() if callable.is_entrypoint) for typename, methods in self.get_all_methods_in_application().items()
-        )
-        return {typename: {method: callable for _, method, callable in group} for typename, group in groupby(methods, key=lambda x: x[0])}
+        result: Dict[str, Dict[str, JCallable]] = {}
+        for name, methods in self.get_all_methods_in_application().items():
+            entrypoints = {sig: c for sig, c in methods.items() if c.is_entrypoint}
+            if entrypoints:
+                result[name] = entrypoints
+        return result
 
     def get_all_entry_point_classes(self) -> Dict[str, JType]:
-        """Should return  a dictionary of all entry point classes in the Java code.
+        return {name: t for name, t in self._types.items() if t.is_entrypoint_class}
 
-        Returns:
-            Dict[str, JType]: A dictionary of all entry point classes in the Java code,
-            with qualified class names as keys.
-        """
+    # -----[ CRUD (J-4) ]-----
+    def get_all_crud_operations(self) -> List[CRUDRow]:
+        raise CodeanalyzerExecutionException(CRUD_UNAVAILABLE)
 
-        return {typename: klass for typename, klass in self.get_all_classes().items() if klass.is_entrypoint_class}
+    def get_all_create_operations(self) -> List[CRUDRow]:
+        raise CodeanalyzerExecutionException(CRUD_UNAVAILABLE)
 
-    def get_all_crud_operations(self) -> List[Dict[str, Union[JType, JCallable, List[JCRUDOperation]]]]:
-        """Should return  a dictionary of all CRUD operations in the source code.
+    def get_all_read_operations(self) -> List[CRUDRow]:
+        raise CodeanalyzerExecutionException(CRUD_UNAVAILABLE)
 
-        Raises:
-            NotImplementedError: Raised when we do not support this function.
+    def get_all_update_operations(self) -> List[CRUDRow]:
+        raise CodeanalyzerExecutionException(CRUD_UNAVAILABLE)
 
-        Returns:
-            Dict[str, List[str]]: A dictionary of all CRUD operations in the source code.
-        """
+    def get_all_delete_operations(self) -> List[CRUDRow]:
+        raise CodeanalyzerExecutionException(CRUD_UNAVAILABLE)
 
-        crud_operations = []
-        for class_name, class_details in self.get_all_classes().items():
-            for method_name, method_details in class_details.callable_declarations.items():
-                if len(method_details.crud_operations) > 0:
-                    crud_operations.append({class_name: class_details, method_name: method_details, "crud_operations": method_details.crud_operations})
-        return crud_operations
+    # -----[ repository artifacts — the shared Py* models, as the generic ABC promises ]-----
+    def get_artifacts(self) -> Dict[str, PyArtifact]:
+        """Every non-code artifact (see :meth:`AnalysisBackend.get_artifacts`), keyed by repo-relative
+        path as the wire keys them. ``JArtifact.text_truncated`` has no home on the shared model and
+        is not carried; read it off ``JApplication.artifacts`` when it matters."""
+        return {path: PyArtifact(**a.model_dump(exclude={"config_keys", "text_truncated"}), config_keys=[PyConfigKey(**ck.model_dump()) for ck in a.config_keys]) for path, a in self.application.artifacts.items()}
 
-    def get_all_read_operations(self) -> List[Dict[str, Union[JType, JCallable, List[JCRUDOperation]]]]:
-        """Should return  a list of all read operations in the source code.
+    def get_dependencies(self, *, direct_only: bool = False, ecosystem: str | None = None, declared_in: str | None = None) -> List[PyDependency]:
+        """Every declared dependency, optionally filtered (see :meth:`AnalysisBackend.get_dependencies`).
+        The Maven ``group`` coordinate has no home on the shared model and is not carried; read it off
+        ``JApplication.dependencies`` when ``name`` alone is ambiguous."""
+        deps = [PyDependency(**d.model_dump(exclude={"group"})) for d in self.application.dependencies]
+        if direct_only:
+            deps = [d for d in deps if d.direct]
+        if ecosystem is not None:
+            deps = [d for d in deps if d.ecosystem == ecosystem]
+        if declared_in is not None:
+            deps = [d for d in deps if d.declared_in == declared_in]
+        return deps
 
-        Raises:
-            NotImplementedError: Raised when we do not support this function.
+    def get_config_keys(self) -> Dict[str, PyConfigKey]:
+        return {ck.id: PyConfigKey(**ck.model_dump()) for a in self.application.artifacts.values() for ck in a.config_keys}
 
-        Returns:
-            List[Dict[str, Union[str, JCallable, List[CRUDOperation]]]]:: A list of all read operations in the source code.
-        """
-        crud_read_operations = []
-        for class_name, class_details in self.get_all_classes().items():
-            for method_name, method_details in class_details.callable_declarations.items():
-                if len(method_details.crud_operations) > 0:
-                    crud_read_operations.append(
-                        {
-                            class_name: class_details,
-                            method_name: method_details,
-                            "crud_operations": [crud_op for crud_op in method_details.crud_operations if crud_op.operation_type == CRUDOperationType.READ],
-                        }
-                    )
-        return crud_read_operations
+    def get_config_uses(self, key: str | None = None) -> List[PyConfigUseEdge]:
+        """Always empty: codeanalyzer-java 3.0.1 emits no code-to-config edges (there is no
+        ``config_uses`` on the Java wire), so there is nothing to filter by ``key``."""
+        return []
 
-    def get_all_create_operations(self) -> List[Dict[str, Union[JType, JCallable, List[JCRUDOperation]]]]:
-        """Should return  a list of all create operations in the source code.
+    def get_unresolved_config_reads(self) -> List[PyConfigRead]:
+        """Always empty: codeanalyzer-java 3.0.1 has no config-read detector (no ``config_reads``
+        on the Java wire)."""
+        return []
 
-        Raises:
-            NotImplementedError: Raised when we do not support this function.
-
-        Returns:
-            List[Dict[str, Union[str, JCallable, List[CRUDOperation]]]]: A list of all create operations in the source code.
-        """
-        crud_create_operations = []
-        for class_name, class_details in self.get_all_classes().items():
-            for method_name, method_details in class_details.callable_declarations.items():
-                if len(method_details.crud_operations) > 0:
-                    crud_create_operations.append(
-                        {
-                            class_name: class_details,
-                            method_name: method_details,
-                            "crud_operations": [crud_op for crud_op in method_details.crud_operations if crud_op.operation_type == CRUDOperationType.CREATE],
-                        }
-                    )
-        return crud_create_operations
-
-    def get_all_update_operations(self) -> List[Dict[str, Union[JType, JCallable, List[JCRUDOperation]]]]:
-        """Should return  a list of all update operations in the source code.
-
-        Raises:
-            NotImplementedError: Raised when we do not support this function.
-
-        Returns:
-            List[Dict[str, Union[str, JCallable, List[CRUDOperation]]]]: A list of all update operations in the source code.
-        """
-        crud_update_operations = []
-        for class_name, class_details in self.get_all_classes().items():
-            for method_name, method_details in class_details.callable_declarations.items():
-                if len(method_details.crud_operations) > 0:
-                    crud_update_operations.append(
-                        {
-                            class_name: class_details,
-                            method_name: method_details,
-                            "crud_operations": [crud_op for crud_op in method_details.crud_operations if crud_op.operation_type == CRUDOperationType.UPDATE],
-                        }
-                    )
-
-        return crud_update_operations
-
-    def get_all_delete_operations(self) -> List[Dict[str, Union[JType, JCallable, List[JCRUDOperation]]]]:
-        """Should return  a list of all delete operations in the source code.
-
-        Raises:
-            NotImplementedError: Raised when we do not support this function.
-
-        Returns:
-            List[Dict[str, Union[str, JCallable, List[CRUDOperation]]]]: A list of all delete operations in the source code.
-        """
-        crud_delete_operations = []
-        for class_name, class_details in self.get_all_classes().items():
-            for method_name, method_details in class_details.callable_declarations.items():
-                if len(method_details.crud_operations) > 0:
-                    crud_delete_operations.append(
-                        {
-                            class_name: class_details,
-                            method_name: method_details,
-                            "crud_operations": [crud_op for crud_op in method_details.crud_operations if crud_op.operation_type == CRUDOperationType.DELETE],
-                        }
-                    )
-        return crud_delete_operations
-
-    # Some APIs to process comments
+    # -----[ comments ]-----
     def get_comments_in_a_method(self, qualified_class_name: str, method_signature: str) -> List[JComment]:
-        """Get all comments in a method.
-
-        Args:
-            qualified_class_name (str): Qualified name of the class.
-            method_signature (str): Signature of the method.
-
-        Returns:
-            List[str]: List of comments in the method. Empty list if the method is not found.
-        """
-        callable = self.get_method(qualified_class_name, method_signature)
-        return callable.comments if callable is not None else []
+        method = self.get_method(qualified_class_name, method_signature)
+        return method.comments if method is not None else []
 
     def get_comments_in_a_class(self, qualified_class_name: str) -> List[JComment]:
-        """Get all comments in a class.
-
-        Args:
-            qualified_class_name (str): Qualified name of the class.
-
-        Returns:
-            List[str]: List of comments in the class. Empty list if the class is not found.
-        """
         klass = self.get_class(qualified_class_name)
         return klass.comments if klass is not None else []
 
     def get_comment_in_file(self, file_path: str) -> List[JComment]:
-        """Get all comments in a file.
-
-        Args:
-            file_path (str): Path to the file.
-
-        Returns:
-            List[str]: List of comments in the file.
-        """
-        compilation_unit = self.get_symbol_table().get(file_path, None)
-        if compilation_unit is None:
+        unit = self.application.symbol_table.get(file_path)
+        if unit is None:
             raise CodeanalyzerExecutionException(f"File {file_path} not found in the symbol table.")
-        return compilation_unit.comments
+        return unit.comments
 
     def get_all_comments(self) -> Dict[str, List[JComment]]:
-        """Get all comments in the Java application.
+        return {path: unit.comments for path, unit in self.application.symbol_table.items()}
 
-        Returns:
-            Dict[str, List[str]]: Dictionary of file paths and their corresponding comments.
-        """
-        comments = {}
-        for file_path, _ in self.get_symbol_table().items():
-            comments[file_path] = self.get_comment_in_file(file_path)
-        return comments
-
-    def get_all_docstrings(self) -> List[Tuple[str, JComment]]:
-        """Get all docstrings in the Java application.
-
-        Returns:
-            Dict[str, List[str]]: Dictionary of file paths and their corresponding docstrings.
-        """
+    def get_all_docstrings(self) -> Dict[str, List[JComment]]:
         docstrings = {}
-        for file_path, list_of_comments in self.get_all_comments().items():
-            javadoc_comments = [docstring for docstring in list_of_comments if docstring.is_javadoc]
-            if javadoc_comments:
-                docstrings[file_path] = javadoc_comments
-
+        for path, comments in self.get_all_comments().items():
+            javadoc = [c for c in comments if c.is_javadoc]
+            if javadoc:
+                docstrings[path] = javadoc
         return docstrings
+
+    def remove_all_comments(self, src_code: str) -> str:
+        raise NotImplementedError("This function is not implemented yet.")

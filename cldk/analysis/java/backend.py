@@ -16,26 +16,33 @@
 
 """The Java analysis backend contract.
 
-:class:`JavaAnalysis` is a (mostly) thin façade that delegates its static-analysis queries to a
-*backend*. Today the only backend is :class:`~cldk.analysis.java.codeanalyzer.JCodeanalyzer`
-(in-memory pydantic / NetworkX over the codeanalyzer JSON); this ABC formalizes the surface the
-façade depends on so an alternative backend (e.g. a forthcoming Neo4j/Cypher backend, mirroring
-the TypeScript :class:`~cldk.analysis.typescript.neo4j.TSNeo4jBackend`) can be dropped in and
-selected without touching the façade.
+:class:`JavaAnalysis` is a thin façade that delegates its static-analysis queries to a *backend*.
+Two interchangeable backends exist:
 
-The contract is enforced by the type system and at instantiation time rather than matching only by
-convention. Note the façade also calls Tree-sitter directly for a few parsing/sanitization helpers
-(e.g. ``is_parsable``, ``get_raw_ast``); those are not part of the backend contract — only the
-analysis queries the façade routes through ``self.backend`` are.
+* :class:`~cldk.analysis.java.codeanalyzer.JCodeanalyzer` — walks the in-memory pydantic
+  ``JApplication`` / a NetworkX call graph built from the ``analysis.json`` codeanalyzer-java emits;
+* :class:`~cldk.analysis.java.neo4j.JNeo4jBackend` — answers the *same* queries with Cypher over
+  the graph codeanalyzer-java emits with ``--emit neo4j``.
+
+The shape shared with every other language — application view, symbol table, call graph, the
+class/method/field lookups and the repository-artifact layer — is inherited from the generic
+:class:`~cldk.analysis.commons.backend.AnalysisBackend`; what is declared here is the Java-native
+remainder (compilation units, the 1.x caller/callee and class-call-graph accessors, constructors,
+sub/nested classes, entry points, CRUD, comments). Both backends subclass it; the façade is typed
+against it. Note the façade also calls Tree-sitter directly for a few parsing helpers
+(``is_parsable``, ``get_raw_ast``); those are not part of the backend contract.
+
+``get_call_graph()`` on both backends is keyed by ``"<type fqn>.<signature>"`` strings (spec J-1),
+with a ``method_detail`` (:class:`~cldk.models.java.models.JMethodDetail`) and ``kind`` node
+attribute; edges carry ``type``, ``weight`` and ``calling_lines``.
 """
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from typing import Dict, List, Tuple, Union
+from abc import abstractmethod
+from typing import ClassVar, Dict, List, Tuple, Union
 
-import networkx as nx
-
+from cldk.analysis.commons.backend import AnalysisBackend
 from cldk.models.java.models import (
     JApplication,
     JCallable,
@@ -51,43 +58,42 @@ from cldk.models.java.models import (
 # A CRUD query row: the owning type + callable and the operations found within it.
 CRUDRow = Dict[str, Union[JType, JCallable, List[JCRUDOperation]]]
 
+#: J-4: the CRUD accessors keep their names and raise this on schema v2, on both backends.
+CRUD_UNAVAILABLE = "CRUD operations are not emitted by codeanalyzer-java 3.0.1 (schema v2); tracked upstream as codeanalyzer-java#187"
 
-class JavaAnalysisBackend(ABC):
+
+class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType, JCallable, JField, JCallableParameter]):
     """Abstract base every Java analysis backend implements.
 
-    A backend owns all indexing and query logic for a Java application (symbol table, call graph,
-    class/method/field navigation, entry points, CRUD operations, comments/docstrings); the
-    :class:`JavaAnalysis` façade delegates to it. Implementations must return the canonical
-    ``cldk.models.java`` pydantic objects (or the documented NetworkX / dict / list shapes) so
-    backends are behaviorally interchangeable.
+    A backend owns all indexing and query logic for a Java application; the :class:`JavaAnalysis`
+    façade delegates to it. Implementations must return the canonical ``cldk.models.java`` pydantic
+    objects (or the documented NetworkX / dict / list shapes) so backends are behaviorally
+    interchangeable.
+
+    Inherited abstract (see :class:`~cldk.analysis.commons.backend.AnalysisBackend`):
+    ``get_application_view``, ``get_symbol_table``, ``get_call_graph``, ``get_all_classes``,
+    ``get_class``, ``get_all_methods_in_class``, ``get_method``, ``get_all_fields``,
+    ``get_method_parameters``, ``get_artifacts``, ``get_dependencies``, ``get_config_keys``,
+    ``get_config_uses``, ``get_unresolved_config_reads``.
     """
 
+    P: ClassVar[str] = "J"
+    N: ClassVar[str] = "J"
+
     # -----[ application / whole-program ]-----
-    @abstractmethod
-    def get_application_view(self) -> JApplication:
-        """The whole application view."""
-
-    @abstractmethod
-    def get_symbol_table(self) -> Dict[str, JCompilationUnit]:
-        """The per-file symbol table, keyed by file path."""
-
     @abstractmethod
     def get_compilation_units(self) -> List[JCompilationUnit]:
         """All compilation units."""
 
     @abstractmethod
     def get_java_file(self, qualified_class_name: str) -> str | None:
-        """The file path declaring a class. ``None`` if the class is not found."""
+        """The (repo-relative) file path declaring a class. ``None`` if the class is not found."""
 
     @abstractmethod
     def get_java_compilation_unit(self, file_path: str) -> JCompilationUnit:
         """The compilation unit for a file path."""
 
     # -----[ call graph ]-----
-    @abstractmethod
-    def get_call_graph(self) -> nx.DiGraph:
-        """NetworkX DiGraph of the application's call edges."""
-
     @abstractmethod
     def get_call_graph_json(self) -> str:
         """The call graph serialized as JSON."""
@@ -102,21 +108,13 @@ class JavaAnalysisBackend(ABC):
 
     @abstractmethod
     def get_class_call_graph(self, qualified_class_name: str, method_name: str | None = None) -> List[Tuple[JMethodDetail, JMethodDetail]]:
-        """Call-graph edges reachable from a class (or one of its methods)."""
+        """Call-graph edges out of a class (or one of its methods)."""
 
     @abstractmethod
     def get_class_call_graph_using_symbol_table(self, qualified_class_name: str, method_signature: str | None = None) -> List[Tuple[JMethodDetail, JMethodDetail]]:
-        """Call-graph edges reachable from a class, computed from the symbol table only."""
+        """Call-graph edges out of a class, computed from the symbol table's call sites only."""
 
     # -----[ classes / methods / fields ]-----
-    @abstractmethod
-    def get_all_classes(self) -> Dict[str, JType]:
-        """Every class, keyed by qualified name."""
-
-    @abstractmethod
-    def get_class(self, qualified_class_name: str) -> JType | None:
-        """A single class by qualified name. ``None`` if not found."""
-
     @abstractmethod
     def get_all_sub_classes(self, qualified_class_name: str) -> Dict[str, JType]:
         """Classes that extend/implement the given class."""
@@ -138,24 +136,8 @@ class JavaAnalysisBackend(ABC):
         """All methods grouped by their owning class qualified name."""
 
     @abstractmethod
-    def get_all_methods_in_class(self, qualified_class_name: str) -> Dict[str, JCallable]:
-        """The methods of a class."""
-
-    @abstractmethod
-    def get_method(self, qualified_class_name: str, method_signature: str) -> JCallable | None:
-        """A single method of a class. ``None`` if not found."""
-
-    @abstractmethod
-    def get_method_parameters(self, qualified_class_name: str, method_signature: str) -> List[JCallableParameter]:
-        """The parameters of a method. Empty list if the method is not found."""
-
-    @abstractmethod
     def get_all_constructors(self, qualified_class_name: str) -> Dict[str, JCallable]:
         """The constructors of a class."""
-
-    @abstractmethod
-    def get_all_fields(self, qualified_class_name: str) -> List[JField]:
-        """The fields of a class."""
 
     # -----[ entry points ]-----
     @abstractmethod
@@ -166,7 +148,7 @@ class JavaAnalysisBackend(ABC):
     def get_all_entry_point_classes(self) -> Dict[str, JType]:
         """Classes identified as application entry points."""
 
-    # -----[ CRUD operations ]-----
+    # -----[ CRUD operations — J-4: raise CRUD_UNAVAILABLE on schema v2 ]-----
     @abstractmethod
     def get_all_crud_operations(self) -> List[CRUDRow]:
         """All CRUD operations across the application."""
@@ -205,8 +187,8 @@ class JavaAnalysisBackend(ABC):
         """The comments in a method. Returns an empty list if the method is not found."""
 
     @abstractmethod
-    def get_all_docstrings(self) -> List[Tuple[str, JComment]]:
-        """All docstring-style comments across the application."""
+    def get_all_docstrings(self) -> Dict[str, List[JComment]]:
+        """All Javadoc comments across the application, keyed by file."""
 
     @abstractmethod
     def remove_all_comments(self, src_code: str) -> str:

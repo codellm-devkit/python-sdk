@@ -790,7 +790,6 @@ class JMethodDetail(_Base):
 # ----------------------------------------------------------------------------------------------
 
 JGraphEdges = JCallGraphEdge  # J-14: the v1 rich edge is gone; the wire edge is the type
-JGraphEdgesST = JCallGraphEdge  # imported by cldk/analysis/java at module level; T2 drops both
 JVariableDeclaration = JLocalVariable
 InitializationBlock = JCallable  # ``JType.initialization_blocks`` are the ``initializer`` callables
 
