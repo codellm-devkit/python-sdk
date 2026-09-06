@@ -90,10 +90,35 @@ import networkx as nx
 
 from cldk.analysis.commons import artifacts as shared  # the artifact layer every analyzer projects identically
 from cldk.analysis.commons.backend import semver
+from cldk.analysis.commons.bounds import (
+    DEFAULT_DEPTH,
+    DEFAULT_MAX_NODES,
+    DEFAULT_MAX_PATHS,
+    DEFAULT_PAGE_SIZE,
+    EdgeOrder,
+    check_depth,
+    check_distinct_endpoints,
+    check_max_nodes,
+    check_max_paths,
+    check_page_size,
+    cursor_params,
+    encode_cursor,
+    keyset_where,
+)
+from cldk.analysis.commons.graphs import cone_sinks, flow_path, slice_resolved
 from cldk.analysis.commons.keys import body_key_column, module_key_of, resolve_module_key
 from cldk.analysis.commons.resolve import CallableCandidate, resolve_callable_signature, resolve_value_name, resolve_within
-from cldk.analysis.commons.results import BodyRef, CallableRef, Diagnostic, LocateResult, ModuleRef, SliceNode, Span, TypeRef
-from cldk.analysis.typescript.backend import TSAnalysisBackend, ts_module_dotted
+from cldk.analysis.commons.results import BodyRef, CallableRef, Diagnostic, EdgePage, FlowPaths, LocateResult, ModuleRef, Slice, SliceNode, Span, TypeRef
+from cldk.analysis.typescript.backend import (
+    CDG_ORDER,
+    CFG_ORDER,
+    DDG_ORDER,
+    SDG_REL_PATTERN,
+    VIA,
+    TSAnalysisBackend,
+    ts_body_node_kind,
+    ts_module_dotted,
+)
 from cldk.analysis.typescript.neo4j import reconstruct as R
 from cldk.analysis.typescript.neo4j.reconstruct import CALLABLE_KINDS, TYPE_KINDS, TYPE_LABEL_KINDS
 from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
@@ -101,6 +126,9 @@ from cldk.models.typescript import (
     TSApplication,
     TSArtifact,
     TSCallable,
+    TSCdgEdge,
+    TSCfgEdge,
+    TSDdgEdge,
     TSCallableOverview,
     TSCallGraphEdge,
     TSCallsite,
@@ -130,6 +158,23 @@ def _scoped(var: str) -> str:
     the two id prefixes as an ``OR`` (which plans as a seek union), never ``any(p IN $prefixes …)``
     (which plans as a label scan). Bound from :attr:`TSNeo4jBackend._scope_params`."""
     return f"({var}.id STARTS WITH $p1 OR {var}.id STARTS WITH $p2)"
+
+
+def _vertex(var: str, *, escape: bool = False) -> str:
+    """The projection every call-graph vertex is read back through, for node variable ``var``.
+
+    Written once so a neighbour, a cone member and a path node describe the same vertex
+    identically; :meth:`TSNeo4jBackend._call_vertex` is the one place that reads the row back.
+    ``kind`` is what says which of TypeScript's three call-graph shapes a row is: a callable carries
+    ``signature``/``start_line``, a module ``name`` (its file key) and ``start_line``, an external
+    ``module``/``name`` and neither.
+
+    ``escape`` doubles the braces, for a statement that is itself ``.format()``-ed later for its
+    ``depth`` bound -- the alternative was two copies of the projection, which is the drift this
+    helper exists to prevent.
+    """
+    open_, close = ("{{", "}}") if escape else ("{", "}")
+    return f"{open_}kind: {var}.kind, signature: {var}.signature, name: {var}.name, ref: {var}.id, line: {var}.start_line, module: {var}.module{close}"
 
 
 #: The kinds a method owner may have -- alongside the label, so a declaration-merged node carrying
@@ -171,6 +216,14 @@ class TSNeo4jBackend(TSAnalysisBackend):
     #: Set by :meth:`_probe_resolution_edges`; the class-level default is for the ``object.__new__``
     #: seam the unit tests build instances through.
     _has_resolution_edges: bool = False
+    #: The Cypher generation the call-graph walks need. A **quantified path pattern** --
+    #: ``(a) ((x)-[:R]->(y) WHERE ...){0,n} (m)``, the only way to put a predicate on *every* hop of
+    #: a walk -- arrives in Neo4j 5.9. Recorded at attach (:meth:`_read_server_version`) and
+    #: enforced at the calls that need it (:meth:`_require_quantified_paths`), never at attach, so
+    #: an older server keeps serving every other accessor on this class.
+    _QUANTIFIED_PATH_MIN_SERVER = (5, 9)
+    #: Set by :meth:`_read_server_version`; ``None`` means *unknown*, which blocks nothing.
+    _server_version: Tuple[int, ...] | None = None
     _call_graph: nx.DiGraph | None = None
     _module_ids: Dict[str, str] = {}
 
@@ -298,6 +351,47 @@ class TSNeo4jBackend(TSAnalysisBackend):
             )
         self._analyzer_version = version
         self._relationship_types = frozenset(found)
+        self._server_version = self._read_server_version()
+
+    def _read_server_version(self) -> "Tuple[int, ...] | None":
+        """The attached server's version as an int tuple, or ``None`` when it cannot be read.
+
+        Read here because attach is the one place already talking to the server before any accessor
+        runs, and deliberately **not** acted on here: see :attr:`_QUANTIFIED_PATH_MIN_SERVER`.
+
+        ``None`` means *unknown*, and an unknown version blocks nothing: a server that will not
+        answer ``dbms.components()`` (the fake driver the unit tests inject, a deployment that
+        restricts the procedure) is not evidence of an old one, and refusing on that basis would be
+        a guess dressed as a check. If such a server really is pre-5.9, its own parser reports the
+        syntax error, which is the same outcome as before this check existed.
+        """
+        try:
+            rows = self._run("CALL dbms.components() YIELD versions RETURN versions[0] AS v")
+        except Exception:  # noqa: BLE001 - an unreadable version is "unknown", never fatal
+            return None
+        raw = rows[0].get("v") if rows else None
+        if not isinstance(raw, str):
+            return None
+        return tuple(int(x) for x in raw.split("-", 1)[0].split(".") if x.isdigit()) or None
+
+    def _require_quantified_paths(self, accessor: str) -> None:
+        """Refuse, naming the accessor and the requirement, on a server too old for a quantified
+        path pattern.
+
+        The pattern is what lets a call-graph walk be labelled and application-scoped at *every*
+        hop rather than only at its endpoints (see :attr:`_REACHES` and :attr:`_CONE`), and it
+        arrives in Neo4j 5.9. Enforced per accessor rather than at attach, so a caller who never
+        asks a call-graph walk of an older server keeps working. The reference server reports
+        5.26.30, so this fires on no supported deployment; it exists for one that is not.
+        """
+        if self._server_version is not None and self._server_version < self._QUANTIFIED_PATH_MIN_SERVER:
+            got = ".".join(str(n) for n in self._server_version)
+            floor = ".".join(str(n) for n in self._QUANTIFIED_PATH_MIN_SERVER)
+            raise CodeanalyzerExecutionException(
+                f"{accessor} compiles to a quantified path pattern, which needs Neo4j server {floor} or newer; the attached "
+                f"server reports {got}. Only the hop-scoped call-graph walks (reaches, backward_cone) need the newer "
+                "pattern; every other accessor on this backend runs on any 5.x."
+            )
 
     def _load_module_keys(self) -> Dict[str, str]:
         """``file key -> module id`` for the application's modules (``TSModule.name`` holds the key)."""
@@ -1227,3 +1321,376 @@ class TSNeo4jBackend(TSAnalysisBackend):
         if "TS_RESOLVES_TO" not in self._relationship_types:
             return False
         return bool(self._run(f"MATCH (s:TSBodyNode)-[:TS_RESOLVES_TO]->() WHERE {_scoped('s')} RETURN s LIMIT 1", **self._scope_params))
+
+    # =====================================================================================
+    # The dataflow surface (leg 2.5b, Task 2) -- over Cypher.
+    #
+    # SEEK LABELS, MEASURED ON THE SUPERSET GRAPH (statements timed end-to-end over the driver,
+    # median of 5 with the first discarded). Task 1's rule -- what decides the anchor is how narrow
+    # the predicate is, not that there is one -- holds again, and the per-callable page is the
+    # narrowest prefix on this surface, so the seek wins:
+    #
+    #   per-callable DDG page, 4 callables (1,933 / 461 / 399 / 366 edges)
+    #     (s:TSBodyNode)          WHERE s.id STARTS WITH <callable id>@   82.8 / 56.6 / 61.6 / 44.3 ms
+    #     (s:CanNode:TSBodyNode)  WHERE s.id STARTS WITH <callable id>@   42.8 / 11.7 / 10.8 /  9.2 ms  <- 2-6x
+    #     the containment spelling on (c:TSCallable)                      55.5 / 19.4 / 17.6 / 16.8 ms
+    #     the containment spelling on (c:CanNode:TSCallable)             636.8 /147.7 /118.4 /106.5 ms
+    #
+    #   slice seed (an id-equality point lookup), depth 5, three formal_in seeds
+    #     (r:TSBodyNode {id})           42.1 / 42.3 / 39.9 ms
+    #     (r:CanNode:TSBodyNode {id})    3.2 /  5.6 /  2.8 ms  <- 13x, the CanNode.id uniqueness index
+    #
+    # THE CONTAINMENT SPELLING IS ALSO WRONG, WHICH IS WHY IT IS NOT USED. The Python backend's
+    # ``_OWN_EDGES`` shape -- ``(c)-[:HAS_BODY_NODE]->(s)-[r]->(d)<-[:HAS_BODY_NODE]-(c)`` -- binds
+    # two ``TS_HAS_BODY_NODE`` relationships in one MATCH, and Cypher's relationship-uniqueness rule
+    # forbids them from being the *same* relationship. So every **self-loop** edge is silently
+    # dropped: measured on the reference graph, 173 ``TS_DDG`` and 2,511 ``TS_SUMMARY`` edges run
+    # from a body node to itself, and ``drawGraph``'s DDG page came back 1,931 against the true
+    # 1,933. The id-prefix spelling below has no such pattern and returns all of them.
+    #
+    # THE PREFIX IS EXACT, VERIFIED RATHER THAN ASSUMED: every one of the 125,532 body nodes' ids
+    # starts with its owning callable's id plus ``@`` (0 exceptions), no body node has two owners or
+    # none, and no callable id is another callable id plus ``@`` -- so ``<callable id>@`` selects
+    # that callable's body nodes and nothing else. ``d.id STARTS WITH $bp`` keeps the "both
+    # endpoints in one callable" restriction written rather than trusted (0 cross-callable edges of
+    # 214,058 today), for the Python backend's reason: a graph built some other way must not be able
+    # to widen the answer silently.
+    # =====================================================================================
+    _OWN_EDGES = "MATCH (s:CanNode:TSBodyNode)-[r:{rel}]->(d:TSBodyNode) WHERE s.id STARTS WITH $bp AND d.id STARTS WITH $bp "
+
+    def _own_edges(self, name: str, in_class: str | None, rel: str, projection: str, order: EdgeOrder, page_size: int, cursor: str | None):
+        """One page of a callable's own ``rel`` edges: ``(signature, rows, whole size, is there more)``.
+
+        Resolution is :meth:`resolve_callable`'s, not a second path, so an ambiguous name raises
+        listing candidates here exactly as it does there -- and its ``ref`` is the callable id the
+        body-node prefix is built from, which is why this accessor pays no extra lookup for it.
+
+        **Keyset, not ``SKIP``.** ``order.exprs`` is the canonical order written as Cypher -- the
+        same components ``order.key`` produces in Python, ``coalesce``-d the way ``or ""`` / ``or []``
+        normalise there -- and a cursor becomes a ``WHERE`` filter
+        (:func:`~cldk.analysis.commons.bounds.keyset_where`) rather than an offset, which is flat in
+        the page depth where an offset re-sorts a growing prefix.
+
+        **Three round trips, not one.** ``resolve_callable`` costs one -- the price of the caller
+        naming a callable instead of quoting a signature -- then a ``count`` for ``total`` and the
+        page itself. ``total`` is not optional: without it a caller cannot see the size of what it
+        is walking into from the first page, which is E5's whole point. It is re-counted per page
+        rather than cached, because the alternative is a number that can go stale against a graph
+        this backend does not own.
+
+        The page asks for ``page_size + 1`` rows and reports ``more`` from whether it got them, so
+        "there is more" is a fact about the data and not an inference from ``len(rows) ==
+        page_size`` -- which is wrong exactly when the set ends on a page boundary.
+        """
+        check_page_size(page_size)
+        node = self.resolve_callable(name, in_class=in_class)
+        sig, params = node.callable, {"bp": node.ref + "@"}
+        match = self._OWN_EDGES.format(rel=rel)
+        total = self._run(match + "RETURN count(r) AS total", **params)[0]["total"]
+        where = f"WHERE {keyset_where(order.exprs)} " if cursor is not None else ""
+        rows = self._run(
+            f"{match}WITH s.id AS src, d.id AS dst{projection} {where}RETURN * ORDER BY {', '.join(order.exprs)} LIMIT $lim",
+            lim=page_size + 1,
+            **params,
+            **(cursor_params(cursor, sig, len(order.exprs)) if cursor is not None else {}),
+        )
+        return sig, rows[:page_size], total, len(rows) > page_size
+
+    @staticmethod
+    def _page(model, scope: str, edges: List, order: EdgeOrder, total: int, more: bool) -> EdgePage:
+        """Wrap a page's edges, deriving ``next_cursor`` from the *same* sort key the local backend
+        uses -- so a cursor minted here and one minted there name the same position."""
+        return EdgePage[model](edges=edges, total=total, next_cursor=encode_cursor(scope, order.key(edges[-1])) if more and edges else None)
+
+    def get_cfg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[TSCfgEdge]:
+        """One page of control flow within one callable (see :meth:`TSAnalysisBackend.get_cfg`)."""
+        sig, rows, total, more = self._own_edges(callable, in_class, "TS_CFG_NEXT", ", r.kind AS kind", CFG_ORDER, page_size, cursor)
+        return self._page(TSCfgEdge, sig, [TSCfgEdge(src=r["src"], dst=r["dst"], kind=r["kind"]) for r in rows], CFG_ORDER, total, more)
+
+    def get_cdg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[TSCdgEdge]:
+        """One page of control dependence within one callable (see :meth:`TSAnalysisBackend.get_cdg`)."""
+        sig, rows, total, more = self._own_edges(callable, in_class, "TS_CDG", "", CDG_ORDER, page_size, cursor)
+        return self._page(TSCdgEdge, sig, [TSCdgEdge(src=r["src"], dst=r["dst"]) for r in rows], CDG_ORDER, total, more)
+
+    def get_ddg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[TSDdgEdge]:
+        """One page of data dependence within one callable (see :meth:`TSAnalysisBackend.get_ddg`).
+
+        ``prov`` is ``["reaching-defs"]`` on every one of the reference application's 119,384
+        ``TS_DDG`` edges -- TypeScript's single tier. ``or []`` restores the model's default rather
+        than failing validation on an edge that carries none, and the ``coalesce`` in the sort key
+        does the same for the ordering: a null there would make the keyset filter drop the row
+        silently rather than misplace it.
+        """
+        sig, rows, total, more = self._own_edges(callable, in_class, "TS_DDG", ", r.var AS var, r.prov AS prov", DDG_ORDER, page_size, cursor)
+        edges = [TSDdgEdge(src=r["src"], dst=r["dst"], var=r["var"], prov=list(r["prov"] or [])) for r in rows]
+        return self._page(TSDdgEdge, sig, edges, DDG_ORDER, total, more)
+
+    # -----[ slicing ]-----
+    #: Reverse (backward) and forward reachability over the SDG, as ONE variable-length match each.
+    #: ``*0..`` rather than ``*1..`` so the seed is part of its own slice without being spliced in
+    #: afterwards, which matters because ``total`` and the ``max_nodes`` prefix both have to be over
+    #: the same set.
+    #:
+    #: ``total`` and the page come back from one statement: the ids are collected in id order,
+    #: ``size()`` gives the whole slice's size, and only the first ``$cap`` are joined back to their
+    #: callables for hydration -- collecting the *nodes* rather than their ids would put the whole
+    #: closure in the transaction.
+    #:
+    #: **Not scoped by the application prefix**, unlike the per-callable accessors: a body-node id is
+    #: stamped with its application and the emitter only ever links nodes from its own run, so the
+    #: traversal cannot leave the application it started in. The seed is app-scoped by
+    #: :meth:`resolve_value`, which resolves through :meth:`resolve_callable`.
+    _SLICE = (
+        "MATCH (r:CanNode:TSBodyNode {{id:$id}}){left}[:{rels}*0..{depth}]{right}(m:TSBodyNode) "
+        "WITH DISTINCT m.id AS nid ORDER BY nid "
+        "WITH collect(nid) AS ids "
+        "WITH size(ids) AS total, ids[0..$cap] AS page "
+        "UNWIND page AS nid "
+        "MATCH (c:TSCallable)-[:TS_HAS_BODY_NODE]->(b:CanNode:TSBodyNode {{id:nid}}) "
+        "RETURN total, b.id AS ref, b.kind AS kind, b.of AS of, b.start_line AS line, "
+        "c.signature AS callable, c.start_line AS c_line"
+    )
+
+    def _slice_row(self, row: Dict[str, Any]) -> SliceNode:
+        """One row of the slice or path query as a :class:`SliceNode`, in the caller's vocabulary.
+
+        ``file`` is derived from the body node's own ``ref``: a body-node id is its callable's id
+        plus ``@<key>``, so both embed the same module key, and the graph stores no path to project
+        instead. ``kind``/``name`` go through
+        :func:`~cldk.analysis.typescript.backend.ts_body_node_kind`, the same translation the local
+        backend uses, so a vertex a caller addressed through ``resolve_value`` as a ``parameter``
+        comes back from a slice labelled a ``parameter`` too. A parameter-passing vertex has no span
+        of its own, so the *callable's* first line stands in.
+        """
+        kind, name = ts_body_node_kind(row["kind"], row["of"])
+        return SliceNode(
+            file=self._module_key(row["ref"]),
+            line=row["line"] if row["line"] is not None else row["c_line"],
+            callable=row["callable"],
+            kind=kind,
+            name=name,
+            source=None,
+            ref=row["ref"],
+        )
+
+    def _slice(self, src: str, within: str, depth: int | None, max_nodes: int, *, backward: bool) -> Slice:
+        """One direction of :meth:`TSAnalysisBackend.slice_backward` / ``slice_forward``. The two
+        differ only in which way the arrows point, so they share a query and a builder -- a second
+        copy would be a second place for the node vocabulary to drift."""
+        check_depth(depth)
+        check_max_nodes(max_nodes)
+        root = self.resolve_value(src, within=within)
+        query = self._SLICE.format(
+            rels=SDG_REL_PATTERN,
+            depth="" if depth is None else depth,
+            left="<-" if backward else "-",
+            right="-" if backward else "->",
+        )
+        rows = self._run(query, id=root.ref, cap=max_nodes)
+        return Slice(nodes=[self._slice_row(r) for r in rows], roots=[root], resolved=slice_resolved([root]), total=rows[0]["total"] if rows else 0)
+
+    def slice_backward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """What affects this value (see :meth:`TSAnalysisBackend.slice_backward`)."""
+        return self._slice(src, within, depth, max_nodes, backward=True)
+
+    def slice_forward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """What this value affects (see :meth:`TSAnalysisBackend.slice_forward`)."""
+        return self._slice(src, within, depth, max_nodes, backward=False)
+
+    # -----[ the call graph ]-----
+    def _call_vertex(self, row: Dict[str, Any]) -> SliceNode:
+        """One call-graph vertex as a :class:`SliceNode` -- callable, module or external ghost.
+
+        Which it is, is read off the row's ``kind`` rather than asked for in a second query. A
+        **module** is a legitimate caller (TS-11) and is addressed by its file key, which is exactly
+        what ``:TSModule.name`` holds. An **external** was never analysed, so it gets no position and
+        its readable name is built from its own ``module``/``name`` properties -- the ``can://`` id
+        stays in ``ref`` (E6). Its id sits under the application prefix but names no module, which is
+        why the external arm never calls :meth:`_module_key`.
+        """
+        if row["kind"] == "module":
+            return SliceNode(file=row["name"], line=row["line"], callable=row["name"], kind="module", name=row["name"], source=None, ref=row["ref"])
+        if row["kind"] == "external":
+            qualified = f"{row['module']}.{row['name']}" if row["module"] else row["name"]
+            return SliceNode(file="", line=0, callable=qualified, kind="external", name=row["name"], source=None, ref=row["ref"])
+        return SliceNode(file=self._module_key(row["ref"]), line=row["line"], callable=row["signature"], kind="callable", name=row["name"], source=None, ref=row["ref"])
+
+    #: Every hop labelled and application-scoped, not just the endpoints. A plain variable-length
+    #: ``-[:TS_CALLS*1..]->(m:TSCallable)`` labels only its *endpoint*, so an intermediate could be a
+    #: module or an external ghost; the quantified pattern is what makes the walk exactly the
+    #: callable-only edge set the local backend's ``_callable_call_graph`` view walks. The ``kind``
+    #: guard alongside the label is Task 1's "the domain is the kind, not the label" rule, which is
+    #: what keeps a declaration-merged node out of the facet it is not. Needs Neo4j 5.9+.
+    _REACHES = (
+        "MATCH (a:TSCallable {{signature:$a}}) WHERE " + _scoped("a") + " AND a.kind IN $callable_kinds "
+        "MATCH (a) ((x:TSCallable)-[:TS_CALLS]->(y:TSCallable) WHERE " + _scoped("x") + " AND x.kind IN $callable_kinds AND y.kind IN $callable_kinds){{1,{depth}}} (m:TSCallable) "
+        "WITH DISTINCT m WHERE m.signature = $b RETURN count(m) > 0 AS ok"
+    )
+
+    def reaches(self, src: str, dst: str, *, depth: int | None = None) -> bool:
+        """Is there a call path (see :meth:`TSAnalysisBackend.reaches`)?"""
+        check_depth(depth)
+        self._require_quantified_paths("reaches")
+        a = self.resolve_callable(src).callable
+        b = self.resolve_callable(dst).callable
+        query = self._REACHES.format(depth="" if depth is None else depth)
+        return bool(self._run(query, a=a, b=b, callable_kinds=sorted(CALLABLE_KINDS), **self._scope_params)[0]["ok"])
+
+    #: ``{0,}`` so a sink with no callers is its own cone rather than an empty answer a caller could
+    #: not tell from "this name is wrong" (D7). Unlike :attr:`_REACHES` the hop node is
+    #: ``:TSCallable|TSModule``: a module is the caller of its own top-level code, so it is part of
+    #: "what could get here" -- and it can only ever be the *last* node of such a walk, because it
+    #: has no incoming ``TS_CALLS`` (verified: 0 on the reference graph). Properties are projected
+    #: into maps *before* the cap so only ``$cap`` of them cross the wire.
+    _CONE = (
+        "MATCH (s:TSCallable) WHERE s.signature IN $sigs AND " + _scoped("s") + " AND s.kind IN $callable_kinds "
+        "MATCH (s) (()<-[:TS_CALLS]-(x:TSCallable|TSModule) WHERE " + _scoped("x") + "){{0,{depth}}} (m:TSCallable|TSModule) "
+        "WITH DISTINCT m ORDER BY m.id "
+        "WITH collect(" + _vertex("m", escape=True) + ") AS found "
+        "RETURN size(found) AS total, found[0..$cap] AS page"
+    )
+
+    def backward_cone(self, sinks: Sequence[str], *, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """Everything that can reach these sinks (see :meth:`TSAnalysisBackend.backward_cone`)."""
+        check_depth(depth)
+        check_max_nodes(max_nodes)
+        self._require_quantified_paths("backward_cone")
+        roots = cone_sinks(self.resolve_callable, sinks)
+        query = self._CONE.format(depth="" if depth is None else depth)
+        row = self._run(query, sigs=[r.callable for r in roots], cap=max_nodes, callable_kinds=sorted(CALLABLE_KINDS), **self._scope_params)[0]
+        return Slice(nodes=[self._call_vertex(n) for n in row["page"]], roots=roots, resolved=slice_resolved(roots), total=row["total"])
+
+    #: ``(s:TSCallable|TSModule)`` on the caller side keeps TypeScript's module callers (TS-11) and
+    #: still excludes a ghost, whose id sits under the same prefix; ``(t:TSCallable|TSExternal)`` on
+    #: the callee side keeps the externals a caller tracing a sink is looking for. Both are ordered
+    #: by id, which is the one total order the local backend can also compute -- without it a caller
+    #: comparing the two backends would be comparing two arbitrary orders.
+    _CALLERS = (
+        "MATCH (s:TSCallable|TSModule)-[:TS_CALLS]->(t:TSCallable {signature: $sig}) "
+        f"WHERE {_scoped('s')} AND t.kind IN $callable_kinds "
+        "RETURN " + _vertex("s") + " AS v ORDER BY s.id"
+    )
+    _CALLEES = (
+        "MATCH (s:TSCallable {signature: $sig})-[:TS_CALLS]->(t:TSCallable|TSExternal) "
+        f"WHERE {_scoped('s')} AND s.kind IN $callable_kinds "
+        "RETURN " + _vertex("t") + " AS v ORDER BY t.id"
+    )
+
+    def callers_of(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> List[SliceNode]:
+        """Who calls this, module callers included (see :meth:`TSAnalysisBackend.callers_of`)."""
+        sig = self.resolve_callable(name, in_class=in_class, in_module=in_module).callable
+        return [self._call_vertex(r["v"]) for r in self._run(self._CALLERS, sig=sig, callable_kinds=sorted(CALLABLE_KINDS), **self._scope_params)]
+
+    def callees_of(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> List[SliceNode]:
+        """What this calls, externals included (see :meth:`TSAnalysisBackend.callees_of`)."""
+        sig = self.resolve_callable(name, in_class=in_class, in_module=in_module).callable
+        return [self._call_vertex(r["v"]) for r in self._run(self._CALLEES, sig=sig, callable_kinds=sorted(CALLABLE_KINDS), **self._scope_params)]
+
+    # -----[ paths and flow predicates ]-----
+    #: The caller's word for a hop, computed in Cypher so the ORDER BY below sorts by the same
+    #: vocabulary :func:`~cldk.analysis.commons.graphs.hop_sort_key` sorts by. Ordering by the raw
+    #: ``type(r)`` instead would be just as deterministic and a *different* order, so the two
+    #: backends would truncate ``max_paths`` to different witnesses.
+    _VIA_CASE = "CASE type(relationships(p)[i]) " + " ".join(f"WHEN '{rel}' THEN '{word}'" for rel, word in VIA.items()) + " ELSE type(relationships(p)[i]) END"
+
+    #: One string per path, ordered exactly as Python would order the tuple ``hop_sort_key`` builds.
+    #: ``U+0001`` is the separator rather than ``|`` for one reason: string comparison agrees with
+    #: field-by-field comparison **only** when the separator sorts below every character a field can
+    #: hold, and ``|`` (0x7C) sorts *above* every lowercase letter. ``elementId`` is the last field
+    #: of each hop and breaks the tie between parallel relationships a caller cannot tell apart.
+    _PATH_ORDER = (
+        "reduce(k = '', i IN range(0, length(p) - 1) | k + " + _VIA_CASE + " + '\\u0001' + coalesce(relationships(p)[i].var, '') "
+        "+ '\\u0001' + nodes(p)[i + 1].id + '\\u0001' + elementId(relationships(p)[i]) + '\\u0001')"
+    )
+
+    #: ``allShortestPaths`` and not a plain variable-length match: a variable-length pattern
+    #: enumerates *trails*, which does not terminate on a real dependence graph, while
+    #: ``allShortestPaths`` is a bidirectional BFS. ``$cap`` is ``max_paths + 1`` so one extra row
+    #: reports the truncation, rather than a second traversal for a number the caller cannot act on.
+    _PATHS = (
+        "MATCH (a:CanNode:TSBodyNode {{id:$src}}) MATCH (b:CanNode:TSBodyNode {{id:$dst}}) "
+        "MATCH p = allShortestPaths((a)-[:{rels}*1..{depth}]->(b)) "
+        "WITH p, " + _PATH_ORDER + " AS key ORDER BY length(p), key LIMIT $cap "
+        "RETURN [n IN nodes(p) | {{ref: n.id, kind: n.kind, of: n.of, line: n.start_line, "
+        "callable: head([(c:TSCallable)-[:TS_HAS_BODY_NODE]->(n) | c.signature]), "
+        "c_line: head([(c:TSCallable)-[:TS_HAS_BODY_NODE]->(n) | c.start_line])}}] AS ns, "
+        "[r IN relationships(p) | {{via: type(r), var: r.var, prov: r.prov}}] AS rs"
+    )
+
+    #: The same query over the call graph. ``all(n IN nodes(p) WHERE n:TSCallable)`` keeps a module
+    #: or a ghost off the *interior* of a path -- the same edge set :attr:`_REACHES` walks, so the
+    #: paths cannot disagree with the boolean that summarises them. Neo4j inlines an ``all()`` node
+    #: predicate into the shortest-path search itself.
+    _CALL_PATHS = (
+        "MATCH (a:TSCallable {{signature:$src}}) WHERE " + _scoped("a") + " "
+        "MATCH (b:TSCallable {{signature:$dst}}) WHERE " + _scoped("b") + " "
+        "MATCH p = allShortestPaths((a)-[:TS_CALLS*1..{depth}]->(b)) WHERE all(n IN nodes(p) WHERE n:TSCallable) "
+        "WITH p, " + _PATH_ORDER + " AS key ORDER BY length(p), key LIMIT $cap "
+        "RETURN [n IN nodes(p) | " + _vertex("n", escape=True) + "] AS ns, "
+        "[r IN relationships(p) | {{via: type(r), var: null, prov: null}}] AS rs"
+    )
+
+    def _paths(self, query: str, node_of, a: SliceNode, b: SliceNode, *, src: str, dst: str, max_paths: int) -> FlowPaths:
+        """Run one of the two path queries and build the result. The two differ in what a node is
+        and nothing else, so the ordering, the cap and the completeness flag live here once.
+        ``a``/``b`` are the resolved endpoints (for the self-question's message); ``src``/``dst`` are
+        the keys the query matches them by."""
+        check_distinct_endpoints(a, b)
+        rows = self._run(query, src=src, dst=dst, cap=max_paths + 1, **self._scope_params)
+        paths = [flow_path([node_of(n) for n in r["ns"]], [(e["via"], e["var"], e["prov"]) for e in r["rs"]], via=VIA) for r in rows[:max_paths]]
+        return FlowPaths(paths=paths, complete=len(rows) <= max_paths)
+
+    # Argument validation precedes name resolution on every accessor below, as it does on the local
+    # backend: a malformed ``depth``/``max_paths`` is a ``ValueError`` before any round trip,
+    # whichever backend answers.
+    def paths_between(self, src: str, dst: str, *, src_within: str, dst_within: str, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+        """How a value reaches another value (see :meth:`TSAnalysisBackend.paths_between`)."""
+        check_depth(depth)
+        check_max_paths(max_paths)
+        a = self.resolve_value(src, within=src_within)
+        b = self.resolve_value(dst, within=dst_within)
+        query = self._PATHS.format(rels=SDG_REL_PATTERN, depth="" if depth is None else depth)
+        return self._paths(query, self._slice_row, a, b, src=a.ref, dst=b.ref, max_paths=max_paths)
+
+    def call_paths_between(self, src: str, dst: str, *, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+        """How one callable reaches another (see :meth:`TSAnalysisBackend.call_paths_between`)."""
+        check_depth(depth)
+        check_max_paths(max_paths)
+        a = self.resolve_callable(src)
+        b = self.resolve_callable(dst)
+        query = self._CALL_PATHS.format(depth="" if depth is None else depth)
+        return self._paths(query, self._call_vertex, a, b, src=a.callable, dst=b.callable, max_paths=max_paths)
+
+    #: ``WITH DISTINCT m`` before the membership test is what makes this a pruning BFS instead of a
+    #: trail enumeration. Not scoped by the application prefix, for :meth:`_slice`'s reason.
+    _VALUE_REACHES = "MATCH (a:CanNode:TSBodyNode {{id:$src}})-[:{rels}*1..{depth}]->(m:TSBodyNode) WITH DISTINCT m WHERE m.id IN $dsts RETURN count(m) > 0 AS ok"
+
+    #: Every value that *enters* ``$sig`` -- in TypeScript, its parameters. Scoped, because a
+    #: signature is not application-stamped the way an id is.
+    _CALLEE_VALUES = f"MATCH (c:TSCallable {{signature:$sig}})-[:TS_HAS_BODY_NODE]->(b:TSBodyNode {{kind:'formal_in'}}) WHERE {_scoped('c')} RETURN collect(b.id) AS ids"
+
+    def _value_reaches(self, src: str, dsts: List[str], depth: int | None) -> bool:
+        """Does the value at ``src`` reach any of ``dsts``? The one predicate both flow queries run,
+        which is what makes ``flows_to_argument`` implies ``flows_to_call`` a fact about their
+        *targets* rather than an agreement between two pieces of Cypher."""
+        if not dsts:
+            return False
+        query = self._VALUE_REACHES.format(rels=SDG_REL_PATTERN, depth="" if depth is None else depth)
+        return bool(self._run(query, src=src, dsts=dsts)[0]["ok"])
+
+    def flows_to_call(self, src: str, callee: str, *, within: str, depth: int | None = None) -> bool:
+        """Does this value reach any argument of a call to ``callee``
+        (see :meth:`TSAnalysisBackend.flows_to_call`)?"""
+        check_depth(depth)
+        root = self.resolve_value(src, within=within)
+        sig = self.resolve_callable(callee).callable
+        targets = [i for i in self._run(self._CALLEE_VALUES, sig=sig, **self._scope_params)[0]["ids"] if i != root.ref]
+        return self._value_reaches(root.ref, targets, depth)
+
+    def flows_to_argument(self, src: str, callee: str, arg: str, *, within: str, depth: int | None = None) -> bool:
+        """Does this value reach ``callee``'s ``arg``
+        (see :meth:`TSAnalysisBackend.flows_to_argument`)?"""
+        check_depth(depth)
+        root = self.resolve_value(src, within=within)
+        target = self.resolve_value(arg, within=callee).ref
+        return target != root.ref and self._value_reaches(root.ref, [target], depth)

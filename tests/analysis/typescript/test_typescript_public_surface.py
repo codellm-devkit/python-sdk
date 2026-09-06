@@ -22,7 +22,10 @@ raised ``NotImplementedError``; additions land with the query surface (2.5b) and
 
 Leg 2.5b Task 1 adds the seven addressing accessors, six of them methods and one
 (``has_resolution_edges``) a property — which :func:`inspect.isfunction` cannot see, so it is
-frozen separately in :data:`PROPERTIES`.
+frozen separately in :data:`PROPERTIES`. Task 2 adds the fourteen dataflow accessors, every one of
+them signature-for-signature ``PythonAnalysis``'s — the defaults included, which is where the
+asymmetry lives: the three slices carry a finite ``depth`` and the five predicate/path accessors
+carry ``depth: int | None = None``.
 """
 
 import ast
@@ -86,6 +89,19 @@ SURFACE = {
     "locate_many": "(self, positions: 'Sequence[Tuple[str, int]]') -> 'List[LocateResult]'",
     "resolve_callable": "(self, name: 'str', *, in_class: 'str | None' = None, in_module: 'str | None' = None) -> 'SliceNode'",
     "resolve_value": "(self, name: 'str', *, within: 'str') -> 'SliceNode'",
+    "backward_cone": "(self, sinks: 'Sequence[str]', *, depth: 'int | None' = 5, max_nodes: 'int' = 10000) -> 'Slice'",
+    "call_paths_between": "(self, src: 'str', dst: 'str', *, depth: 'int | None' = None, max_paths: 'int' = 10) -> 'FlowPaths'",
+    "callees_of": "(self, name: 'str', *, in_class: 'str | None' = None, in_module: 'str | None' = None) -> 'List[SliceNode]'",
+    "callers_of": "(self, name: 'str', *, in_class: 'str | None' = None, in_module: 'str | None' = None) -> 'List[SliceNode]'",
+    "flows_to_argument": "(self, src: 'str', callee: 'str', arg: 'str', *, within: 'str', depth: 'int | None' = None) -> 'bool'",
+    "flows_to_call": "(self, src: 'str', callee: 'str', *, within: 'str', depth: 'int | None' = None) -> 'bool'",
+    "get_cdg": "(self, callable: 'str', *, in_class: 'str | None' = None, page_size: 'int' = 10000, cursor: 'str | None' = None) -> 'EdgePage[TSCdgEdge]'",
+    "get_cfg": "(self, callable: 'str', *, in_class: 'str | None' = None, page_size: 'int' = 10000, cursor: 'str | None' = None) -> 'EdgePage[TSCfgEdge]'",
+    "get_ddg": "(self, callable: 'str', *, in_class: 'str | None' = None, page_size: 'int' = 10000, cursor: 'str | None' = None) -> 'EdgePage[TSDdgEdge]'",
+    "paths_between": "(self, src: 'str', dst: 'str', *, src_within: 'str', dst_within: 'str', depth: 'int | None' = None, max_paths: 'int' = 10) -> 'FlowPaths'",
+    "reaches": "(self, src: 'str', dst: 'str', *, depth: 'int | None' = None) -> 'bool'",
+    "slice_backward": "(self, src: 'str', *, within: 'str', depth: 'int | None' = 5, max_nodes: 'int' = 10000) -> 'Slice'",
+    "slice_forward": "(self, src: 'str', *, within: 'str', depth: 'int | None' = 5, max_nodes: 'int' = 10000) -> 'Slice'",
 }
 
 #: Public *properties* — frozen the same way, since ``inspect.isfunction`` does not see them.

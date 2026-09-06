@@ -38,6 +38,7 @@ import logging
 import os
 import shlex
 import subprocess
+import tempfile
 from pathlib import Path
 
 import networkx as nx
@@ -119,26 +120,114 @@ def _populate_neo4j(project_dir) -> None:
     """Load the sample app's graph into Neo4j out of band (what a cloud job would do).
 
     The SDK's Neo4j backend is read-only, so the test harness — not CLDK — runs the analyzer's
-    ``--emit neo4j`` to push the graph over Bolt before the read-only assertions run.
+    ``--emit neo4j`` to produce the graph before the read-only assertions run.
+
+    **Two departures from the 2.5a spelling, both forced by codeanalyzer-typescript 1.3.0.**
+
+    *No ``-a``.* 1.3.0 refuses a level alongside ``--emit neo4j`` ("--analysis-level does not apply
+    to --emit neo4j; the graph is always projected at full depth") where 1.2.0 accepted and ignored
+    it, so the ``-a 2`` this used to pass now makes the emitter exit 1 and every test in this module
+    error out. The graph was always full depth, so dropping the flag changes what runs, not what is
+    loaded.
+
+    *The projection is applied here, not pushed by the analyzer.* 1.3.0's **live Bolt push silently
+    drops every type node and its containment edges** — measured on this very app: pushing over
+    ``--neo4j-uri`` leaves 0 ``:TSClass`` / ``:TSInterface`` / ``:TSEnum`` / ``:TSTypeAlias`` /
+    ``:TSNamespace`` nodes and no ``TS_HAS_METHOD`` / ``TS_HAS_FIELD`` / ``TS_EXTENDS`` /
+    ``TS_IMPLEMENTS`` relationships, so ``TSNeo4jBackend`` refuses the result at attach
+    (``GraphSchemaMismatch``: ``TS_HAS_METHOD`` missing). The *same run's* ``graph.cypher`` carries
+    all of them and applies without a single failed statement (6 classes, 2 interfaces, 2 enums, 1
+    type alias, 1 namespace). So the emitter is asked for its own projection and this applies it
+    verbatim: nothing is hand-written, and the graph under test is exactly what the analyzer
+    produced. Revert to ``--neo4j-uri`` when the push path is fixed upstream.
     """
-    args = _codeanalyzer_ts_exec() + [
-        "-i",
-        str(Path(project_dir)),
-        "-a",
-        "2",  # call_graph
-        "--emit",
-        "neo4j",
-        "--neo4j-uri",
-        NEO4J_URI,
-        "--neo4j-user",
-        NEO4J_USER,
-        "--neo4j-password",
-        NEO4J_PASSWORD,
-        "--app-name",
-        APP_NAME,
-        "--eager",  # clean rebuild of this app's subgraph
-    ]
-    subprocess.run(args, capture_output=True, text=True, check=True)
+    with tempfile.TemporaryDirectory() as out:
+        args = _codeanalyzer_ts_exec() + [
+            "-i",
+            str(Path(project_dir)),
+            "--emit",
+            "neo4j",
+            "-o",
+            out,
+            "--app-name",
+            APP_NAME,
+            "--eager",  # clean rebuild of this app's subgraph
+        ]
+        subprocess.run(args, capture_output=True, text=True, check=True)
+        _apply_cypher(Path(out) / "graph.cypher")
+
+
+def _apply_cypher(path: Path) -> None:
+    """Apply the analyzer's own ``graph.cypher`` statement by statement, after clearing this
+    application's subgraph so the load is a rebuild and not an accumulation.
+
+    A statement that fails is raised, never counted and skipped: a partially loaded graph is
+    exactly the failure mode this function exists to avoid.
+    """
+    from neo4j import GraphDatabase
+
+    _teardown_application()
+    statements = _cypher_statements(path.read_text(encoding="utf-8"))
+    assert statements, f"the analyzer emitted no Cypher at {path}"
+    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+    try:
+        with driver.session() as session:
+            for statement in statements:
+                session.run(statement)
+    finally:
+        driver.close()
+
+
+def _cypher_statements(text: str) -> list[str]:
+    """Split a Cypher script into statements, **respecting quoted strings and comments**.
+
+    Neither of the two obvious splits works on what the emitter writes, and both fail *silently*:
+
+    * splitting on ``";\n"`` cuts inside a string literal, because a callable's ``code`` property
+      is embedded with real newlines and TypeScript source routinely contains ``;`` at end of line
+      (``console.log(slug);``). The halves still run — the first is valid Cypher with a truncated
+      literal — so the load reports no failure and the graph carries **truncated source text**,
+      which is how this was found: ``get_source`` parity failed on exactly the callables whose body
+      ends in ``;``.
+    * discarding any chunk that *starts* with ``//`` drops the whole first statement of each
+      section, including the ``:Application`` anchor, and again nothing raises.
+
+    So this scans character by character: a ``'``/``"``/`````-quoted run (with backslash escapes)
+    is opaque, a ``//`` run to end of line is a comment, and a ``;`` anywhere else ends a statement.
+    """
+    statements: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    i = 0
+    while i < len(text):
+        ch = text[i]
+        if quote is not None:
+            current.append(ch)
+            if ch == "\\" and i + 1 < len(text):
+                current.append(text[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+        elif ch in "'\"`":
+            quote = ch
+            current.append(ch)
+        elif ch == "/" and text.startswith("//", i):
+            end = text.find("\n", i)
+            i = len(text) if end == -1 else end
+            continue
+        elif ch == ";":
+            statement = "".join(current).strip()
+            if statement:
+                statements.append(statement)
+            current = []
+        else:
+            current.append(ch)
+        i += 1
+    tail = "".join(current).strip()
+    if tail:
+        statements.append(tail)
+    return statements
 
 
 @pytest.fixture(scope="module")

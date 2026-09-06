@@ -50,6 +50,7 @@ See Also:
 from __future__ import annotations
 
 import logging
+from functools import partial
 from pathlib import Path
 from typing import Dict, Iterator, List, Sequence, Tuple, Union
 
@@ -87,6 +88,7 @@ from cldk.analysis.python.backend import (
     flow_path,
     resolve_module_key,
     scope_paths,
+    shortest_walks,
     slice_resolved,
 )
 from cldk.models.python import (
@@ -1417,58 +1419,12 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         return out
 
     # -----[ paths, mixed queries, hydration ]-----
-    @staticmethod
-    def _shortest_walks(edges: Dict[str, Dict[str, list]], src: str, dst: str, depth: int | None, limit: int) -> List[list]:
-        """Up to ``limit`` shortest ``src``->``dst`` walks over ``edges``, in the documented order.
-
-        The local twin of the graph's ``allShortestPaths``, and only shortest walks for its reason:
-        enumerating every walk does not terminate on a real dependence graph.
-
-        Two passes. The first is the same breadth-first level walk :meth:`_reach` does, keeping the
-        hop count each node was *first* reached at; the second is a depth-first replay that only
-        ever steps to a node whose recorded distance is exactly one more than the walk so far, so
-        it visits shortest walks and nothing else.
-
-        The replay's branch order is ``(via, var, to)`` -- exactly the per-hop key
-        :func:`~cldk.analysis.python.backend.hop_sort_key` documents -- and every walk found has
-        the same length, so a pre-order depth-first traversal emits them already sorted. That is
-        what makes ``limit`` a *prefix* of a total order rather than whichever ``limit`` walks the
-        recursion happened to find first.
-        """
-        dist, frontier, hops = {src: 0}, [src], 0
-        while frontier and dst not in dist and (depth is None or hops < depth):
-            hops += 1
-            nxt = []
-            for s in frontier:
-                for d in edges.get(s, ()):
-                    if d not in dist:
-                        dist[d] = hops
-                        nxt.append(d)
-            frontier = nxt
-        if dst not in dist or dist[dst] == 0:
-            return []
-        target, out = dist[dst], []
-
-        def walk(node: str, walked: list) -> None:
-            if len(walked) == target:
-                if node == dst:
-                    out.append(list(walked))
-                return
-            options = sorted(
-                (VIA[rel], var or "", d, (rel, var, prov))
-                for d, labels in edges.get(node, {}).items()
-                if dist.get(d) == len(walked) + 1
-                for rel, var, prov in labels
-            )
-            for _, _, d, label in options:
-                walked.append((d, label))
-                walk(d, walked)
-                walked.pop()
-                if len(out) >= limit:
-                    return
-
-        walk(src, [])
-        return out
+    #: Up to ``limit`` shortest walks over a ``{src: {dst: [label]}}`` adjacency, in
+    #: :func:`~cldk.analysis.python.backend.hop_sort_key` order. Lifted to
+    #: :func:`~cldk.analysis.commons.graphs.shortest_walks` (leg 2.5b) with the ``via`` table as its
+    #: one parameter -- it is a graph algorithm over strings and knows no language, and TypeScript's
+    #: local backend answers ``paths_between`` with the same two passes.
+    _shortest_walks = staticmethod(partial(shortest_walks, via=VIA))
 
     def _value_paths(self, a: SliceNode, b: SliceNode, depth: int | None, max_paths: int) -> FlowPaths:
         """Build the :class:`FlowPaths` for value ``a`` -> value ``b``."""

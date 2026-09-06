@@ -665,7 +665,11 @@ def test_has_resolution_edges_is_probed_against_this_applications_edges():
 # =====================================================================================
 _MATCHES_BY_PREFIX = re.compile(r"\w+\.id STARTS WITH \$p1 OR \w+\.id STARTS WITH \$p2|\.id STARTS WITH \$prefix\b")
 _MATCHES_BY_SIGNATURE = re.compile(r"signature\s*[:=]\s*\$|\.signature IN \$")
-_MATCHES_BY_ID = re.compile(r"\bid\s*:\s*\$|\.id IN \$|\.id = \$")
+#: A ``can://`` id, or a **prefix of one**. ``$bp`` (leg 2.5b) is a resolved callable's own ``ref``
+#: plus ``@`` -- minted by ``resolve_callable``, which is itself two-prefix scoped -- so a body node
+#: whose id starts with it is this application's by construction, exactly as one matched by a whole
+#: id is. It is the narrowest scope on this surface, not a missing one.
+_MATCHES_BY_ID = re.compile(r"\bid\s*:\s*\$|\.id IN \$|\.id = \$|\.id STARTS WITH \$bp\b")
 _INTROSPECTION = re.compile(r"^\s*CALL (db|dbms)\.")
 _ANCHORED_ON_THE_APPLICATION = re.compile(r"\(\w*:Application \{id: \$app_id\}\)")
 #: Class-level strings that are Cypher but not a whole statement, judged at their use sites.
@@ -748,7 +752,7 @@ def _inline_statements() -> Dict[str, str]:
 
 
 def _every_statement() -> Dict[str, str]:
-    inline = {name: s for name, s in _inline_statements().items() if "<anchor>" not in s}
+    inline = {name: s for name, s in _inline_statements().items() if "<anchor>" not in s and "<query>" not in s}
     return {**{n: s for n, s in _class_level_statements().items() if n not in _FRAGMENTS}, **inline}
 
 
@@ -761,8 +765,11 @@ def test_the_audit_sees_every_inline_statement_too():
     assert source.count(".run(") == 1, "only _run may touch the session"
     inline = _inline_statements()
     assert len(inline) == source.count("self._run(") + source.count("self._fetch("), "a statement site the harvester did not see"
-    indirect = sorted({name.split("@")[0] for name, s in inline.items() if "<anchor>" in s})
-    assert indirect == ["_fetch"], f"unjudged statements passed through a variable: {indirect}"
+    indirect = sorted({name.split("@")[0] for name, s in inline.items() if "<anchor>" in s or "<query>" in s})
+    # ``_fetch``'s ``<anchor>`` is judged at every ``self._fetch(`` call site; ``_paths``' ``<query>``
+    # is one of the two class-level path statements, both of which are harvested and judged in their
+    # own right (``_PATHS`` by an id point lookup, ``_CALL_PATHS`` by the two-prefix scope).
+    assert indirect == ["_fetch", "_paths"], f"unjudged statements passed through a variable: {indirect}"
     for expected in (
         "_probe_schema",
         "_load_module_keys",

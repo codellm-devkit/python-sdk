@@ -66,6 +66,7 @@ from cldk.analysis.commons.graphs import (
     hop_sort_key,
     sdg_rel_pattern,
     sdg_rels,
+    shortest_walks,
     slice_resolved,
     via_table,
 )

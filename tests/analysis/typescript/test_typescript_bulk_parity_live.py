@@ -101,6 +101,13 @@ def ts_dual(typescript_application, tmp_path_factory):
     """``(ref, neo)``: the in-memory backend and a Neo4j backend, both over the SAME tracked
     sample app (``tests/resources/typescript/application``) — the emit and the in-memory reference
     must describe identical code, so neither side may fall back to the slim fixture JSON.
+
+    **The local reference is level 4** (leg 2.5b). It was ``call_graph`` while the emit was run with
+    ``-a 2``; codeanalyzer-typescript 1.3.0 refuses a level alongside ``--emit neo4j`` and always
+    projects at full depth, so a level-2 reference now compares two *analysis levels* rather than
+    two backends — measured: ``locate("src/controllers.ts", 4)`` returned ``body=None`` locally
+    (level 2 emits no body nodes at all) against the graph's ``@entry``. The level is what makes
+    both sides hold the same facts; the parity assertions are unchanged.
     """
     _populate_neo4j(typescript_application)
 
@@ -108,13 +115,13 @@ def ts_dual(typescript_application, tmp_path_factory):
     ref = CLDK.typescript(
         project_path=typescript_application,
         eager=True,
-        analysis_level=AnalysisLevel.call_graph,
+        analysis_level=AnalysisLevel.system_dependency_graph,
         backend=CodeAnalyzerConfig(cache_dir=str(cache_dir)),
     )
 
     neo = CLDK.typescript(
         project_path=typescript_application,
-        analysis_level=AnalysisLevel.call_graph,
+        analysis_level=AnalysisLevel.system_dependency_graph,
         backend=Neo4jConnectionConfig(
             uri=NEO4J_URI,
             username=NEO4J_USER,
@@ -291,23 +298,15 @@ def test_resolve_callable_scoping_keywords_agree(ts_dual):
         assert ref.resolve_callable(o.signature, in_module=o.path).ref == neo.resolve_callable(o.signature, in_module=o.path).ref
 
 
-def test_resolve_value_parity_over_every_callable(typescript_application, tmp_path_factory, ts_dual):
+def test_resolve_value_parity_over_every_callable(ts_dual):
     """Every named value entering every callable, resolved on both.
 
-    The local reference here is a **level-4** one of its own: ``ts_dual``'s is built at
-    ``call_graph`` for the bulk accessors, and ``formal_in`` vertices -- the whole domain of
-    ``resolve_value`` -- first exist at level 4. ``--emit neo4j`` is always full depth, so the graph
-    side already has them; comparing it against a level-2 reference would be comparing analysis
-    levels, not backends. The parity assertion is on the *values*; the level is just what makes
-    both sides hold them.
+    ``formal_in`` vertices -- the whole domain of ``resolve_value`` -- first exist at analysis
+    level 4, which is the level ``ts_dual`` now builds both sides at (leg 2.5b; it used to build a
+    second level-4 backend of its own here). The parity assertion is on the *values*; the level is
+    just what makes both sides hold them.
     """
-    _, neo = ts_dual
-    ref = CLDK.typescript(
-        project_path=typescript_application,
-        eager=True,
-        analysis_level=AnalysisLevel.system_dependency_graph,
-        backend=CodeAnalyzerConfig(cache_dir=str(tmp_path_factory.mktemp("ts_addressing_parity_cache"))),
-    )
+    ref, neo = ts_dual
     seen = 0
     for o in ref.get_callables_overview():
         owner = o.owner_signature or o.signature.rsplit(".", 1)[0]
@@ -355,3 +354,180 @@ def test_describe_parity(ts_dual):
 def test_has_resolution_edges_agrees(ts_dual):
     ref, neo = ts_dual
     assert ref.has_resolution_edges is neo.has_resolution_edges is True
+
+
+# =====================================================================================
+# Leg 2.5b Task 2: the dataflow surface answers identically on both backends.
+#
+# cfg/cdg/ddg first exist at analyzer level 3 and the SDG overlays at level 4, and ``--emit neo4j``
+# is always full depth -- which is why ``ts_dual``'s local reference is now built at level 4 too
+# (see its docstring). Comparing a shallower local view against the graph would be comparing
+# analysis levels, not backends.
+# =====================================================================================
+@pytest.fixture(scope="module")
+def ref_l4(ts_dual):
+    """The level-4 local backend ``ts_dual`` already builds — named for what the dataflow tests
+    need from it, so a reader does not have to check the level at every call site."""
+    return ts_dual[0]
+
+
+def _signatures(ref_l4):
+    return [o.signature for o in ref_l4.get_callables_overview()]
+
+
+def _entering_values(ref_l4, signature):
+    """Every named value entering ``signature``, read off the level-4 model rather than through the
+    accessor under test."""
+    overview = next(o for o in ref_l4.get_callables_overview() if o.signature == signature)
+    owner = overview.owner_signature or signature.rsplit(".", 1)[0]
+    callable_ = ref_l4.get_method(owner, overview.name)
+    return sorted({n.of for n in (callable_.body if callable_ else {}).values() if n.kind == "formal_in" and n.of})
+
+
+@pytest.mark.parametrize("accessor,key", [("get_cfg", lambda e: (e.src, e.dst, e.kind)), ("get_cdg", lambda e: (e.src, e.dst)), ("get_ddg", lambda e: (e.src, e.dst, e.var, tuple(e.prov)))])
+def test_the_per_callable_graphs_are_identical_on_both_backends(ref_l4, ts_dual, accessor, key):
+    """Every callable of the sample app, every edge, in the accessor's canonical order — the list,
+    not the set, because the order is what makes a *page* mean the same thing on both backends."""
+    _, neo = ts_dual
+    seen = 0
+    for sig in _signatures(ref_l4):
+        a, b = getattr(ref_l4, accessor)(sig), getattr(neo, accessor)(sig)
+        assert a.total == b.total, sig
+        assert [key(e) for e in a.edges] == [key(e) for e in b.edges], sig
+        assert a.next_cursor == b.next_cursor and a.complete == b.complete, sig
+        seen += a.total
+    assert seen, "the sample app carried no edges at all; this test proved nothing"
+
+
+def test_paging_agrees_edge_for_edge_and_cursor_for_cursor(ref_l4, ts_dual):
+    """A cursor minted on one backend names the same position on the other, which is only true if
+    both sort by the same key — the point of ``EdgeOrder`` holding the two spellings together."""
+    _, neo = ts_dual
+    sig = max(_signatures(ref_l4), key=lambda s: ref_l4.get_ddg(s).total)
+    assert ref_l4.get_ddg(sig).total > 2, "no callable in the sample app is big enough to page"
+    cursor, pages = None, 0
+    while True:
+        a = ref_l4.get_ddg(sig, page_size=2, cursor=cursor)
+        b = neo.get_ddg(sig, page_size=2, cursor=cursor)
+        assert [(e.src, e.dst, e.var, tuple(e.prov)) for e in a.edges] == [(e.src, e.dst, e.var, tuple(e.prov)) for e in b.edges]
+        assert a.next_cursor == b.next_cursor and a.total == b.total
+        pages += 1
+        cursor = a.next_cursor
+        if cursor is None:
+            break
+    assert pages > 1, "the chosen callable fitted in one page"
+
+
+def test_slices_are_identical_over_every_entering_value(ref_l4, ts_dual):
+    _, neo = ts_dual
+    seen = 0
+    for sig in _signatures(ref_l4):
+        for value in _entering_values(ref_l4, sig):
+            for depth in (None, 5, 1):
+                a = ref_l4.slice_forward(value, within=sig, depth=depth)
+                b = neo.slice_forward(value, within=sig, depth=depth)
+                assert a.total == b.total, f"{value} in {sig} at depth {depth}"
+                assert [(n.ref, n.kind, n.name, n.callable, n.file, n.line) for n in a.nodes] == [(n.ref, n.kind, n.name, n.callable, n.file, n.line) for n in b.nodes]
+                assert a.resolved == b.resolved and a.complete == b.complete
+            back_a, back_b = ref_l4.slice_backward(value, within=sig, depth=None), neo.slice_backward(value, within=sig, depth=None)
+            assert back_a.total == back_b.total
+            assert [n.ref for n in back_a.nodes] == [n.ref for n in back_b.nodes]
+            seen += 1
+    assert seen, "the sample app carried no entering values; this test proved nothing"
+
+
+def test_the_call_graph_accessors_are_identical_over_every_callable(ref_l4, ts_dual):
+    _, neo = ts_dual
+    tuples = lambda ns: [(n.ref, n.kind, n.callable, n.name, n.file, n.line) for n in ns]  # noqa: E731
+    for sig in _signatures(ref_l4):
+        assert tuples(ref_l4.callers_of(sig)) == tuples(neo.callers_of(sig)), f"callers_of({sig})"
+        assert tuples(ref_l4.callees_of(sig)) == tuples(neo.callees_of(sig)), f"callees_of({sig})"
+        for depth in (None, 5, 1):
+            a, b = ref_l4.backward_cone([sig], depth=depth), neo.backward_cone([sig], depth=depth)
+            assert a.total == b.total and tuples(a.nodes) == tuples(b.nodes), f"backward_cone([{sig}], depth={depth})"
+
+
+def test_reaches_agrees_on_every_pair_of_callables(ref_l4, ts_dual):
+    _, neo = ts_dual
+    sigs = _signatures(ref_l4)
+    trues = 0
+    for a in sigs:
+        for b in sigs:
+            if a == b:
+                continue
+            for depth in (None, 2):
+                got = ref_l4.reaches(a, b, depth=depth)
+                assert got is neo.reaches(a, b, depth=depth), f"reaches({a}, {b}, depth={depth})"
+                trues += got and depth is None
+    assert trues, "no pair of callables reached another; this test proved nothing"
+
+
+def test_the_path_queries_agree_hop_for_hop(ref_l4, ts_dual):
+    _, neo = ts_dual
+    sigs = _signatures(ref_l4)
+    hops = lambda p: [(h.frm.ref, h.to.ref, h.via, h.var, tuple(h.prov)) for h in p.hops]  # noqa: E731
+    call_paths = 0
+    for a in sigs:
+        for b in sigs:
+            if a == b or not ref_l4.reaches(a, b):
+                continue
+            x, y = ref_l4.call_paths_between(a, b), neo.call_paths_between(a, b)
+            assert x.complete == y.complete
+            assert [hops(p) for p in x.paths] == [hops(p) for p in y.paths], f"call_paths_between({a}, {b})"
+            call_paths += len(x.paths)
+    assert call_paths, "no call path was found at all; this test proved nothing"
+
+    value_paths = 0
+    for src_sig in sigs:
+        for src in _entering_values(ref_l4, src_sig):
+            for dst_sig in sigs:
+                for dst in _entering_values(ref_l4, dst_sig):
+                    if (src, src_sig) == (dst, dst_sig):
+                        continue
+                    x = ref_l4.paths_between(src, dst, src_within=src_sig, dst_within=dst_sig)
+                    y = neo.paths_between(src, dst, src_within=src_sig, dst_within=dst_sig)
+                    assert x.complete == y.complete
+                    assert [hops(p) for p in x.paths] == [hops(p) for p in y.paths], f"paths_between({src}@{src_sig}, {dst}@{dst_sig})"
+                    value_paths += len(x.paths)
+    assert value_paths, "no value flow was found at all; this test proved nothing"
+
+
+def test_the_flow_predicates_agree_including_where_a_bound_cuts(ref_l4, ts_dual):
+    """Both halves of the asymmetry, on both backends: a flow that is ``True`` unbounded must be
+    ``True`` on both, and ``False`` at a cutting depth on both."""
+    _, neo = ts_dual
+    sigs = _signatures(ref_l4)
+    trues = 0
+    for src_sig in sigs:
+        for src in _entering_values(ref_l4, src_sig):
+            for callee in sigs:
+                for depth in (None, 1):
+                    got = ref_l4.flows_to_call(src, callee, within=src_sig, depth=depth)
+                    assert got is neo.flows_to_call(src, callee, within=src_sig, depth=depth), f"flows_to_call({src}, {callee}, depth={depth})"
+                    trues += got and depth is None
+                for arg in _entering_values(ref_l4, callee):
+                    for depth in (None, 1):
+                        got = ref_l4.flows_to_argument(src, callee, arg, within=src_sig, depth=depth)
+                        assert got is neo.flows_to_argument(src, callee, arg, within=src_sig, depth=depth), f"flows_to_argument({src}, {callee}, {arg}, depth={depth})"
+    assert trues, "no value flowed into any call; this test proved nothing"
+
+
+def test_the_dataflow_miss_paths_raise_the_same_way(ref_l4, ts_dual):
+    _, neo = ts_dual
+    sig = _signatures(ref_l4)[0]
+    for pair in (
+        (lambda b: b.get_cfg("noSuchCallable"), None),
+        (lambda b: b.get_ddg(sig, page_size=0), None),
+        (lambda b: b.get_ddg(sig, cursor="not-a-cursor"), None),
+        (lambda b: b.slice_forward("noSuchValue", within=sig), None),
+        (lambda b: b.slice_forward("x", within=sig, depth=0), None),
+        (lambda b: b.backward_cone([]), None),
+        (lambda b: b.backward_cone("notAList"), None),
+        (lambda b: b.reaches("noSuchCallable", sig), None),
+        (lambda b: b.callers_of("noSuchCallable"), None),
+        (lambda b: b.call_paths_between(sig, sig), None),
+        (lambda b: b.flows_to_call("noSuchValue", sig, within=sig), None),
+    ):
+        call = pair[0]
+        a, b = _same_raise(lambda: call(ref_l4), lambda: call(neo))
+        assert str(a).split(";")[0] == str(b).split(";")[0] or type(a) is type(b)

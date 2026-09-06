@@ -30,7 +30,8 @@ from typing import Dict, List, Sequence, Set, Tuple
 import networkx as nx
 
 from cldk.analysis.commons.backend_config import CodeAnalyzerConfig, Neo4jConnectionConfig, TSBackend, cache_subdir
-from cldk.analysis.commons.results import LocateResult, SliceNode
+from cldk.analysis.commons.bounds import DEFAULT_DEPTH, DEFAULT_MAX_NODES, DEFAULT_MAX_PATHS, DEFAULT_PAGE_SIZE
+from cldk.analysis.commons.results import EdgePage, FlowPaths, LocateResult, Slice, SliceNode
 from cldk.analysis.typescript.backend import TSAnalysisBackend
 from cldk.analysis.typescript.codeanalyzer import TSCodeanalyzer
 from cldk.analysis.typescript.neo4j import TSNeo4jBackend
@@ -39,8 +40,11 @@ from cldk.models.typescript import (
     TSCallable,
     TSCallableOverview,
     TSCallsite,
+    TSCdgEdge,
+    TSCfgEdge,
     TSClass,
     TSClassAttribute,
+    TSDdgEdge,
     TSDecorator,
     TSEnum,
     TSEnumMember,
@@ -500,3 +504,236 @@ class TypeScriptAnalysis:
             :meth:`get_callsites_for`: The accessor whose ``None`` this disambiguates.
         """
         return self.backend.has_resolution_edges
+
+    # =====================================================================================
+    # The dataflow surface (leg 2.5b, Task 2). Every signature is
+    # :class:`~cldk.analysis.python.python_analysis.PythonAnalysis`'s, keyword-for-keyword.
+    # =====================================================================================
+    def get_cfg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[TSCfgEdge]:
+        """Return one page of the control flow inside one callable, addressed by name.
+
+        The graph the analyzer built, not one re-derived here: a conditional's two successors stay
+        two edges discriminated by ``kind``. Endpoints are the body nodes' own opaque ids, which
+        :meth:`get_source` and :meth:`describe` both accept::
+
+            page = ts.get_cfg("show", in_class="UserController")
+            page.total          # the whole graph's size, on every page
+            page.complete       # False when there is more, with page.next_cursor to fetch it
+
+        Args:
+            callable: The callable's name, resolved as by :meth:`resolve_callable`.
+            in_class: Disambiguate by owning class or interface.
+            page_size: Most edges to return.
+            cursor: ``next_cursor`` from a previous page; ``None`` starts at the beginning.
+
+        Returns:
+            An :class:`~cldk.analysis.commons.results.EdgePage` of
+            :class:`~cldk.models.typescript.TSCfgEdge`.
+
+        Raises:
+            AmbiguousName: More than one callable matched.
+            SelectorNotInGraph: Nothing matched.
+            ValueError: ``page_size`` below 1, or a cursor from another page, callable or accessor.
+            CodeanalyzerUsageException: (local backend) built below
+                ``analysis_level="program_dependency_graph"``.
+        """
+        return self.backend.get_cfg(callable, in_class=in_class, page_size=page_size, cursor=cursor)
+
+    def get_cdg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[TSCdgEdge]:
+        """Return one page of the control *dependence* inside one callable.
+
+        ``src`` is the branching node ``dst`` is control dependent on. Arguments, paging and
+        failures are :meth:`get_cfg`'s.
+        """
+        return self.backend.get_cdg(callable, in_class=in_class, page_size=page_size, cursor=cursor)
+
+    def get_ddg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[TSDdgEdge]:
+        """Return one page of the data dependence inside one callable.
+
+        Each edge carries the variable it flows and the evidence for it. **TypeScript has a single
+        provenance tier:** every edge's ``prov`` is ``["reaching-defs"]``, where Python distinguishes
+        ``ssa`` / ``reaching-defs`` / ``points-to``. Arguments, paging and failures are
+        :meth:`get_cfg`'s.
+        """
+        return self.backend.get_ddg(callable, in_class=in_class, page_size=page_size, cursor=cursor)
+
+    def slice_backward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """Return everything the value ``src`` depends on — reverse reachability over the SDG.
+
+        ``depth`` defaults to a **finite** bound on purpose: a bounded traversal answers a narrower
+        question *completely*, and ``total`` says how much was left out. ``depth=None`` asks for the
+        whole cone::
+
+            s = ts.slice_backward("id", within="UserController.show")
+            s.total, s.truncated
+
+        Args:
+            src: The value's name — in TypeScript, a parameter.
+            within: The callable to look inside. Required: a value name is scoped by its callable.
+            depth: Most hops from the seed; ``None`` for the whole cone.
+            max_nodes: Most nodes in the result; a cap that fires is reported, never silent.
+
+        Returns:
+            A :class:`~cldk.analysis.commons.results.Slice`, ordered by node id, with ``source``
+            unhydrated (:meth:`describe` fills it in).
+
+        Raises:
+            AmbiguousName: ``within`` or ``src`` matched more than one thing.
+            SelectorNotInGraph: No such callable, or no such value in it.
+            ValueError: ``depth`` is not a positive ``int``, or ``max_nodes`` is below 1.
+        """
+        return self.backend.slice_backward(src, within=within, depth=depth, max_nodes=max_nodes)
+
+    def slice_forward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """Return everything the value ``src`` can affect — the same edges read forward.
+
+        Usually the interesting direction for a parameter: nothing flows *into* one except from its
+        callers. Arguments, bounds and failures are :meth:`slice_backward`'s.
+        """
+        return self.backend.slice_forward(src, within=within, depth=depth, max_nodes=max_nodes)
+
+    def reaches(self, src: str, dst: str, *, depth: int | None = None) -> bool:
+        """Return whether control can get from one callable to another over the call graph.
+
+        The cheap check before asking for the paths themselves. **``depth`` is unbounded by
+        default**, unlike the slices: a bound on a boolean would collapse "there is no path" and
+        "there is no path within five hops" into the same ``False``.
+
+        Args:
+            src: The calling callable's name.
+            dst: The called callable's name.
+            depth: Most call hops, or ``None`` for any distance.
+
+        Raises:
+            AmbiguousName: Either name matched more than one callable.
+            SelectorNotInGraph: Either matched none.
+            ValueError: ``depth`` is not a positive ``int``.
+        """
+        return self.backend.reaches(src, dst, depth=depth)
+
+    def backward_cone(self, sinks: Sequence[str], *, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """Return every call-graph vertex that can reach any of ``sinks`` — "what could get here".
+
+        The accessor to reach for when the sink is a dangerous function and the question is which
+        entry points lead to it. Its nodes are callables **and modules**: cants makes a module the
+        caller of its own top-level code, so a cone without them would under-report.
+
+        Args:
+            sinks: The callables to walk back from; a bare string is refused.
+            depth: Most call hops back; ``None`` for the whole cone.
+            max_nodes: Most nodes in the result.
+
+        Raises:
+            AmbiguousName: A sink matched more than one callable.
+            SelectorNotInGraph: A sink matched none.
+            TypeError: ``sinks`` is a bare string.
+            ValueError: ``sinks`` is empty, or a bound is out of range.
+        """
+        return self.backend.backward_cone(sinks, depth=depth, max_nodes=max_nodes)
+
+    def callers_of(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> List[SliceNode]:
+        """Return who calls this — one hop back over the call graph, addressed by name.
+
+        The name-based sibling of :meth:`get_callers`, returning
+        :class:`~cldk.analysis.commons.results.SliceNode` objects rather than raw dicts. A module is
+        a legitimate caller (``kind="module"``). ``[]`` is unambiguous: a name matching nothing
+        raises.
+
+        Raises:
+            AmbiguousName: More than one callable matched.
+            SelectorNotInGraph: Nothing matched.
+        """
+        return self.backend.callers_of(name, in_class=in_class, in_module=in_module)
+
+    def callees_of(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> List[SliceNode]:
+        """Return what this calls — one hop forward, externals included (``kind="external"``).
+
+        An external was never analysed, so it has no position: ``file=""`` and ``line=0``, with
+        ``kind`` saying why. Its ``callable`` is the readable ``"<module>.<name>"``.
+
+        Raises:
+            AmbiguousName: More than one callable matched.
+            SelectorNotInGraph: Nothing matched.
+        """
+        return self.backend.callees_of(name, in_class=in_class, in_module=in_module)
+
+    def paths_between(self, src: str, dst: str, *, src_within: str, dst_within: str, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+        """Return how one value reaches another — the *sequences*, where a slice is the set.
+
+        Each hop says what justified it: the kind of edge (``data`` / ``control`` / ``argument`` /
+        ``return`` / ``summary``), the variable, and the provenance — which in TypeScript is always
+        ``["reaching-defs"]``. Only shortest paths are returned.
+
+        **Two scopes, not one**: a value is addressed by a name plus the callable it enters, and a
+        single scope could never find the cross-callable path this accessor exists for. ``depth`` is
+        unbounded by default, for :meth:`reaches`'s reason.
+
+        Args:
+            src: The value the flow starts at.
+            dst: The value it must reach.
+            src_within: The callable ``src`` enters. Required.
+            dst_within: The callable ``dst`` enters. Required.
+            depth: Most hops a path may take; ``None`` for no bound.
+            max_paths: Most paths to return; ``complete`` says whether more existed.
+
+        Raises:
+            AmbiguousName: A name matched more than one thing.
+            SelectorNotInGraph: A name matched nothing.
+            ValueError: A bound is out of range, or the two endpoints are the same position.
+        """
+        return self.backend.paths_between(src, dst, src_within=src_within, dst_within=dst_within, depth=depth, max_paths=max_paths)
+
+    def call_paths_between(self, src: str, dst: str, *, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+        """Return how one callable reaches another — the evidence-carrying form of :meth:`reaches`.
+
+        Every hop is ``via="call"`` with no variable and no provenance: a call is a syntactic fact,
+        and saying so is better than inventing a provenance for it. ``depth`` is unbounded by
+        default.
+
+        Raises:
+            AmbiguousName: Either name matched more than one callable.
+            SelectorNotInGraph: Either matched nothing.
+            ValueError: A bound is out of range, or ``src`` and ``dst`` name the same callable.
+        """
+        return self.backend.call_paths_between(src, dst, depth=depth, max_paths=max_paths)
+
+    def flows_to_call(self, src: str, callee: str, *, within: str, depth: int | None = None) -> bool:
+        """Return whether this value reaches **any** argument of a call to ``callee``.
+
+        A dataflow claim, not a control one: a value that merely runs before a call site and feeds
+        none of its arguments is not counted. ``depth`` is unbounded by default — a bare ``False``
+        carries no signal that a bound fired.
+
+        Args:
+            src: The value, named as a caller would.
+            callee: The called callable.
+            within: The callable ``src`` enters. Required; it scopes ``src`` only.
+            depth: Most hops; ``None`` for no bound.
+
+        Raises:
+            AmbiguousName: A name matched more than one thing.
+            SelectorNotInGraph: A name matched nothing.
+            ValueError: ``depth`` is not a positive ``int``.
+        """
+        return self.backend.flows_to_call(src, callee, within=within, depth=depth)
+
+    def flows_to_argument(self, src: str, callee: str, arg: str, *, within: str, depth: int | None = None) -> bool:
+        """Return whether this value reaches the argument ``arg`` of a call to ``callee``.
+
+        The narrower question: a tainted value routinely reaches a function without reaching the
+        parameter that matters. ``arg`` is resolved **by name**, never by position.
+
+        Args:
+            src: The value the flow starts at.
+            callee: The called callable.
+            arg: The callee's parameter, by name.
+            within: The callable ``src`` enters. Required; ``arg`` is scoped by ``callee``.
+            depth: Most hops; ``None`` for no bound.
+
+        Raises:
+            AmbiguousName: A name matched more than one thing.
+            SelectorNotInGraph: A name matched nothing — including ``arg`` naming no parameter of
+                ``callee``, which is a caller error and not a ``False``.
+            ValueError: ``depth`` is not a positive ``int``.
+        """
+        return self.backend.flows_to_argument(src, callee, arg, within=within, depth=depth)
