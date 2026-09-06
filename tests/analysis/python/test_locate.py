@@ -253,16 +253,16 @@ def test_locate_parity_documented_module_source_divergence(py, py_local):
 # Application scope, path normalisation, and the file_not_in_graph distinction.
 # ================================================================================================
 def test_locate_query_is_scoped_to_the_application(py, fake_driver):
-    """Every other query in neo4j_backend.py constrains ``_module IN $mods``; so must this one, or
-    a same-valued file_key from another application in the same database can win."""
+    """Every other query in neo4j_backend.py constrains ``.id STARTS WITH $prefix``; so must this
+    one, or a same-valued file_key from another application in the same database can win."""
     py.locate("src/app.py", 21)
     statement = next(s for s in fake_driver.statements if "UNWIND $positions AS pos" in s)
-    assert "c._module IN $mods" in statement
+    assert "c.id STARTS WITH $prefix" in statement
 
 
 def test_locate_scope_is_actually_honoured(py):
-    """Not just present in the text: drop the application's module keys and no callable matches."""
-    py._modules = []
+    """Not just present in the text: attach as another application and no callable matches."""
+    py.application_name = "some_other_application"
     r = py.locate("src/app.py", 21)
     assert r.callable is None
     assert "module_scope" in [d.code for d in r.diagnostics]

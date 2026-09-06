@@ -89,6 +89,9 @@ NEO4J_URI = os.environ.get("CLDK_TEST_NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = os.environ.get("CLDK_TEST_NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.environ.get("CLDK_TEST_NEO4J_PASSWORD", "neo4j")
 APP_NAME = os.environ.get("CLDK_TEST_NEO4J_APP", "odoo-slim-19")
+#: The application's id prefix -- the scope every SDK statement carries, and the scope this
+#: suite's own fixture-derivation Cypher carries too, since a 1.4.1 graph has no ``_module``.
+APP_PREFIX = f"can://python/{APP_NAME}/"
 
 # The four relationship types PyNeo4jBackend._probe_schema insists on. Duplicated here on purpose:
 # a test that imports the constant it is checking cannot catch the constant changing.
@@ -195,7 +198,7 @@ def sample(cypher) -> Dict[str, Any]:
         """
         MATCH (m:PyModule) WITH m.module_name AS mn, collect(m.file_key) AS ks WHERE size(ks) = 1
         WITH mn, ks[0] AS path
-        MATCH (any:PyCallable {_module: path}) WITH mn, path, min(any.start_line) AS first_def
+        MATCH (any:PyCallable) WHERE any.id STARTS WITH $prefix + path + '/' WITH mn, path, min(any.start_line) AS first_def
         WHERE first_def > 2
         MATCH (:PyModule {file_key: path})-[:PY_DECLARES]->(c:PyCallable)-[:PY_HAS_BODY_NODE]->(b:PyBodyNode)
         WHERE c.code IS NOT NULL AND c.end_line - c.start_line >= 3
@@ -205,7 +208,8 @@ def sample(cypher) -> Dict[str, Any]:
                mn AS module_name, path AS module_path, c.start_line AS start_line,
                c.end_line AS end_line, call_line, first_def
         ORDER BY c.signature LIMIT 1
-        """
+        """,
+        prefix=APP_PREFIX,
     )
     assert rows, "no top-level module function in the graph satisfies the fixture constraints"
     picked = dict(rows[0])
@@ -349,7 +353,8 @@ def test_overview_path_joins_locate_and_class_overview(analysis, sample, cypher)
     # callable overview draws from. (Not a subset check against the callable paths: a module can
     # declare a class and no callable, and 66 of this application's 1,157 class-bearing modules do.)
     module_keys = {r["k"] for r in cypher("MATCH (:PyApplication {name: $n})-[:PY_HAS_MODULE]->(m:PyModule) RETURN m.file_key AS k", n=APP_NAME)}
-    class_paths = {r["p"] for r in cypher("MATCH (cl:PyClass) WHERE cl._module IN $m RETURN DISTINCT cl._module AS p", m=list(module_keys))}
+    # Task 2: the ``cl._module AS p`` projection becomes a key derived from ``cl.id``.
+    class_paths = {r["p"] for r in cypher("MATCH (cl:PyClass) WHERE cl.id STARTS WITH $prefix RETURN DISTINCT cl._module AS p", prefix=APP_PREFIX)}
     assert class_paths, "no classes in the graph"
     assert row.path in module_keys and class_paths <= module_keys, "class and callable overviews disagree on path spelling"
 
@@ -534,10 +539,11 @@ def test_locate_many_agrees_with_locate_position_by_position(analysis, sample, c
     """``locate_many`` is not allowed to drift from ``locate``, nor to reorder its results."""
     others = cypher(
         """
-        MATCH (c:PyCallable) WHERE c.code IS NOT NULL AND c.start_line IS NOT NULL AND c.end_line > c.start_line
+        MATCH (c:PyCallable) WHERE c.id STARTS WITH $prefix AND c.code IS NOT NULL AND c.start_line IS NOT NULL AND c.end_line > c.start_line
         RETURN c._module AS path, c.start_line + 1 AS line, c.signature AS signature
         ORDER BY c.signature LIMIT 12
-        """
+        """,
+        prefix=APP_PREFIX,  # Task 2: ``c._module AS path`` becomes a key derived from ``c.id``
     )
     positions = [(sample["module_path"], sample["inner_line"])]
     positions += [(r["path"], r["line"]) for r in others]
@@ -563,9 +569,10 @@ def test_locate_many_is_a_single_round_trip(analysis, cypher):
         (r["path"], r["line"])
         for r in cypher(
             """
-            MATCH (c:PyCallable) WHERE c.start_line IS NOT NULL AND c.end_line > c.start_line
+            MATCH (c:PyCallable) WHERE c.id STARTS WITH $prefix AND c.start_line IS NOT NULL AND c.end_line > c.start_line
             RETURN c._module AS path, c.start_line + 1 AS line ORDER BY c.signature LIMIT 40
-            """
+            """,
+            prefix=APP_PREFIX,  # Task 2: ``c._module AS path`` becomes a key derived from ``c.id``
         )
     ]
     assert len(positions) == 40
@@ -809,6 +816,32 @@ def test_entrypoint_report_is_genuinely_absent_from_the_graph(cypher):
 
 
 # =====================================================================================
+# The analyzer-version probe (leg 1.6, F2), on whichever generation this graph is
+# =====================================================================================
+def test_attach_warns_on_a_1_4_0_graph_and_is_silent_from_1_4_1(cypher, caplog):
+    """1.4.0 graphs are served (same id grammar) with one warning that scoped queries scan, since
+    they carry no ``:PyCanNode`` index; 1.4.1 and newer attach silently. Which branch this graph
+    exercises is read off the graph, so the same test is the back-compat gate on 7688 and the
+    silence check on 7689."""
+    version = cypher("MATCH (a:PyApplication {name: $n}) RETURN a.analyzer_version AS v", n=APP_NAME)[0]["v"]
+    with caplog.at_level(logging.WARNING, logger="cldk.analysis.python.neo4j.neo4j_backend"):
+        facade = CLDK.python(backend=Neo4jConnectionConfig(uri=NEO4J_URI, username=NEO4J_USER, password=NEO4J_PASSWORD, application_name=APP_NAME))
+        facade.backend.close()
+    warnings = [r.getMessage() for r in caplog.records if "scan rather than seek" in r.getMessage()]
+    if version == "1.4.0":
+        assert len(warnings) == 1 and "1.4.0" in warnings[0]
+    else:
+        assert not warnings, f"a {version} graph should attach silently"
+
+
+def test_attaching_to_an_absent_application_is_refused_not_served_empty():
+    """The version probe doubles as the "is this application even here" check: no ``:PyApplication``
+    of that name means no version, and unknown is refused rather than served as silent empties."""
+    with pytest.raises(GraphSchemaMismatch, match="1.4.0 or newer"):
+        CLDK.python(backend=Neo4jConnectionConfig(uri=NEO4J_URI, username=NEO4J_USER, password=NEO4J_PASSWORD, application_name="definitely-not-an-application-here"))
+
+
+# =====================================================================================
 # External symbols and resolution
 # =====================================================================================
 def test_get_external_symbols_is_non_empty_and_application_scoped(analysis, cypher):
@@ -945,8 +978,8 @@ def busy_callable(cypher, module_keys) -> Dict[str, Any]:
     """
     rows = cypher(
         """
-        MATCH (m:PyModule)-[:PY_DECLARES]->(c:PyCallable) WHERE c._module IN $mods
-        MATCH (caller:PyCallable)-[:PY_CALLS]->(c) WHERE caller._module IN $mods
+        MATCH (m:PyModule)-[:PY_DECLARES]->(c:PyCallable) WHERE c.id STARTS WITH $prefix
+        MATCH (caller:PyCallable)-[:PY_CALLS]->(c) WHERE caller.id STARTS WITH $prefix
         WITH m, c, count(caller) AS n_callers
         WHERE n_callers > 0
         MATCH (c)-[:PY_CALLS]->(ext:PyExternal)
@@ -954,7 +987,7 @@ def busy_callable(cypher, module_keys) -> Dict[str, Any]:
         RETURN m.module_name AS module_name, c.name AS name, c.signature AS signature, external_callee_id
         ORDER BY c.signature LIMIT 1
         """,
-        mods=list(module_keys),
+        prefix=APP_PREFIX,
     )
     assert rows, "no top-level module function here has both a real caller and an external callee"
     return dict(rows[0])
@@ -971,8 +1004,8 @@ def test_get_call_graph_builds_with_external_targets_resolved(analysis, cypher, 
     graph = analysis.get_call_graph()
 
     expected_edges = cypher(
-        "MATCH (s:PyCallable|PyExternal)-[r:PY_CALLS]->(t:PyCallable|PyExternal) WHERE s._module IN $mods RETURN count(r) AS c",
-        mods=list(module_keys),
+        "MATCH (s:PyCallable)-[r:PY_CALLS]->(t:PyCallable|PyExternal) WHERE s.id STARTS WITH $prefix RETURN count(r) AS c",
+        prefix=APP_PREFIX,
     )[0]["c"]
     assert graph.number_of_edges() == expected_edges
     assert graph.number_of_nodes() > 0
@@ -1085,8 +1118,8 @@ def test_get_classes_returns_every_top_level_class(analysis, cypher):
 # wrong direction because nothing exercised it.
 # =====================================================================================
 _CROSSING_FLOW = """
-MATCH (a:PyBodyNode {kind:'formal_in', _module:$mod})-[:PY_DDG]->(:PyBodyNode)-[:PY_DDG]->(:PyBodyNode {kind:'actual_in'})-[:PY_PARAM_IN]->(v:PyBodyNode {kind:'formal_in'})
-WHERE a.var IS NOT NULL AND NOT a.var STARTS WITH '<' AND v.var IS NOT NULL AND NOT v.var STARTS WITH '<'
+MATCH (a:PyBodyNode {kind:'formal_in'})-[:PY_DDG]->(:PyBodyNode)-[:PY_DDG]->(:PyBodyNode {kind:'actual_in'})-[:PY_PARAM_IN]->(v:PyBodyNode {kind:'formal_in'})
+WHERE a.id STARTS WITH $module_prefix AND a.var IS NOT NULL AND NOT a.var STARTS WITH '<' AND v.var IS NOT NULL AND NOT v.var STARTS WITH '<'
 WITH a, v ORDER BY a.id, v.id LIMIT 1
 MATCH (c1:PyCallable)-[:PY_HAS_BODY_NODE]->(a) MATCH (c2:PyCallable)-[:PY_HAS_BODY_NODE]->(v)
 RETURN c1.signature AS src_callable, a.var AS src_value, a.id AS src_ref,
@@ -1099,9 +1132,9 @@ def crossing_flow(analysis, cypher, module_keys) -> Dict[str, Any]:
     """A real value-to-value flow that crosses a call boundary, found by asking the graph.
 
     Scoped to one module at a time and taken from the first module (in ``file_key`` order) that has
-    one: the unscoped form is the same query without ``_module``, and it takes 66 seconds because
-    ordering the whole crossing set is the cost. Module-scoped it is 0.08 s, and the first hit on
-    this graph is the fifth module.
+    one: the unscoped form is the same query without the module prefix, and it takes 66 seconds
+    because ordering the whole crossing set is the cost. Module-scoped it is 0.08 s, and the first
+    hit on this graph is the fifth module.
 
     Both ends are then run back through ``resolve_value``, and a module whose names do not resolve
     uniquely is skipped rather than worked around: the fixture has to be addressable *the way a
@@ -1109,7 +1142,7 @@ def crossing_flow(analysis, cypher, module_keys) -> Dict[str, Any]:
     real front door.
     """
     for path in sorted(module_keys)[:40]:
-        rows = cypher(_CROSSING_FLOW, mod=path)
+        rows = cypher(_CROSSING_FLOW, module_prefix=f"{APP_PREFIX}{path}/")
         if not rows:
             continue
         found = dict(rows[0])
@@ -1234,6 +1267,53 @@ def test_paths_between_explains_the_flow_the_slice_only_asserts(analysis, crossi
         assert p.weakest in p.hops
         assert all(set(h.prov) <= {"ssa", "reaching-defs", "points-to"} for h in p.hops)
     assert len({tuple((h.via, h.var, h.to.ref) for h in p.hops) for p in paths}) == len(paths), "no path is returned twice"
+
+
+@pytest.fixture(scope="module")
+def ghost_chain(cypher) -> Dict[str, str]:
+    """A real ``callable -> @external ghost -> callable`` chain inside this application with **no
+    all-callable route** beside it, or skip.
+
+    Found by asking the graph, not hard-coded: leg 1.5 found two on this graph, both through
+    ``odoo.tools/parse_version``, and a rebuilt graph may hold different ones or none. The
+    all-callable check is the same quantified path pattern ``reaches`` compiles to, run here as
+    ground truth so the assertion below is about the ghost and nothing else.
+    """
+    chains = cypher(
+        "MATCH (a:PyCallable)-[:PY_CALLS]->(g:PyExternal)-[:PY_CALLS]->(b:PyCallable) "
+        "WHERE a.id STARTS WITH $prefix AND b.id STARTS WITH $prefix AND a <> b "
+        "RETURN a.signature AS src, g.id AS ghost, b.signature AS dst ORDER BY src, ghost, dst LIMIT 20",
+        prefix=APP_PREFIX,
+    )
+    for chain in chains:
+        routed = cypher(
+            "MATCH (a:PyCallable {signature:$a}) WHERE a.id STARTS WITH $prefix "
+            "MATCH (a) ((x:PyCallable)-[:PY_CALLS]->(y:PyCallable) WHERE x.id STARTS WITH $prefix){1,} (m:PyCallable) "
+            "WITH DISTINCT m WHERE m.signature = $b RETURN count(m) > 0 AS ok",
+            a=chain["src"], b=chain["dst"], prefix=APP_PREFIX,
+        )[0]["ok"]
+        if not routed:
+            return dict(chain)
+    pytest.skip("every callable -> ghost -> callable chain on this graph also has an all-callable route, so none isolates the ghost rule")
+
+
+def test_a_ghost_is_reached_but_never_traversed_through(analysis, ghost_chain):
+    """The ghost rule (leg 1.5, kept by leg 1.6 F5) asserted on the live predicates.
+
+    Every ghost's id sits under the application prefix -- ``can://python/<app>/@external/...`` --
+    so a prefix predicate alone would admit it as a hop *source* and ``reaches`` would answer
+    ``True`` through it, contradicting ``get_call_graph``, which both backends build from
+    declared-callable-origin edges only. The chain here is chosen so the source calls **no**
+    all-callable route to ``dst`` exists (verified in Cypher by the fixture), so the ghost is the
+    whole question, not a detour beside a legitimate path.
+    """
+    src, dst = ghost_chain["src"], ghost_chain["dst"]
+    assert analysis.reaches(src, dst) is False, f"reaches walked through {ghost_chain['ghost']}"
+    paths = analysis.call_paths_between(src, dst)
+    assert not [p for p in paths if any(h.to.kind == "external" for h in p.hops[:-1])], "a path routed through a ghost"
+    assert not paths, "no all-callable route exists, so there is no path to return"
+    # The ghost itself is still reached: it is a legitimate callee of the source.
+    assert ghost_chain["ghost"] in {c.ref for c in analysis.callees_of(src)}
 
 
 def test_call_paths_between_agrees_with_reaches(analysis, crossing_flow):

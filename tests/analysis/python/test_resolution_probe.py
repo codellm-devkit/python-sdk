@@ -42,8 +42,8 @@ def test_has_resolution_edges_false_on_a_level_1_graph(fake_driver):
 
 
 def test_probe_is_scoped_to_this_applications_modules(fake_driver):
-    """The probe query filters on ``s._module IN $mods`` -- verify the Cypher actually does, not
-    just that the boolean comes back right."""
+    """The probe query filters on ``s.id STARTS WITH $prefix`` -- verify the Cypher actually does,
+    not just that the boolean comes back right."""
     seen_queries = []
 
     def responder(query, params):
@@ -55,8 +55,8 @@ def test_probe_is_scoped_to_this_applications_modules(fake_driver):
     probe_calls = [(q, p) for q, p in seen_queries if "PY_RESOLVES_TO" in q]
     assert len(probe_calls) == 1
     query, params = probe_calls[0]
-    assert "s._module IN $mods" in query
-    assert "mods" in params
+    assert "s.id STARTS WITH $prefix" in query
+    assert params["prefix"] == "can://python/app/"
 
 
 def test_probe_does_not_raise_on_a_legitimate_empty_result(fake_driver):

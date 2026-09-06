@@ -100,6 +100,8 @@ class FakeSession:
         self._driver.statements.append(query)
         if "db.relationshipTypes" in query:
             return [_FakeRecord({"relationshipType": rt}) for rt in self._driver.rel_types]
+        if "RETURN a.analyzer_version AS v" in query:
+            return [] if self._driver.analyzer_version is None else [_FakeRecord({"v": self._driver.analyzer_version})]
         if self._driver.responder is not None:
             return [_FakeRecord(d) for d in self._driver.responder(query, params)]
         return []
@@ -109,8 +111,9 @@ class FakeSession:
 
 
 class FakeDriver:
-    """Stub Neo4j driver with a settable ``rel_types`` set, standing in for a real
-    ``neo4j.GraphDatabase`` driver in unit tests.
+    """Stub Neo4j driver with a settable ``rel_types`` set and ``analyzer_version`` (``None``
+    means "no :PyApplication of that name"), standing in for a real ``neo4j.GraphDatabase``
+    driver in unit tests.
 
     ``responder``, when set, answers every statement that isn't the schema probe — a tiny
     in-memory Cypher stub (query text, params) -> rows, the same shape as the ad hoc
@@ -122,8 +125,10 @@ class FakeDriver:
         self,
         rel_types: set[str] | frozenset[str] = _V2_RELATIONSHIP_TYPES,
         responder: Callable[[str, dict], list[dict]] | None = None,
+        analyzer_version: str | None = "1.4.1",
     ) -> None:
         self.rel_types: set[str] = set(rel_types)
+        self.analyzer_version = analyzer_version
         self.statements: list[str] = []
         self.responder = responder
 
@@ -353,7 +358,7 @@ def _locate_callable_id(signature: str) -> str:
     """A stand-in for the analyzer's ``can://`` id. Only its shape matters here: a body node's graph
     ``id`` is ``<callable id>@<body key>``, which is what the Neo4j backend's innermost-node tie
     break splits on."""
-    return f"can://{_LOCATE_MODULE_PATH}#{signature}"
+    return f"can://python/app/{_LOCATE_MODULE_PATH}/{signature}"
 
 
 # -----[ the local backend's view: a real in-memory PyApplication ]-----
@@ -462,17 +467,18 @@ def _locate_responder(query: str, params: dict) -> list[dict]:
     ``get_source`` for the ``py`` fixture.
 
     This evaluates the query's WHERE clauses rather than short-circuiting them, so the assertions it
-    backs are about the query the backend actually sends: ``$mods`` really gates the callable match
-    (drop the application's module keys and the callables disappear), a callable row repeats once per
-    matching body node, and every containment decision is made on lines the way Cypher would.
+    backs are about the query the backend actually sends: ``$prefix`` really gates the callable
+    match (attach as another application and the callables disappear), a callable row repeats once
+    per matching body node, and every containment decision is made on lines the way Cypher would.
     """
+    in_scope = "prefix" in params and _locate_callable_id("").startswith(params["prefix"])
     if "RETURN m.file_key AS k" in query:
         return [{"k": _LOCATE_MODULE_PATH}]
     if "c.code IS NOT NULL" in query:
         # get_method_bodies (bulk, "c.signature IN $sigs") and get_source (single, "c.signature =
-        # $sig") both gate on $mods and on a real code property -- a bodyless callable (has_span
+        # $sig") both gate on $prefix and on a real code property -- a bodyless callable (has_span
         # False, e.g. Store.stub) has none, so it is simply absent from the rows, never "".
-        if _LOCATE_MODULE_PATH not in params.get("mods", []):
+        if not in_scope:
             return []
         if "IN $sigs" in query:
             return [
@@ -489,8 +495,7 @@ def _locate_responder(query: str, params: dict) -> list[dict]:
         if pos["path"] != _LOCATE_MODULE_PATH:
             rows.append(_locate_row(pos["idx"]))  # no :PyModule for this file_key
             continue
-        # ``OPTIONAL MATCH (c:PyCallable {_module: pos.path}) WHERE c._module IN $mods AND ...``
-        in_scope = _LOCATE_MODULE_PATH in params["mods"]
+        # ``OPTIONAL MATCH (c:PyCallable {_module: pos.path}) WHERE c.id STARTS WITH $prefix AND ...``
         matches = [c for c in _LOCATE_CALLABLE_SPECS if in_scope and c["start_line"] <= pos["line"] <= c["end_line"]]
         if not matches:
             rows.append(_locate_row(pos["idx"], _LOCATE_MODULE_PROPS))

@@ -1461,7 +1461,7 @@ def test_local_locate_speaks_the_repo_relative_path(slice_l4):
 def test_slice_node_kinds_are_the_graphs_vocabulary_translated(live_analysis):
     """``SliceNode.KINDS`` is pinned against the graph's own ``:PyBodyNode.kind`` values, each
     translated the way both backends translate it, plus the two call-graph kinds."""
-    graph_kinds = {r["k"] for r in live_analysis.backend._run("MATCH (b:PyBodyNode) WHERE b._module IN $mods RETURN DISTINCT b.kind AS k", mods=live_analysis.backend._modules)}
+    graph_kinds = {r["k"] for r in live_analysis.backend._run("MATCH (b:PyBodyNode) WHERE b.id STARTS WITH $prefix RETURN DISTINCT b.kind AS k", prefix=live_analysis.backend._scope_prefix)}
     assert graph_kinds, "no body nodes?"
     translated = set()
     for kind in graph_kinds:

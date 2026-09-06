@@ -131,7 +131,7 @@ def test_entrypoints_query_filters_on_is_entrypoint_property():
     assert [o.signature for o in eps] == ["svc.app.handler"]
     assert isinstance(eps[0], PyCallableOverview)
     query = run.call_args.args[0]
-    assert "c._module IN $mods" in query
+    assert "c.id STARTS WITH $prefix" in query
     assert "SET" not in query and "CREATE" not in query and "MERGE" not in query and "DELETE" not in query
 
 
@@ -209,7 +209,7 @@ def test_entrypoint_classes_query_filters_on_is_entrypoint_property():
     assert [c.signature for c in classes] == ["svc.views.AdminView"]
     assert isinstance(classes[0], PyClassOverview)
     query = run.call_args.args[0]
-    assert "cl._module IN $mods" in query
+    assert "cl.id STARTS WITH $prefix" in query
     assert "SET" not in query and "CREATE" not in query and "MERGE" not in query and "DELETE" not in query
 
 
