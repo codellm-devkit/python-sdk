@@ -31,3 +31,6 @@ artifacts. `a4` has `max_level 4`, 4 symbol-table keys, `call_graph` 247 edges, 
 both `cancelOrder` overloads on `TradeDirect` (`cancelOrder(java.lang.Integer, boolean)`,
 `cancelOrder(java.sql.Connection, java.lang.Integer)`). Artifact text (default `--artifact-text`,
 256 KiB cap) is included in both; the four `jmeter_files/*.jmx` are the largest entries.
+
+
+The committed files are gzip-compressed (`analysis.json.gz`, `gzip -9`) because the analyzer pretty-prints and the raw pair is 18.7 MB; `tests/conftest.py` reads them with `gzip.open`. Regenerate, then `gzip -9 -k` — never hand-edit.

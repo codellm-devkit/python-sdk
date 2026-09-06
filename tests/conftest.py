@@ -23,6 +23,7 @@ import os
 os.putenv("ASAN_DISABLE", "1")
 os.putenv("ASAN_OPTIONS", "verify_asan_link_order=0")
 
+import gzip
 import json
 from pdb import set_trace
 import shutil
@@ -56,7 +57,7 @@ def analysis_json(analysis_json_fixture) -> str:
     """Opens the analysis.json file and returns the contents as a json string"""
     json_file = {}
     # Read the json file and return it as a json string
-    with open(os.path.join(analysis_json_fixture, "analysis.json"), "r", encoding="utf-8") as json_data:
+    with gzip.open(os.path.join(analysis_json_fixture, "analysis.json.gz"), "rt", encoding="utf-8") as json_data:
         json_file = json.dumps(json.load(json_data))
 
     return json_file
@@ -65,7 +66,7 @@ def analysis_json(analysis_json_fixture) -> str:
 @pytest.fixture(scope="session")
 def analysis_json_a4(analysis_json_fixture) -> str:
     """The codeanalyzer-java 3.0.1 ``-a 4`` fixture (``v2/a4``) as a JSON string."""
-    with open(analysis_json_fixture.parent / "a4" / "analysis.json", "r", encoding="utf-8") as json_data:
+    with gzip.open(analysis_json_fixture.parent / "a4" / "analysis.json.gz", "rt", encoding="utf-8") as json_data:
         return json.dumps(json.load(json_data))
 
 
