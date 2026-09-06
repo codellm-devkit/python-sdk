@@ -33,15 +33,14 @@ index — so a collision is exactly the condition under which an unscoped statem
 applications' children. Every child below is named for its own application, so a leak is visible
 by name rather than by count.
 
-**Why the seven buckets covered here are the seven that can leak.** Of the eleven child
-collections, four (``module_classes``, ``module_functions``, ``module_variables``,
-``module_imports``) are keyed by a module ``file_key`` rather than a signature. Their per-parent
-statements pin the parent with ``{file_key: $fk}`` and their bulk rows come back under
-``pk = file_key``, so separating two applications there requires their module keys to differ —
-and if two applications *shared* a module key, ``$mods`` (a list of module keys) could not tell
-them apart either, since it is the same key. Those four are covered by
-``test_every_child_statement_carries_the_application_scope`` instead, which is what catches the
-predicate being dropped from them.
+**The four module-keyed collections** (``module_classes``, ``module_functions``,
+``module_variables``, ``module_imports``) are addressed by a module ``file_key`` rather than a
+signature, and ``$mods`` (a list of module keys) cannot tell two applications apart when they
+*share* a key -- ``src/__init__.py`` in both is the ordinary case, not an exotic one. So those
+statements carry the application's id prefix too, and the second fixture below is exactly that
+collision: one ``file_key`` declared by both applications, a function named for each. The audit
+``test_every_child_statement_carries_the_application_scope`` catches the predicate being dropped
+from any of the eleven.
 """
 
 from __future__ import annotations
@@ -130,6 +129,15 @@ _EXPECTED: Dict[str, tuple[Any, set[str]]] = {
     "callable_variables": (lambda c: {v.name for v in c.callables["alpha_method"].local_variables}, {"alpha_var"}),
 }
 
+#: The module-key collision: one ``file_key`` declared by **both** applications, each holding one
+#: top-level function named for its application. ``module_id`` puts the application in the id and
+#: nowhere else, exactly as for the class fixture above.
+SHARED_MODULE = "src/__init__.py"
+_SHARED_FUNCTIONS: Dict[str, Dict[str, Any]] = {
+    app: {"id": f"{module_id(app, SHARED_MODULE)}/{name}", "signature": f"src.{name}", "name": name, "path": SHARED_MODULE}
+    for app, name in ((APP_A, "alpha_fn"), (APP_B, "beta_fn"))
+}
+
 # One :PyClass node per application, same signature, different owning module — what ``get_class``
 # and ``get_all_classes`` select on before any child fetch happens.
 _CLASSES: List[Dict[str, Any]] = [
@@ -137,13 +145,15 @@ _CLASSES: List[Dict[str, Any]] = [
     _node(APP_B_MODULE, "Widget", signature=CLASS_SIG, name="Widget", path=APP_B_MODULE),
 ]
 
-#: The two spellings of the application scope a statement may carry: the whole application
-#: (``$prefix``) or, for a narrowed bulk fetch, a list of per-module prefixes (``$prefixes``).
-_MATCHES_BY_PREFIX = re.compile(r"\.id STARTS WITH \$prefix\b|any\(p IN \$prefixes WHERE \w+\.id STARTS WITH p\)")
+#: The three spellings of the application scope a statement may carry: the whole application
+#: (``$prefix``); for a narrowed bulk fetch, a list of per-module prefixes (``$prefixes``); and for
+#: ``locate``, one module's own prefix per position (``pos.module_prefix``, minted from the same
+#: application name). ``file_key IN $mods`` is *not* one: a module key is not application-stamped.
+_MATCHES_BY_PREFIX = re.compile(r"\.id STARTS WITH (\$prefix\b|pos\.module_prefix\b)|any\(p IN \$prefixes WHERE \w+\.id STARTS WITH p\)")
 
 
 def _is_scoped(statement: str) -> bool:
-    return bool(_MATCHES_BY_PREFIX.search(statement)) or "IN $mods" in statement
+    return bool(_MATCHES_BY_PREFIX.search(statement))
 
 
 def _bucket_of(query: str) -> str | None:
@@ -167,6 +177,8 @@ def _bucket_of(query: str) -> str | None:
         return "callable_inner_callables"
     if "(d:PyClass)" in query:
         return "callable_inner_classes"
+    if "(f:PyCallable)" in query:
+        return "module_functions"
     return None
 
 
@@ -179,7 +191,7 @@ def _in_scope(query: str, params: Dict[str, Any], props: Dict[str, Any]) -> bool
         return props["id"].startswith(params["prefix"])
     if "$prefixes" in query:
         return any(props["id"].startswith(p) for p in params["prefixes"])
-    if "IN $mods" in query:
+    if "_module IN $mods" in query:
         return props.get("_module") in (params.get("mods") or [])
     return True
 
@@ -187,6 +199,16 @@ def _in_scope(query: str, params: Dict[str, Any], props: Dict[str, Any]) -> bool
 def _fake_two_app_cypher(query: str, **params: Any) -> List[Dict[str, Any]]:
     """Answer the statements a class reconstruction issues, honestly (see :func:`_in_scope`)."""
     bucket = _bucket_of(query)
+    if bucket == "module_functions":
+        # Keyed by file_key: the per-parent twin names it (``$fk``), the bulk twin lists the scope
+        # (``$mods``). Both applications declare SHARED_MODULE, so that filter alone admits both.
+        wanted = [params["fk"]] if "fk" in params else (params.get("mods") or [])
+        if SHARED_MODULE not in wanted:
+            return []
+        rows = [props for props in _SHARED_FUNCTIONS.values() if _in_scope(query, params, props)]
+        if "AS pk" in query:
+            return [{"pk": SHARED_MODULE, "p": props} for props in rows]
+        return [{"p": props} for props in rows]
     if bucket in _CHILDREN:
         pk, by_module = _CHILDREN[bucket]
         if params.get("sig", pk) != pk:  # a per-parent statement about some other parent
@@ -216,7 +238,7 @@ def _two_app_backend(record: List[str] | None = None) -> PyNeo4jBackend:
     backend._database = None
     backend._driver = None
     backend._session_obj = None
-    backend._modules = [APP_A_MODULE]
+    backend._modules = [APP_A_MODULE, SHARED_MODULE]
     backend._call_graph = None
     backend._run = run
     return backend
@@ -226,7 +248,7 @@ def test_the_fake_graph_carries_no_module_property():
     """What a 1.4.1 graph is: scope lives in the id, and there is no ``_module`` to fall back on.
     A fixture that grew the property back would let a ``_module``-scoped statement pass here while
     returning nothing on a real graph."""
-    nodes = [c for _, by_module in _CHILDREN.values() for c in by_module.values()] + _CLASSES
+    nodes = [c for _, by_module in _CHILDREN.values() for c in by_module.values()] + _CLASSES + list(_SHARED_FUNCTIONS.values())
     assert nodes and not any("_module" in n for n in nodes)
     assert all(n["id"].startswith(("can://python/app_a/", "can://python/app_b/")) for n in nodes)
 
@@ -268,6 +290,21 @@ def test_every_signature_keyed_child_collection_is_application_scoped(bucket: st
 
     extract, expected = _EXPECTED[bucket]
     assert extract(cls) == expected, f"{bucket} leaked another application's children"
+
+
+@pytest.mark.parametrize("bulk", [False, True], ids=["per_parent", "bulk"])
+def test_a_module_key_shared_by_two_applications_does_not_leak(bulk: bool):
+    """``file_key IN $mods`` cannot separate two applications that both declare ``src/__init__.py``;
+    only the id prefix can. Application A's module must come back with A's function and not B's,
+    on both fetch paths."""
+    backend = _two_app_backend()
+    props = {"file_key": SHARED_MODULE, "module_name": "src"}
+    if bulk:
+        with backend._bulk():
+            module = backend._module_full(props)
+    else:
+        module = backend._module_full(props)
+    assert set(module.functions) == {"alpha_fn"}, "the module-keyed fetch leaked another application's function"
 
 
 def test_every_child_statement_carries_the_application_scope():

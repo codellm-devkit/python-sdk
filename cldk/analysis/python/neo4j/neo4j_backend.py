@@ -80,7 +80,8 @@ import logging
 import re
 from collections import defaultdict
 from contextlib import contextmanager
-from typing import Any, Dict, List, Sequence, Tuple
+from functools import cached_property
+from typing import Any, Callable, Dict, FrozenSet, List, Sequence, Tuple
 
 import networkx as nx
 from codeanalyzer.schema import model_dump_json
@@ -168,14 +169,14 @@ def _semver(raw: Any) -> Tuple[int, int, int] | None:
 # merge another application's methods while ``get_all_classes`` would not.
 _BULK_CHILD_QUERIES: Dict[str, str] = {
     # module -> its own top-level declarations
-    "module_classes": "MATCH (m:PyModule)-[:PY_DECLARES]->(c:PyClass) WHERE m.file_key IN $mods RETURN m.file_key AS pk, properties(c) AS p",
-    "module_functions": "MATCH (m:PyModule)-[:PY_DECLARES]->(f:PyCallable) WHERE m.file_key IN $mods RETURN m.file_key AS pk, properties(f) AS p",
+    "module_classes": "MATCH (m:PyModule)-[:PY_DECLARES]->(c:PyClass) WHERE m.file_key IN $mods AND m.id STARTS WITH $prefix RETURN m.file_key AS pk, properties(c) AS p",
+    "module_functions": "MATCH (m:PyModule)-[:PY_DECLARES]->(f:PyCallable) WHERE m.file_key IN $mods AND m.id STARTS WITH $prefix RETURN m.file_key AS pk, properties(f) AS p",
     "module_variables": (
-        "MATCH (m:PyModule)-[:PY_DECLARES_VAR]->(v:PyVariable) WHERE m.file_key IN $mods "
+        "MATCH (m:PyModule)-[:PY_DECLARES_VAR]->(v:PyVariable) WHERE m.file_key IN $mods AND m.id STARTS WITH $prefix "
         "RETURN m.file_key AS pk, properties(v) AS p ORDER BY v.start_line, v.name"
     ),
     "module_imports": (
-        "MATCH (m:PyModule)-[e:PY_IMPORTS]->(pkg:PyPackage) WHERE m.file_key IN $mods "
+        "MATCH (m:PyModule)-[e:PY_IMPORTS]->(pkg:PyPackage) WHERE m.file_key IN $mods AND m.id STARTS WITH $prefix "
         "RETURN m.file_key AS pk, pkg.name AS module, e.imported_names AS names"
     ),
     # class -> its members
@@ -196,8 +197,12 @@ _BULK_CHILD_QUERIES: Dict[str, str] = {
 }
 
 
-def _slice_node(row: Dict[str, Any]) -> SliceNode:
+def _slice_node(row: Dict[str, Any], module_key: Callable[[str], str]) -> SliceNode:
     """One row of the slice query as a :class:`SliceNode`, in the caller's vocabulary.
+
+    ``file`` is derived from the body node's own ``ref`` by ``module_key`` (the backend's
+    :meth:`PyNeo4jBackend._module_key`): a body-node id is its callable's id plus ``@<key>``, so
+    both embed the same module key, and the graph stores no path to project instead.
 
     ``kind``/``name`` go through :func:`~cldk.analysis.commons.resolve.body_node_kind`, the same
     translation the local backend uses, so a vertex a caller addressed through ``resolve_value``
@@ -210,7 +215,7 @@ def _slice_node(row: Dict[str, Any]) -> SliceNode:
     """
     kind, name, defined_in = body_node_kind(row["kind"], row["var"])
     return SliceNode(
-        file=row["file"],
+        file=module_key(row["ref"]),
         line=row["line"] if row["line"] is not None else row["c_line"],
         callable=row["callable"],
         kind=kind,
@@ -221,7 +226,7 @@ def _slice_node(row: Dict[str, Any]) -> SliceNode:
     )
 
 
-def _call_neighbour(row: Dict[str, Any]) -> SliceNode:
+def _call_neighbour(row: Dict[str, Any], module_key: Callable[[str], str]) -> SliceNode:
     """One ``PY_CALLS`` neighbour as a :class:`SliceNode` — declared callable or external ghost.
 
     Which it is, is read off the row rather than asked for in a second query: only a
@@ -232,7 +237,7 @@ def _call_neighbour(row: Dict[str, Any]) -> SliceNode:
     discovered as sentinels.
     """
     if row["signature"] is not None:
-        return SliceNode(file=row["file"], line=row["line"], callable=row["signature"], kind="callable", name=row["name"], source=None, ref=row["ref"])
+        return SliceNode(file=module_key(row["ref"]), line=row["line"], callable=row["signature"], kind="callable", name=row["name"], source=None, ref=row["ref"])
     qualified = f"{row['module']}.{row['name']}" if row["module"] else row["name"]
     return SliceNode(file="", line=0, callable=qualified, kind="external", name=row["name"], source=None, ref=row["ref"])
 
@@ -475,6 +480,24 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         """
         return application_id(self.application_name) + "/"
 
+    @cached_property
+    def _module_set(self) -> FrozenSet[str]:
+        """:attr:`_modules` as a set -- the membership side of :func:`~cldk.analysis.python.neo4j.reconstruct.module_key_of`.
+        The list stays the Cypher parameter (the driver does not pack a set); this is the view every
+        projected row's key is verified against, built once."""
+        return frozenset(self._modules)
+
+    def _module_key(self, node_id: str) -> str:
+        """The repo-relative module key a node's ``can://`` id embeds (F4). The graph stores no
+        path property to project, so every ``path``/``file`` a caller sees is derived from the id
+        it came with and verified against the application's module keys -- never split, never
+        guessed."""
+        return R.module_key_of(node_id, self._scope_prefix, self._module_set)
+
+    def _overview(self, row: Dict[str, Any]) -> PyCallableOverview:
+        """A projected callable row (``_OVERVIEW_PROJECTION``'s shape) with its ``path`` derived."""
+        return R.overview({**row, "path": self._module_key(row["id"])})
+
     def _module_prefixes(self, keys: Sequence[str] | None) -> List[str]:
         """Per-module id prefixes for **narrowing** a bulk fetch to a subset of the application's
         modules (``get_symbol_table(paths=...)``, ``get_all_classes(module=...)``); ``None`` is the
@@ -577,7 +600,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     def _collect(self, bucket: str) -> Dict[str, List[Dict[str, Any]]]:
         """One whole child collection for this application, in one round trip, grouped by ``pk``."""
         index: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-        for row in self._run(_BULK_CHILD_QUERIES[bucket], mods=self._prefetch_scope, prefixes=self._prefetch_prefixes):
+        for row in self._run(_BULK_CHILD_QUERIES[bucket], mods=self._prefetch_scope, prefixes=self._prefetch_prefixes, prefix=self._scope_prefix):
             index[row["pk"]].append(row)
         return index
 
@@ -696,7 +719,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         for r in self._children(
             "module_classes",
             file_key,
-            "MATCH (par:PyModule {file_key: $fk})-[:PY_DECLARES]->(c:PyClass) WHERE par.file_key IN $mods RETURN properties(c) AS p",
+            "MATCH (par:PyModule {file_key: $fk})-[:PY_DECLARES]->(c:PyClass) WHERE par.file_key IN $mods AND par.id STARTS WITH $prefix RETURN properties(c) AS p",
             fk=file_key,
         ):
             c = self._class_full(r["p"])
@@ -705,7 +728,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         for r in self._children(
             "module_functions",
             file_key,
-            "MATCH (par:PyModule {file_key: $fk})-[:PY_DECLARES]->(f:PyCallable) WHERE par.file_key IN $mods RETURN properties(f) AS p",
+            "MATCH (par:PyModule {file_key: $fk})-[:PY_DECLARES]->(f:PyCallable) WHERE par.file_key IN $mods AND par.id STARTS WITH $prefix RETURN properties(f) AS p",
             fk=file_key,
         ):
             fn = self._callable_full(r["p"])
@@ -716,7 +739,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
                 "module_variables",
                 file_key,
                 "MATCH (par:PyModule {file_key: $fk})-[:PY_DECLARES_VAR]->(v:PyVariable) "
-                "WHERE par.file_key IN $mods RETURN properties(v) AS p ORDER BY v.start_line, v.name",
+                "WHERE par.file_key IN $mods AND par.id STARTS WITH $prefix RETURN properties(v) AS p ORDER BY v.start_line, v.name",
                 fk=file_key,
             )
         ]
@@ -730,7 +753,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             "module_imports",
             file_key,
             "MATCH (par:PyModule {file_key: $fk})-[e:PY_IMPORTS]->(pkg:PyPackage) "
-            "WHERE par.file_key IN $mods RETURN pkg.name AS module, e.imported_names AS names",
+            "WHERE par.file_key IN $mods AND par.id STARTS WITH $prefix RETURN pkg.name AS module, e.imported_names AS names",
             fk=file_key,
         ):
             names = r.get("names") or []
@@ -915,11 +938,11 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     def get_python_file(self, qualified_class_name: str) -> str | None:
         # Only top-level classes are in the in-memory _class_to_file map (module.types).
         rows = self._run(
-            "MATCH (:PyModule)-[:PY_DECLARES]->(c:PyClass {signature: $sig}) WHERE c.id STARTS WITH $prefix RETURN c._module AS fk LIMIT 1",
+            "MATCH (:PyModule)-[:PY_DECLARES]->(c:PyClass {signature: $sig}) WHERE c.id STARTS WITH $prefix RETURN c.id AS id LIMIT 1",
             sig=qualified_class_name,
             prefix=self._scope_prefix,
         )
-        return rows[0]["fk"] if rows else None
+        return self._module_key(rows[0]["id"]) if rows else None
 
     # =====================================================================================
     # call graph
@@ -1090,9 +1113,10 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         """
         rows = self._run(
             "MATCH (m:PyModule {module_name: $name})-[:PY_DECLARES]->(f:PyCallable) "
-            "WHERE m.file_key IN $mods RETURN properties(f) AS p",
+            "WHERE m.file_key IN $mods AND m.id STARTS WITH $prefix RETURN properties(f) AS p",
             name=module_name,
             mods=self._modules,
+            prefix=self._scope_prefix,
         )
         return {fn.name: fn for fn in (self._callable_full(r["p"]) for r in rows)}
 
@@ -1146,7 +1170,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     _OVERVIEW_PROJECTION = (
         "OPTIONAL MATCH (owner:PyClass)-[:PY_HAS_METHOD]->(c) "
         "RETURN c.signature AS signature, c.name AS name, c.decorators AS decorators, "
-        "c._module AS path, c.start_line AS start_line, c.end_line AS end_line, "
+        "c.id AS id, c.start_line AS start_line, c.end_line AS end_line, "
         "owner.signature AS class_signature"
     )
 
@@ -1155,7 +1179,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             "MATCH (c:PyCallable) WHERE c.id STARTS WITH $prefix " + self._OVERVIEW_PROJECTION,
             prefix=self._scope_prefix,
         )
-        return [R.overview(r) for r in rows]
+        return [self._overview(r) for r in rows]
 
     def get_method_bodies(self, signatures: List[str]) -> Dict[str, str]:
         rows = self._run(
@@ -1201,7 +1225,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     _RESOLVE_CALLABLE_QUERY = (
         "MATCH (c:PyCallable) WHERE c.id STARTS WITH $prefix AND (c.signature = $name OR c.signature ENDS WITH $dotted) "
         "OPTIONAL MATCH (owner:PyClass)-[:PY_HAS_METHOD]->(c) "
-        "RETURN c.signature AS signature, c.name AS name, c.id AS id, c._module AS path, "
+        "RETURN c.signature AS signature, c.name AS name, c.id AS id, "
         "c.start_line AS start_line, owner.signature AS class_signature"
     )
 
@@ -1228,13 +1252,13 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             if r["signature"] in by_sig:
                 collisions.add(r["signature"])
             by_sig[r["signature"]] = r
-        candidates = [CallableCandidate(r["signature"], r["class_signature"], r["path"]) for r in by_sig.values()]
+        candidates = [CallableCandidate(r["signature"], r["class_signature"], self._module_key(r["id"])) for r in by_sig.values()]
         sig = resolve_callable_signature(name, candidates, in_class=in_class, in_module=in_module)
         if sig in collisions:
             raise ValueError(f"{sig!r} is carried by more than one analysed callable; neither can be addressed unambiguously")
         row = by_sig[sig]
         return SliceNode(
-            file=row["path"],
+            file=self._module_key(row["id"]),
             line=row["start_line"],
             callable=row["signature"],
             kind="callable",
@@ -1389,7 +1413,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         "UNWIND page AS nid "
         "MATCH (c:PyCallable)-[:PY_HAS_BODY_NODE]->(b:PyBodyNode {{id:nid}}) "
         "RETURN total, b.id AS ref, b.kind AS kind, b.var AS var, b.start_line AS line, "
-        "c.signature AS callable, c._module AS file, c.start_line AS c_line"
+        "c.signature AS callable, c.start_line AS c_line"
     )
 
     def _slice(self, src: str, within: str, depth: int | None, max_nodes: int, *, backward: bool) -> Slice:
@@ -1416,7 +1440,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             right="-" if backward else "->",
         )
         rows = self._run(query, id=root.ref, cap=max_nodes)
-        return Slice(nodes=[_slice_node(r) for r in rows], roots=[root], resolved=slice_resolved([root]), total=rows[0]["total"] if rows else 0)
+        return Slice(nodes=[_slice_node(r, self._module_key) for r in rows], roots=[root], resolved=slice_resolved([root]), total=rows[0]["total"] if rows else 0)
 
     def slice_backward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
         """What affects this value (see :meth:`PythonAnalysisBackend.slice_backward`)."""
@@ -1462,7 +1486,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         "MATCH (s:PyCallable) WHERE s.signature IN $sigs AND s.id STARTS WITH $prefix "
         "MATCH (s) (()<-[:PY_CALLS]-(x:PyCallable) WHERE x.id STARTS WITH $prefix){{0,{depth}}} (m:PyCallable) "
         "WITH DISTINCT m ORDER BY m.id "
-        "WITH collect({{callable: m.signature, name: m.name, ref: m.id, file: m._module, line: m.start_line}}) AS found "
+        "WITH collect({{callable: m.signature, name: m.name, ref: m.id, line: m.start_line}}) AS found "
         "RETURN size(found) AS total, found[0..$cap] AS page"
     )
 
@@ -1473,7 +1497,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         self._require_quantified_paths("backward_cone")
         roots = cone_sinks(self.resolve_callable, sinks)
         row = self._run(self._CONE.format(depth="" if depth is None else depth), sigs=[r.callable for r in roots], cap=max_nodes, prefix=self._scope_prefix)[0]
-        nodes = [SliceNode(file=n["file"], line=n["line"], callable=n["callable"], kind="callable", name=n["name"], source=None, ref=n["ref"]) for n in row["page"]]
+        nodes = [SliceNode(file=self._module_key(n["ref"]), line=n["line"], callable=n["callable"], kind="callable", name=n["name"], source=None, ref=n["ref"]) for n in row["page"]]
         return Slice(nodes=nodes, roots=roots, resolved=slice_resolved(roots), total=row["total"])
 
     #: ``t`` may be a ``:PyExternal`` ghost, which carries ``module``/``name``/``id`` and no
@@ -1481,18 +1505,18 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     #: explicitly and :func:`_call_neighbour` decides what a row means from whether ``signature``
     #: came back. ``(s:PyCallable)`` pins the *caller* side by label -- a ghost's id sits under
     #: the same prefix -- which is how a call originating at a ghost stays out of ``callers_of``.
-    _CALLERS = "MATCH (s:PyCallable)-[:PY_CALLS]->(t:PyCallable {signature: $sig}) WHERE s.id STARTS WITH $prefix RETURN s.signature AS signature, s.name AS name, s.id AS ref, s._module AS file, s.start_line AS line, s.module AS module"
-    _CALLEES = "MATCH (s:PyCallable {signature: $sig})-[:PY_CALLS]->(t:PyCallable|PyExternal) WHERE s.id STARTS WITH $prefix RETURN t.signature AS signature, t.name AS name, t.id AS ref, t._module AS file, t.start_line AS line, t.module AS module"
+    _CALLERS = "MATCH (s:PyCallable)-[:PY_CALLS]->(t:PyCallable {signature: $sig}) WHERE s.id STARTS WITH $prefix RETURN s.signature AS signature, s.name AS name, s.id AS ref, s.start_line AS line, s.module AS module"
+    _CALLEES = "MATCH (s:PyCallable {signature: $sig})-[:PY_CALLS]->(t:PyCallable|PyExternal) WHERE s.id STARTS WITH $prefix RETURN t.signature AS signature, t.name AS name, t.id AS ref, t.start_line AS line, t.module AS module"
 
     def callers_of(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> List[SliceNode]:
         """Who calls this (see :meth:`PythonAnalysisBackend.callers_of`)."""
         sig = self.resolve_callable(name, in_class=in_class, in_module=in_module).callable
-        return [_call_neighbour(r) for r in self._run(self._CALLERS, sig=sig, prefix=self._scope_prefix)]
+        return [_call_neighbour(r, self._module_key) for r in self._run(self._CALLERS, sig=sig, prefix=self._scope_prefix)]
 
     def callees_of(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> List[SliceNode]:
         """What this calls, externals included (see :meth:`PythonAnalysisBackend.callees_of`)."""
         sig = self.resolve_callable(name, in_class=in_class, in_module=in_module).callable
-        return [_call_neighbour(r) for r in self._run(self._CALLEES, sig=sig, prefix=self._scope_prefix)]
+        return [_call_neighbour(r, self._module_key) for r in self._run(self._CALLEES, sig=sig, prefix=self._scope_prefix)]
 
     # -----[ paths, mixed queries, hydration ]-----
     #: The caller's word for a hop, computed in Cypher so the ORDER BY below sorts by the same
@@ -1531,7 +1555,6 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         "WITH p, " + _PATH_ORDER + " AS key ORDER BY length(p), key LIMIT $cap "
         "RETURN [n IN nodes(p) | {{ref: n.id, kind: n.kind, var: n.var, line: n.start_line, "
         "callable: head([(c:PyCallable)-[:PY_HAS_BODY_NODE]->(n) | c.signature]), "
-        "file: head([(c:PyCallable)-[:PY_HAS_BODY_NODE]->(n) | c._module]), "
         "c_line: head([(c:PyCallable)-[:PY_HAS_BODY_NODE]->(n) | c.start_line])}}] AS ns, "
         "[r IN relationships(p) | {{via: type(r), var: r.var, prov: r.prov}}] AS rs"
     )
@@ -1551,7 +1574,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         "MATCH (b:PyCallable {{signature:$dst}}) WHERE b.id STARTS WITH $prefix "
         "MATCH p = allShortestPaths((a)-[:PY_CALLS*1..{depth}]->(b)) WHERE all(n IN nodes(p) WHERE n:PyCallable) "
         "WITH p, " + _PATH_ORDER + " AS key ORDER BY length(p), key LIMIT $cap "
-        "RETURN [n IN nodes(p) | {{signature: n.signature, name: n.name, ref: n.id, file: n._module, "
+        "RETURN [n IN nodes(p) | {{signature: n.signature, name: n.name, ref: n.id, "
         "line: n.start_line, module: n.module}}] AS ns, "
         "[r IN relationships(p) | {{via: type(r), var: null, prov: null}}] AS rs"
     )
@@ -1563,7 +1586,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         are the keys the query matches them by."""
         check_distinct_endpoints(a, b)
         rows = self._run(query.format(rels=SDG_REL_PATTERN, depth="" if depth is None else depth), src=src, dst=dst, cap=max_paths + 1, prefix=self._scope_prefix)
-        paths = [flow_path([node_of(n) for n in r["ns"]], [(e["via"], e["var"], e["prov"]) for e in r["rs"]]) for r in rows[:max_paths]]
+        paths = [flow_path([node_of(n, self._module_key) for n in r["ns"]], [(e["via"], e["var"], e["prov"]) for e in r["rs"]]) for r in rows[:max_paths]]
         return FlowPaths(paths=paths, complete=len(rows) <= max_paths)
 
     # Argument validation precedes name resolution on every accessor below, as it does on the
@@ -1653,23 +1676,23 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             prefix=self._scope_prefix,
             markers=list(markers),
         )
-        return [R.overview(r) for r in rows]
+        return [self._overview(r) for r in rows]
 
     def get_entrypoints(self) -> List[PyCallableOverview]:
         rows = self._run(
             "MATCH (c:PyCallable) WHERE c.id STARTS WITH $prefix AND c.is_entrypoint = true " + self._OVERVIEW_PROJECTION,
             prefix=self._scope_prefix,
         )
-        return [R.overview(r) for r in rows]
+        return [self._overview(r) for r in rows]
 
     def get_entrypoint_classes(self) -> List[PyClassOverview]:
         rows = self._run(
             "MATCH (cl:PyClass) WHERE cl.id STARTS WITH $prefix AND cl.is_entrypoint = true "
             "RETURN cl.signature AS signature, cl.name AS name, cl.decorators AS decorators, "
-            "cl._module AS path, cl.start_line AS start_line, cl.end_line AS end_line",
+            "cl.id AS id, cl.start_line AS start_line, cl.end_line AS end_line",
             prefix=self._scope_prefix,
         )
-        return [R.class_overview(r) for r in rows]
+        return [R.class_overview({**r, "path": self._module_key(r["id"])}) for r in rows]
 
     def get_entrypoint_coverage(self) -> EntrypointCoverage:
         # codeanalyzer-python's neo4j/project.py projects only the derived is_entrypoint /
@@ -1827,12 +1850,12 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             "MATCH (reader:PyCallable)-[:PY_HAS_BODY_NODE]->(bn) "
             "OPTIONAL MATCH (cls:PyClass)-[:PY_HAS_METHOD]->(reader) "
             "RETURN DISTINCT reader.signature AS signature, reader.name AS name, reader.decorators AS decorators, "
-            "reader._module AS path, reader.start_line AS start_line, reader.end_line AS end_line, "
+            "reader.id AS id, reader.start_line AS start_line, reader.end_line AS end_line, "
             "cls.signature AS class_signature",
             prefix=self._scope_prefix,
             key=key,
         )
-        return [R.overview(r) for r in rows]
+        return [self._overview(r) for r in rows]
 
     # =====================================================================================
     # locate / locate_many — one round trip, UNWIND over the position list
@@ -1858,8 +1881,8 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         "UNWIND $positions AS pos "
         "OPTIONAL MATCH (:PyApplication {name: $app})-[:PY_HAS_MODULE]->(m:PyModule {file_key: pos.path}) "
         "WITH pos, m "
-        "OPTIONAL MATCH (c:PyCallable {_module: pos.path}) "
-        "WHERE c.id STARTS WITH $prefix "
+        "OPTIONAL MATCH (c:PyCallable) "
+        "WHERE c.id STARTS WITH pos.module_prefix "
         "AND c.start_line IS NOT NULL AND c.end_line IS NOT NULL "
         "AND c.start_line <= pos.line AND pos.line <= c.end_line "
         "WITH pos, m, c "
@@ -2005,11 +2028,15 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         # the graph's file_key before it becomes a Cypher parameter — an unnormalised path would
         # match no :PyModule and read back as file_not_in_graph.
         keys = [resolve_module_key(path, self._modules) for path, _ in positions]
+        # ``module_prefix`` is the exact inverse of ``_module_key``: ``module_id(app, key) + "/"``
+        # selects the module's own callables and nothing under a longer key sharing the spelling.
         rows = self._run(
             self._LOCATE_QUERY,
             app=self.application_name,
-            prefix=self._scope_prefix,
-            positions=[{"idx": i, "path": key, "line": line} for i, (key, (_, line)) in enumerate(zip(keys, positions))],
+            positions=[
+                {"idx": i, "path": key, "module_prefix": module_id(self.application_name, key) + "/", "line": line}
+                for i, (key, (_, line)) in enumerate(zip(keys, positions))
+            ],
         )
         by_idx: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
         for r in rows:

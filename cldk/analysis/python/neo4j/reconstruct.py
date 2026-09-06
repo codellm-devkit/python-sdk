@@ -38,7 +38,7 @@ Parity caveats (inherent to what the projection stores, not bugs):
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Mapping
+from typing import Any, Collection, Dict, List, Mapping
 
 from cldk.models.python import (
     BodyNode,
@@ -66,6 +66,26 @@ from cldk.models.python import (
 )
 
 Props = Mapping[str, Any]
+
+
+# -----[ ids ]-----
+def module_key_of(node_id: str, prefix: str, known: Collection[str]) -> str:
+    """The repo-relative module key embedded in a ``can://`` id (F4).
+
+    Ids are ``<prefix><file_key>/<rest>`` (or exactly ``<prefix><file_key>`` for a module), and a
+    file key can itself contain ``.py/`` as a directory name, so the key is never recovered by
+    splitting: every ``/``-boundary prefix of the id is tried longest first and the first that is
+    a member of ``known`` -- the application's verified module keys -- wins. A miss raises: a key
+    we cannot verify is a defect, not a guess. ``known`` should be a set; this runs once per row.
+    """
+    if not node_id.startswith(prefix):
+        raise KeyError(node_id)
+    parts = node_id[len(prefix) :].split("/")
+    for n in range(len(parts), 0, -1):
+        candidate = "/".join(parts[:n])
+        if candidate in known:
+            return candidate
+    raise KeyError(node_id)
 
 
 # -----[ helpers ]-----
@@ -289,9 +309,9 @@ def overview(row: Props) -> PyCallableOverview:
     ``decorators``, ``path``, ``start_line``, ``end_line``, and ``class_signature`` (the owning
     class via ``PY_HAS_METHOD``, or ``None`` for a module-level / nested function).
 
-    ``path`` is projected from ``:PyCallable._module`` — the repo-relative module key, the same
-    vocabulary :func:`class_overview` and ``locate`` speak — *not* ``:PyCallable.path``, which is
-    the absolute path on the machine that ran the analysis.
+    ``path`` is the repo-relative module key derived from the node's ``id`` by the backend (see
+    :func:`module_key_of`), the same vocabulary :func:`class_overview` and ``locate`` speak — *not*
+    ``:PyCallable.path``, which is the absolute path on the machine that ran the analysis.
     """
     class_sig = row.get("class_signature")
     return PyCallableOverview(
@@ -311,8 +331,8 @@ def class_overview(row: Props) -> PyClassOverview:
     callable equivalent).
 
     ``row`` is a flat ``RETURN`` projection: ``signature``, ``name``, ``decorators``,
-    ``start_line``, ``end_line``, and ``path`` -- sourced from ``:PyClass``'s ``_module`` property,
-    since (unlike ``:PyCallable``) the node itself carries no ``path`` property.
+    ``start_line``, ``end_line``, and ``path`` -- derived from ``:PyClass``'s ``id`` by the backend
+    (see :func:`module_key_of`), since the node itself carries no ``path`` property.
     """
     return PyClassOverview(
         signature=row.get("signature", ""),

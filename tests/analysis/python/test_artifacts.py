@@ -192,7 +192,7 @@ _CONNECT_OVERVIEW_ROW = {
     "signature": "src.db.connect",
     "name": "connect",
     "decorators": [],
-    "path": _MODULE_PATH,
+    "id": f"can://python/{_APP}/{_MODULE_PATH}/connect",  # what get_config_readers projects; path is derived
     "start_line": 5,
     "end_line": 11,
     "class_signature": None,

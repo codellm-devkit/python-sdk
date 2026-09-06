@@ -471,7 +471,7 @@ def _locate_responder(query: str, params: dict) -> list[dict]:
     match (attach as another application and the callables disappear), a callable row repeats once
     per matching body node, and every containment decision is made on lines the way Cypher would.
     """
-    in_scope = "prefix" in params and _locate_callable_id("").startswith(params["prefix"])
+    in_scope = "prefix" in params and _locate_callable_id("").startswith(params["prefix"])  # get_method_bodies / get_source
     if "RETURN m.file_key AS k" in query:
         return [{"k": _LOCATE_MODULE_PATH}]
     if "c.code IS NOT NULL" in query:
@@ -495,8 +495,8 @@ def _locate_responder(query: str, params: dict) -> list[dict]:
         if pos["path"] != _LOCATE_MODULE_PATH:
             rows.append(_locate_row(pos["idx"]))  # no :PyModule for this file_key
             continue
-        # ``OPTIONAL MATCH (c:PyCallable {_module: pos.path}) WHERE c.id STARTS WITH $prefix AND ...``
-        matches = [c for c in _LOCATE_CALLABLE_SPECS if in_scope and c["start_line"] <= pos["line"] <= c["end_line"]]
+        # ``OPTIONAL MATCH (c:PyCallable) WHERE c.id STARTS WITH pos.module_prefix AND ...``
+        matches = [c for c in _LOCATE_CALLABLE_SPECS if _locate_callable_id(c["signature"]).startswith(pos["module_prefix"]) and c["start_line"] <= pos["line"] <= c["end_line"]]
         if not matches:
             rows.append(_locate_row(pos["idx"], _LOCATE_MODULE_PROPS))
             continue

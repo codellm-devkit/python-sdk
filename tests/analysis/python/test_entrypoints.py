@@ -120,7 +120,7 @@ def test_entrypoints_query_filters_on_is_entrypoint_property():
         "signature": "svc.app.handler",
         "name": "handler",
         "decorators": [],
-        "path": "svc/app.py",
+        "id": "can://python/app/svc/app.py/handler",
         "start_line": 1,
         "end_line": 2,
         "class_signature": None,
@@ -145,8 +145,9 @@ def test_entrypoints_parity_between_backends():
     """Same fixture, same signatures, on both backends."""
     local_sigs = {o.signature for o in _local_backend().get_entrypoints()}
 
-    row_handler = {"signature": "svc.app.handler", "name": "handler", "decorators": [], "path": "svc/app.py", "start_line": 1, "end_line": 2, "class_signature": None}
-    row_run = {"signature": "svc.app.Service.run", "name": "run", "decorators": [], "path": "svc/app.py", "start_line": 3, "end_line": 4, "class_signature": "svc.app.Service"}
+    common = {"decorators": [], "start_line": 1, "end_line": 2}
+    row_handler = {"signature": "svc.app.handler", "name": "handler", "id": "can://python/app/svc/app.py/handler", "class_signature": None, **common}
+    row_run = {"signature": "svc.app.Service.run", "name": "run", "id": "can://python/app/svc/app.py/Service/run", "class_signature": "svc.app.Service", **common}
     backend = _neo4j_backend()
     with patch.object(PyNeo4jBackend, "_run", side_effect=_run_keyed({"c.is_entrypoint = true": [row_handler, row_run]})):
         neo4j_sigs = {o.signature for o in backend.get_entrypoints()}
@@ -199,11 +200,11 @@ def test_entrypoint_classes_query_filters_on_is_entrypoint_property():
         "signature": "svc.views.AdminView",
         "name": "AdminView",
         "decorators": [],
-        "path": "svc/views.py",
+        "id": "can://python/app/svc/views.py/AdminView",
         "start_line": 1,
         "end_line": 10,
     }
-    backend = _neo4j_backend()
+    backend = _neo4j_backend(modules=("svc/views.py",))  # the row's path is derived from its id and verified against these
     with patch.object(PyNeo4jBackend, "_run", side_effect=_run_keyed({"cl.is_entrypoint = true": [row]})) as run:
         classes = backend.get_entrypoint_classes()
     assert [c.signature for c in classes] == ["svc.views.AdminView"]
@@ -226,11 +227,11 @@ def test_entrypoint_classes_parity_between_backends():
         "signature": "svc.views.AdminView",
         "name": "AdminView",
         "decorators": [],
-        "path": "svc/views.py",
+        "id": "can://python/app/svc/views.py/AdminView",
         "start_line": 1,
         "end_line": 10,
     }
-    backend = _neo4j_backend()
+    backend = _neo4j_backend(modules=("svc/views.py",))  # the row's path is derived from its id and verified against these
     with patch.object(PyNeo4jBackend, "_run", side_effect=_run_keyed({"cl.is_entrypoint = true": [row]})):
         neo4j_sigs = {c.signature for c in backend.get_entrypoint_classes()}
 

@@ -253,11 +253,14 @@ def test_locate_parity_documented_module_source_divergence(py, py_local):
 # Application scope, path normalisation, and the file_not_in_graph distinction.
 # ================================================================================================
 def test_locate_query_is_scoped_to_the_application(py, fake_driver):
-    """Every other query in neo4j_backend.py constrains ``.id STARTS WITH $prefix``; so must this
-    one, or a same-valued file_key from another application in the same database can win."""
+    """Every other query in neo4j_backend.py constrains ``.id STARTS WITH $prefix``; this one
+    narrows further, to the position's own module: ``module_id(app, key) + "/"`` per position, so a
+    same-valued file_key from another application in the same database cannot win, and neither can
+    a module whose key merely extends this one's spelling."""
     py.locate("src/app.py", 21)
     statement = next(s for s in fake_driver.statements if "UNWIND $positions AS pos" in s)
-    assert "c.id STARTS WITH $prefix" in statement
+    assert "c.id STARTS WITH pos.module_prefix" in statement
+    assert "_module" not in statement, "the graph stores no _module property to match on"
 
 
 def test_locate_scope_is_actually_honoured(py):

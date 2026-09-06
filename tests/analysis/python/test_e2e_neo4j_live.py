@@ -81,6 +81,7 @@ import pytest
 
 from cldk import CLDK
 from cldk.analysis.commons.backend_config import Neo4jConnectionConfig
+from cldk.analysis.python.neo4j.reconstruct import module_key_of
 from cldk.utils.exceptions import GraphSchemaMismatch
 
 logging.getLogger("neo4j").setLevel(logging.ERROR)
@@ -347,14 +348,15 @@ def test_overview_path_joins_locate_and_class_overview(analysis, sample, cypher)
     located = analysis.locate(sample["module_path"], sample["inner_line"])
     assert located.module.path == row.path
 
-    # ...and the third vocabulary. ``PyClassOverview.path`` is projected from ``cl._module``; this
-    # graph has no entrypoint classes to read one back through, so the check goes to that property
-    # directly. Both projections now name a module by its ``file_key`` -- the same dictionary the
-    # callable overview draws from. (Not a subset check against the callable paths: a module can
-    # declare a class and no callable, and 66 of this application's 1,157 class-bearing modules do.)
+    # ...and the third vocabulary. ``PyClassOverview.path`` is derived from ``cl.id``; this graph
+    # has no entrypoint classes to read one back through, so the check derives it from every
+    # class id directly, the same way. Both projections name a module by its ``file_key`` -- the
+    # same dictionary the callable overview draws from. (Not a subset check against the callable
+    # paths: a module can declare a class and no callable, and 66 of this application's 1,157
+    # class-bearing modules do.)
     module_keys = {r["k"] for r in cypher("MATCH (:PyApplication {name: $n})-[:PY_HAS_MODULE]->(m:PyModule) RETURN m.file_key AS k", n=APP_NAME)}
-    # Task 2: the ``cl._module AS p`` projection becomes a key derived from ``cl.id``.
-    class_paths = {r["p"] for r in cypher("MATCH (cl:PyClass) WHERE cl.id STARTS WITH $prefix RETURN DISTINCT cl._module AS p", prefix=APP_PREFIX)}
+    class_ids = [r["i"] for r in cypher("MATCH (cl:PyClass) WHERE cl.id STARTS WITH $prefix RETURN cl.id AS i", prefix=APP_PREFIX)]
+    class_paths = {module_key_of(i, APP_PREFIX, module_keys) for i in class_ids}
     assert class_paths, "no classes in the graph"
     assert row.path in module_keys and class_paths <= module_keys, "class and callable overviews disagree on path spelling"
 
@@ -535,18 +537,18 @@ def test_locate_on_a_file_outside_the_graph_reports_file_not_in_graph(analysis):
     assert "module_xyzzy.py" in result.diagnostics[0].message
 
 
-def test_locate_many_agrees_with_locate_position_by_position(analysis, sample, cypher):
+def test_locate_many_agrees_with_locate_position_by_position(analysis, sample, cypher, module_keys):
     """``locate_many`` is not allowed to drift from ``locate``, nor to reorder its results."""
     others = cypher(
         """
         MATCH (c:PyCallable) WHERE c.id STARTS WITH $prefix AND c.code IS NOT NULL AND c.start_line IS NOT NULL AND c.end_line > c.start_line
-        RETURN c._module AS path, c.start_line + 1 AS line, c.signature AS signature
+        RETURN c.id AS id, c.start_line + 1 AS line, c.signature AS signature
         ORDER BY c.signature LIMIT 12
         """,
-        prefix=APP_PREFIX,  # Task 2: ``c._module AS path`` becomes a key derived from ``c.id``
+        prefix=APP_PREFIX,
     )
     positions = [(sample["module_path"], sample["inner_line"])]
-    positions += [(r["path"], r["line"]) for r in others]
+    positions += [(module_key_of(r["id"], APP_PREFIX, module_keys), r["line"]) for r in others]
     positions += [
         (sample["module_path"], sample["module_scope_line"]),  # module scope
         ("definitely/not/a/real/module_xyzzy.py", 3),  # not in graph
@@ -560,19 +562,19 @@ def test_locate_many_agrees_with_locate_position_by_position(analysis, sample, c
         assert got.model_dump() == one.model_dump(), f"locate_many disagreed with locate at {path}:{line}"
 
 
-def test_locate_many_is_a_single_round_trip(analysis, cypher):
+def test_locate_many_is_a_single_round_trip(analysis, cypher, module_keys):
     """Many positions must cost **one** Cypher statement, not one per position.
 
     Counted by wrapping the backend's ``_run`` seam — the only way to observe round trips at all.
     """
     positions = [
-        (r["path"], r["line"])
+        (module_key_of(r["id"], APP_PREFIX, module_keys), r["line"])
         for r in cypher(
             """
             MATCH (c:PyCallable) WHERE c.id STARTS WITH $prefix AND c.start_line IS NOT NULL AND c.end_line > c.start_line
-            RETURN c._module AS path, c.start_line + 1 AS line ORDER BY c.signature LIMIT 40
+            RETURN c.id AS id, c.start_line + 1 AS line ORDER BY c.signature LIMIT 40
             """,
-            prefix=APP_PREFIX,  # Task 2: ``c._module AS path`` becomes a key derived from ``c.id``
+            prefix=APP_PREFIX,
         )
     ]
     assert len(positions) == 40
