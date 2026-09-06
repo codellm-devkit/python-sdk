@@ -1672,14 +1672,14 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     #: are one, its interior the other). The ``:PyBodyNode`` and ``:PyExternal`` arms return
     #: ``null`` code deliberately: the graph carries no text below callable granularity, and a
     #: ghost was never analysed, so those rows say "found, and there is nothing to read", which is
-    #: what keeps that apart from "not found" (see :meth:`PythonAnalysisBackend.describe`). Only
-    #: the callable arm carries the prefix predicate: a body-node id and a ghost id both embed the
-    #: application, while a signature does not.
+    #: what keeps that apart from "not found" (see :meth:`PythonAnalysisBackend.describe`). All
+    #: three arms carry the prefix predicate: a ref naming another application's node must read as
+    #: "not found" here, not as "found, with nothing to read".
     _SOURCES = (
         "MATCH (c:PyCallable) WHERE c.id STARTS WITH $prefix AND (c.id IN $refs OR c.signature IN $refs) "
         "RETURN c.id AS id, c.signature AS sig, c.code AS code "
-        "UNION MATCH (b:PyBodyNode) WHERE b.id IN $refs RETURN b.id AS id, null AS sig, null AS code "
-        "UNION MATCH (e:PyExternal) WHERE e.id IN $refs RETURN e.id AS id, null AS sig, null AS code"
+        "UNION MATCH (b:PyBodyNode) WHERE b.id STARTS WITH $prefix AND b.id IN $refs RETURN b.id AS id, null AS sig, null AS code "
+        "UNION MATCH (e:PyExternal) WHERE e.id STARTS WITH $prefix AND e.id IN $refs RETURN e.id AS id, null AS sig, null AS code"
     )
 
     def _sources_for(self, refs: Sequence[str]) -> Dict[str, "str | None"]:
