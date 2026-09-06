@@ -19,14 +19,31 @@ Java package
 """
 
 from .models import (
+    JAnalysis,
     JApplication,
+    JBodyNode,
     JCallable,
+    JCallGraphEdge,
+    JCompilationUnit,
+    JDecorator,
+    JGraphEdges,
     JImport,
     JType,
-    JCompilationUnit,
-    JGraphEdges,
 )
 
 from .enums import CRUDOperationType, CRUDQueryType
 
-__all__ = ["JApplication", "JCallable", "JImport", "JType", "JCompilationUnit", "JGraphEdges", "CRUDOperationType", "CRUDQueryType"]
+__all__ = [
+    "JAnalysis",
+    "JApplication",
+    "JBodyNode",
+    "JCallable",
+    "JCallGraphEdge",
+    "JCompilationUnit",
+    "JDecorator",
+    "JGraphEdges",
+    "JImport",
+    "JType",
+    "CRUDOperationType",
+    "CRUDQueryType",
+]

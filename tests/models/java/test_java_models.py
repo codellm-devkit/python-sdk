@@ -1,116 +1,107 @@
-import shutil
-from pathlib import Path
-from typing import Any
-from cldk import CLDK
-from cldk.analysis.commons.backend_config import CodeAnalyzerConfig
-from cldk.models.java.models import JCompilationUnit, JImport
+################################################################################
+# Copyright IBM Corporation 2026
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#       http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+################################################################################
+
+"""Schema-level tests for the Java v2 models: the codeanalyzer-java 3.0.1 envelope parses at
+L1 and L4, round-trips losslessly, and rejects anything the wire does not carry."""
+
+import json
+
+import pytest
+from pydantic import ValidationError
+
+from cldk.models.java import JAnalysis, JApplication, JCallGraphEdge, JGraphEdges
 
 
-def _build_compilation_unit_payload(imports: list[Any], import_declarations: list[Any] | None = None) -> dict[str, Any]:
-    payload = {
-        "file_path": "/tmp/T.java",
-        "package_name": "",
-        "comments": [],
-        "imports": imports,
-        "type_declarations": {},
-    }
-    if import_declarations is not None:
-        payload["import_declarations"] = import_declarations
-    return payload
+def _sorted(obj) -> str:
+    return json.dumps(obj, sort_keys=True)
 
 
-def test_jcompilationunit_supports_legacy_import_list() -> None:
-    """Should keep legacy imports and synthesize structured declarations."""
-    compilation_unit = JCompilationUnit(**_build_compilation_unit_payload(imports=["java.util.List"]))
-    assert compilation_unit.imports == ["java.util.List"]
-    assert len(compilation_unit.import_declarations) == 1
-    assert isinstance(compilation_unit.import_declarations[0], JImport)
-    assert compilation_unit.import_declarations[0].path == "java.util.List"
-    assert compilation_unit.import_declarations[0].is_static is False
-    assert compilation_unit.import_declarations[0].is_wildcard is False
+@pytest.fixture(scope="module")
+def a1(analysis_json) -> JAnalysis:
+    return JAnalysis.model_validate_json(analysis_json)
 
 
-def test_jcompilationunit_supports_structured_import_list() -> None:
-    """Should derive legacy imports from structured import declarations."""
-    compilation_unit = JCompilationUnit(
-        **_build_compilation_unit_payload(
-            imports=[
-                {"path": "Foo.bar", "is_static": True, "is_wildcard": False},
-                {"path": "Foo.bar", "is_static": False, "is_wildcard": True},
-            ]
-        )
-    )
-    assert compilation_unit.imports == ["Foo.bar", "Foo.bar"]
-    assert len(compilation_unit.import_declarations) == 2
-    assert compilation_unit.import_declarations[0].is_static is True
-    assert compilation_unit.import_declarations[0].is_wildcard is False
-    assert compilation_unit.import_declarations[1].is_static is False
-    assert compilation_unit.import_declarations[1].is_wildcard is True
+@pytest.fixture(scope="module")
+def a4(analysis_json_a4) -> JAnalysis:
+    return JAnalysis.model_validate_json(analysis_json_a4)
 
 
-def test_jcompilationunit_uses_imports_when_import_declarations_is_empty() -> None:
-    """Should preserve imports when import_declarations is present but empty."""
-    compilation_unit = JCompilationUnit(
-        **_build_compilation_unit_payload(
-            imports=["java.util.List"],
-            import_declarations=[],
-        )
-    )
-    assert compilation_unit.imports == ["java.util.List"]
-    assert len(compilation_unit.import_declarations) == 1
-    assert compilation_unit.import_declarations[0].path == "java.util.List"
+def test_envelope_at_both_levels(a1: JAnalysis, a4: JAnalysis):
+    for a, level in ((a1, 1), (a4, 4)):
+        assert a.schema_version == "2.0.0"
+        assert a.language == "java"
+        assert a.max_level == level
+        assert a.k_limit is None  # never emitted by 3.0.1
+        assert a.analyzer.name == "codeanalyzer-java"
+        assert a.analyzer.version == "3.0.1"
+        assert a.application.id == "can://java/daytrader8"
+        assert a.application.kind == "application"
 
 
-def test_jcompilationunit_prefers_non_empty_import_declarations() -> None:
-    """Should prefer structured import_declarations over imports when non-empty."""
-    compilation_unit = JCompilationUnit(
-        **_build_compilation_unit_payload(
-            imports=["legacy.Value"],
-            import_declarations=[{"path": "structured.Value", "is_static": True, "is_wildcard": False}],
-        )
-    )
-    assert compilation_unit.imports == ["structured.Value"]
-    assert len(compilation_unit.import_declarations) == 1
-    assert compilation_unit.import_declarations[0].path == "structured.Value"
-    assert compilation_unit.import_declarations[0].is_static is True
-    assert compilation_unit.import_declarations[0].is_wildcard is False
+def test_l1_has_138_units_and_no_app_scope_overlays(a1: JAnalysis):
+    app = a1.application
+    assert len(app.symbol_table) == 138
+    # L1 emits no ``call_graph``/``param_in``/``param_out`` keys at all — the defaults are empty, not None.
+    assert app.call_graph == []
+    assert app.param_in == []
+    assert app.param_out == []
+    assert "call_graph" not in app.model_fields_set
+    assert "param_in" not in app.model_fields_set
 
 
-def test_jcompilationunit_imports_round_trip_through_dump_apis() -> None:
-    """Should preserve import fields across model dump and re-parse flows."""
-    original = JCompilationUnit(
-        **_build_compilation_unit_payload(
-            imports=["legacy.Value"],
-            import_declarations=[
-                {"path": "structured.Value", "is_static": True, "is_wildcard": False},
-                {"path": "structured.Value", "is_static": False, "is_wildcard": True},
-            ],
-        )
-    )
-
-    from_dump = JCompilationUnit(**original.model_dump())
-    from_json = JCompilationUnit.model_validate_json(original.model_dump_json())
-
-    expected_imports = ["structured.Value", "structured.Value"]
-    expected_declarations = [
-        ("structured.Value", True, False),
-        ("structured.Value", False, True),
-    ]
-
-    for reparsed in [from_dump, from_json]:
-        assert reparsed.imports == expected_imports
-        assert [(item.path, item.is_static, item.is_wildcard) for item in reparsed.import_declarations] == expected_declarations
+def test_l4_carries_param_edges_and_points_to_ddg(a4: JAnalysis):
+    app = a4.application
+    assert len(app.param_in) == 258
+    assert len(app.param_out) == 97
+    assert len(app.call_graph) == 247
+    assert all(isinstance(e, JCallGraphEdge) for e in app.call_graph)
+    provs = {tuple(e.prov) for u in app.symbol_table.values() for t in u.types.values() for c in t.callables.values() for e in (c.ddg or [])}
+    assert ("points-to",) in provs
+    assert ("ssa",) in provs
 
 
-def test_get_class_call_graph(analysis_json_fixture, tmp_path):
-    """The facade reuses a cached analysis.json from the language-keyed cache dir (<cache>/java)."""
-    keyed = tmp_path / "java"
-    keyed.mkdir()
-    shutil.copy(Path(analysis_json_fixture) / "analysis.json", keyed / "analysis.json")
-    analysis = CLDK.java(
-        project_path=analysis_json_fixture,
-        eager=False,
-        analysis_level="call-graph",
-        backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)),
-    )
-    assert analysis is not None
+@pytest.mark.parametrize("fixture_name", ["analysis_json", "analysis_json_a4"])
+def test_round_trip_is_byte_equal(fixture_name: str, request):
+    raw = request.getfixturevalue(fixture_name)
+    dumped = JAnalysis.model_validate_json(raw).model_dump(mode="json", exclude_unset=True, by_alias=True)
+    assert _sorted(dumped) == _sorted(json.loads(raw))
+
+
+def test_unknown_top_level_key_is_rejected(analysis_json_a4: str):
+    raw = json.loads(analysis_json_a4)
+    raw["repository"] = "x"
+    with pytest.raises(ValidationError):
+        JAnalysis.model_validate(raw)
+
+
+def test_unknown_nested_key_is_rejected(analysis_json_a4: str):
+    raw = json.loads(analysis_json_a4)
+    unit = next(iter(raw["application"]["symbol_table"].values()))
+    unit["file_path"] = "x"
+    with pytest.raises(ValidationError):
+        JAnalysis.model_validate(raw)
+
+
+def test_v1_shaped_payload_is_rejected():
+    v1 = {"symbol_table": {"a/B.java": {"file_path": "a/B.java", "package_name": "a", "comments": [], "imports": [], "type_declarations": {}}}}
+    with pytest.raises(ValidationError):
+        JAnalysis.model_validate(v1)
+    with pytest.raises(ValidationError):
+        JApplication.model_validate(v1)
+
+
+def test_jgraphedges_is_the_call_graph_edge():
+    assert JGraphEdges is JCallGraphEdge
