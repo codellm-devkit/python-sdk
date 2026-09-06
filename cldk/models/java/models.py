@@ -14,475 +14,727 @@
 # limitations under the License.
 ################################################################################
 
-"""Java data models module.
+"""Java schema models — a pydantic mirror of ``codeanalyzer-java/src/main/java/com/ibm/cldk/schema``
+at the pinned release (3.0.1), schema v2.
 
-This module defines Pydantic model classes for representing Java code elements
-extracted during static analysis. These models form the core data structures
-returned by :class:`~cldk.analysis.java.JavaAnalysis` and related classes.
+The wire is one containment tree: ``JAnalysis{analyzer, application}`` →
+``JApplication{symbol_table{path → JCompilationUnit}, call_graph, param_in, param_out, artifacts,
+dependencies}`` → ``JCompilationUnit{types{name → JType}}`` → ``JType{fields{}, callables{signature →
+JCallable}, types{}}`` → ``JCallable{body{}, cfg, cdg, ddg, summary, types{}}``. Every node carries a
+``can://`` ``id`` and a ``kind``; a unit carries its full ``source`` once and every node's text is a
+slice of it. Gson omits ``null`` fields, so an absent key is a ``None``/empty default here.
 
-The models represent:
-    - **Types**: Classes, interfaces, enums, records (:class:`JType`)
-    - **Callables**: Methods, constructors (:class:`JCallable`)
-    - **Fields**: Class and instance variables (:class:`JField`)
-    - **Comments**: Javadoc and inline comments (:class:`JComment`)
-    - **Imports**: Import declarations (:class:`JImport`)
-    - **CRUD Operations**: Database operations (:class:`JCRUDOperation`)
-    - **Call Information**: Method call details (:class:`JMethodDetail`, :class:`JCallSite`)
+What the 1.x models exposed as stored fields is kept as **properties** where the wire still has the
+fact in another shape (J-8): ``code`` over ``span`` + ``source``, ``call_sites`` over the ``call``
+body nodes, ``thrown_exceptions`` over ``error_channel``, ``cyclomatic_complexity`` over ``metrics``,
+``variable_declarations`` over ``local_variables``, ``referenced_types``/``accessed_fields`` over
+``refs``, the ``is_*`` type predicates over ``kind`` and the owner chain. What the wire does not
+carry (CRUD) is an empty list, and the facade raises for it (J-4).
 
-All models inherit from Pydantic's :class:`~pydantic.BaseModel`, providing:
-    - Automatic validation of field types
-    - JSON serialization/deserialization
-    - Schema generation for documentation
-
-See Also:
-    - :class:`~cldk.analysis.java.JavaAnalysis`: Analysis facade using these models.
-    - :mod:`~cldk.models.java.enums`: Related enumeration types.
+``extra="forbid"`` is intentional: drift between the analyzer's JSON and these models fails loudly.
 """
-from typing import Any, Dict, List, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional, Tuple, Union
+
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from typing_extensions import Literal
 
 from cldk.models.java.enums import CRUDOperationType, CRUDQueryType
 
-_CALLABLES_LOOKUP_TABLE = dict()
+
+class _Base(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
-class JComment(BaseModel):
-    """Represents a comment in Java code.
+# ----------------------------------------------------------------------------------------------
+# Span — the one universal attribute
+# ----------------------------------------------------------------------------------------------
 
-    Attributes:
-        content (str): The content of the comment.
-        start_line (int): The starting line number of the comment in the source file.
-        end_line (int): The ending line number of the comment in the source file.
-        start_column (int): The starting column of the comment in the source file.
-        end_column (int): The ending column of the comment in the source file.
-        is_javadoc (bool): A flag indicating whether the comment is a Javadoc comment.
-    """
 
-    content: str | None = None
-    start_line: int = -1
-    end_line: int = -1
-    start_column: int = -1
-    end_column: int = -1
+class JSpan(_Base):
+    """``start``/``end`` are ``[line, column]`` (1-based); ``bytes`` are ``[from, to]`` offsets into the
+    owning unit's ``source``."""
+
+    start: Tuple[int, int]
+    end: Tuple[int, int]
+    bytes: Tuple[int, int]
+
+
+class _Spanned(_Base):
+    """A node with an optional span. ``start_line``/``end_line``/``start_column``/``end_column`` are
+    the 1.x attribute paths, read off ``span`` (``-1`` without one); ``code`` is the **character**
+    slice ``source[span.bytes[0]:span.bytes[1]]`` of the owning unit (J-15), ``""`` without a span or
+    before the owner has been threaded in (J-13)."""
+
+    span: Optional[JSpan] = None
+    _unit: Optional["JCompilationUnit"] = PrivateAttr(default=None)
+
+    @property
+    def start_line(self) -> int:
+        return self.span.start[0] if self.span else -1
+
+    @property
+    def end_line(self) -> int:
+        return self.span.end[0] if self.span else -1
+
+    @property
+    def start_column(self) -> int:
+        return self.span.start[1] if self.span else -1
+
+    @property
+    def end_column(self) -> int:
+        return self.span.end[1] if self.span else -1
+
+    @property
+    def code(self) -> str:
+        if self.span is None or self._unit is None:
+            return ""
+        return self._unit.source[self.span.bytes[0] : self.span.bytes[1]]
+
+
+# ----------------------------------------------------------------------------------------------
+# Leaf models
+# ----------------------------------------------------------------------------------------------
+
+
+class JComment(_Spanned):
+    """A comment or Javadoc block."""
+
+    content: str
     is_javadoc: bool = False
 
 
-class JImport(BaseModel):
-    """Represents a Java import declaration.
+class JImport(_Spanned):
+    """An import declaration: ``name`` is the imported simple name, ``path`` the fully-qualified target."""
 
-    Attributes:
-        path (str): Fully qualified import target path.
-        is_static (bool): True when import uses the static modifier.
-        is_wildcard (bool): True when import uses wildcard syntax.
-    """
-
+    name: str
     path: str
     is_static: bool = False
     is_wildcard: bool = False
 
 
-class JRecordComponent(BaseModel):
-    """Represents a component of a Java record.
-
-    Attributes:
-        comment (JComment): The comment associated with the component.
-        name (str): The name of the component.
-        type (str): The type of the component.
-        annotations (List[str]): The annotations applied to the component.
-        modifiers (List[str]): The modifiers applied to the component.
-    """
-
-    comment: JComment | None
-    name: str
-    type: str
-    modifiers: List[str]
-    annotations: List[str]
-    default_value: Union[str, None, Any] = None
-    is_var_args: bool = False
-
-
-class JField(BaseModel):
-    """Represents a field in a Java class or interface.
-
-    Attributes:
-        comment (JComment): The comment associated with the field.
-        name (str): The name of the field.
-        type (str): The type of the field.
-        start_line (int): The starting line number of the field in the source file.
-        end_line (int): The ending line number of the field in the source file.
-        variables (List[str]): The variables declared in the field.
-        modifiers (List[str]): The modifiers applied to the field (e.g., public, static).
-        annotations (List[str]): The annotations applied to the field.
-        variable_initializers (Dict[str, str] | None): Initializer expression text keyed by
-            variable name. None is used as the default for backwards compatibility.
-    """
-
-    comment: JComment | None
-    type: str
-    start_line: int
-    end_line: int
-    variables: List[str]
-    modifiers: List[str]
-    annotations: List[str]
-    variable_initializers: Dict[str, str] | None = None
-
-
-class JCallableParameter(BaseModel):
-    """Represents a parameter of a Java callable.
-
-    Attributes:
-        name (str): The name of the parameter.
-        type (str): The type of the parameter.
-        annotations (List[str]): The annotations applied to the parameter.
-        modifiers (List[str]): The modifiers applied to the parameter.
-        start_line (int): The starting line number of the parameter in the source file.
-        end_line (int): The ending line number of the parameter in the source file.
-        start_column (int): The starting column of the parameter in the source file.
-        end_column (int): The ending column of the parameter in the source file.
-    """
-
-    name: str | None
-    type: str
-    annotations: List[str]
-    modifiers: List[str]
-    start_line: int
-    end_line: int
-    start_column: int
-    end_column: int
-
-
-class JEnumConstant(BaseModel):
-    """Represents a constant in an enumeration.
-
-    Attributes:
-        name (str): The name of the enum constant.
-        arguments (List[str]): The arguments associated with the enum constant.
-    """
+class JDecorator(_Spanned):
+    """An annotation use; ``args`` are the source spellings of its arguments (``name="accountejb"``)."""
 
     name: str
-    arguments: List[str]
+    args: List[str] = []
 
 
-class JCRUDOperation(BaseModel):
-    """Represents a CRUD operation.
+class JTypeParameter(_Spanned):
+    name: str
+    bounds: List[str] = []
+    decorators: List[JDecorator] = []
 
-    Attributes:
-        line_number (int): The line number of the operation.
-        operation_type (JCRUDOperationType): The type of the operation.
-    """
+
+class JEnumConstant(_Spanned):
+    name: str
+    arguments: List[str] = []
+    comments: List[JComment] = []
+    decorators: List[JDecorator] = []
+
+
+class JRecordComponent(_Spanned):
+    name: str
+    type: str
+    modifiers: List[str] = []
+    decorators: List[JDecorator] = []
+    comments: List[JComment] = []
+    is_variadic: bool = False
+
+    @property
+    def annotations(self) -> List[str]:
+        return [d.name for d in self.decorators]
+
+    @property
+    def comment(self) -> Optional[JComment]:
+        return self.comments[0] if self.comments else None
+
+    @property
+    def is_var_args(self) -> bool:
+        return self.is_variadic
+
+
+class JCallableParameter(_Spanned):
+    name: Optional[str] = None
+    type: str
+    modifiers: List[str] = []
+    decorators: List[JDecorator] = []
+    is_variadic: bool = False
+
+    @property
+    def annotations(self) -> List[str]:
+        return [d.name for d in self.decorators]
+
+
+class JLocalVariable(_Spanned):
+    """A local variable declaration inside a callable (the 1.x ``JVariableDeclaration``)."""
+
+    name: str
+    type: str
+    initializer: Optional[str] = None
+    comments: List[JComment] = []
+
+    @property
+    def comment(self) -> Optional[JComment]:
+        return self.comments[0] if self.comments else None
+
+
+class JField(_Spanned):
+    id: str
+    kind: Literal["field"] = "field"
+    name: str
+    type: str
+    modifiers: List[str] = []
+    comments: List[JComment] = []
+    decorators: List[JDecorator] = []
+    initializer: Optional[str] = None
+
+    @property
+    def annotations(self) -> List[str]:
+        return [d.name for d in self.decorators]
+
+    @property
+    def variables(self) -> List[str]:
+        return [self.name]
+
+    @property
+    def variable_initializers(self) -> Optional[Dict[str, str]]:
+        return {self.name: self.initializer} if self.initializer is not None else None
+
+    @property
+    def comment(self) -> Optional[JComment]:
+        return self.comments[0] if self.comments else None
+
+
+class JMetrics(_Base):
+    cyclomatic: int
+
+
+class JRefs(_Base):
+    types: List[str] = []
+    fields: List[str] = []
+
+
+# ----------------------------------------------------------------------------------------------
+# Body nodes and intra-callable edges (bare local-key endpoints)
+# ----------------------------------------------------------------------------------------------
+
+
+class JBodyNode(_Base):
+    """One entry of a callable's ``body{}`` map, keyed ``L:C``, ``@entry``/``@exit``/``@formal_in:N``/
+    ``@formal_out`` or ``L:C/actual_in:N``/``L:C/actual_out``. Every attribute is optional: the
+    analyzer writes the empty call-shaped fields on non-call nodes too."""
+
+    kind: str  # call | statement | branch | loop | switch | return | entry | exit | formal_in | formal_out | actual_in | actual_out
+    span: Optional[JSpan] = None
+    callee: Optional[str] = None
+    arguments: List[str] = []
+    receiver_expr: Optional[str] = None
+    receiver_type: Optional[str] = None
+    argument_types: List[str] = []
+    argument_expr: List[str] = []
+    callee_signature: Optional[str] = None
+    method_name: Optional[str] = None
+    return_type: Optional[str] = None
+    accessibility: Optional[str] = None  # public | private | protected | package_private
+    comment: Optional[JComment] = None
+    is_static_call: Optional[bool] = None
+    is_constructor_call: bool = False
+    of: Optional[str] = None
+    parent: Optional[str] = None
+
+
+class JCfgEdge(_Base):
+    src: str
+    dst: str
+    kind: str  # fallthrough | true | false | return | loop_back | exception | break | switch_case
+
+
+class JCdgEdge(_Base):
+    src: str
+    dst: str
+
+
+class JDdgEdge(_Base):
+    src: str
+    dst: str
+    var: Optional[str] = None
+    prov: List[str] = []  # ssa | points-to
+
+
+class JSummaryEdge(_Base):
+    src: str
+    dst: str
+
+
+# ----------------------------------------------------------------------------------------------
+# 1.x view models the wire no longer carries as such
+# ----------------------------------------------------------------------------------------------
+
+
+class JCRUDOperation(_Base):
+    """Not emitted by codeanalyzer-java 3.0.1 (upstream #187); kept for import compatibility."""
 
     line_number: int
-    operation_type: CRUDOperationType | None
+    operation_type: Optional[CRUDOperationType] = None
 
 
-class JCRUDQuery(BaseModel):
-    """Represents a CRUD query.
-
-    Attributes:
-        line_number (int): The line number of the query.
-        query_arguments (List[str]): The arguments of the query.
-        query_type (JCRUDQueryType): The type of the query.
-    """
+class JCRUDQuery(_Base):
+    """Not emitted by codeanalyzer-java 3.0.1 (upstream #187); kept for import compatibility."""
 
     line_number: int
-    query_arguments: List[str] | None
-    query_type: CRUDQueryType | None
+    query_arguments: Optional[List[str]] = None
+    query_type: Optional[CRUDQueryType] = None
 
 
-class JCallSite(BaseModel):
-    """Represents a call site.
+class JCallSite(_Base):
+    """The 1.x per-call record, built on demand from a ``call`` body node (:meth:`from_body_node`).
+    The four visibility booleans derive from ``accessibility`` and are ``None`` when the callee was
+    not resolved."""
 
-    Attributes:
-        comment (JComment): The comment associated with the call site.
-        method_name (str): The name of the method called at the call site.
-        receiver_expr (str): Expression for the receiver of the method call.
-        receiver_type (str): Name of type declaring the called method.
-        argument_types (List[str]): Types of actual parameters for the call.
-        argument_expr (List[str]): Actual parameter expressions for the call.
-        return_type (str): Return type of the method call (resolved type of the method call expression; empty string if expression is unresolved).
-        callee_signature (str): Signature of the callee.
-        is_static_call (bool): Flag indicating whether the call is a static call.
-        is_private (bool): Flag indicating whether the call is a private call.
-        is_public (bool): Flag indicating whether the call is a public call.
-        is_protected (bool): Flag indicating whether the call is a protected call.
-        is_unspecified (bool): Flag indicating whether the call is an unspecified call.
-        is_constructor_call (bool): Flag indicating whether the call is a constructor call.
-        crud_operation (CRUDOperationType): The CRUD operation type of the call site.
-        crud_query (CRUDQueryType): The CRUD query type of the call site.
-        start_line (int): The starting line number of the call site.
-        start_column (int): The starting column of the call site.
-        end_line (int): The ending line number of the call site.
-        end_column (int): The ending column of the call site.
-    """
-
-    comment: JComment | None
+    comment: Optional[JComment] = None
     method_name: str
     receiver_expr: str = ""
-    receiver_type: str
-    argument_types: List[str]
-    argument_expr: List[str]
+    receiver_type: str = ""
+    argument_types: List[str] = []
+    argument_expr: List[str] = []
     return_type: str = ""
     callee_signature: str = ""
-    is_static_call: bool | None = None
-    is_private: bool | None = None
-    is_public: bool | None = None
-    is_protected: bool | None = None
-    is_unspecified: bool | None = None
-    is_constructor_call: bool
-    crud_operation: JCRUDOperation | None
-    crud_query: JCRUDQuery | None
-    start_line: int
-    start_column: int
-    end_line: int
-    end_column: int
+    is_static_call: Optional[bool] = None
+    is_private: Optional[bool] = None
+    is_public: Optional[bool] = None
+    is_protected: Optional[bool] = None
+    is_unspecified: Optional[bool] = None
+    is_constructor_call: bool = False
+    crud_operation: Optional[JCRUDOperation] = None
+    crud_query: Optional[JCRUDQuery] = None
+    start_line: int = -1
+    start_column: int = -1
+    end_line: int = -1
+    end_column: int = -1
 
-
-class JVariableDeclaration(BaseModel):
-    """Represents a variable declaration.
-
-    Attributes:
-        comment (JComment): The comment associated with the variable declaration.
-        name (str): The name of the variable.
-        type (str): The type of the variable.
-        initializer (str): The initialization expression (if present) for the variable declaration.
-        start_line (int): The starting line number of the declaration.
-        start_column (int): The starting column of the declaration.
-        end_line (int): The ending line number of the declaration.
-        end_column (int): The ending column of the declaration.
-    """
-
-    comment: JComment | None
-    name: str
-    type: str
-    initializer: str
-    start_line: int
-    start_column: int
-    end_line: int
-    end_column: int
-
-
-class InitializationBlock(BaseModel):
-    """Represents an initialization block in Java.
-
-    Attributes:
-        file_path (str): The path to the source file.
-        comments (List[JComment]): The comments associated with the block.
-        annotations (List[str]): The annotations applied to the block.
-        thrown_exceptions (List[str]): Exceptions declared via "throws".
-        code (str): The code block.
-        start_line (int): The starting line number of the block in the source file.
-        end_line (int): The ending line number of the block in the source file.
-        is_static (bool): A flag indicating whether the block is static.
-        referenced_types (List[str]): The types referenced within the block.
-        accessed_fields (List[str]): Fields accessed in the block.
-        call_sites (List[JCallSite]): Call sites in the block.
-        variable_declarations (List[JVariableDeclaration]): Local variable declarations in the block.
-        cyclomatic_complexity (int): Cyclomatic complexity of the block.
-    """
-
-    file_path: str
-    comments: List[JComment]
-    annotations: List[str]
-    thrown_exceptions: List[str]
-    code: str
-    start_line: int
-    end_line: int
-    is_static: bool
-    referenced_types: List[str]
-    accessed_fields: List[str]
-    call_sites: List[JCallSite]
-    variable_declarations: List[JVariableDeclaration]
-    cyclomatic_complexity: int
-
-
-class JCallable(BaseModel):
-    """Represents a callable entity such as a method or constructor in Java.
-
-    Attributes:
-        signature (str): The signature of the callable.
-        is_implicit (bool): A flag indicating whether the callable is implicit (e.g., a default constructor).
-        is_constructor (bool): A flag indicating whether the callable is a constructor.
-        comment (List[JComment]): A list of comments associated with the callable.
-        annotations (List[str]): The annotations applied to the callable.
-        modifiers (List[str]): The modifiers applied to the callable (e.g., public, static).
-        thrown_exceptions (List[str]): Exceptions declared via "throws".
-        declaration (str): The declaration of the callable.
-        parameters (List[JCallableParameter]): The parameters of the callable.
-        return_type (Optional[str]): The return type of the callable. None if the callable does not return a value (e.g., a constructor).
-        code (str): The code block of the callable.
-        start_line (int): The starting line number of the callable in the source file.
-        end_line (int): The ending line number of the callable in the source file.
-        code_start_line (int): The starting line number of the code block of a callable in the source file.
-        referenced_types (List[str]): The types referenced within the callable.
-        accessed_fields (List[str]): Fields accessed in the callable.
-        call_sites (List[JCallSite]): Call sites in the callable.
-        is_entrypoint (bool): A flag indicating whether this is a service entry point method.
-        variable_declarations (List[JVariableDeclaration]): Local variable declarations in the callable.
-        crud_operations (List[JCRUDOperation]): CRUD operations in the callable.
-        crud_queries (List[JCRUDQuery]): CRUD queries in the callable.
-        cyclomatic_complexity (int): Cyclomatic complexity of the callable.
-    """
-
-    signature: str
-    is_implicit: bool
-    is_constructor: bool
-    comments: List[JComment]
-    annotations: List[str]
-    modifiers: List[str]
-    thrown_exceptions: List[str] = []
-    declaration: str
-    parameters: List[JCallableParameter]
-    return_type: Optional[str] = None  # Pythonic way to denote a nullable field
-    code: str
-    start_line: int
-    end_line: int
-    code_start_line: int
-    referenced_types: List[str]
-    accessed_fields: List[str]
-    call_sites: List[JCallSite]
-    is_entrypoint: bool = False
-    variable_declarations: List[JVariableDeclaration]
-    crud_operations: List[JCRUDOperation] | None
-    crud_queries: List[JCRUDQuery] | None
-    cyclomatic_complexity: int | None
-
-    def __hash__(self):
-        """
-        Returns the hash value of the declaration.
-        """
-        return hash(self.declaration)
-
-
-class JType(BaseModel):
-    """Represents a Java class or interface.
-
-    Attributes:
-        is_interface (bool): A flag indicating whether the object is an interface.
-        is_inner_class (bool): A flag indicating whether the object is an inner class.
-        is_local_class (bool): A flag indicating whether the object is a local class.
-        is_nested_type (bool): A flag indicating whether the object is a nested type.
-        is_class_or_interface_declaration (bool): A flag indicating whether the object is a class or interface declaration.
-        is_enum_declaration (bool): A flag indicating whether the object is an enum declaration.
-        is_annotation_declaration (bool): A flag indicating whether the object is an annotation declaration.
-        is_record_declaration (bool): A flag indicating whether this object is a record declaration.
-        is_concrete_class (bool): A flag indicating whether this is a concrete class.
-        comments (List[JComment]): A list of comments associated with the class/type.
-        extends_list (List[str]): The list of classes or interfaces that the object extends.
-        implements_list (List[str]): The list of interfaces that the object implements.
-        modifiers (List[str]): The list of modifiers of the object.
-        annotations (List[str]): The list of annotations of the object.
-        parent_type (str): The name of the parent class (if it exists).
-        is_entrypoint_class (bool): A flag indicating whether this is a service entry point class.
-        nested_type_declarations (List[str]): All the class declarations nested under this class.
-        callable_declarations (Dict[str, JCallable]): The list of constructors and methods of the object.
-        field_declarations (List[JField]): The list of fields of the object.
-        enum_constants (List[JEnumConstant]): The list of enum constants in the object.
-    """
-
-    is_interface: bool = False
-    is_inner_class: bool = False
-    is_local_class: bool = False
-    is_nested_type: bool = False
-    is_class_or_interface_declaration: bool = False
-    is_enum_declaration: bool = False
-    is_annotation_declaration: bool = False
-    is_record_declaration: bool = False
-    is_concrete_class: bool = False
-    comments: List[JComment] | None = []
-    extends_list: List[str] | None = []
-    implements_list: List[str] | None = []
-    modifiers: List[str] | None = []
-    annotations: List[str] | None = []
-    parent_type: str
-    nested_type_declarations: List[str] | None = []
-    callable_declarations: Dict[str, JCallable] = {}
-    field_declarations: List[JField] = []
-    enum_constants: List[JEnumConstant] | None = []
-    record_components: List[JRecordComponent] | None = []
-    initialization_blocks: List[InitializationBlock] | None = []
-    is_entrypoint_class: bool = False
-
-
-class JCompilationUnit(BaseModel):
-    """Represents a compilation unit in Java.
-
-    Attributes:
-        file_path (str): The path to the source file.
-        package_name (str): The name of the package for the comppilation unit.
-        comments (List[JComment]): A list of comments in the compilation unit.
-        imports (List[str]): A list of import paths in the compilation unit.
-            Deprecated: use ``import_declarations`` to access structured import metadata.
-        import_declarations (List[JImport]): A list of structured import declarations.
-        type_declarations (Dict[str, JType]): A dictionary mapping type names to their corresponding JType representations.
-    """
-
-    file_path: str
-    package_name: str
-    comments: List[JComment]
-    # Deprecated: retained for backward compatibility with existing consumers.
-    imports: List[str] = Field(default_factory=list)
-    import_declarations: List[JImport] = Field(default_factory=list)
-    type_declarations: Dict[str, JType]
-    is_modified: bool = False
-
-    @model_validator(mode="before")
     @classmethod
-    def normalize_import_fields(cls, data: Any) -> Any:
-        """Normalize legacy and structured import payloads into both model fields.
-
-        Args:
-            data (Any): Raw input payload for ``JCompilationUnit``.
-
-        Returns:
-            Any: Input payload with ``imports`` and ``import_declarations`` synchronized.
-        """
-        if not isinstance(data, dict):
-            return data
-
-        imports_payload = data.get("imports")
-        import_declarations_payload = data.get("import_declarations")
-
-        normalized_imports: List[str] = []
-        normalized_declarations: List[JImport] = []
-
-        # Prefer structured declarations only when they are provided and non-empty.
-        source_payload: List[Any] | None = None
-        source_name = "import entry"
-        if isinstance(import_declarations_payload, list) and len(import_declarations_payload) > 0:
-            source_payload = import_declarations_payload
-            source_name = "import declaration entry"
-        elif isinstance(imports_payload, list):
-            source_payload = imports_payload
-
-        if source_payload is not None:
-            for import_entry in source_payload:
-                if isinstance(import_entry, str):
-                    import_declaration = JImport(path=import_entry)
-                elif isinstance(import_entry, dict):
-                    import_declaration = JImport(**import_entry)
-                elif isinstance(import_entry, JImport):
-                    import_declaration = import_entry
-                else:
-                    raise TypeError(f"Unsupported {source_name} type: {type(import_entry)!r}")
-                normalized_declarations.append(import_declaration)
-                normalized_imports.append(import_declaration.path)
-
-        data["imports"] = normalized_imports
-        data["import_declarations"] = normalized_declarations
-
-        return data
+    def from_body_node(cls, node: JBodyNode) -> "JCallSite":
+        acc = node.accessibility
+        return cls(
+            comment=node.comment,
+            method_name=node.method_name or "",
+            receiver_expr=node.receiver_expr or "",
+            receiver_type=node.receiver_type or "",
+            argument_types=node.argument_types,
+            argument_expr=node.argument_expr,
+            return_type=node.return_type or "",
+            callee_signature=node.callee_signature or "",
+            is_static_call=node.is_static_call,
+            is_private=None if acc is None else acc == "private",
+            is_public=None if acc is None else acc == "public",
+            is_protected=None if acc is None else acc == "protected",
+            is_unspecified=None if acc is None else acc == "package_private",
+            is_constructor_call=node.is_constructor_call,
+            start_line=node.span.start[0] if node.span else -1,
+            start_column=node.span.start[1] if node.span else -1,
+            end_line=node.span.end[0] if node.span else -1,
+            end_column=node.span.end[1] if node.span else -1,
+        )
 
 
-class JMethodDetail(BaseModel):
-    """Represents details about a method in a Java class.
+# ----------------------------------------------------------------------------------------------
+# Callable and type — mutually recursive (local classes live under a callable's ``types``)
+# ----------------------------------------------------------------------------------------------
 
-    Attributes:
-        method_declaration (str): The declaration string of the method.
-        klass (str): The name of the class containing the method. 'class' is a reserved keyword in Python.
-        method (JCallable): An instance of JCallable representing the callable details of the method.
-    """
 
-    method_declaration: str
+class JCallable(_Spanned):
+    """A method, constructor or initializer (``<clinit>$N()``). ``cfg``/``cdg``/``ddg`` are present
+    from L3, ``summary`` from L4; ``None`` means the level did not compute them. Implicit callables
+    (default constructors) carry no span, body, parameters, metrics or declaration."""
+
+    id: str
+    kind: str  # method | constructor | initializer
+    signature: str
+    parameters: List[JCallableParameter] = []
+    return_type: Optional[str] = None
+    error_channel: List[str] = []
+    modifiers: List[str] = []
+    decorators: List[JDecorator] = []
+    type_parameters: List[JTypeParameter] = []
+    body_span: Optional[JSpan] = None
+    declaration: Optional[str] = None
+    is_implicit: bool = False
+    comments: List[JComment] = []
+    is_entrypoint: bool = False
+    metrics: Optional[JMetrics] = None
+    refs: Optional[JRefs] = None
+    local_variables: List[JLocalVariable] = []
+    body: Dict[str, JBodyNode] = {}
+    cfg: Optional[List[JCfgEdge]] = None
+    cdg: Optional[List[JCdgEdge]] = None
+    ddg: Optional[List[JDdgEdge]] = None
+    summary: Optional[List[JSummaryEdge]] = None
+    types: Dict[str, "JType"] = {}  # local / anonymous classes declared in the body
+    _owner_type: Optional["JType"] = PrivateAttr(default=None)
+
+    # -- 1.x views ----------------------------------------------------------------------------
+
+    @property
+    def code_start_line(self) -> int:
+        if self.body_span is not None:
+            return self.body_span.start[0]
+        return self.start_line
+
+    @property
+    def annotations(self) -> List[str]:
+        return [d.name for d in self.decorators]
+
+    @property
+    def thrown_exceptions(self) -> List[str]:
+        return self.error_channel
+
+    @property
+    def cyclomatic_complexity(self) -> Optional[int]:
+        return self.metrics.cyclomatic if self.metrics is not None else None
+
+    @property
+    def variable_declarations(self) -> List[JLocalVariable]:
+        return self.local_variables
+
+    @property
+    def referenced_types(self) -> List[str]:
+        return self.refs.types if self.refs is not None else []
+
+    @property
+    def accessed_fields(self) -> List[str]:
+        return self.refs.fields if self.refs is not None else []
+
+    @property
+    def call_sites(self) -> List[JCallSite]:
+        return [JCallSite.from_body_node(n) for n in self.body.values() if n.kind == "call"]
+
+    @property
+    def is_constructor(self) -> bool:
+        return self.kind == "constructor"
+
+    @property
+    def is_static(self) -> bool:
+        return "static" in self.modifiers
+
+    @property
+    def crud_operations(self) -> List[JCRUDOperation]:
+        return []
+
+    @property
+    def crud_queries(self) -> List[JCRUDQuery]:
+        return []
+
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+
+class JType(_Spanned):
+    """A class, interface, enum, annotation or record. The wire has no ``name``: the map key is the
+    simple name and the id's last segment; :attr:`name` is stamped from the key (J-13)."""
+
+    id: str
+    kind: Literal["class", "interface", "enum", "annotation", "record"]
+    span: JSpan
+    comments: List[JComment] = []
+    modifiers: List[str] = []
+    base_types: List[str] = []
+    interfaces: List[str] = []
+    decorators: List[JDecorator] = []
+    type_parameters: List[JTypeParameter] = []
+    is_entrypoint_class: bool = False
+    enum_constants: List[JEnumConstant] = []
+    record_components: List[JRecordComponent] = []
+    fields: Dict[str, JField] = {}
+    callables: Dict[str, JCallable] = {}
+    types: Dict[str, "JType"] = {}  # nested member types
+    _name: str = PrivateAttr(default="")
+    _owner: Union["JType", JCallable, None] = PrivateAttr(default=None)
+
+    @property
+    def name(self) -> str:
+        return self._name or self.id.rsplit("/", 1)[-1]
+
+    def _enclosing_type(self) -> Optional["JType"]:
+        owner = self._owner
+        if isinstance(owner, JCallable):
+            return owner._owner_type
+        return owner
+
+    @property
+    def qualified_name(self) -> str:
+        """``package.Outer.Inner`` — the source spelling (nested types joined with ``.``)."""
+        enclosing = self._enclosing_type()
+        if enclosing is not None:
+            return f"{enclosing.qualified_name}.{self.name}"
+        package = self._unit.package if self._unit is not None else ""
+        return f"{package}.{self.name}" if package else self.name
+
+    # -- 1.x views ----------------------------------------------------------------------------
+
+    @property
+    def is_interface(self) -> bool:
+        return self.kind == "interface"
+
+    @property
+    def is_nested_type(self) -> bool:
+        return isinstance(self._owner, JType)
+
+    @property
+    def is_local_class(self) -> bool:
+        return isinstance(self._owner, JCallable)
+
+    @property
+    def is_inner_class(self) -> bool:
+        return self.is_nested_type and self.kind == "class" and "static" not in self.modifiers
+
+    @property
+    def is_class_or_interface_declaration(self) -> bool:
+        return self.kind in ("class", "interface")
+
+    @property
+    def is_enum_declaration(self) -> bool:
+        return self.kind == "enum"
+
+    @property
+    def is_annotation_declaration(self) -> bool:
+        return self.kind == "annotation"
+
+    @property
+    def is_record_declaration(self) -> bool:
+        return self.kind == "record"
+
+    @property
+    def is_concrete_class(self) -> bool:
+        return self.kind == "class" and "abstract" not in self.modifiers
+
+    @property
+    def extends_list(self) -> List[str]:
+        return self.base_types
+
+    @property
+    def implements_list(self) -> List[str]:
+        return self.interfaces
+
+    @property
+    def annotations(self) -> List[str]:
+        return [d.name for d in self.decorators]
+
+    @property
+    def parent_type(self) -> str:
+        """Qualified name of the enclosing type, ``""`` at top level (the 1.x value)."""
+        enclosing = self._enclosing_type()
+        return enclosing.qualified_name if enclosing is not None else ""
+
+    @property
+    def field_declarations(self) -> List[JField]:
+        return list(self.fields.values())
+
+    @property
+    def callable_declarations(self) -> Dict[str, JCallable]:
+        return self.callables
+
+    @property
+    def nested_type_declarations(self) -> List[str]:
+        return list(self.types.keys())
+
+    @property
+    def initialization_blocks(self) -> List[JCallable]:
+        return [c for c in self.callables.values() if c.kind == "initializer"]
+
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+
+# ----------------------------------------------------------------------------------------------
+# Compilation unit
+# ----------------------------------------------------------------------------------------------
+
+
+def _thread_type(t: JType, name: str, unit: "JCompilationUnit", owner: Union[JType, JCallable, None]) -> None:
+    t._name, t._unit, t._owner = name, unit, owner
+    for f in t.fields.values():
+        f._unit = unit
+    for c in t.callables.values():
+        c._unit, c._owner_type = unit, t
+        for ln, lt in c.types.items():
+            _thread_type(lt, ln, unit, c)
+    for nn, nt in t.types.items():
+        _thread_type(nt, nn, unit, t)
+
+
+class JCompilationUnit(_Spanned):
+    """One ``.java`` file. The symbol-table key is its repo-relative path (:attr:`file_path`); the
+    wire carries no ``file_path``/``package_name``. The wire key ``imports`` holds structured
+    :class:`JImport` records, exposed as :attr:`import_declarations`; the 1.x ``imports`` (a list of
+    paths) is the property of that name."""
+
+    model_config = ConfigDict(extra="forbid", validate_by_name=True, validate_by_alias=True, serialize_by_alias=True)
+
+    id: str
+    kind: Literal["module"] = "module"
+    span: JSpan
+    package: str
+    source: str
+    comments: List[JComment] = []
+    import_declarations: List[JImport] = Field(default=[], alias="imports")
+    types: Dict[str, JType] = {}
+    content_hash: Optional[str] = None
+    _file_path: str = PrivateAttr(default="")
+
+    def model_post_init(self, __context: Any) -> None:
+        # Private attrs are not dumped, so model_dump/model_validate round-trips are unaffected.
+        for c in self.comments:
+            c._unit = self
+        for i in self.import_declarations:
+            i._unit = self
+        for name, t in self.types.items():
+            _thread_type(t, name, self, None)
+
+    # -- 1.x views ----------------------------------------------------------------------------
+
+    @property
+    def file_path(self) -> str:
+        return self._file_path
+
+    @property
+    def package_name(self) -> str:
+        return self.package
+
+    @property
+    def imports(self) -> List[str]:
+        return [i.path for i in self.import_declarations]
+
+    @property
+    def type_declarations(self) -> Dict[str, JType]:
+        return self.types
+
+    @property
+    def is_modified(self) -> bool:
+        """Always ``False``: the analyzer emits a snapshot, never an edit state."""
+        return False
+
+    @property
+    def code(self) -> str:
+        return self.source
+
+
+# ----------------------------------------------------------------------------------------------
+# Application-scope overlays: call graph, param edges, externals, artifact layer
+# ----------------------------------------------------------------------------------------------
+
+
+class JCallGraphEdge(_Base):
+    """A wire call-graph edge: ``can://`` endpoints, provenance tokens ``declared`` / ``rta``."""
+
+    src: str
+    dst: str
+    prov: List[str] = []
+    weight: int = 1
+
+
+class JParamEdge(_Base):
+    """An L4 ``param_in``/``param_out`` edge with global endpoints
+    (``<callable id>@L:C/actual_in:N`` → ``<callable id>@formal_in:N``)."""
+
+    src: str
+    dst: str
+
+
+class JExternalSymbol(_Base):
+    """A call target outside the project, keyed by its ``@external/…`` id on the application.
+    Declared in the analyzer's schema; not emitted for daytrader8 at any level."""
+
+    kind: str
+    signature: str
+    declaring_type: Optional[str] = None
+
+
+class JConfigKey(_Base):
+    id: str
+    key: str
+    namespace: str
+    value: Optional[str] = None
+    span: Optional[JSpan] = None
+    references: List[str] = []
+
+
+class JArtifact(_Base):
+    """A recognized non-code file (config, manifest, build descriptor)."""
+
+    id: str
+    kind: Literal["artifact"] = "artifact"
+    path: str
+    format: str
+    roles: List[str] = []
+    size_bytes: int
+    sha256: str
+    source: str = ""
+    text_truncated: bool = False
+    extraction: str = "none"
+    config_keys: List[JConfigKey] = []
+
+
+class JDependency(_Base):
+    group: Optional[str] = None
+    name: str
+    ecosystem: str = "maven"
+    spec: str = ""
+    kind: str = "runtime"
+    extras: List[str] = []
+    declared_in: str = ""
+    direct: bool = True
+    locked_version: Optional[str] = None
+    prov: List[str] = []
+
+
+class JApplication(_Base):
+    """The application root. ``call_graph``/``param_in``/``param_out`` are absent below the level
+    that computes them — empty here, never ``None``."""
+
+    id: str
+    kind: Literal["application"] = "application"
+    symbol_table: Dict[str, JCompilationUnit]
+    call_graph: List[JCallGraphEdge] = []
+    external_symbols: Optional[Dict[str, JExternalSymbol]] = None
+    param_in: List[JParamEdge] = []
+    param_out: List[JParamEdge] = []
+    artifacts: Dict[str, JArtifact] = {}
+    dependencies: List[JDependency] = []
+
+    def model_post_init(self, __context: Any) -> None:
+        for path, unit in self.symbol_table.items():
+            unit._file_path = path
+
+
+class JAnalyzer(_Base):
+    name: str
+    version: str
+
+
+class JAnalysis(_Base):
+    """The envelope ``analysis.json`` IS."""
+
+    schema_version: str
+    language: str
+    max_level: int
+    k_limit: Optional[int] = None  # not emitted by 3.0.1 at any level
+    analyzer: JAnalyzer
+    application: JApplication
+
+
+# ----------------------------------------------------------------------------------------------
+# Call-graph node payload built by the backends (not on the wire)
+# ----------------------------------------------------------------------------------------------
+
+
+class JMethodDetail(_Base):
+    """The ``method_detail`` node attribute of ``get_call_graph()``: built from the string node key
+    (``klass`` = everything before the signature's simple name) and the resolved callable."""
+
+    method_declaration: Optional[str] = None
     # class is a reserved keyword in python. we'll use klass.
     klass: str
     method: JCallable
@@ -491,103 +743,21 @@ class JMethodDetail(BaseModel):
         return f"JMethodDetail({self.method_declaration})"
 
     def __hash__(self):
-        return hash(tuple(self))
+        return hash((self.klass, self.method.id))
 
 
-class JGraphEdgesST(BaseModel):
-    """Represents an edge in a graph structure for method dependencies.
+# ----------------------------------------------------------------------------------------------
+# 1.x compatibility aliases
+# ----------------------------------------------------------------------------------------------
 
-    Attributes:
-        source (JMethodDetail): The source method of the edge.
-        target (JMethodDetail): The target method of the edge.
-        type (str): The type of the edge.
-        weight (str): The weight of the edge, indicating the strength or significance of the connection.
-        source_kind (Optional[str]): The kind of the source method. Default is None.
-        destination_kind (Optional[str]): The kind of the target method. Default is None.
-    """
-
-    source: JMethodDetail
-    target: JMethodDetail
-    type: str
-    weight: str
-    source_kind: str | None = None
-    destination_kind: str | None = None
+JGraphEdges = JCallGraphEdge  # J-14: the v1 rich edge is gone; the wire edge is the type
+JGraphEdgesST = JCallGraphEdge  # imported by cldk/analysis/java at module level; T2 drops both
+JVariableDeclaration = JLocalVariable
+InitializationBlock = JCallable  # ``JType.initialization_blocks`` are the ``initializer`` callables
 
 
-class JGraphEdges(BaseModel):
-    source: JMethodDetail
-    target: JMethodDetail
-    type: str
-    weight: str
-    source_kind: str | None = None
-    destination_kind: str | None = None
-
-    @field_validator("source", "target", mode="before")
-    @classmethod
-    def validate_source(cls, value) -> JMethodDetail:
-        _, type_declaration, signature = value["file_path"], value["type_declaration"], value["signature"]
-        j_callable: JCallable = _CALLABLES_LOOKUP_TABLE.get(
-            (type_declaration, signature),
-            JCallable(
-                signature=signature,
-                is_implicit=True,
-                is_constructor="<init>" in value["callable_declaration"],
-                comments=[],
-                annotations=[],
-                modifiers=[],
-                thrown_exceptions=[],
-                declaration="",
-                parameters=[
-                    JCallableParameter(name=None, type=t, annotations=[], modifiers=[], start_column=-1, end_column=-1, start_line=-1, end_line=-1)
-                    for t in value["callable_declaration"].split("(")[1].split(")")[0].split(",")
-                ],
-                return_type=None,
-                code="",
-                start_line=-1,
-                end_line=-1,
-                code_start_line=-1,
-                referenced_types=[],
-                accessed_fields=[],
-                call_sites=[],
-                is_entrypoint=False,
-                variable_declarations=[],
-                crud_operations=[],
-                crud_queries=[],
-                cyclomatic_complexity=0,
-            ),
-        )
-        _CALLABLES_LOOKUP_TABLE[(type_declaration, signature)] = j_callable
-        class_name = type_declaration
-        method_decl = j_callable.declaration
-        return JMethodDetail(method_declaration=method_decl, klass=class_name, method=j_callable)
-
-    def __hash__(self):
-        return hash(tuple(self))
-
-
-class JApplication(BaseModel):
-    """
-    Represents a Java application.
-
-    Parameters
-    ----------
-    symbol_table : List[JCompilationUnit]
-        The symbol table representation
-    system_dependency : List[JGraphEdges]
-        The edges of the system dependency graph. Default None.
-    """
-
-    symbol_table: Dict[str, JCompilationUnit]
-    call_graph: List[JGraphEdges] = None
-    system_dependency_graph: List[JGraphEdges] = None
-
-    @field_validator("symbol_table", mode="after")
-    @classmethod
-    def validate_source(cls, symbol_table) -> Dict[str, JCompilationUnit]:
-        # Populate the lookup table for callables
-        for _, j_compulation_unit in symbol_table.items():
-            for type_declaration, jtype in j_compulation_unit.type_declarations.items():
-                for __, j_callable in jtype.callable_declarations.items():
-                    _CALLABLES_LOOKUP_TABLE[(type_declaration, j_callable.signature)] = j_callable
-
-        return symbol_table
+# Resolve forward references for the mutually-recursive models.
+JCallable.model_rebuild()
+JType.model_rebuild()
+JCompilationUnit.model_rebuild()
+JApplication.model_rebuild()

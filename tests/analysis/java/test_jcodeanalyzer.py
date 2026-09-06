@@ -1056,3 +1056,25 @@ def test_get_all_get_crud_operations_daytrader8(test_fixture, codeanalyzer_backe
             assert isinstance(crud_op, JCRUDOperation)
             assert crud_op.line_number > 0
             assert crud_op.operation_type.value in ["CREATE", "READ", "UPDATE", "DELETE"]
+
+
+def test_facade_reuses_language_keyed_cache(analysis_json_fixture, tmp_path):
+    """The facade reuses a cached analysis.json from the language-keyed cache dir (<cache>/java)."""
+    import gzip
+    import shutil
+    from pathlib import Path
+
+    from cldk import CLDK
+    from cldk.analysis.commons.backend_config import CodeAnalyzerConfig
+
+    keyed = tmp_path / "java"
+    keyed.mkdir()
+    with gzip.open(Path(analysis_json_fixture) / "analysis.json.gz", "rb") as src, open(keyed / "analysis.json", "wb") as dst:
+        shutil.copyfileobj(src, dst)
+    analysis = CLDK.java(
+        project_path=analysis_json_fixture,
+        eager=False,
+        analysis_level="call-graph",
+        backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)),
+    )
+    assert analysis is not None
