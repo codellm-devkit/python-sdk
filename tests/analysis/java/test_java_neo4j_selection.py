@@ -35,7 +35,7 @@ def test_neo4j_config_selects_neo4j_backend():
         backend = backend_cls.return_value
 
         # Read-only: no project_dir needed, the graph is loaded out of band.
-        analysis = JavaAnalysis(project_dir=None, source_code=None, analysis_level="call_graph", target_files=None, eager_analysis=False, backend=config)
+        analysis = JavaAnalysis(project_dir=None, analysis_level="call_graph", target_files=None, eager_analysis=False, backend=config)
 
         _, kwargs = backend_cls.call_args
         assert kwargs["neo4j_uri"] == "bolt://example:7687"
@@ -48,7 +48,7 @@ def test_neo4j_config_selects_neo4j_backend():
 
 def test_no_config_uses_in_process_backend(tmp_path):
     with patch("cldk.analysis.java.java_analysis.JCodeanalyzer") as backend_cls, patch("cldk.analysis.java.java_analysis.JNeo4jBackend") as neo4j_cls:
-        analysis = JavaAnalysis(project_dir=str(tmp_path), source_code=None, analysis_level="symbol_table", target_files=None, eager_analysis=False)
+        analysis = JavaAnalysis(project_dir=str(tmp_path), analysis_level="symbol_table", target_files=None, eager_analysis=False)
 
         backend_cls.assert_called_once()
         neo4j_cls.assert_not_called()

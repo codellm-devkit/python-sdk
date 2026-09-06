@@ -89,7 +89,7 @@ include = [
 ]
 
 [tool.backend-versions]
-codeanalyzer-java = "2.4.1"
+codeanalyzer-java = "3.0.1"
 codeanalyzer-python = "1.4.1"
 codeanalyzer-typescript = "1.2.0"
 

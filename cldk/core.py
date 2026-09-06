@@ -124,7 +124,6 @@ class CLDK:
     @staticmethod
     def java(
         project_path: str | Path | None = None,
-        source_code: str | None = None,
         *,
         analysis_level: str = AnalysisLevel.symbol_table,
         target_files: List[str] | None = None,
@@ -138,33 +137,21 @@ class CLDK:
                 :class:`Neo4jConnectionConfig` (the graph is read out of band over Bolt). When
                 provided, the path is validated — it must exist and be a directory — regardless of
                 backend.
-            source_code: Single Java source string (deprecated; pass ``project_path`` instead).
             analysis_level: Analysis depth (see :class:`~cldk.analysis.AnalysisLevel`).
             target_files: Restrict analysis to these files.
             eager: Force regeneration of cached analysis.
-            backend: Backend configuration. Defaults to :class:`CodeAnalyzerConfig`.
+            backend: Backend configuration. Defaults to :class:`CodeAnalyzerConfig`; pass a
+                :class:`Neo4jConnectionConfig` to use the read-only Neo4j backend.
 
         Raises:
-            CldkInitializationException: If neither or both of ``project_path`` / ``source_code``
-                are provided.
+            CldkInitializationException: If ``project_path`` is missing and the backend is not
+                Neo4j. (The 1.x ``source_code`` single-file mode was removed in 2.0.)
         """
-        # The read-only Neo4j backend reads a graph populated out of band, so it needs neither
-        # project_path nor source_code.
-        is_neo4j = isinstance(backend, Neo4jConnectionConfig)
-        if project_path is None and source_code is None and not is_neo4j:
-            raise CldkInitializationException("Either project_path or source_code must be provided.")
-        if project_path is not None and source_code is not None:
-            raise CldkInitializationException("Both project_path and source_code are provided. Please provide only one.")
-        if source_code is not None:
-            warnings.warn(
-                "Passing source_code for Java analysis is deprecated and will be removed in a "
-                "future release; provide project_path instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
+        # The read-only Neo4j backend reads a graph populated out of band, so it needs no project_path.
+        if project_path is None and not isinstance(backend, Neo4jConnectionConfig):
+            raise CldkInitializationException("project_path must be provided.")
         return JavaAnalysis(
             project_dir=_normalize_project_path(project_path),
-            source_code=source_code,
             analysis_level=analysis_level,
             target_files=target_files,
             eager_analysis=eager,
@@ -279,9 +266,10 @@ class CLDK:
         cache_root = cache_dir if cache_dir is not None else analysis_json_path
 
         if self.language == "java":
+            if source_code is not None:
+                raise CldkInitializationException("source_code mode was removed in 2.0; pass project_path")
             return CLDK.java(
                 project_path=project_path,
-                source_code=source_code,
                 analysis_level=analysis_level,
                 target_files=target_files,
                 eager=eager,

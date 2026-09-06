@@ -69,11 +69,10 @@ from typing import Any, Dict, List, Tuple, Union
 import networkx as nx
 
 from cldk.analysis.commons.treesitter import TreesitterJava
-from cldk.analysis.java.backend import JavaAnalysisBackend
+from cldk.analysis.java.backend import CRUD_UNAVAILABLE, JavaAnalysisBackend
 from cldk.analysis.java.neo4j import reconstruct as R
 from cldk.models.java import JGraphEdges
-from cldk.models.java.enums import CRUDOperationType
-from cldk.models.java.models import JApplication, JCRUDOperation, JCallable, JCallableParameter, JComment, JField, JMethodDetail, JType, JCompilationUnit, JGraphEdgesST
+from cldk.models.java.models import JApplication, JCRUDOperation, JCallable, JCallableParameter, JComment, JField, JMethodDetail, JType, JCompilationUnit
 from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 
 logger = logging.getLogger(__name__)
@@ -673,29 +672,21 @@ class JNeo4jBackend(JavaAnalysisBackend):
     def get_all_entry_point_classes(self) -> Dict[str, JType]:
         return {typename: klass for typename, klass in self.get_all_classes().items() if klass.is_entrypoint_class}
 
-    def _crud(self, op_filter: CRUDOperationType | None) -> List[Dict[str, Union[JType, JCallable, List[JCRUDOperation]]]]:
-        rows = []
-        for class_name, class_details in self.get_all_classes().items():
-            for method_name, method_details in class_details.callable_declarations.items():
-                if method_details.crud_operations and len(method_details.crud_operations) > 0:
-                    ops = method_details.crud_operations if op_filter is None else [o for o in method_details.crud_operations if o.operation_type == op_filter]
-                    rows.append({class_name: class_details, method_name: method_details, "crud_operations": ops})
-        return rows
-
+    # -----[ CRUD (J-4): not emitted at schema v2, on either backend ]-----
     def get_all_crud_operations(self) -> List[Dict[str, Union[JType, JCallable, List[JCRUDOperation]]]]:
-        return self._crud(None)
+        raise CodeanalyzerExecutionException(CRUD_UNAVAILABLE)
 
     def get_all_read_operations(self) -> List[Dict[str, Union[JType, JCallable, List[JCRUDOperation]]]]:
-        return self._crud(CRUDOperationType.READ)
+        raise CodeanalyzerExecutionException(CRUD_UNAVAILABLE)
 
     def get_all_create_operations(self) -> List[Dict[str, Union[JType, JCallable, List[JCRUDOperation]]]]:
-        return self._crud(CRUDOperationType.CREATE)
+        raise CodeanalyzerExecutionException(CRUD_UNAVAILABLE)
 
     def get_all_update_operations(self) -> List[Dict[str, Union[JType, JCallable, List[JCRUDOperation]]]]:
-        return self._crud(CRUDOperationType.UPDATE)
+        raise CodeanalyzerExecutionException(CRUD_UNAVAILABLE)
 
     def get_all_delete_operations(self) -> List[Dict[str, Union[JType, JCallable, List[JCRUDOperation]]]]:
-        return self._crud(CRUDOperationType.DELETE)
+        raise CodeanalyzerExecutionException(CRUD_UNAVAILABLE)
 
     def get_comments_in_a_method(self, qualified_class_name: str, method_signature: str) -> List[JComment]:
         callable = self.get_method(qualified_class_name, method_signature)

@@ -17,16 +17,14 @@
 """Java analysis facade module.
 
 This module provides the :class:`JavaAnalysis` class, which serves as the
-primary high-level interface for performing static analysis on Java projects
-and source files. It combines Tree-sitter-based parsing with the CodeAnalyzer
-backend to provide comprehensive code analysis capabilities.
+primary high-level interface for performing static analysis on Java projects.
+It combines Tree-sitter-based parsing with the CodeAnalyzer backend to provide
+comprehensive code analysis capabilities.
 
-The analysis supports two modes of operation:
-    - **Project mode**: Analyze an entire Java project directory, providing
-      access to cross-file analysis features like call graphs and class
-      hierarchies.
-    - **Source code mode**: Analyze a single Java source code string, useful
-      for quick syntactic analysis without a full project structure.
+The analysis operates on a project directory (cross-file call graphs, class
+hierarchies, the symbol table). The 1.x single-file ``source_code`` mode was
+removed in 2.0 (spec leg 3, J-10): pass the project directory, or hand a source
+string to :class:`~cldk.analysis.commons.treesitter.TreesitterJava` directly.
 
 Key capabilities include:
     - Symbol table extraction (classes, methods, fields, imports)
@@ -46,6 +44,8 @@ See Also:
     - :class:`~cldk.analysis.java.codeanalyzer.JCodeanalyzer`: Backend implementation.
 """
 
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Dict, List, Tuple, Set, Union
 import networkx as nx
@@ -56,7 +56,7 @@ from cldk.analysis.commons.backend_config import CodeAnalyzerConfig, JavaBackend
 from cldk.analysis.commons.treesitter import TreesitterJava
 from cldk.models.java import JCallable
 from cldk.models.java import JApplication
-from cldk.models.java.models import JCRUDOperation, JComment, JCompilationUnit, JMethodDetail, JType, JField
+from cldk.models.java.models import JCallableParameter, JCRUDOperation, JComment, JCompilationUnit, JMethodDetail, JType, JField
 from cldk.analysis.java.codeanalyzer import JCodeanalyzer
 from cldk.analysis.java.neo4j import JNeo4jBackend
 from cldk.analysis.java.backend import JavaAnalysisBackend
@@ -69,12 +69,9 @@ class JavaAnalysis:
     on Java projects and source files. It combines Tree-sitter-based parsing for
     syntactic analysis with the CodeAnalyzer backend for semantic analysis.
 
-    The facade supports two modes of operation:
-        - **Project mode**: When initialized with ``project_dir``, provides full
-          analysis capabilities including cross-file call graphs, class hierarchies,
-          and symbol tables.
-        - **Source code mode**: When initialized with ``source_code``, provides
-          syntactic analysis capabilities like parsing and AST extraction.
+    The facade is initialized with ``project_dir`` and provides full analysis
+    capabilities including cross-file call graphs, class hierarchies, and symbol
+    tables; the single-file ``source_code`` mode was removed in 2.0.
 
     Key features:
         - Symbol table access with classes, methods, and fields
@@ -87,7 +84,6 @@ class JavaAnalysis:
 
     Attributes:
         project_dir (str | Path | None): Path to the Java project directory.
-        source_code (str | None): Java source code string for single-file mode (deprecated).
         analysis_level (str): The depth of analysis performed.
         eager_analysis (bool): Whether to force regeneration of analysis.
         target_files (List[str] | None): Specific files to analyze.
@@ -103,7 +99,6 @@ class JavaAnalysis:
     def __init__(
         self,
         project_dir: str | Path | None,
-        source_code: str | None,
         analysis_level: str,
         target_files: List[str] | None,
         eager_analysis: bool,
@@ -111,22 +106,16 @@ class JavaAnalysis:
     ) -> None:
         """Initialize the Java analysis facade.
 
-        Creates a new analysis facade for Java code. Either ``project_dir`` or
-        ``source_code`` must be provided, but not both.
+        Creates a new analysis facade for Java code.
 
         Args:
             project_dir: Absolute or relative path to the Java project directory.
                 The directory should contain Java source files (``.java``).
-                When provided, enables full analysis including call graphs.
-                Mutually exclusive with ``source_code``.
-            source_code: Java source code string for single-file analysis.
-                Useful for quick syntactic analysis without a project structure.
-                Mutually exclusive with ``project_dir``. Deprecated; will be
-                removed in a future release.
-            analysis_level: The depth of analysis to perform. Common values:
-                - ``"symbol_table"``: Extract symbols only (faster)
-                - ``"call_graph"``: Full call graph analysis (comprehensive)
-                See :class:`~cldk.analysis.AnalysisLevel` for all options.
+                Optional only for the read-only Neo4j backend.
+            analysis_level: The depth of analysis to perform — any
+                :class:`~cldk.analysis.AnalysisLevel`: ``"symbol_table"`` (1),
+                ``"call_graph"`` (2), ``"program_dependency_graph"`` (3),
+                ``"system_dependency_graph"`` (4); the level reaches the analyzer as ``-a``.
             target_files: Optional list of specific file paths (relative to
                 ``project_dir``) to include in the analysis. When provided,
                 only these files are analyzed, improving performance for
@@ -145,7 +134,6 @@ class JavaAnalysis:
         """
 
         self.project_dir = project_dir
-        self.source_code = source_code
         self.analysis_level = analysis_level
         self.eager_analysis = eager_analysis
         self.target_files = target_files
@@ -164,14 +152,12 @@ class JavaAnalysis:
                 application_name=application_name,
             )
         else:
-            # The config only carries the cache root. analysis.json is cached under <cache_dir>/java
-            # (None in source_code mode, where the analyzer streams results over a pipe).
+            # The config only carries the cache root. analysis.json is cached under <cache_dir>/java.
             cache_path = cache_subdir(self.backend_config.cache_dir, project_dir, "java")
             if cache_path is not None:
                 cache_path.mkdir(parents=True, exist_ok=True)
             self.backend = JCodeanalyzer(
                 project_dir=self.project_dir,
-                source_code=self.source_code,
                 eager_analysis=self.eager_analysis,
                 analysis_level=self.analysis_level,
                 analysis_json_path=cache_path,
@@ -279,16 +265,10 @@ class JavaAnalysis:
                 - Project-level metadata
                 - Aggregated statistics about the codebase
 
-        Raises:
-            NotImplementedError: If called in single-file mode (``source_code``
-                was provided instead of ``project_dir``).
-
         See Also:
             :meth:`get_symbol_table`: For direct access to the symbol table.
             :meth:`get_compilation_units`: For a list of compilation units.
         """
-        if self.source_code:
-            raise NotImplementedError("Support for this functionality has not been implemented yet.")
         return self.backend.get_application_view()
 
     def get_symbol_table(self) -> Dict[str, JCompilationUnit]:
@@ -405,16 +385,17 @@ class JavaAnalysis:
         relationships across the entire project. Each node represents a
         method, and each edge represents a call from one method to another.
 
-        The call graph requires ``analysis_level`` to be set to ``"call_graph"``
-        during initialization for accurate results.
+        The call graph requires ``analysis_level`` of at least ``"call_graph"``;
+        below it the graph is empty.
 
         Returns:
             A ``networkx.DiGraph`` where:
-                - Nodes represent methods with attributes containing method
-                  metadata (class name, signature, etc.)
+                - Nodes are keyed by the string ``"<type fqn>.<signature>"`` (e.g.
+                  ``"com.acme.Svc.run(java.lang.String)"``), with a
+                  :class:`~cldk.models.java.JMethodDetail` under ``method_detail``
+                  and ``kind="callable"``
                 - Edges represent call relationships, directed from caller
-                  to callee
-                - Edge attributes may include call site information
+                  to callee, with ``type``, ``weight`` and ``calling_lines``
 
         See Also:
             :meth:`get_callers`: For finding callers of a specific method.
@@ -435,15 +416,9 @@ class JavaAnalysis:
             including compilation units, classes, methods, and call
             relationships.
 
-        Raises:
-            NotImplementedError: If called in single-file mode (``source_code``
-                was provided instead of ``project_dir``).
-
         See Also:
             :meth:`get_call_graph`: For the graph object directly.
         """
-        if self.source_code:
-            raise NotImplementedError("Producing a call graph over a single file is not implemented yet.")
         return self.backend.get_call_graph_json()
 
     def get_callers(self, target_class_name: str, target_method_declaration: str, using_symbol_table: bool = False) -> Dict:
@@ -468,17 +443,10 @@ class JavaAnalysis:
                 - Call site locations (file and line)
                 - Caller class information
 
-        Raises:
-            NotImplementedError: If called in single-file mode (``source_code``
-                was provided instead of ``project_dir``).
-
         See Also:
             :meth:`get_callees`: For the reverse direction (what a method calls).
             :meth:`get_call_graph`: For the complete call relationship graph.
         """
-
-        if self.source_code:
-            raise NotImplementedError("Generating all callers over a single file is not implemented yet.")
         return self.backend.get_all_callers(target_class_name, target_method_declaration, using_symbol_table)
 
     def get_callees(self, source_class_name: str, source_method_declaration: str, using_symbol_table: bool = False) -> Dict:
@@ -503,16 +471,10 @@ class JavaAnalysis:
                 - Target class information
                 - Call site locations within the source method
 
-        Raises:
-            NotImplementedError: If called in single-file mode (``source_code``
-                was provided instead of ``project_dir``).
-
         See Also:
             :meth:`get_callers`: For the reverse direction (who calls a method).
             :meth:`get_call_graph`: For the complete call relationship graph.
         """
-        if self.source_code:
-            raise NotImplementedError("Generating all callees over a single file is not implemented yet.")
         return self.backend.get_all_callees(source_class_name, source_method_declaration, using_symbol_table)
 
     def get_methods(self) -> Dict[str, Dict[str, JCallable]]:
@@ -655,11 +617,8 @@ class JavaAnalysis:
         """
         return self.backend.get_method(qualified_class_name, qualified_method_name)
 
-    def get_method_parameters(self, qualified_class_name: str, qualified_method_name: str) -> List[str]:
-        """Return the parameter types for a specific method.
-
-        Retrieves the list of parameter type names defined in the method
-        signature.
+    def get_method_parameters(self, qualified_class_name: str, qualified_method_name: str) -> List[JCallableParameter]:
+        """Return the parameters of a specific method.
 
         Args:
             qualified_class_name: The fully qualified name of the class
@@ -667,9 +626,10 @@ class JavaAnalysis:
             qualified_method_name: The method signature to get parameters for.
 
         Returns:
-            A list of parameter type names as strings, in the order they
-            appear in the method signature. Returns an empty list if the
-            method is not found or has no parameters.
+            The :class:`~cldk.models.java.models.JCallableParameter` objects
+            (name, type, annotations, position), in signature order. Returns an
+            empty list if the method is not found or has no parameters. (1.x
+            annotated this ``List[str]``; it always returned the objects.)
 
         See Also:
             :meth:`get_method`: For complete method information.
@@ -960,19 +920,16 @@ class JavaAnalysis:
         from the source code, including Javadoc comments. This is useful
         for code analysis that should ignore comment content.
 
-        Returns:
-            A string containing the source code with all comments removed.
-            Whitespace where comments were removed may be preserved or
-            collapsed depending on the implementation.
-
-        Note:
-            This method operates on the ``source_code`` provided during
-            initialization. It requires single-file mode.
+        Raises:
+            NotImplementedError: always. This accessor only ever operated on the
+            ``source_code`` given to the 1.x constructor, and that single-file mode
+            was removed in 2.0 (J-10). Pass the source to
+            :meth:`TreesitterJava.remove_all_comments` directly.
 
         See Also:
             :meth:`get_all_comments`: For extracting comments instead.
         """
-        return self.backend.remove_all_comments(self.source_code)
+        raise NotImplementedError("single-file source mode was removed in 2.0; pass the source to TreesitterJava.remove_all_comments directly")
 
     def get_methods_with_annotations(self, annotations: List[str]) -> Dict[str, List[Dict]]:
         """Return methods decorated with specific annotations.
@@ -1009,18 +966,16 @@ class JavaAnalysis:
 
         Returns:
             A dictionary mapping test method signatures to their source
-            code bodies.
-
-        Note:
-            This method operates on the ``source_code`` provided during
-            initialization. It requires single-file mode.
+            code bodies, merged over every compilation unit's ``source``.
 
         See Also:
             :meth:`get_methods_with_annotations`: For finding methods with
                 any annotation.
         """
-
-        return self.treesitter_java.get_test_methods(source_class_code=self.source_code)
+        test_methods: Dict[str, str] = {}
+        for unit in self.get_symbol_table().values():
+            test_methods.update(self.treesitter_java.get_test_methods(source_class_code=unit.source))
+        return test_methods
 
     def get_calling_lines(self, target_method_name: str) -> List[int]:
         """Return line numbers where a method is called.
