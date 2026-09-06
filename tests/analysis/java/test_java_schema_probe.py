@@ -115,10 +115,15 @@ def test_probe_serves_every_generation_from_the_floor_up_silently(fake_driver, c
 
 
 def test_probe_anchors_on_the_application_name(fake_driver):
-    """The 3.0.1 anchor is ``:JApplication {name}`` -- keyed by name, not by a ``can://`` id."""
+    """The 3.0.1 anchor is ``:JApplication {name}`` -- keyed by name, not by a ``can://`` id, and
+    bound as a parameter. The fake answers the version *only* for the name it was told the graph
+    holds, so a probe that matched on anything else -- an id, a file key, no key at all -- would
+    attach to ``other-app`` instead of refusing it."""
+    fake_driver.application_name = "my-app"
     JNeo4jBackend._from_driver(fake_driver, application_name="my-app")
-    probe = next(s for s in fake_driver.statements if "analyzer_version" in s)
-    assert "(a:JApplication {name: $app})" in probe and "count(a) AS n" in probe
+    with pytest.raises(GraphSchemaMismatch, match="has no :JApplication node"):
+        JNeo4jBackend._from_driver(fake_driver, application_name="other-app")
+    assert not any("can://" in s for s in fake_driver.statements)
 
 
 def test_attach_does_not_reconstruct_the_application(fake_driver):

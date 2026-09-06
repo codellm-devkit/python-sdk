@@ -138,6 +138,10 @@ def _build() -> _Graph:
         g.edge(nested, "J_HAS_METHOD", nested_m)
         local = g.node(f"{method}/$anon$0", ["JSymbol", "JType"], name="$anon$0", kind="class", start_line=7, end_line=7)
         g.edge(method, "J_DECLARES", local)
+        # A *sibling* callable declaring its own ``$anon$0`` -- the numbering is per declaring
+        # callable, so this collides with the one above unless the callable is part of the key.
+        ctor_local = g.node(f"{ctor}/$anon$0", ["JSymbol", "JType"], name="$anon$0", kind="class", start_line=5, end_line=5)
+        g.edge(ctor, "J_DECLARES", ctor_local)
         var = g.node(f"{method}#{tag}_var@7", ["JVariable"], name=f"{tag}_var", type="int", initializer="1", start_line=7, end_line=7)
         g.edge(method, "J_DECLARES_VAR", var)
 
@@ -449,7 +453,8 @@ def test_get_class_does_not_leak_another_applications_children():
 
 def test_get_all_classes_covers_nested_and_local_types_of_this_application_only():
     backend = _backend()
-    assert set(backend.get_all_classes()) == {CLASS_FQN, "shared.Widget.Inner", "shared.Widget.$anon$0", "shared.Helper"}
+    expected = {CLASS_FQN, "shared.Widget.Inner", f"shared.Widget.{METHOD_SIG}.$anon$0", "shared.Widget.<init>().$anon$0", "shared.Helper"}
+    assert set(backend.get_all_classes()) == expected, "a local class is not keyed by the callable that declares it (J-1 erratum)"
     assert backend.get_all_classes()[CLASS_FQN] == backend.get_class(CLASS_FQN)
     assert backend.get_java_file(CLASS_FQN) == SHARED_MODULE
     assert backend.get_java_file("shared.NoSuchClass") is None
@@ -506,43 +511,94 @@ def test_docstrings_are_this_applications():
     assert backend.get_all_docstrings() == {SHARED_MODULE: [c for c in backend.get_comments_in_a_class(CLASS_FQN)] + backend.get_comments_in_a_method(CLASS_FQN, METHOD_SIG)}
 
 
-def test_a_symbol_whose_labels_and_kind_name_no_facet_is_raised_as_a_defect():
-    """``:JSymbol`` carries ``:JType``/``:JCallable``/``:JExternal``; a row whose labels and
-    ``kind`` name none of them is the emitter's defect, named by signature/name, labels and kind --
-    never by its id (E6)."""
-    from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
+def test_a_module_row_that_is_not_a_type_is_refused_by_the_model():
+    """A module declares types only. ``JType.kind`` is a ``Literal``, so a row naming any other
+    kind is refused there -- with no id in the message (E6) -- and the backend needs no dispatch of
+    its own."""
+    from pydantic import ValidationError
 
-    backend = _backend()
-    row = {"id": "can://java/app_a/x/Y.java/Y", "name": "Y", "kind": "widget", "_labels": ["JCanNode", "JSymbol"]}
-    with pytest.raises(CodeanalyzerExecutionException, match=r"'Y' \(labels \['JCanNode', 'JSymbol'\], kind 'widget'\)") as e:
-        backend._facet(row)
-    assert "can://" not in str(e.value)
+    from cldk.analysis.java.neo4j import reconstruct as R
+
+    with pytest.raises(ValidationError) as e:
+        R.type_({"id": "can://java/app_a/x/Y.java/Y", "name": "Y", "kind": "widget"}, decorators=[], fields={}, callables={}, types={}, enum_constants=[], record_components=[])
+    assert "kind" in str(e.value) and "can://" not in str(e.value)
 
 
 # =====================================================================================
 # The audit: every statement, class-level and inline, carries the application scope
 # =====================================================================================
-_MATCHES_BY_PREFIX = re.compile(r"\.id STARTS WITH \$prefix\b")
-_MATCHES_BY_NAME = re.compile(r"(?:signature|file_key|name)\s*[:=]\s*\$|\.(?:signature|file_key|name) IN \$")
-_MATCHES_BY_ID = re.compile(r"\bid\s*:\s*\$|\.id IN \$|\.id = \$")
+_SCOPED_VAR = re.compile(r"\b(\w+)\.id STARTS WITH \$prefix\b")
 _INTROSPECTION = re.compile(r"^\s*CALL (db|dbms)\.")
-_ANCHORED_ON_THE_APPLICATION = re.compile(r"\(\w*:JApplication \{name: \$app\}\)")
+
+#: Relationship types that cannot leave the application: each runs from the application node, a
+#: module or a declaration to something the same emitter minted under the same id prefix. A
+#: variable reached from an in-scope one over these is in scope too, without a predicate of its own.
+_CONTAINMENT = frozenset(
+    {
+        "J_HAS_MODULE",
+        "J_DECLARES",
+        "J_HAS_METHOD",
+        "J_HAS_FIELD",
+        "J_DECLARES_VAR",
+        "J_HAS_ENUM_CONSTANT",
+        "J_HAS_RECORD_COMPONENT",
+        "J_HAS_BODY_NODE",
+        "HAS_ARTIFACT",
+        "DEFINES_CONFIG",
+    }
+)
+
+#: Cross-reference types whose target is shared vocabulary *by construction*: an ``:JAnnotation``
+#: keyed by name, a ``:JPackage``, a ``:Package`` coordinate, or a ``J_RESOLVES_TO`` callee that may
+#: be a ``:JExternal`` and so belongs to no application at all. A statement may reach these without
+#: a prefix because there is no per-application node to reach. **``J_CALLS`` is deliberately not
+#: here**: both its endpoints are application-owned callables, so both must carry the prefix.
+_SHARED_TARGET = frozenset({"J_ANNOTATED_BY", "J_IMPORTS", "DECLARES_DEPENDENCY", "J_RESOLVES_TO"})
+
+_KEEPS_SCOPE = _CONTAINMENT | _SHARED_TARGET
 
 
-def _is_scoped(statement: str) -> bool:
-    return bool(_MATCHES_BY_PREFIX.search(statement))
+def _match_clauses(statement: str) -> List[str]:
+    """The pattern of each ``MATCH`` / ``OPTIONAL MATCH`` clause, split as :func:`fake_cypher` does."""
+    clauses = re.split(r"(?<!STARTS)(?<!OPTIONAL) (?=MATCH |OPTIONAL MATCH |WHERE |WITH |RETURN )", statement.strip())
+    return [re.sub(r"^(?:OPTIONAL )?MATCH ", "", c) for c in clauses if re.match(r"(?:OPTIONAL )?MATCH ", c)]
+
+
+def _unscoped_variables(statement: str) -> List[str]:
+    """The node variables the statement binds that are **not** provably inside one application.
+
+    A variable is inside when it carries ``id STARTS WITH $prefix``, when it *is* the
+    ``(:JApplication {name: $app})`` anchor, or when the pattern reaches it from an inside variable
+    over :data:`_KEEPS_SCOPE`. Judging per variable is the point: a presence check ("does the text
+    contain a prefix predicate?") passes ``MATCH (s:JCallable)-[:J_CALLS]->(t:JCallable) WHERE
+    s.id STARTS WITH $prefix``, which leaks through ``t``. Anonymous pattern nodes are skipped --
+    they bind nothing, so no clause can read one.
+    """
+    prefixed = set(_SCOPED_VAR.findall(statement))
+    inside: Dict[str, bool] = {}
+    bound: List[str] = []
+    for clause in _match_clauses(statement):
+        previous, rels = False, None
+        for kind, token in _tokens(clause):
+            if kind == "hop":
+                rels = token[1]
+                continue
+            var, labels, props = token
+            anchor = labels == "JApplication" and props == "name: $app"
+            here = var in prefixed or anchor or inside.get(var, False) or (previous and rels is not None and rels <= _KEEPS_SCOPE)
+            if not var.startswith("_"):
+                bound.append(var)
+            inside[var] = inside.get(var, False) or here
+            previous, rels = inside[var], None
+    return sorted({v for v in bound if not inside[v]})
 
 
 def _scope_kind(statement: str) -> str | None:
     if _INTROSPECTION.match(statement):
         return "introspection"
-    if _is_scoped(statement):
-        return "prefix"
-    if _ANCHORED_ON_THE_APPLICATION.search(statement):
-        return "application"
-    if _MATCHES_BY_ID.search(statement):
-        return "id"
-    return None
+    if _unscoped_variables(statement):
+        return None
+    return "prefix" if _SCOPED_VAR.search(statement) else "application"
 
 
 def _class_level_statements() -> Dict[str, str]:
@@ -605,11 +661,45 @@ def _every_statement() -> Dict[str, str]:
     return {**_class_level_statements(), **_inline_statements()}
 
 
+#: What the backend is allowed to touch on the driver and on the session it opens. The harvester
+#: only follows Cypher passed to ``self._run(``, so anything that reaches the server another way is
+#: invisible to it: ``self._driver.execute_query(...)`` would satisfy a ``.run(`` count of one and
+#: be harvested zero times. Judging the *surface* instead makes a new driver API a deliberate act --
+#: adding it here, with the harvester taught to follow it.
+_DRIVER_SURFACE = frozenset({"session", "close"})
+_SESSION_SURFACE = frozenset({"run", "close"})
+
+
+def _attribute_uses(target: str) -> Dict[str, List[str]]:
+    """``<method>@<line> -> [attribute, ...]`` for every ``self.<target>.<attr>`` in the class."""
+    out: Dict[str, List[str]] = defaultdict(list)
+    for fn in ast.walk(ast.parse(inspect.getsource(JNeo4jBackend))):
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        for node in ast.walk(fn):
+            if (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Attribute)
+                and node.value.attr == target
+                and isinstance(node.value.value, ast.Name)
+                and node.value.value.id == "self"
+            ):
+                out[f"{fn.name}@{node.lineno}"].append(node.attr)
+    return out
+
+
+@pytest.mark.parametrize("target, allowed", [("_driver", _DRIVER_SURFACE), ("_session_obj", _SESSION_SURFACE)])
+def test_the_backend_reaches_the_server_only_through_the_harvested_surface(target, allowed):
+    """Every attribute the backend touches on the driver and on its session is in a small
+    allow-list, so no statement can reach Neo4j by a route the audit does not read."""
+    for where, attributes in _attribute_uses(target).items():
+        assert set(attributes) <= allowed, f"{where} uses self.{target}.{sorted(set(attributes) - allowed)}, outside the audited surface"
+
+
 def test_the_audit_sees_every_inline_statement_too():
     """One harvested statement per ``self._run(`` site, every one fully reassembled -- no statement
     reaches the driver through a variable the harvester cannot follow."""
     source = inspect.getsource(JNeo4jBackend)
-    assert source.count(".run(") == 1, "only _run may touch the session"
     inline = _inline_statements()
     assert len(inline) == source.count("self._run("), "a statement site the harvester did not see"
     assert [name for name, s in inline.items() if "{…}" in s] == [], "a statement the harvester could not reassemble"
@@ -644,6 +734,36 @@ def test_no_statement_names_retired_vocabulary():
             assert retired not in s, f"{name} names retired vocabulary {retired!r}: {s[:160]!r}"
 
 
+@pytest.mark.parametrize(
+    "statement, leaks",
+    [
+        ("MATCH (s:JCallable)-[:J_CALLS]->(t:JCallable) WHERE s.id STARTS WITH $prefix RETURN s.id", ["t"]),
+        ("MATCH (:JApplication {name: $app})-[:J_HAS_MODULE]->(m:JModule) MATCH (x:JType) RETURN x.id", ["x"]),
+        ("MATCH (c:JCallable) RETURN c.id", ["c"]),
+    ],
+    ids=["one-endpoint-of-two", "a-second-unanchored-match", "no-scope-at-all"],
+)
+def test_the_audit_rejects_a_statement_that_scopes_only_part_of_its_pattern(statement, leaks):
+    """The net's own net. A presence-based check ("does the text contain a prefix predicate?")
+    passes the first of these, which is the regression this audit exists to catch."""
+    assert _unscoped_variables(statement) == leaks
+    assert _scope_kind(statement) is None
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "MATCH (s:JCallable)-[:J_CALLS]->(t:JCallable) WHERE s.id STARTS WITH $prefix AND t.id STARTS WITH $prefix RETURN s.id",
+        "MATCH (:JApplication {name: $app})-[:J_HAS_MODULE]->(m:JModule)-[r:J_IMPORTS]->() RETURN m.file_key",
+        "CALL db.relationshipTypes()",
+    ],
+    ids=["both-endpoints-prefixed", "walked-from-the-anchor", "introspection"],
+)
+def test_the_audit_accepts_the_three_shapes_that_are_actually_scoped(statement):
+    assert _unscoped_variables(statement) == []
+    assert _scope_kind(statement) is not None
+
+
 def test_no_statement_spells_the_scope_with_any():
     """``any(p IN $prefixes WHERE …)`` plans as a label scan; Java has one prefix, so the predicate
     is a bare ``STARTS WITH`` and there is nothing for ``any()`` to iterate."""
@@ -652,28 +772,30 @@ def test_no_statement_spells_the_scope_with_any():
 
 @pytest.mark.parametrize("name", sorted(_every_statement()))
 def test_every_statement_is_application_scoped_or_anchored(name):
-    """Three ways a statement stays inside one application. A **qualified name, signature or
-    file_key** is not application-stamped, so a statement matching by one must carry the prefix. A
-    **can:// id** embeds the application, so a statement keyed only by id is scoped by
-    construction. A statement anchored on ``(:JApplication {name: $app})`` walks out from the
-    application node and cannot leave it."""
+    """Two ways a node stays inside one application, judged **per bound variable**: the pattern
+    reaches it from an ``(:JApplication {name: $app})`` anchor, or it carries the
+    ``id STARTS WITH $prefix`` predicate itself. A qualified name, a signature and a ``file_key``
+    are all shared vocabulary, so neither can be skipped for one endpoint of two."""
     statement = _every_statement()[name]
-    kind = _scope_kind(statement)
-    assert kind is not None, f"{name} carries no application scope: {statement[:160]!r}"
-    if _MATCHES_BY_NAME.search(statement):
-        assert kind in ("prefix", "application"), f"{name} matches by a name the graph does not stamp with the application"
+    assert _unscoped_variables(statement) == [], f"{name} leaks through {_unscoped_variables(statement)}: {statement[:200]!r}"
+    assert _scope_kind(statement) is not None, f"{name} carries no application scope: {statement[:160]!r}"
 
 
-def test_seek_labels_follow_the_measured_rule():
-    """Measured on ThingsBoard (7691, ``PROFILE``, median of 5 -- the table is in Task 3 of the
-    plan). Every keyed label already owns a uniqueness constraint on ``id``, so the bare specific
-    label is the right anchor for every family here and ``:JCanNode`` is never faster: it loses on
-    the whole-application prefix (118 ms against 23 ms), on the point lookup (1.40 ms against
-    1.13 ms on ``:JSymbol``), and on both prefix-scoped statements this backend actually issues,
-    where the traversal dominates the wall clock and ``:JCanNode`` only adds db hits (call sites
-    5.65M against 4.55M; call edges 1.89M against 0.73M). ``:JSymbol:JCallable`` wins a *bare*
-    prefixed count (10.6 ms against 23.8 ms) but not a traversal (4.56M hits against 4.55M) and
-    not a signature lookup (31.6 ms against 22.4 ms), so nothing here uses it. ``:JCanNode`` wins
-    only a *per-module* prefix (3.0 ms against 21.2 ms), and no statement here issues one."""
+def test_no_statement_anchors_on_the_marker_label():
+    """A grep, not a measurement: it freezes the *ruling* that no statement anchors on
+    ``:JCanNode``, so a change of anchor has to change this test and re-run the numbers.
+
+    The ruling, measured on ThingsBoard (7691, ``PROFILE``, median of 5 -- the table is in Task 3
+    of the plan): the two prefix-scoped statements this backend issues both fan out over
+    relationships, and the traversal dominates -- swapping the anchor moves the wall clock by under
+    1% while ``:JCanNode`` adds a quarter again as many db hits (call sites 5.65M against 4.55M;
+    call edges 1.89M against 0.73M). Every other statement walks out from the ``:JApplication``
+    anchor and never scans. Where ``:JCanNode`` *is* the only seek available it still loses, its
+    index being a non-constraint range index over 615,329 nodes: 118 ms against 24 on a
+    whole-application prefix, 1.40 ms against 1.13 on a point lookup. It wins a *per-module*
+    prefix (3.0 ms against 21.2), which no statement here issues. This test does not notice a
+    switch to ``:JSymbol`` -- also measured, also not used (it loses a signature lookup at 31.6 ms
+    against 22.4 and is a wash on the traversals) -- because that would be a different ruling with
+    its own numbers, not a violation of this one."""
     for name, s in _every_statement().items():
         assert "JCanNode" not in s, f"{name} anchors on :JCanNode, which is never the faster anchor here: {s[:120]!r}"
