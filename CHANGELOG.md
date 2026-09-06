@@ -7,11 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Python legs 1 and 1.5 of the CLDK 2.0 agent-facing query facade (see
-`docs/design/specs/2026-09-03-agent-facing-query-facade.md` and
-`docs/design/specs/2026-09-05-leg-1.5-bounded-queries-and-dataflow.md`). Targets `2.0.0-rc.1`.
+Python legs 1, 1.5 and 1.6 of the CLDK 2.0 agent-facing query facade (see
+`docs/design/specs/2026-09-03-agent-facing-query-facade.md`,
+`docs/design/specs/2026-09-05-leg-1.5-bounded-queries-and-dataflow.md` and
+`docs/design/specs/2026-09-06-leg-1.6-id-prefix-scoping.md`). Targets `2.0.0-rc.1`.
 
 ### Changed
+- **Pinned `codeanalyzer-python` 1.4.0 → 1.4.1** (`pyproject.toml` `dependencies` and
+  `[tool.backend-versions]`). 1.4.1 removes the `_module` node property from every graph it emits
+  (upstream #183), so the Neo4j backend no longer scopes on it: **every statement is scoped to the
+  application by its `can://` id prefix** (`n.id STARTS WITH 'can://python/<app>/'`), the rule the
+  analyzer's own destructive statements use, and a callable's repo-relative `path` is derived from
+  its id and verified against the application's module keys rather than projected from a property.
+  No accessor changes name, signature, return type or value; the `_module` scoping is simply gone.
+  Ghosts (`:PyExternal`) fall inside the prefix, so every call-graph walk pins its traversal source
+  to `:PyCallable` by label -- an `@external` node is still reached and never traversed through.
+- **The schema probe reads the graph's analyzer generation.** Attaching to a graph whose
+  `:PyApplication.analyzer_version` is below **1.4.0** (or missing) raises `GraphSchemaMismatch`
+  naming the version found and the floor -- before this it was served with silent empties. A
+  **1.4.0** graph is served with identical results and one `WARNING` that scoped statements scan
+  rather than seek (it carries no `:PyCanNode` index). A **1.4.1** graph attaches silently, and
+  `locate` / `locate_many` name `:PyCanNode` on it so the per-module prefix seeks the range index
+  (40 positions: 399 → 89 ms). Statements whose prefix is the whole application stay unlabelled:
+  measured, the seek over 955,961 application nodes is 2–20× slower than the `:PyCallable` label
+  scan they use.
 - **BREAKING: Neo4j graph vocabulary migration.** The Python Neo4j backend
   (`cldk.analysis.python.neo4j.PyNeo4jBackend`) now queries `PyBodyNode` / `PY_HAS_BODY_NODE`
   instead of the pre-1.4.0 `PyCallSite` / `PY_HAS_CALLSITE` / `PySymbol` vocabulary, matching what
@@ -43,8 +62,9 @@ Python legs 1 and 1.5 of the CLDK 2.0 agent-facing query facade (see
   `PyClassOverview.path` and the keys of `get_symbol_table()`, which it previously could not be
   joined against. Both backends changed together: the Neo4j projections behind
   `get_callables_overview()`, `get_decorated_callables()`, `get_entrypoints()` and
-  `get_config_readers()` now read `:PyCallable._module` rather than `:PyCallable.path`, and the
-  local backend projects the symbol table key rather than `PyCallable.path`.
+  `get_config_readers()` now project the module key rather than `:PyCallable.path` (from the
+  `_module` property on a 1.4.0 graph in leg 1; derived from the node's `can://` id since leg 1.6),
+  and the local backend projects the symbol table key rather than `PyCallable.path`.
   **Migration:** a caller that stored or persisted these paths will see different strings for the
   same callable, and one that stripped a project-root prefix off them must stop.
 
@@ -104,7 +124,7 @@ Python legs 1 and 1.5 of the CLDK 2.0 agent-facing query facade (see
 | SDK version | Requires `codeanalyzer-python` | Graph vocabulary |
 | --- | --- | --- |
 | <= 1.5.0 | 0.3.x | `PyCallSite` / `PY_HAS_CALLSITE` / `PySymbol` |
-| 2.0.0-rc.1 (this) | >= 1.4.0 | `PyBodyNode` / `PY_HAS_BODY_NODE` |
+| 2.0.0-rc.1 (this) | 1.4.1 pinned; graphs emitted by >= 1.4.0 served (1.4.0 scanned, 1.4.1 indexed) | `PyBodyNode` / `PY_HAS_BODY_NODE`, scope by `can://` id prefix |
 
 ### Added
 - **Slices and reachability: `slice_backward(src, within=)` / `slice_forward(src, within=)` /
@@ -312,6 +332,23 @@ Python legs 1 and 1.5 of the CLDK 2.0 agent-facing query facade (see
   schema probe at attach time; see the breaking-change note above.
 
 ### Fixed
+- **`get_entrypoint_coverage()` over Neo4j reads the projected report.** It answered with an
+  `entrypoint_report_unavailable` diagnostic unconditionally; codeanalyzer-python 1.4.1 (#182)
+  projects `entrypoint_frameworks` / `entrypoint_report_json` onto `:PyApplication`, so on such a
+  graph the answer is now the pass's own `PyEntrypointReport`, field for field what the local
+  backend returns. The diagnostic survives only for a graph that genuinely lacks the property (one
+  emitted by 1.4.0).
+- **Resolved through the 1.4.1 pin** -- python-sdk's upstream reports #176 / #177 / #178, fixed
+  in codeanalyzer-python as #180 (body nodes and parameters carry their `id` in `analysis.json`;
+  the SDK's composed body-node id is now pinned equal to the analyzer's own per run), #182 / #185
+  (entrypoint report projected, Odoo `@http.route` / `http.Controller` detected: 534 callables and
+  94 classes on the same checkout that 1.4.0 flagged 0 / 0), #181 (`PY_EXTENDS` is actually emitted:
+  1,573 edges where every 2.0.0 graph had none) and #183 (`_module` retired, `:PyCanNode` range
+  index on `id`, `:PyExternal` ghosts under the application prefix).
+- **The N+1 timing assertion measured the coverage tracer, not the query.** The two timed live
+  tests (`get_symbol_table` / `get_classes` under 15 s) ran under `sys.settrace`, which adds ~5 s
+  to a ~10 s Python-side reconstruction; they passed the ceiling by luck. They now run with coverage
+  paused (`pytest-cov`'s `no_cover`), so the ceiling measures the round trips it exists to bound.
 - **Java: a missing JDK cache root is refused, not crashed on.** `JCodeanalyzer._get_codeanalyzer_exec`
   now raises `CodeanalyzerExecutionException` ("no cache directory and no project directory")
   when neither is available, instead of letting `ensure_jdk` fail with `TypeError: ... not
@@ -328,7 +365,8 @@ Python legs 1 and 1.5 of the CLDK 2.0 agent-facing query facade (see
   child fetches (`get_class()` and everything reconstructing one declaration) matched by a bare
   `{signature: $sig}` / `{file_key: $fk}` while their bulk twins were application-scoped, so in a
   database holding two applications `get_class()` merged another application's members and
-  `get_all_classes()` did not. All twelve carry the same `_module IN $mods` predicate now, and so
+  `get_all_classes()` did not. All twelve carry the same application-scope predicate now (`_module
+  IN $mods` when this landed, the `can://` id prefix since leg 1.6), and so
   do the leg-1.5 call-graph statements behind `reaches`, `backward_cone`, `call_paths_between` and
   `flows_to_call`, which had matched by signature unscoped too. Statements keyed only by a
   body-node or ghost id (`slice_*`, `paths_between`, the value-reachability predicate) are scoped

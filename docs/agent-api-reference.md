@@ -3,10 +3,11 @@
 What you can ask a CLDK Python analysis, what comes back, and what will mislead you if you don't
 know it. Written for an agent composing queries at runtime.
 
-Status: legs 1 and 1.5 (`codeanalyzer-python` 1.4.0) — every accessor below is implemented on both
-backends and exercised against a live graph. Design records:
-`docs/design/specs/2026-09-03-agent-facing-query-facade.md` and
-`docs/design/specs/2026-09-05-leg-1.5-bounded-queries-and-dataflow.md`.
+Status: legs 1, 1.5 and 1.6 (`codeanalyzer-python` 1.4.1 pinned; graphs emitted by 1.4.0 or newer
+served) — every accessor below is implemented on both backends and exercised against live graphs of
+both generations. Design records: `docs/design/specs/2026-09-03-agent-facing-query-facade.md`,
+`docs/design/specs/2026-09-05-leg-1.5-bounded-queries-and-dataflow.md` and
+`docs/design/specs/2026-09-06-leg-1.6-id-prefix-scoping.md`.
 
 ---
 
@@ -28,6 +29,15 @@ py = CLDK.python(project_path="/path/to/project", backend=PyCodeAnalyzerConfig()
 Attaching raises `GraphSchemaMismatch` if the graph was built by a different analyzer generation.
 That is deliberate: the alternative is every query silently returning zero rows. If you see it,
 the graph needs re-ingesting — it is not a bug in your query.
+
+**Graph version floor: codeanalyzer-python 1.4.0.** The probe reads `:PyApplication.analyzer_version`
+and the message names what it found and the floor. What attaching to each generation does:
+
+| graph emitted by | attach | behaviour |
+| --- | --- | --- |
+| < 1.4.0, or no `analyzer_version` | refused (`GraphSchemaMismatch`) | the `can://` id grammar every query scopes on does not exist there |
+| 1.4.0 | served, one `WARNING` logged | identical results; the graph has no `:PyCanNode` index, so scoped statements scan rather than seek, and `get_entrypoint_coverage()` reports `entrypoint_report_unavailable` (the report was not projected yet) |
+| 1.4.1 and newer | served, silent | `locate` seeks the `:PyCanNode(id)` index; the entrypoint report is read off the graph |
 
 ---
 
@@ -262,8 +272,10 @@ class EntrypointCoverage:
 
 **This is the most important gotcha in the API.** The analyzer's entrypoint pass
 *under-approximates by design* — its own docs say "silence is its failure mode". On a real Odoo
-checkout it detects **zero** entrypoints across 15,549 callables, in a framework built entirely
-from HTTP routes.
+checkout, codeanalyzer-python 1.4.0 detected **zero** entrypoints across 15,549 callables, in a
+framework built entirely from HTTP routes; 1.4.1 ships Odoo rules and flags 534 callables and 94
+classes on the same checkout. The number is a fact about the analyzer generation and its rules,
+never about the application alone.
 
 So an empty `get_entrypoints()` means either "no entrypoints" or "the pass found nothing", and you
 cannot tell from the list. `get_entrypoint_coverage()` is how you ask. Over a Neo4j graph emitted
@@ -356,7 +368,8 @@ tells you the `reaches` call to ask instead.
 
 **The per-callable graphs return a page, not a list.** Naming a callable says *which* edges you
 want, not *how many*: on a real application one callable's DDG is 1,386,918 edges — 27% of the whole
-application's 5,134,655 — while 15,520 of its 15,549 callables have fewer than 10,000. So all three
+application's 5,134,655 (1.4.0 graph; 5,129,295 on 1.4.1) — while 15,520 of its 15,549 callables
+have fewer than 10,000. So all three
 return an `EdgePage`, and nothing is discarded to make it fit:
 
 ```python
