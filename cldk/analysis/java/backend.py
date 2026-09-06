@@ -51,6 +51,8 @@ from abc import abstractmethod
 from typing import ClassVar, Dict, List, Tuple, Union
 
 from cldk.analysis.commons.backend import AnalysisBackend
+from cldk.analysis.commons.treesitter import TreesitterJava
+from cldk.analysis.commons.treesitter.models import Captures
 from cldk.models.java.models import (
     JApplication,
     JCallable,
@@ -67,7 +69,65 @@ from cldk.models.java.models import (
 CRUDRow = Dict[str, Union[JType, JCallable, List[JCRUDOperation]]]
 
 #: J-4: the CRUD accessors keep their names and raise this on schema v2, on both backends.
-CRUD_UNAVAILABLE = "CRUD operations are not emitted by codeanalyzer-java 3.0.1 (schema v2); tracked upstream as codeanalyzer-java#187"
+CRUD_UNAVAILABLE = "CRUD operations are not emitted by codeanalyzer-java 3.0.1 or newer (schema v2); tracked upstream as codeanalyzer-java#187"
+
+
+#: Every call-shaped site in a callable body, under **one** capture name. One name matters: the
+#: query result is a ``{capture name: [node]}`` mapping, so several names would put the nodes in
+#: per-name groups and lose their source order between the groups.
+_CALL_SITES = (
+    "(object_creation_expression (type_identifier) @call) "
+    "(object_creation_expression type: (scoped_type_identifier (type_identifier) @call)) "
+    "(method_invocation name: (identifier) @call)"
+)
+
+
+class CallingLines:
+    """The ``calling_lines`` edge attribute of ``get_call_graph()``: **absolute file lines**, sorted,
+    of the calls a source callable makes to a target — parsed once per source callable.
+
+    **Absolute, not offsets into** ``code``. The 1.x value was the 0-based line offset into
+    ``JCallable.code``, and ``code`` is the body block off ``analysis.json`` and the whole
+    declaration off the Neo4j projection, so the same call reported two different numbers on the
+    two backends (560 of daytrader8's 1,862 edges, measured). ``code_start_line`` is on both, so
+    ``code_start_line + offset`` is the file line both agree on — and it is the number a caller
+    wants anyway, since it indexes the file rather than a string they would have to fetch first.
+
+    Sorted, because source order within one callable is not otherwise guaranteed: 18 of those 560
+    differed only in order, and 24 of the local backend's own lists were not ascending.
+
+    Parsed once per source callable, because the naive form re-parsed the body for every outgoing
+    edge — 3.6 parses per callable on ThingsBoard, where tree-sitter was 99.5% of the time
+    ``get_call_graph`` spent. Measured on that corpus (21,269 nodes / 53,938 edges):
+    **145.7 s → 41.0 s**.
+    """
+
+    def __init__(self) -> None:
+        self._tsu = TreesitterJava()
+        self._by_callable: Dict[str, Dict[str, List[int]]] = {}
+
+    def of(self, source: JCallable, target: JCallable) -> List[int]:
+        index = self._by_callable.get(source.id)
+        if index is None:
+            index = self._by_callable[source.id] = self._index(source)
+        return index.get(target.signature.partition("(")[0], [])
+
+    def _index(self, source: JCallable) -> Dict[str, List[int]]:
+        """``{callee simple name: sorted absolute file lines}`` for one callable's ``code``."""
+        code = source.code
+        if not code:
+            return {}
+        try:
+            captures: Captures = self._tsu.frame_query_and_capture_output(_CALL_SITES, code)
+        except Exception:  # noqa: BLE001 — an unparsable body costs its lines, not the call graph
+            return {}
+        first_line = source.code_start_line
+        index: Dict[str, List[int]] = {}
+        for capture in captures:
+            index.setdefault(capture.node.text.decode(), []).append(first_line + capture.node.start_point[0])
+        for lines in index.values():
+            lines.sort()
+        return index
 
 
 def duplicate_type_name(qualified_name: str) -> str:
@@ -224,16 +284,24 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
 
     @abstractmethod
     def get_comments_in_a_class(self, qualified_class_name: str) -> List[JComment]:
-        """The comments in a class. Returns an empty list if the class is not found.
+        """The class declaration's **own** comment. Returns an empty list if the class is not found.
 
-        A backend whose source keeps only per-declaration javadoc returns **just the javadoc** — a
-        strictly smaller set than every comment in the class body, and a real answer rather than a
-        refusal (J-16). :class:`~cldk.analysis.java.neo4j.JNeo4jBackend` is such a backend.
+        Not the comments inside the class body: on both backends this is the type's own comment
+        list — the comment immediately above ``class Foo``. A method's is on
+        :meth:`get_comments_in_a_method`; an inline comment in a body is on neither, and reaches
+        the SDK only through :meth:`get_comment_in_file`.
+
+        A backend whose source keeps only per-declaration javadoc narrows further, to **just the
+        javadoc** — a real answer rather than a refusal (J-16).
+        :class:`~cldk.analysis.java.neo4j.JNeo4jBackend` is such a backend.
         """
 
     @abstractmethod
     def get_comments_in_a_method(self, qualified_class_name: str, method_signature: str) -> List[JComment]:
-        """The comments in a method. Returns an empty list if the method is not found.
+        """The method declaration's **own** comment (at most one). Returns an empty list if the
+        method is not found.
+
+        Not every comment inside the body — see :meth:`get_comments_in_a_class`.
 
         Narrows to javadoc only on a javadoc-only backend, exactly as
         :meth:`get_comments_in_a_class` does (J-16).

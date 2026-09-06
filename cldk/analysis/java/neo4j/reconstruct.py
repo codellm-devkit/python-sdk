@@ -40,7 +40,14 @@ What the projection does **not** carry, and therefore comes back at the model's 
 * **every column and every byte offset** -- the projection writes ``start_line`` and ``end_line``
   and no position within a line, and no offset into a ``source`` it does not carry. Both are
   reported as :data:`_UNKNOWN` (``-1``), the model's own "not known", on every node: a ``0`` would
-  read as column one and offset zero, which is a position, and a wrong one.
+  read as column one and offset zero, which is a position, and a wrong one. **One exception, and it
+  is deliberate:** a :class:`JCallableParameter` comes back with the analyzer's own columns *and*
+  byte offsets, because the projection serialises the whole parameter list into
+  ``:JCallable.parameters_json`` and it round-trips exactly (see :func:`parameters`). Those byte
+  offsets index the module ``source`` the graph does not carry, so they locate the parameter in the
+  file on disk and nothing this backend can hand you; ``JCallableParameter.code`` is unreachable on
+  either backend (a parameter is never threaded to its compilation unit, so slicing raises rather
+  than returning a silent empty).
 * **``JCallable.body_span``** -- the graph projects one line range per callable, the *declaration*
   span. So ``JCallable.code`` here is the whole declaration (``public void f() {…}``), where the
   local backend's is the body block (``{…}``); ``code_start_line`` is the declaration's first line,
@@ -54,6 +61,14 @@ What the projection does **not** carry, and therefore comes back at the model's 
   ``:JBodyNode``); the ``entry``/``exit``/``statement``/``branch``/``loop``/``return`` nodes and the
   parameter lattice are not. A call site's ``arguments`` (body-key references) and both columns are
   not projected either.
+* **``JBodyNode.callee``** (226 populated on the committed daytrader8 ``-a 4`` fixture, 0 here) -- the
+  ``can://`` id of the resolved callee. The projection puts that edge on ``J_RESOLVES_TO``, which
+  this module reads into ``callee_signature`` instead, and an id has no home on the public surface
+  (E6) anyway. **It is not an "unresolved" signal here:** ``node.callee is None`` classifies every
+  call on this backend as unresolved while ``callee_signature`` beside it is fully populated --
+  test that instead.
+* **``JCallSite.comment``** (47 on the same fixture, 0 here) -- the comment attached
+  to a call site. It follows from the comment gap above: the graph has no comment node to attach.
 * ``cfg`` / ``cdg`` / ``ddg`` / ``summary`` (``None``: 3b reads them per callable on demand),
   ``type_parameters``, ``JCompilationUnit.comments``, ``JApplication.param_in`` / ``param_out`` /
   ``external_symbols``, and a decorator's / import's / enum constant's / record component's span.

@@ -140,7 +140,8 @@ java = CLDK.java(backend=Neo4jConnectionConfig(
     application_name="daytrader8"))
 ```
 
-**Analyzer floor: codeanalyzer-java 3.0.1** (pinned; `--emit neo4j` always runs at level 4 and
+**Analyzer floor: codeanalyzer-java 3.0.1** (the pin is `[tool.backend-versions]` in
+`pyproject.toml` and is ahead of the floor; `--emit neo4j` always runs at level 4 and
 forces external calls). Attaching to a graph refuses rather than answering empty, and the message
 names what it found and the floor:
 
@@ -167,7 +168,7 @@ docstring accessors, and — new in 3a, from the generic backend ABC — `get_ar
 `get_imports`, `get_variables`, `get_class_hierarchy`, `get_methods_with_annotations`,
 `get_calling_lines`, `get_call_targets`, `get_service_entry_point_classes` /
 `get_service_entry_point_methods`, and `remove_all_comments` (which only ever worked in the removed
-single-file mode). Four things will mislead you if you don't know them:
+single-file mode). Six things will mislead you if you don't know them:
 
 - **Call-graph nodes are strings** — `"<type fqn>.<signature>"` — not `(signature, klass)` tuples.
   Read the parts off `cg.nodes[key]["method_detail"]` rather than parsing the key. A local or
@@ -176,12 +177,26 @@ single-file mode). Four things will mislead you if you don't know them:
 - **CRUD accessors raise** (`codeanalyzer-java#187`): schema v2 carries no CRUD enrichment, and an
   empty list would read as "this application touches no database".
 - **Over Neo4j, `JCallable.code` is the whole declaration**, not the body block (upstream
-  `codeanalyzer-java#176`), a module carries no `source` at all, and every column and byte offset
-  is `-1` — "not known", never zero. Line numbers are exact.
+  `codeanalyzer-java#176`), `code_start_line` is the declaration's first line rather than the body
+  block's (they differ on 398 of daytrader8's 1,216 callables), a module carries no `source` at all,
+  and every column and byte offset is `-1` — "not known", never zero. Line numbers are exact. The
+  one exception is a `JCallableParameter`, which round-trips out of `:JCallable.parameters_json`
+  with the analyzer's own columns *and* byte offsets; those offsets index a module `source` this
+  backend does not carry, so they locate the parameter in the file on disk and nothing else.
+- **Over Neo4j, `cfg`/`cdg`/`ddg`/`summary` are `None` and `param_in`/`param_out` are empty at
+  every level**, and re-ingesting will not change that: `--emit neo4j` already forces level 4, so
+  the analyzer computed them — this leg simply does not project them back out (leg 3b reads the
+  per-callable graphs on demand). Off `analysis.json` the same `None` does mean "run at a higher
+  `analysis_level`". `call_graph` in the same sentence is the honest case: empty there really is
+  "below level 2".
 - **Over Neo4j, comments are one `docstring` per declaration**: `get_all_comments` and
   `get_comment_in_file` raise (a file-keyed answer would be empty and read as "no comments"), while
   `get_comments_in_a_class` / `get_comments_in_a_method` / `get_all_docstrings` return the
   javadoc-only subset. The `analysis.json` backend returns every comment.
+- **A class's and a method's comment is its *own*, on both backends.** `get_comments_in_a_class`
+  returns the comment above `class Foo` and `get_comments_in_a_method` the one above the
+  declaration (at most one) — never the comments inside the body. Comments inside a body reach the
+  SDK only through `get_comment_in_file`, which is `analysis.json`-only (it raises on Neo4j).
 
 ---
 

@@ -45,8 +45,9 @@ see :mod:`cldk.analysis.java.neo4j.reconstruct` for the projection's side of eac
   projection carries one line range per callable, the declaration's, and no ``body_span``. The
   relation is exact and total, so it is asserted rather than skipped:
   ``neo.code.endswith(ref.code)``. ``code_start_line`` therefore agrees except where the opening
-  brace sits below the declaration's first line, and ``calling_lines`` — line offsets *into*
-  ``code`` — shift by the same prefix.
+  brace sits below the declaration's first line. ``calling_lines`` used to shift by that same
+  prefix and no longer do: they are absolute file lines, which both backends can spell, so they
+  are asserted equal on every edge rather than tolerated.
 * Order within one source line is not recoverable: a field, a local variable and a call site carry
   a line but no column in the graph, so a declaration's ``field_declarations`` and
   ``local_variables`` are compared as multisets. Annotation order is not recoverable at all
@@ -297,9 +298,14 @@ def test_methods_constructors_hierarchy_and_lookups_parity(backends):
 
 
 def test_call_graph_parity(backends):
-    """The node set, the edge set and every edge's ``type``/``weight``. ``calling_lines`` are line
-    offsets into ``JCallable.code``, which differs by the declaration prefix, so they are compared
-    only where the two ``code`` values agree."""
+    """The node set, the edge set and every edge's ``type``/``weight`` — and ``calling_lines``
+    **on every edge**, not only where the two ``code`` values agree.
+
+    They used to be 0-based offsets into ``JCallable.code``, which is the body block here and the
+    whole declaration there, so they differed on 560 of daytrader8's 1,862 edges and were compared
+    only where ``code`` matched. They are absolute file lines now (``code_start_line + offset``,
+    sorted), which both backends can spell, so the tolerance is gone and this asserts equality.
+    """
     ref, neo = backends
     gr, gn = ref.get_call_graph(), neo.get_call_graph()
     assert set(gr.nodes) == set(gn.nodes), "call-graph node set differs"
@@ -308,8 +314,9 @@ def test_call_graph_parity(backends):
     for u, v in gr.edges:
         assert (gn[u][v]["type"], gn[u][v]["weight"]) == (gr[u][v]["type"], gr[u][v]["weight"]), f"{u} -> {v}"
         assert gn.nodes[u]["method_detail"].klass == gr.nodes[u]["method_detail"].klass
-        if gn.nodes[u]["method_detail"].method.code == gr.nodes[u]["method_detail"].method.code:
-            assert gn[u][v]["calling_lines"] == gr[u][v]["calling_lines"], f"{u} -> {v}"
+        assert gn[u][v]["calling_lines"] == gr[u][v]["calling_lines"], f"{u} -> {v}"
+        assert gn[u][v]["calling_lines"] == sorted(gn[u][v]["calling_lines"]), f"{u} -> {v}"
+    assert any(gr[u][v]["calling_lines"] for u, v in gr.edges), "no edge carries calling lines"
     # Only :JCallable -> :JCallable edges are in the graph: the projection forces external calls,
     # and 3a keeps the 1.x callable-only shape.
     _, neo_only = ref, neo
@@ -372,6 +379,14 @@ def test_artifact_layer_parity(backends):
     assert [d.name for d in neo.get_dependencies(ecosystem="maven")] == [d.name for d in ref.get_dependencies(ecosystem="maven")]
     ck_r, ck_n = ref.get_config_keys(), neo.get_config_keys()
     assert sorted(ck_r) == sorted(ck_n) and all(ck_n[k].model_dump() == ck_r[k].model_dump() for k in ck_r)
+    # The key is artifact-relative, so it does not depend on the ``--app-name`` either side ran
+    # under: the SDK passes the project directory's name and the graph carries whatever the
+    # operator emitted it as. Keying by the ``can://`` id made the two share *zero* keys whenever
+    # those differed — and put an id on the public surface, which E6 forbids.
+    assert ck_r and all("can://" not in k for k in ck_r), "a config key is keyed by its id"
+    for path, artifact in ref.application.artifacts.items():
+        for ck in artifact.config_keys:
+            assert f"{path}@key/{ck.key}" in ck_r
     assert neo.get_config_uses() == [] == ref.get_config_uses()
     assert neo.get_unresolved_config_reads() == [] == ref.get_unresolved_config_reads()
     # The Java wire's own artifact models carry two fields the shared Py* ones have no home for.

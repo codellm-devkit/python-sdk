@@ -852,7 +852,7 @@ def test_get_methods_with_annotations(test_fixture, analysis_json):
 
 
 def test_get_test_methods(test_fixture, analysis_json):
-    """Should return test methods, read from every compilation unit's source (J-10)"""
+    """Should return test methods, read off the analyzer's own annotations."""
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
@@ -867,6 +867,37 @@ def test_get_test_methods(test_fixture, analysis_json):
 
         test_methods = java_analysis.get_test_methods()
         assert test_methods == {}  # daytrader8 ships no @Test methods; the walk itself is what is exercised
+
+
+def test_get_test_methods_reads_the_annotations_not_the_module_source(test_fixture, analysis_json, monkeypatch):
+    """The mechanism, on a corpus with no ``@Test`` in it: swap the marker set for one daytrader8
+    *does* carry and the same walk answers.
+
+    Why it matters: the 1.x version re-parsed each ``JCompilationUnit.source`` with Tree-sitter,
+    and a Neo4j-backed analysis has no module source at all, so it returned ``{}`` there whatever
+    the corpus held. daytrader8 cannot witness that — it has zero ``@Test`` methods — which is why
+    the real marker set is exercised on ThingsBoard in ``test_java_neo4j_scale.py``.
+    """
+    monkeypatch.setattr("cldk.analysis.java.java_analysis._TEST_ANNOTATIONS", frozenset({"Override"}))
+    with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
+        run_mock.side_effect = _write_java_output(analysis_json)
+        java_analysis = JavaAnalysis(
+            project_dir=test_fixture,
+            backend=_BK,
+            analysis_level=AnalysisLevel.call_graph,
+            target_files=None,
+            eager_analysis=False,
+        )
+
+        marked = java_analysis.get_test_methods()
+        # One entry per annotated callable — 328 ``@Override`` callables in the a1 fixture — keyed by
+        # the J-1 call-graph node key, which is unique application-wide where a bare method name is not.
+        assert len(marked) == 328
+        methods = java_analysis.get_methods()
+        for key, code in marked.items():
+            assert "can://" not in key
+            klass = key[: key.rindex("(")].rsplit(".", 1)[0]  # the documented split (CHANGELOG, J-1)
+            assert code == methods[klass][key[len(klass) + 1 :]].code
 
 
 def test_get_calling_lines(test_fixture, analysis_json):

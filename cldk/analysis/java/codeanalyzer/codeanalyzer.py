@@ -26,6 +26,7 @@ facade is a thin delegating shell over it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -35,11 +36,11 @@ from subprocess import CompletedProcess
 from typing import Dict, Iterable, List, Tuple, Union
 
 import networkx as nx
+from pydantic import ValidationError
 
 from cldk.analysis.commons.levels import LEVEL_NAMES, analyzer_level
 from cldk.analysis.commons.results import Diagnostic
-from cldk.analysis.commons.treesitter import TreesitterJava
-from cldk.analysis.java.backend import CRUD_UNAVAILABLE, CRUDRow, JavaAnalysisBackend, duplicate_type_name, unhomed_endpoint
+from cldk.analysis.java.backend import CRUD_UNAVAILABLE, CallingLines, CRUDRow, JavaAnalysisBackend, duplicate_type_name, unhomed_endpoint
 from cldk.models.java import JGraphEdges
 from cldk.models.java.models import JAnalysis, JApplication, JCallable, JCallableParameter, JCallSite, JComment, JCompilationUnit, JField, JMethodDetail, JType
 from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
@@ -88,21 +89,46 @@ def _degradations(log: str) -> List[Diagnostic]:
     return [Diagnostic(code="level_too_low", message=message) for message in messages]
 
 
-def _recorded_verdict(verdict_file: Path) -> List[Diagnostic] | None:
-    """The verdict recorded beside a cached ``analysis.json``, or ``None`` when there is none.
+def _payload_digest(analysis_json_file: Path) -> str | None:
+    """The sha256 of the payload the verdict describes, or ``None`` when it cannot be read."""
+    try:
+        return hashlib.sha256(analysis_json_file.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def _recorded_verdict(verdict_file: Path, analysis_json_file: Path) -> List[Diagnostic] | None:
+    """The verdict recorded beside a cached ``analysis.json``, or ``None`` when there is none *for
+    this payload*.
 
     ``None`` is a third state and not a synonym for "the analyzer reported no degradation": a cache
     written before this file existed, or an ``analysis.json`` dropped into the cache directory by
     something other than this backend, carries no verdict at all. Reporting that as clean is the
     ambiguous-empty defect (#341), so it stays distinguishable from ``[]``.
+
+    **The verdict is bound to the payload it was written for** by that payload's sha256. A verdict
+    file has no other relation to the ``analysis.json`` beside it, so pairing it with a payload it
+    did not describe — the analyzer re-run by hand, an ``analysis.json`` copied in over one this
+    backend wrote — would report a stale verdict as current. A digest that does not match is no
+    verdict for this payload, which is ``None``.
+
+    Never raises: every way this file can be wrong (missing, unreadable, not JSON, not the shape
+    this backend writes, a ``Diagnostic`` that no longer validates) is a verdict that cannot be
+    read, and turning a working cache hit into a constructor failure over the SDK's own sidecar is
+    not a trade this makes.
     """
     try:
         recorded = json.loads(verdict_file.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    if not isinstance(recorded, list):
+    if not isinstance(recorded, dict) or not isinstance(recorded.get("diagnostics"), list):
         return None
-    return [Diagnostic.model_validate(entry) for entry in recorded]
+    if recorded.get("payload_sha256") != _payload_digest(analysis_json_file):
+        return None
+    try:
+        return [Diagnostic.model_validate(entry) for entry in recorded["diagnostics"]]
+    except ValidationError:
+        return None
 
 
 class JCodeanalyzer(JavaAnalysisBackend):
@@ -238,9 +264,10 @@ class JCodeanalyzer(JavaAnalysisBackend):
             # Persisted beside the payload, because the point of the cache is that the next run does
             # not invoke the analyzer — and a cached payload has no log to read the verdict off.
             self.analyzer_diagnostics = _degradations(console_out.stdout)
-            verdict_file.write_text(json.dumps([d.model_dump() for d in self.analyzer_diagnostics]), encoding="utf-8")
+            verdict = {"payload_sha256": _payload_digest(analysis_json_file), "diagnostics": [d.model_dump() for d in self.analyzer_diagnostics]}
+            verdict_file.write_text(json.dumps(verdict), encoding="utf-8")
         else:
-            self.analyzer_diagnostics = _recorded_verdict(verdict_file)
+            self.analyzer_diagnostics = _recorded_verdict(verdict_file, analysis_json_file)
         return JAnalysis.model_validate_json(analysis_json_file.read_text(encoding="utf-8"))
 
     def _report_analyzer_diagnostics(self, analysis_level: int) -> None:
@@ -307,10 +334,6 @@ class JCodeanalyzer(JavaAnalysisBackend):
         callable-only graph and drops edges to them; ``get_external_symbols`` arrives in 3b."""
         return "@external/" in node_id or node_id in (self.application.external_symbols or {})
 
-    @staticmethod
-    def _calling_lines(tsu: TreesitterJava, source: JCallable, target: JCallable) -> List[int]:
-        return tsu.get_calling_lines(source.code, target.signature) if source.code else []
-
     # -----[ application / whole-program ]-----
     def get_application_view(self) -> JApplication:
         return self.application
@@ -339,7 +362,7 @@ class JCodeanalyzer(JavaAnalysisBackend):
         if self._call_graph is not None:
             return self._call_graph
         cg = nx.DiGraph()
-        tsu = TreesitterJava()
+        lines = CallingLines()
         for edge in self.application.call_graph:
             if self._is_external(edge.src) or self._is_external(edge.dst):
                 continue
@@ -347,7 +370,7 @@ class JCodeanalyzer(JavaAnalysisBackend):
             dst, dst_detail = self._node_of(edge.dst)
             cg.add_node(src, method_detail=src_detail, kind="callable")
             cg.add_node(dst, method_detail=dst_detail, kind="callable")
-            cg.add_edge(src, dst, type="CALL_DEP", weight=edge.weight, calling_lines=self._calling_lines(tsu, src_detail.method, dst_detail.method))
+            cg.add_edge(src, dst, type="CALL_DEP", weight=edge.weight, calling_lines=lines.of(src_detail.method, dst_detail.method))
         self._call_graph = cg
         return cg
 
@@ -411,13 +434,13 @@ class JCodeanalyzer(JavaAnalysisBackend):
     # -----[ symbol-table call graph (call sites → declarations) ]-----
     def _symbol_table_call_graph(self, qualified_class_name: str, method_signature: str | None, is_target: bool = False) -> nx.DiGraph:
         cg = nx.DiGraph()
-        tsu = TreesitterJava()
+        lines = CallingLines()
         edges = self._st_edges_into(qualified_class_name, method_signature) if is_target else self._st_edges_from(qualified_class_name, method_signature)
         for source, target in edges:
             src, dst = f"{source.klass}.{source.method.signature}", f"{target.klass}.{target.method.signature}"
             cg.add_node(src, method_detail=source, kind="callable")
             cg.add_node(dst, method_detail=target, kind="callable")
-            cg.add_edge(src, dst, type="CALL_DEP", weight=1, calling_lines=self._calling_lines(tsu, source.method, target.method))
+            cg.add_edge(src, dst, type="CALL_DEP", weight=1, calling_lines=lines.of(source.method, target.method))
         return cg
 
     def _st_edges_from(self, qualified_class_name: str, method_signature: str | None) -> Iterable[Tuple[JMethodDetail, JMethodDetail]]:
@@ -569,7 +592,16 @@ class JCodeanalyzer(JavaAnalysisBackend):
         return deps
 
     def get_config_keys(self) -> Dict[str, PyConfigKey]:
-        return {ck.id: PyConfigKey(**ck.model_dump()) for a in self.application.artifacts.values() for ck in a.config_keys}
+        """Every configuration key flattened out of the config-bearing artifacts, keyed
+        ``"<artifact repo-relative path>@key/<dotted key>"`` (``pom.xml@key/project.artifactId``).
+
+        That key is the analyzer's own id with its ``can://artifact/<app>/`` prefix dropped: the
+        application name belongs to the run, not to the key, so keying by the raw id made the two
+        backends share **zero** keys whenever the graph was emitted under a different ``--app-name``
+        than the local run passes (the SDK passes the project directory's name). ``can://`` ids also
+        stay off the public surface (E6); the id is still on ``PyConfigKey.id``.
+        """
+        return {f"{path}@key/{ck.key}": PyConfigKey(**ck.model_dump()) for path, a in self.application.artifacts.items() for ck in a.config_keys}
 
     def get_config_uses(self, key: str | None = None) -> List[PyConfigUseEdge]:
         """Always empty: codeanalyzer-java 3.0.1 emits no code-to-config edges (there is no

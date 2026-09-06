@@ -6,11 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
-Leg 2.5a of the CLDK 2.0 facade: the TypeScript layer on schema v2 (see
+Two legs of the CLDK 2.0 facade, in one unreleased block.
+
+**Leg 2.5a — the TypeScript layer on schema v2** (spec
 `docs/design/specs/2026-09-06-leg-2.5-typescript.md`; plan
 `docs/design/plans/2026-09-06-leg-2.5a-typescript-schema-v2.md`). Targets `2.0.0-rc.3`. The
-leg-1.5/1.6 query surface for TypeScript (addressing, scoping keywords, per-callable graphs, slices,
-paths, entrypoints) is 2.5b, on codeanalyzer-typescript 1.3.0 when it is cut.
+leg-1.5/1.6 query surface for TypeScript (addressing, scoping keywords, per-callable graphs,
+slices, paths, entrypoints) is 2.5b, on codeanalyzer-typescript 1.3.0 when it is cut.
+
+**Leg 3 — the Java layer on schema v2** (spec `docs/design/specs/2026-09-06-leg-3-java.md`; plan
+`docs/design/plans/2026-09-06-leg-3a-java-schema-v2.md`), with the analyzer moved onto the
+`codeanalyzer-java` PyPI wheel (#339) and the analyzer's own L3/L4 degradation reported (#341).
+Targets `2.0.0-rc.4` (spec J-12). The leg-1.5/1.6 query surface for Java is 3b (#311).
 
 ### Changed
 - **The Java analyzer comes from the `codeanalyzer-java` PyPI wheel, behind a new `java` extra**
@@ -45,17 +52,6 @@ paths, entrypoints) is 2.5b, on codeanalyzer-typescript 1.3.0 when it is cut.
   jar is bundled in the wheel and sdist — the mechanism issues #284, #336 and #337 patched. The
   analyzer arrives as a normal locked dependency; nothing is fetched at build time.
 
-### Removed
-- **`cldk/analysis/java/codeanalyzer/jar/` and the checked-in `codeanalyzer-2.4.1.jar`**, the
-  `[tool.hatch.build] artifacts` force-include that shipped it, and the root `.gitignore`'s `*.jar`
-  rule. The `cldk` wheel and sdist no longer contain a `.jar` (~35 MB smaller).
-- **`cldk/analysis/java/codeanalyzer/_jdk.py`** (`ensure_jdk`, `JdkLoader`, the pinned Temurin
-  `jdk-21.0.5+11`). codeanalyzer-java 3.0.x reads its primordial scope from `jrt:/` in the running
-  JVM, so no `jmods/` is needed: **the SDK downloads no JDK (~200 MB per project cache), and reads
-  or writes no `JAVA_HOME`** — a `JAVA_HOME` already in the environment is left exactly as it is.
-  `pip install "cldk[java]"` now works on a machine with no Java at all. The `<cache>/java/jdk/`
-  cache directory is simply unused; delete it by hand if you want the space back. The
-  `CLDK_CODEANALYZER_JAVA_JAR` test/dev seam is removed with it — the wheel is the source of the jar.
 - **Pinned `codeanalyzer-typescript` 0.4.3 → 1.2.0** (`pyproject.toml` `dependencies` and
   `[tool.backend-versions]`). The analyzer emits canonical schema v2, and `cldk.models.typescript`
   is rewritten as an `extra="forbid"` mirror of it: `analysis.json` is the `TSAnalysis` envelope
@@ -177,16 +173,7 @@ paths, entrypoints) is 2.5b, on codeanalyzer-typescript 1.3.0 when it is cut.
   `JSpan.start`/`end` column and both `JSpan.bytes` offsets are the model's own "not known" on
   types, callables, fields, local variables, call sites and compilation units. `start_line` /
   `end_line` are unaffected.
-- **`TSAnalysisBackend` inherits the generic `AnalysisBackend`** (`P = "TS"`, `N = "TS"`), so the
-  in-process backend now also answers `get_artifacts` / `get_dependencies` / `get_config_keys` /
-  `get_config_uses` / `get_unresolved_config_reads` with the shared `PyArtifact` / `PyDependency` /
-  `PyConfigKey` / `PyConfigUseEdge` / `PyConfigRead` models (a TypeScript dependency's `ecosystem` is
-  `"npm"`; a non-string config value is rendered as its JSON text).
-- The backend drives the 1.2.0 CLI: `-i <project> --app-name <project.name> -a <1..4> -o <cache>
-  --cache-dir <cache> --skip-tests [--eager] [-t <file>]...`. Every `AnalysisLevel` is sent as its
-  integer (the old cap at level 2 is gone). **`TSCodeAnalyzerConfig.tsc_only` is a deprecated no-op**
-  (the flag was removed upstream in 1.0.0); `True` emits a `DeprecationWarning`.
-- **Pinned `codeanalyzer-java` 2.4.1 → 3.0.1** (`pyproject.toml` `[tool.backend-versions]`), and
+- **Pinned `codeanalyzer-java` 2.4.1 → 3.0.2** (`pyproject.toml` `[tool.backend-versions]`), and
   `cldk.models.java` is rewritten as an `extra="forbid"` mirror of the canonical schema v2 that
   analyzer emits: `analysis.json` is the `JAnalysis` envelope (`schema_version 2.0.0`, `language`,
   `max_level`, `analyzer`, `application`); every node carries a `can://` `id`, a `kind` and a
@@ -270,16 +257,55 @@ paths, entrypoints) is 2.5b, on codeanalyzer-typescript 1.3.0 when it is cut.
   `"maven"`; `get_config_uses` and `get_unresolved_config_reads` are `[]` — the analyzer emits
   neither). `JArtifact.text_truncated` and `JDependency.group` have no home on the shared models and
   are dropped by those accessors; read them off `get_application_view()` if you need them.
+- **BREAKING by value: `JavaAnalysis.get_test_methods()` answers off the analyzer's annotations, on
+  both backends.** It used to re-parse each compilation unit's `source` with Tree-sitter, which
+  returns `{}` on *every* Neo4j-backed analysis — the projection carries no module `source` at all —
+  so an application with 3,354 `@Test`/`@ParameterizedTest` callables read as one with no tests.
+  A callable is now a test method when one of its own annotations is `@Test` (JUnit 4/5, TestNG),
+  `@ParameterizedTest`, `@RepeatedTest`, `@TestFactory` or `@TestTemplate`, matched by simple name
+  so a fully qualified spelling matches too. ***Migration:*** the returned dict is keyed by
+  `"<type fqn>.<signature>"` — the call-graph node key of J-1, unique application-wide — where 1.x
+  keyed by the bare method name and silently collapsed same-named tests across classes. The value
+  is the callable's `code`, which is the body block off `analysis.json` and the whole declaration
+  off the Neo4j projection, as everywhere else.
+- **BREAKING by value: `get_config_keys()` on Java is keyed by the artifact-relative key**
+  (`pom.xml@key/project.artifactId`), not by the `can://artifact/<app>/…` id. The application name
+  belongs to the run, not to the key: the SDK passes `--app-name <project directory name>` while a
+  deployed graph is emitted under whatever `--app-name` the operator chose, so id-keying made the
+  two backends share **zero** of their 336 keys on the same corpus. `can://` ids also stay off the
+  public surface. ***Migration:*** the id is still on `PyConfigKey.id`.
+- **BREAKING by value: `calling_lines` on a `get_call_graph()` edge is a sorted list of absolute
+  file lines**, not 0-based offsets into `JCallable.code`. `code` is the body block off
+  `analysis.json` and the whole declaration off the Neo4j projection, so the offset form gave the
+  same call two different numbers on the two backends (560 of daytrader8's 1,862 edges, 18 of them
+  differing only in order) and needed
+  a string the caller had to fetch first to mean anything. ***Migration:*** subtract
+  `cg.nodes[key]["method_detail"].method.code_start_line` for the old value. `get_call_graph()` also
+  parses each callable's body once instead of once per outgoing edge.
 
 ### Removed
+- **`cldk/analysis/java/codeanalyzer/jar/` and the checked-in `codeanalyzer-2.4.1.jar`**, the
+  `[tool.hatch.build] artifacts` force-include that shipped it, and the root `.gitignore`'s `*.jar`
+  rule. The `cldk` wheel and sdist no longer contain a `.jar` (~35 MB smaller).
+- **`cldk/analysis/java/codeanalyzer/_jdk.py`** (`ensure_jdk`, `JdkLoader`, the pinned Temurin
+  `jdk-21.0.5+11`). codeanalyzer-java 3.0.x reads its primordial scope from `jrt:/` in the running
+  JVM, so no `jmods/` is needed: **the SDK downloads no JDK (~200 MB per project cache), and reads
+  or writes no `JAVA_HOME`** — a `JAVA_HOME` already in the environment is left exactly as it is.
+  `pip install "cldk[java]"` now *runs the analyzer* on a machine with no Java at all. It does not
+  make Java optional for a full answer: codeanalyzer-java builds the project itself and its
+  auto-build shells out to `mvn`, which brings its own JDK, so on a `PATH` with neither the L3/L4
+  run degrades to a declared-only call graph (1,391 edges on daytrader8, against 1,862 built) and
+  says so through `analyzer_diagnostics` (#341, below). The `<cache>/java/jdk/`
+  cache directory is simply unused; delete it by hand if you want the space back. The
+  `CLDK_CODEANALYZER_JAVA_JAR` test/dev seam is removed with it — the wheel is the source of the jar.
 - **BREAKING: Java single-file `source_code` mode.** The `source_code` parameter is gone from
   `CLDK.java(...)`, `JavaAnalysis` and `JCodeanalyzer`, with the `_codeanalyzer_single_file` path
   and the four facade guards behind it; `CLDK(language="java").analysis(source_code=...)` raises
   `CldkInitializationException("source_code mode was removed in 2.0; pass project_path")`. It was
   won't-fix (#256) and 2.0 is the major that can drop it.
   ***Migration:*** analyse the project directory — `CLDK.java(project_path=<dir>)` — and read the
-  file you care about out of `get_symbol_table()`. `get_test_methods()` now reads every module's
-  `source` from the symbol table instead of a source string, and `JavaAnalysis.remove_all_comments()`
+  file you care about out of `get_symbol_table()`. `get_test_methods()` reads the analyzer's own
+  annotations instead of a source string (see below), and `JavaAnalysis.remove_all_comments()`
   — the one accessor that only ever worked in single-file mode — raises `NotImplementedError`
   pointing at `TreesitterJava.remove_all_comments`, which takes the source directly.
 - `TypeScriptAnalysis.get_entry_point_methods` and `get_service_entry_point_methods`, which only ever
@@ -297,7 +323,11 @@ paths, entrypoints) is 2.5b, on codeanalyzer-typescript 1.3.0 when it is cut.
   anywhere. The SDK now runs the analyzer with `-v`, keeps the analyzer's own warning sentences,
   logs each at `WARNING`, records them on the backend as `JCodeanalyzer.analyzer_diagnostics`
   (`level_too_low` diagnostics), and persists them as `<cache>/java/analyzer_diagnostics.json` so a
-  cache hit still knows. Three distinguishable states: a non-empty list (degraded), `[]` (the
+  cache hit still knows. That file stores the sha256 of the `analysis.json` it describes and is
+  ignored when the two do not match, so a payload swapped in beside it (the analyzer re-run by
+  hand, a cache copied from elsewhere) reads as *unknown* rather than reporting a stale verdict as
+  current; every other way the file can be unreadable — wrong shape, invalid `Diagnostic` — reads
+  as unknown too, and never fails the constructor. Three distinguishable states: a non-empty list (degraded), `[]` (the
   analyzer reported none), `None` (no verdict recorded — *unknown*, not clean; a pre-#341 cache, an
   `analysis.json` from elsewhere, or stdout-pipe mode). **Nothing is raised and nothing is
   withheld:** the graph is returned exactly as before, because a declared-only call graph is still

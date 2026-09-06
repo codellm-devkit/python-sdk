@@ -61,6 +61,11 @@ from cldk.analysis.java.codeanalyzer import JCodeanalyzer
 from cldk.analysis.java.neo4j import JNeo4jBackend
 from cldk.analysis.java.backend import JavaAnalysisBackend
 
+#: The annotations that *declare* a test method, by simple name — JUnit 4/5 and TestNG. A lifecycle
+#: annotation (``@BeforeEach``, ``@AfterAll``) is deliberately not here: it marks a fixture, not a
+#: test. Read by :meth:`JavaAnalysis.get_test_methods`.
+_TEST_ANNOTATIONS = frozenset({"Test", "ParameterizedTest", "RepeatedTest", "TestFactory", "TestTemplate"})
+
 
 class JavaAnalysis:
     """Analysis facade for Java code.
@@ -970,22 +975,34 @@ class JavaAnalysis:
     def get_test_methods(self) -> Dict[str, str]:
         """Return methods identified as test methods.
 
-        Finds all test methods in the source code by looking for methods
-        annotated with common test framework annotations (e.g., ``@Test``
-        from JUnit).
+        A callable is a test method when one of its own annotations is a test-declaring one:
+        ``@Test`` (JUnit 4/5, TestNG), ``@ParameterizedTest``, ``@RepeatedTest``, ``@TestFactory``
+        or ``@TestTemplate``. The annotation is matched by simple name, so a fully qualified
+        spelling (``@org.junit.Test``) matches too, and its arguments are ignored — the same
+        marker rule the spec's J-5 gives ``get_decorated_callables``.
+
+        This reads the **analyzer's own** annotations off the model rather than re-parsing a
+        module's ``source``, so it answers identically on both backends: a Neo4j-backed analysis
+        carries no module ``source`` at all (``JCompilationUnit.source`` is ``""``), and the
+        source-parsing version returned ``{}`` there — an empty reading as "this application has
+        no tests" on an application with thousands.
 
         Returns:
-            A dictionary mapping test method signatures to their source
-            code bodies, merged over every compilation unit's ``source``.
+            A dictionary mapping ``"<type fqn>.<signature>"`` — the call-graph node key of J-1,
+            unique application-wide — to the callable's ``code``. Note that ``code`` is the body
+            block off ``analysis.json`` and the whole declaration off the Neo4j projection
+            (:attr:`~cldk.models.java.models.JCallable.code`).
 
         See Also:
             :meth:`get_methods_with_annotations`: For finding methods with
                 any annotation.
         """
-        test_methods: Dict[str, str] = {}
-        for unit in self.get_symbol_table().values():
-            test_methods.update(self.treesitter_java.get_test_methods(source_class_code=unit.source))
-        return test_methods
+        return {
+            f"{klass}.{signature}": callable_.code
+            for klass, methods in self.get_methods().items()
+            for signature, callable_ in methods.items()
+            if any(d.name.rsplit(".", 1)[-1] in _TEST_ANNOTATIONS for d in callable_.decorators)
+        }
 
     def get_calling_lines(self, target_method_name: str) -> List[int]:
         """Return line numbers where a method is called.
@@ -1116,10 +1133,14 @@ class JavaAnalysis:
 
     # Some APIs to process comments
     def get_comments_in_a_method(self, qualified_class_name: str, method_signature: str) -> List[JComment]:
-        """Return all comments contained within a specific method.
+        """Return the method's own comment.
 
-        Retrieves all comment nodes (single-line, multi-line, and Javadoc)
-        that appear within the body of the specified method.
+        **Not** every comment inside the body: on both backends this is the
+        analyzer's per-declaration comment list, which holds the comment
+        immediately above the declaration and nothing else (at most one; 70 of
+        the 128 callables in the committed ``-a 4`` fixture have one, 65 of
+        them javadoc). Comments *inside* a method body reach the SDK only
+        through :meth:`get_comment_in_file`, which reports the whole file's.
 
         Args:
             qualified_class_name: The fully qualified name of the class
@@ -1145,11 +1166,13 @@ class JavaAnalysis:
         return self.backend.get_comments_in_a_method(qualified_class_name, method_signature)
 
     def get_comments_in_a_class(self, qualified_class_name: str) -> List[JComment]:
-        """Return all comments contained within a specific class.
+        """Return the class's own comment.
 
-        Retrieves all comment nodes that appear within the class body,
-        including Javadoc comments, method-level comments, and inline
-        comments.
+        **Not** the comments inside the class body: on both backends this is
+        the type declaration's own comment list — the comment immediately
+        above ``class Foo``. A method's comment is on
+        :meth:`get_comments_in_a_method`, and an inline comment in a body is
+        on neither; :meth:`get_comment_in_file` reports the whole file's.
 
         Args:
             qualified_class_name: The fully qualified name of the class.

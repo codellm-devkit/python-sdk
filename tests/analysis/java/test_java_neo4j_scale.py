@@ -41,6 +41,8 @@ import re
 
 import pytest
 
+from cldk.analysis.java.java_analysis import JavaAnalysis
+
 logging.getLogger("neo4j").setLevel(logging.ERROR)
 
 NEO4J_URI = os.environ.get("CLDK_TEST_NEO4J_URI")
@@ -127,3 +129,35 @@ def test_the_call_graph_builds_and_is_keyed_by_strings(backend):
     assert all(isinstance(n, str) and "can://" not in n for n in graph.nodes)
     assert all(graph.nodes[n]["kind"] == "callable" for n in graph.nodes)
     assert any(_LOCAL_CLASS.search(graph.nodes[n]["method_detail"].klass) for n in graph.nodes), "no local class is a call-graph endpoint"
+
+
+def test_get_test_methods_answers_off_the_graph(backend):
+    """The accessor daytrader8 cannot exercise at all: it ships zero ``@Test`` methods, so ``{}``
+    there is correct whatever the implementation does. ThingsBoard carries thousands.
+
+    The 1.x implementation re-parsed each ``JCompilationUnit.source`` with Tree-sitter, and this
+    projection carries no module source (``source=""`` on every unit), so it returned ``{}`` here —
+    an empty reading as "this application has no tests" on an application with 3,354 annotated
+    callables. The annotations are in the graph on ``J_ANNOTATED_BY``, which is what is read now.
+    """
+    from cldk.analysis.java.java_analysis import _TEST_ANNOTATIONS
+
+    expected = {
+        row["id"]
+        for row in backend._run(
+            "MATCH (c:JCallable)-[:J_ANNOTATED_BY]->(a:JAnnotation) " "WHERE c.id STARTS WITH $prefix AND a.name IN $markers RETURN DISTINCT c.id AS id",
+            prefix=backend._scope_prefix,
+            markers=sorted(_TEST_ANNOTATIONS),
+        )
+    }
+    assert len(expected) > 1000, "the corpus carries no test annotations; it cannot witness this"
+
+    # The facade owns the accessor and reads nothing but ``self.backend``; ``__new__`` gives the
+    # real method the already-attached backend rather than paying a second attach to this graph.
+    analysis = JavaAnalysis.__new__(JavaAnalysis)
+    analysis.backend = backend
+    test_methods = analysis.get_test_methods()
+
+    assert len(test_methods) == len(expected)
+    assert all("can://" not in key for key in test_methods)
+    assert all(key.rindex("(") > 0 for key in test_methods), "a key is not '<type fqn>.<signature>'"

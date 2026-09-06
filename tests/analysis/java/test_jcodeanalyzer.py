@@ -488,8 +488,14 @@ def test_artifact_layer_returns_the_shared_models(analysis_json_a4):
     assert len(artifacts) == 235 and all(isinstance(a, PyArtifact) for a in artifacts.values())
     assert artifacts["pom.xml"].id == "can://artifact/daytrader8/pom.xml" and len(artifacts["pom.xml"].config_keys) == 54
     keys = analyzer.get_config_keys()
-    key = keys["can://artifact/daytrader8/pom.xml@key/project.artifactId"]
+    key = keys["pom.xml@key/project.artifactId"]
     assert isinstance(key, PyConfigKey) and key.value == "io.openliberty.sample.daytrader8" and key.namespace == "xml"
+    # The key is artifact-relative and carries no application name: the SDK runs the analyzer with
+    # ``--app-name <project directory name>``, so an id key would differ from the same corpus's key
+    # in a graph emitted under another name. And a ``can://`` id has no place in a public dict key.
+    assert all("can://" not in k for k in keys)
+    assert key.id == "can://artifact/daytrader8/pom.xml@key/project.artifactId"
+    assert set(keys) == {f"{path}@key/{ck.key}" for path, a in analyzer.application.artifacts.items() for ck in a.config_keys}
     deps = analyzer.get_dependencies()
     assert [d.name for d in deps] == ["derby", "javaee-api", "jaxb-api", "standard"]
     assert all(isinstance(d, PyDependency) and d.ecosystem == "maven" and d.declared_in == "can://artifact/daytrader8/pom.xml" for d in deps)

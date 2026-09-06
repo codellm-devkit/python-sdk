@@ -39,20 +39,9 @@ clean: ## Cleans up from previous compiles
 	$(info Cleaning up compile artifacts...)
 	rm -fr dist
 
-.PHONY: refresh
-refresh: ## Refresh code analyzer
-	$(info Refreshing CodeAnalyzer...)
-	wget $(curl -s https://api.github.com/repos/IBM/codenet-minerva-code-analyzer/releases/latest | grep "browser_download_url" | grep codeanalyzer.jar | cut -d '"' -f 4)
-	mv codeanalyzer.jar cldk/analysis/java/codeanalyzer/jar/codeanalyzer.jar
-
 .PHONY: build
 build: ## Builds a new Python wheel
 	$(info Building artifacts...)
-
-	# Inject the latest Code Analyzer JAR
-	wget -q $(shell curl -s https://api.github.com/repos/IBM/codenet-minerva-code-analyzer/releases/latest | jq -r '.assets[] | .browser_download_url')
-	mkdir -p cldk/analysis/java/codeanalyzer/jar/
-	mv codeanalyzer-*.jar cldk/analysis/java/codeanalyzer/jar/
-
-	# Build the package
+	# No jar is fetched or injected: the Java analyzer is the `codeanalyzer-java` wheel
+	# (the `java` extra), a normal locked dependency. Nothing is downloaded at build time.
 	uv build

@@ -17,6 +17,10 @@ jobs:
       - name: Check out code
         uses: actions/checkout@v4
 
+      # Load-bearing for **Maven**, not for the analyzer. The analyzer jar and the JVM it runs
+      # on come from the `codeanalyzer-java` wheel (#339), but codeanalyzer-java's own auto-build
+      # shells out to `mvn`, which needs a JDK on PATH; without one the Java e2e degrades to a
+      # declared-only call graph and CI goes green on a partial answer. Do not delete this step.
       - name: Set up GraalVM CE Java 11
         uses: graalvm/setup-graalvm@v1
         with:
