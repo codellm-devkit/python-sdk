@@ -340,7 +340,7 @@ test = [
 
 [package.metadata]
 requires-dist = [
-    { name = "codeanalyzer-python", specifier = "==1.4.0" },
+    { name = "codeanalyzer-python", specifier = "==1.4.1" },
     { name = "codeanalyzer-typescript", specifier = "==0.4.3" },
     { name = "neo4j", marker = "extra == 'neo4j'", specifier = ">=5.14,<7" },
     { name = "networkx", specifier = ">=3.4.2,<4" },
@@ -386,7 +386,7 @@ wheels = [
 
 [[package]]
 name = "codeanalyzer-python"
-version = "1.4.0"
+version = "1.4.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "astor" },
@@ -403,9 +403,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "uv" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/b9/e9/8ce468742f0f9bea274bd19a144bdfadcea7c994cf9b0fc95f3eb721a6a6/codeanalyzer_python-1.4.0.tar.gz", hash = "sha256:5cfc367c967f26a764306daf23b4359a106418b8f264833a68b438c5b4ef6b4b", size = 224507, upload-time = "2026-09-02T20:23:02.706Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5b/6f/ee449705998ac7cae481435cae9905da51a2a77e677499b7943bcef9391b/codeanalyzer_python-1.4.1.tar.gz", hash = "sha256:8b9f6c19107bccc2c26a862bab0b51fed9287b4f0329b8d4e9d4d9cb0f029f4b", size = 229087, upload-time = "2026-09-06T01:13:28.613Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/dd/ce/3bba0d0eea0e64a5f9ee41fb1c1f74c7c66618dff6dadbaea2de389c621a/codeanalyzer_python-1.4.0-py3-none-any.whl", hash = "sha256:7ebd20231f5c5f3c4f47c71ac5870634aeccc37f20028f4a52402ed39729ec35", size = 230088, upload-time = "2026-09-02T20:23:01.128Z" },
+    { url = "https://files.pythonhosted.org/packages/bc/4d/ce2c1b45ca9854231ec1f04b2fb8d5a864463b1c7fdc3368a8e2412a4f5d/codeanalyzer_python-1.4.1-py3-none-any.whl", hash = "sha256:206efe708e30ab85c76b6725e7bf1c70619feb8c312d5128687a282398d58fc0", size = 235028, upload-time = "2026-09-06T01:13:27.3Z" },
 ]
 
 [[package]]

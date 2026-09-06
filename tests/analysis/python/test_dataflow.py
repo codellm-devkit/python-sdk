@@ -49,6 +49,7 @@ import pytest
 
 from codeanalyzer.neo4j.project import _project_program_graphs
 from codeanalyzer.neo4j.rows import RowBuilder
+from codeanalyzer.schema.ids import application_id
 
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.resolve import value_candidate
@@ -207,7 +208,9 @@ def test_the_local_answer_is_edge_for_edge_what_the_graph_would_hold(local_l4):
     database; the live tests above are what covers that.
     """
     rows = RowBuilder()
-    _project_program_graphs(rows, local_l4.application, {}, {})
+    # 1.4.1 anchors ghost ids on the application's can:// id; the analyzer names the app after
+    # the project directory (codeanalyzer/core.py: `app_name or project_dir.name`).
+    _project_program_graphs(rows, local_l4.application, {}, {}, application_id(local_l4.project_dir.name))
     edges = rows.finish().edges
 
     def emitted(rel, *props):
@@ -352,7 +355,9 @@ def test_local_pages_are_the_emitter_rows_sliced_by_the_same_order(local_l4):
     that same key — the two backends agree page for page.
     """
     rows = RowBuilder()
-    _project_program_graphs(rows, local_l4.application, {}, {})
+    # 1.4.1 anchors ghost ids on the application's can:// id; the analyzer names the app after
+    # the project directory (codeanalyzer/core.py: `app_name or project_dir.name`).
+    _project_program_graphs(rows, local_l4.application, {}, {}, application_id(local_l4.project_dir.name))
     emitted = sorted((e.from_ref.value, e.to_ref.value, e.props.get("var") or "", list(e.props.get("prov") or [])) for e in rows.finish().edges if e.type == "PY_DDG")
     walked, cursor, pages = [], None, []
     while True:
