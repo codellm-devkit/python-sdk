@@ -140,15 +140,58 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           echo "Release notes for $version:"; echo "$notes"
 
+      # The release body is install one-liners plus a download table; the categorized
+      # "What's Changed" (merged PRs grouped under emoji headings via .github/release.yml)
+      # is appended by generate_release_notes below. The hand-written CHANGELOG section
+      # stays the ANNOUNCEMENT's seed rather than the release body: a changelog entry
+      # explains a change to a maintainer, a release body tells a user what to install.
+      # Indented code blocks avoid backticks inside the heredoc.
+      - name: Compose release notes header (install + download)
+        run: |
+          set -euo pipefail
+          REPO="codellm-devkit/python-sdk"
+          TAG="${GITHUB_REF#refs/tags/}"          # e.g. v2.0.0-rc.2
+          VERSION="${TAG#v}"                      # 2.0.0-rc.2
+          # PyPI normalizes 2.0.0-rc.2 to 2.0.0rc2, and the built artifacts carry the
+          # normalized spelling, so the install line and the asset links must use it.
+          # Done with sed rather than packaging.version: this runs on the runner's bare
+          # python3, which is not the uv-managed environment the tests use.
+          PV=$(printf '%s' "$VERSION" \
+                | sed -E 's/-?alpha\.?([0-9]+)/a\1/; s/-?beta\.?([0-9]+)/b\1/; s/-(rc|a|b)\.?([0-9]+)/\1\2/')
+          BASE="https://github.com/${REPO}/releases/download/${TAG}"
+          PRE=""
+          case "$PV" in *rc*|*a*|*b*) PRE="--pre " ;; esac
+          cat > "$RUNNER_TEMP/RELEASE_BODY.md" <<EOF
+          ## Install cldk ${TAG}
+
+          PyPI:
+
+              pip install ${PRE}cldk==${PV}
+
+          With the read-only Neo4j backend:
+
+              pip install ${PRE}'cldk[neo4j]==${PV}'
+
+          ## Download
+
+          | File | Description |
+          | --- | --- |
+          | [cldk-${PV}-py3-none-any.whl](${BASE}/cldk-${PV}-py3-none-any.whl) | Python wheel |
+          | [cldk-${PV}.tar.gz](${BASE}/cldk-${PV}.tar.gz) | Source distribution |
+          EOF
+          echo "----- composed header -----"; cat "$RUNNER_TEMP/RELEASE_BODY.md"
+
       - name: Publish Release on GitHub
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
-          body: ${{ steps.notes.outputs.notes }}
+          body_path: ${{ runner.temp }}/RELEASE_BODY.md
+          generate_release_notes: true   # categorized "What's Changed"; see .github/release.yml
           # An rc tag is a candidate, not the repository's latest release.
           prerelease: ${{ contains(github.ref_name, '-rc') }}
-          # Auto-open a repo-level Discussion linked to this release, seeded with
-          # the same notes. Requires Discussions enabled and this category to exist.
+          # Auto-open a repo-level Discussion linked to this release, seeded with this
+          # body. Requires Discussions enabled and this category to exist. The prose
+          # announcement is curated afterwards (see CLAUDE.md).
           discussion_category_name: Announcements
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

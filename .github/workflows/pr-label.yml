@@ -1,0 +1,51 @@
+name: Label pull requests
+
+# The release notes group merged PRs by label (.github/release.yml). Every PR in this
+# repository has historically been unlabelled, so without this every entry would land in
+# the catch-all "Other Changes" heading and a breaking change would read like a chore.
+# Titles here follow conventional commits already, so the label is derivable rather than
+# something a human has to remember.
+
+on:
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Apply a label from the conventional-commit prefix
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TITLE: ${{ github.event.pull_request.title }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # A "!" before the colon marks a breaking change in conventional commits
+          # (feat(python)!: ...). That wins over the type, because a breaking fix is
+          # first of all breaking.
+          if printf '%s' "$TITLE" | grep -qE '^[a-z]+(\([^)]*\))?!:'; then
+            label=breaking
+          else
+            type=$(printf '%s' "$TITLE" | sed -nE 's/^([a-z]+)(\([^)]*\))?:.*/\1/p')
+            case "$type" in
+              feat)              label=enhancement ;;
+              fix)               label=fix ;;
+              perf)              label=performance ;;
+              refactor)          label=refactoring ;;
+              docs)              label=documentation ;;
+              test)              label=test ;;
+              ci|build|chore)    label=other ;;
+              *)                 label="" ;;
+            esac
+          fi
+          if [ -z "$label" ]; then
+            echo "::notice::'$TITLE' has no conventional-commit type; leaving it unlabelled (it will appear under Other Changes)."
+            exit 0
+          fi
+          echo "Labelling #$NUMBER as '$label'."
+          gh pr edit "$NUMBER" --repo "$REPO" --add-label "$label"
