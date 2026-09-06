@@ -141,9 +141,13 @@ class TSNeo4jBackend(TSAnalysisBackend):
     #: Relationship types every supported graph has; a graph missing any was emitted by another
     #: generation (0.4.3 has none of them) and is refused at attach.
     _REQUIRED_RELATIONSHIP_TYPES: FrozenSet[str] = frozenset({"TS_HAS_MODULE", "TS_HAS_METHOD", "TS_HAS_BODY_NODE", "TS_CALLS"})
-    #: The oldest codeanalyzer-typescript whose graph this backend serves: 1.2.0 introduced the
-    #: ``can://`` id grammar and the body-node shape every statement here reads.
-    _ANALYZER_FLOOR = (1, 2, 0)
+    #: The oldest codeanalyzer-typescript whose graph this backend serves. 1.2.0 introduced the
+    #: ``can://`` id grammar and the body-node shape every statement here reads; the floor is
+    #: **1.3.0** because that release is the first whose L4 port lattice is wired to the statement
+    #: DDG (cants#169), whose body nodes and parameters carry ``id`` (#165) and which retired
+    #: ``_module`` (#166) -- the three facts the query surface is built on. A 1.2.0 graph has the
+    #: vocabulary but answers those statements with silent empties, so it is refused, not served.
+    _ANALYZER_FLOOR = (1, 3, 0)
     #: Every relationship type the attached database declares, recorded by :meth:`_probe_schema`.
     #: A type absent from it is absent from the graph, so an accessor that can only be answered
     #: over that type raises naming the gap instead of returning an empty the caller would read as

@@ -21,6 +21,12 @@ zero rows and no error -- the 0.4.3 vocabulary (``:Symbol``/``CALLS``/``HAS_CALL
 overlap with 1.2.0's at all. The probe catches that once, at attach: the relationship-type
 fingerprint first, then the ``analyzer_version`` the ``:Application`` anchor stamps, against the
 floor.
+
+The floor is **1.3.0** as of leg 2.5b: a 1.2.0 graph carries the whole v2 relationship vocabulary
+and passes the fingerprint, so nothing but the version stamp can tell it apart -- and its L4 port
+lattice is disconnected from the statement DDG (cants#169), its body nodes carry no ``id`` (#165)
+and it still writes ``_module`` (#166). Serving it would answer the query surface with empties that
+read as facts, so the version check is the only thing standing between a caller and that.
 """
 
 import logging
@@ -57,12 +63,28 @@ def test_probe_refuses_a_python_graph_naming_the_missing_ts_types(fake_driver):
     assert "PY_CALLS" in str(e.value)
 
 
-def test_probe_refuses_a_graph_below_the_analyzer_floor(fake_driver):
-    """1.1.0 has the vocabulary but predates the id grammar and body-node shape this backend
-    reads; refused, naming what was found and the floor."""
-    fake_driver.analyzer_version = "1.1.0"
-    with pytest.raises(GraphSchemaMismatch, match=r"1\.1\.0.*1\.2\.0 or newer"):
+@pytest.mark.parametrize("raw", ["1.1.0", "1.2.0", "1.2.9"])
+def test_probe_refuses_a_graph_below_the_analyzer_floor(fake_driver, raw):
+    """Every generation below 1.3.0 is refused, naming what was found and the floor.
+
+    ``1.2.0`` is the one that matters and the reason the leg-2.5a container on bolt://7690 is kept:
+    it declares every relationship type the fingerprint asks for, so the fingerprint passes and the
+    version stamp is the only signal. What it lacks is behavioural -- the wired L4 lattice, the
+    body-node ids, the retired ``_module`` -- which no schema probe can see."""
+    fake_driver.analyzer_version = raw
+    with pytest.raises(GraphSchemaMismatch, match=rf"{raw}.*1\.3\.0 or newer"):
         TSNeo4jBackend._from_driver(fake_driver, application_name="app")
+
+
+def test_the_1_2_0_refusal_survives_a_complete_relationship_fingerprint(fake_driver):
+    """The 1.2.0 graph is refused on its version, not on a missing type: assert the fingerprint it
+    presents is a superset of what is required, so the refusal cannot be credited to the wrong
+    check."""
+    fake_driver.analyzer_version = "1.2.0"
+    assert REQUIRED <= fake_driver.rel_types
+    with pytest.raises(GraphSchemaMismatch) as e:
+        TSNeo4jBackend._from_driver(fake_driver, application_name="app")
+    assert e.value.missing == set()
 
 
 @pytest.mark.parametrize(
@@ -75,12 +97,12 @@ def test_probe_refuses_when_the_version_cannot_be_read(fake_driver, raw, found):
     because serving it would be the silent-empty defect with no signal -- and the message says
     which of the three it found."""
     fake_driver.analyzer_version = raw
-    with pytest.raises(GraphSchemaMismatch, match="1.2.0 or newer") as e:
+    with pytest.raises(GraphSchemaMismatch, match="1.3.0 or newer") as e:
         TSNeo4jBackend._from_driver(fake_driver, application_name="app")
     assert found in str(e.value)
 
 
-@pytest.mark.parametrize("raw", ["1.2.0", "1.2.1", "1.3.0", "2.0.0"])
+@pytest.mark.parametrize("raw", ["1.3.0", "1.3.1", "1.4.0", "2.0.0"])
 def test_probe_serves_every_generation_from_the_floor_up_silently(fake_driver, caplog, raw):
     fake_driver.analyzer_version = raw
     with caplog.at_level(logging.INFO, logger="cldk.analysis.typescript.neo4j.neo4j_backend"):

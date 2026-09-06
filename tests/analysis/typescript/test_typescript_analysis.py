@@ -437,6 +437,6 @@ def test_tsc_only_is_a_deprecated_no_op(typescript_application, typescript_analy
 
 def test_backend_keeps_the_envelope(ts_analysis):
     analysis = ts_analysis.backend.analysis
-    assert analysis.analyzer.version == "1.2.0"
+    assert analysis.analyzer.version == "1.3.0"
     assert analysis.max_level == 4
     assert analysis.application is ts_analysis.get_application_view()

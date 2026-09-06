@@ -46,6 +46,7 @@ import pytest
 from cldk import CLDK
 from cldk.analysis.commons.backend_config import Neo4jConnectionConfig
 from cldk.analysis.typescript.backend import CALL_GRAPH_NODE_KINDS
+from cldk.analysis.typescript.neo4j.neo4j_backend import TSNeo4jBackend
 from cldk.models.typescript import TSCallable, TSClass, TSEnum, TSInterface, TSTypeAlias
 from cldk.utils.exceptions import GraphSchemaMismatch
 from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
@@ -142,11 +143,12 @@ def test_schema_probe_passed_on_merit(analysis, cypher):
     found = {r["relationshipType"] for r in cypher("CALL db.relationshipTypes()")}
     assert REQUIRED_RELATIONSHIP_TYPES <= found
     assert "HAS_CALLSITE" not in found and "CALLS" not in found  # the 0.4.3 vocabulary is gone
-    assert analysis.backend._analyzer_version >= (1, 2, 0)
+    assert analysis.backend._analyzer_version >= TSNeo4jBackend._ANALYZER_FLOOR
 
 
 def test_attaching_to_an_absent_application_is_refused_not_served_empty():
-    with pytest.raises(GraphSchemaMismatch, match="1.2.0 or newer"):
+    floor = ".".join(map(str, TSNeo4jBackend._ANALYZER_FLOOR))
+    with pytest.raises(GraphSchemaMismatch, match=f"{floor} or newer"):
         CLDK.typescript(project_path=None, backend=Neo4jConnectionConfig(uri=NEO4J_URI, username=NEO4J_USER, password=NEO4J_PASSWORD, application_name=f"{APP_NAME}-b"))
 
 

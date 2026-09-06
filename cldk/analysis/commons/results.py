@@ -24,11 +24,11 @@ apart from "the graph doesn't speak this vocabulary" apart from "ambiguous, pick
 :class:`LocateResult` (and the ``CallableRef`` / ``TypeRef`` / ``ModuleRef`` handles it carries)
 answers the single most-needed query: a scanner alert arrives as ``file:line`` and the caller
 needs the enclosing callable *and its source* in one round trip (see
-:meth:`~cldk.analysis.python.backend.PythonAnalysisBackend.locate`). ``node``/``span`` are typed
-against ``codeanalyzer-python``'s models for this leg, so ``locate`` is declared on the *Python*
-backend ABC rather than the generic cross-language one — a shared declaration typed on one
-language's models is a contract no other language can satisfy. A later leg generalises ``node`` /
-``span`` and hoists the declaration once Java or TypeScript needs the same shape.
+:meth:`~cldk.analysis.python.backend.PythonAnalysisBackend.locate`). Its body-node field is
+:class:`BodyRef` and its span is this module's :class:`Span` (TS-1, leg 2.5b): both were typed on
+``codeanalyzer-python``'s ``BodyNode`` / ``Span``, which made the language-neutral result module
+import one language's schema — and made ``locate`` undeclarable on the cross-language ABC, since a
+shared declaration typed on one language's models is a contract no other language can satisfy.
 
 :class:`EntrypointCoverage` is the same "absence is never null" discipline applied to
 ``get_entrypoints()``: that accessor's ``List[PyCallableOverview]`` return is frozen and cannot
@@ -50,9 +50,7 @@ completeness the same way from each.
 
 from typing import ClassVar, Generic, Iterator, Literal, TypeVar
 
-from pydantic import BaseModel, computed_field
-
-from cldk.models.python import BodyNode, Span
+from pydantic import BaseModel, ConfigDict, computed_field
 
 
 class Diagnostic(BaseModel):
@@ -87,6 +85,66 @@ class Diagnostic(BaseModel):
     ]
     message: str
     suggestions: list[str] = []
+
+
+class Span(BaseModel):
+    """Where something lives in source, in the one spelling this whole surface speaks.
+
+    ``start`` / ``end`` are ``[line, column]`` (1-based line, 0-based column) and ``bytes`` are
+    UTF-8 offsets into the owning module's source — the shape *both* analyzers already emit
+    (``codeanalyzer-python``'s ``Span``, ``codeanalyzer-typescript``'s ``TSSpan``). It is declared
+    here rather than borrowed from one of them because these results are language-neutral, and a
+    span is the one attribute every language's nodes carry (TS-1).
+
+    ``from_attributes`` is load-bearing, not decoration: it is what lets a backend hand its own
+    analyzer's span object straight to a :class:`BodyRef` or a :class:`LocateResult` and have it
+    validate field by field, so no backend converts by hand and no field goes missing in the
+    handover. It does **not** make this class interchangeable with either analyzer's — the reverse
+    direction (this class into a ``Py*`` model's ``span`` field) is a ``ValidationError``, which is
+    why ``cldk.models.python.Span`` stays codeanalyzer-python's own class rather than being
+    replaced by this one.
+
+    Which fields are *meaningful* depends on the backend, and they say so rather than fabricating:
+    a Neo4j projection carrying only ``start_line`` / ``end_line`` rehydrates the columns and
+    ``bytes`` as ``0`` placeholders, never offsets to slice with (see :class:`LocateResult`).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    start: tuple[int, int]
+    end: tuple[int, int]
+    bytes: tuple[int, int]
+
+
+class BodyRef(BaseModel):
+    """A handle on one node inside a callable's body — the statement, call or branch a position
+    landed on, in the vocabulary every analyzer shares (TS-1).
+
+    Carries only what both analyzers emit for such a node. The Python-schema ``BodyNode`` this
+    replaced on :class:`LocateResult` also carried Python-shaped dataflow detail (``of``,
+    ``parent``, ``arguments``, the call-site facets), none of which a TypeScript body node speaks
+    in the same spelling; a caller that needs it addresses the node by :attr:`id` and asks the
+    language's own accessors.
+
+    Attributes:
+        id: The analyzer's own id for the node (``"<callable can:// id>@<body key>"``) — **opaque**.
+            The same value :attr:`LocateResult.node_id` carries, and the handle
+            ``get_source`` takes. Pass it back; do not parse it and do not build one (E6).
+        kind: The node's kind in the analyzer's already-English spelling — ``statement``, ``call``,
+            ``branch``, ``loop``, ``raise``, ``handler`` and the synthetic ``entry`` / ``exit``
+            bookends (the vocabulary :attr:`SliceNode.KINDS` pins).
+        span: The node's own source region, or ``None`` when it has none: the synthetic analysis
+            vertices (``@entry`` / ``@exit`` / a formal parameter) are dataflow positions, not
+            regions in the file, and a fabricated zero span would read as "line 0".
+        callee: On a ``call`` node, the id of what it resolves to; ``None`` everywhere else and on
+            a call that never resolved. This is the sanctioned null-to-id slot, not an absence to
+            paper over — measured across real applications, one call site in four resolves nothing.
+    """
+
+    id: str
+    kind: str
+    span: Span | None = None
+    callee: str | None = None
 
 
 class ModuleRef(BaseModel):
@@ -125,12 +183,14 @@ class LocateResult(BaseModel):
     to the nearest callable) apart from "this file was never analysed".
 
     Attributes:
-        node: The innermost body node containing the position, if the graph has one that precise.
-            ``None`` does not mean "not found" — see ``callable``/``diagnostics`` for that.
-        node_id: ``node``'s identifier for :meth:`~cldk.analysis.python.backend.PythonAnalysisBackend.get_source`,
-            or ``None`` exactly when ``node`` is ``None``. It is the analyzer's own id for that
-            node (``"<callable can:// id>@<body key>"``), read off the graph where the backend can
-            and composed the emitter's way where it cannot — **an opaque handle, not a string to
+        body: The innermost body node containing the position, as a :class:`BodyRef`, if the graph
+            has one that precise. ``None`` does not mean "not found" — see
+            ``callable``/``diagnostics`` for that.
+        node_id: ``body``'s identifier for :meth:`~cldk.analysis.python.backend.PythonAnalysisBackend.get_source`,
+            or ``None`` exactly when ``body`` is ``None`` (it is the same value as ``body.id``, kept
+            as a field of its own because it is published contract). It is the analyzer's own id for
+            that node (``"<callable can:// id>@<body key>"``), read off the graph where the backend
+            can and composed the emitter's way where it cannot — **an opaque handle, not a string to
             parse or build**. Treat it as something to pass back, and address a callable by its
             ``callable.signature`` instead, the same key :meth:`get_method_bodies` uses.
         callable: The enclosing callable, or ``None`` if the position is not inside one (module
@@ -148,7 +208,7 @@ class LocateResult(BaseModel):
             ``module_source_unavailable`` diagnostic. Callable text is available on both.
         span: The span the ``source`` slice covers. Which of its fields are meaningful depends on
             the backend, because they carry different data: the local backend returns the
-            analyzer's real :class:`~cldk.models.python.Span` (1-based line, 0-based column, and
+            analyzer's real span (1-based line, 0-based column, and
             UTF-8 byte offsets into the module source), while the Neo4j graph projects only
             ``start_line`` / ``end_line`` on ``:PyCallable`` and ``:PyBodyNode`` — so over Neo4j
             the line components are real and the columns and ``bytes`` are ``0`` placeholders,
@@ -159,7 +219,7 @@ class LocateResult(BaseModel):
             no analysed module.
     """
 
-    node: BodyNode | None
+    body: BodyRef | None
     node_id: str | None = None
     callable: CallableRef | None
     type: TypeRef | None

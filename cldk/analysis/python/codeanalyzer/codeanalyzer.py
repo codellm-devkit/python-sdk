@@ -62,7 +62,7 @@ from codeanalyzer.schema import Analysis, model_dump_json
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.levels import ANALYZER_LEVELS, LEVEL_NAMES, analyzer_level
 from cldk.analysis.commons.resolve import CallableCandidate, body_node_kind, resolve_callable_signature, resolve_value_name, resolve_within, value_candidate
-from cldk.analysis.commons.results import CallableRef, Diagnostic, EdgePage, EntrypointCoverage, FlowPaths, LocateResult, ModuleRef, Slice, SliceNode, TypeRef
+from cldk.analysis.commons.results import BodyRef, CallableRef, Diagnostic, EdgePage, EntrypointCoverage, FlowPaths, LocateResult, ModuleRef, Slice, SliceNode, TypeRef
 from cldk.utils.exceptions import CodeanalyzerUsageException
 from cldk.analysis.python.backend import (
     CDG_ORDER,
@@ -1711,7 +1711,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         on_disk = Path(path).is_file() or bool(project_dir and (Path(project_dir) / path).is_file())
         why = "the file exists but no analysed module covers it" if on_disk else "no such file in the analysed project"
         return LocateResult(
-            node=None,
+            body=None,
             callable=None,
             type=None,
             module=ModuleRef(path=str(path)),
@@ -1735,7 +1735,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         found = _find_innermost(module, line)
         if found is None:
             return LocateResult(
-                node=None,
+                body=None,
                 callable=None,
                 type=None,
                 module=module_ref,
@@ -1753,8 +1753,11 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         # a bare ``"line:col"``, so this path was already right; it routes through the shared
         # helper so it stays right if that ever changes.
         node, node_id = (found_body[1], body_node_id(c.id, found_body[0])) if found_body else (None, None)
+        # ``BodyRef`` is the language-neutral handle (TS-1): id, kind, span, and -- unlike the graph
+        # backend, where callee resolution is a separate ``PY_RESOLVES_TO`` edge and not a node
+        # property -- the callee the analyzer already resolved on a call node.
         return LocateResult(
-            node=node,
+            body=BodyRef(id=node_id or "", kind=node.kind, span=node.span, callee=node.callee) if node else None,
             node_id=node_id,
             callable=CallableRef(signature=c.signature, name=c.name, class_signature=owner.signature if owner else None),
             type=TypeRef(signature=owner.signature, name=owner.name) if owner else None,

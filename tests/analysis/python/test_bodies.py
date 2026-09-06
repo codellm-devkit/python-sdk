@@ -18,7 +18,7 @@
 
 ``get_source(node_id)`` generalises body access below callable granularity — the id is either a
 callable's signature or ``"<signature>@<body key>"`` for one of its body nodes, exactly the string
-:attr:`~cldk.analysis.commons.results.LocateResult.node_id` hands back alongside ``node``. The two
+:attr:`~cldk.analysis.commons.results.LocateResult.node_id` hands back alongside ``body``. The two
 backends diverge in what they can answer: the local backend holds the module's real text and byte
 offsets for every node, while the graph only precomputes ``:PyCallable.code`` — nothing below that
 granularity has a text property to slice, so the Neo4j backend raises rather than substituting the

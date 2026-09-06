@@ -201,7 +201,7 @@ def as_slice_node(node: object) -> SliceNode:
 
     A ``SliceNode`` passes through untouched. A ``LocateResult`` is re-expressed as one, keeping
     the vocabulary it already speaks: ``module.path`` is the file, ``callable.signature`` the
-    enclosing callable, ``node.kind`` the position's kind.
+    enclosing callable, ``body.kind`` the position's kind.
 
     Raises:
         TypeError: ``node`` carries neither a ``ref`` nor a ``node_id``, so there is nothing to
@@ -212,7 +212,7 @@ def as_slice_node(node: object) -> SliceNode:
     ref = getattr(node, "node_id", None)
     if ref is None:
         raise TypeError(f"describe() needs something carrying a ref (a SliceNode, a path hop endpoint, a locate() result); got {type(node).__name__}")
-    module, callable_ref, body = node.module, node.callable, getattr(node, "node", None)
+    module, callable_ref, body = node.module, node.callable, getattr(node, "body", None)
     return SliceNode(
         file=module.path,
         line=node.span.start[0],

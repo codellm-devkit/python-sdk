@@ -423,15 +423,16 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
 
     # -----[ locate ]-----
     # The v2 query-facade spec's D3. Declared here rather than on the generic cross-language ABC
-    # because LocateResult carries codeanalyzer-python's BodyNode/Span — see
-    # cldk/analysis/commons/backend.py's module docstring for why that stays out of the shared
-    # contract until a second language implements it.
+    # because it has one implementation, not because of its types: TS-1 (leg 2.5b) made
+    # LocateResult language-neutral (BodyRef + the commons Span), so the type blocker is gone and
+    # the declaration hoists with TypeScript's implementation — see
+    # cldk/analysis/commons/backend.py's module docstring.
     @abstractmethod
     def locate(self, path: str, line: int) -> LocateResult:
         """Resolve a source position to its enclosing callable, with the source in hand.
 
         Four outcomes, kept distinguishable rather than collapsed into an ambiguous empty: inside a
-        callable (``callable`` set, and ``node`` set too when a body node is that precise); at module
+        callable (``callable`` set, and ``body`` set too when a body node is that precise); at module
         scope (a real position with no enclosing callable — a ``module_scope`` diagnostic); in the
         gap between two callables (also module scope, and never silently snapped to the nearest
         callable); or in a file the graph has no module for (``file_not_in_graph``).
@@ -557,7 +558,7 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
 
         Generalises body access below callable granularity: ``node_id`` is either a callable's
         signature (the same key :meth:`get_method_bodies` uses) or the opaque body-node id
-        :attr:`LocateResult.node_id` hands back alongside :attr:`LocateResult.node`, so a caller
+        :attr:`LocateResult.node_id` hands back alongside :attr:`LocateResult.body`, so a caller
         can re-fetch the precise statement or call site :meth:`locate` found, not just its
         enclosing callable. The body-node form is the analyzer's own id
         (``"<callable can:// id>@<body key>"``) — round-tripped, never composed by the caller.
