@@ -3,8 +3,10 @@
 What you can ask a CLDK Python analysis, what comes back, and what will mislead you if you don't
 know it. Written for an agent composing queries at runtime.
 
-Status: leg 1 (`codeanalyzer-python` 1.4.0). Accessors marked **1.5** are specified but not yet
-implemented — see `docs/design/specs/2026-09-05-leg-1.5-bounded-queries-and-dataflow.md`.
+Status: legs 1 and 1.5 (`codeanalyzer-python` 1.4.0) — every accessor below is implemented on both
+backends and exercised against a live graph. Design records:
+`docs/design/specs/2026-09-03-agent-facing-query-facade.md` and
+`docs/design/specs/2026-09-05-leg-1.5-bounded-queries-and-dataflow.md`.
 
 ---
 
@@ -38,7 +40,7 @@ Most questions decompose into these. Start here, then use the tables below.
 | a scanner alert at `file:line` | the enclosing callable and its code | `locate(path, line)` |
 | a callable name | its source | `get_method_bodies([sig])` or `get_source(node_id)` |
 | a callable | who calls it / what it calls | `get_callers(...)` / `get_callees(...)` |
-| a value and a sink | does one reach the other | `flows_to_call(...)` **1.5** |
+| a value and a sink | does one reach the other | `flows_to_call(...)` / `flows_to_argument(...)` |
 | a config key | which code reads it | `get_config_readers(key)` |
 | nothing, want the surface | entrypoints | `get_entrypoints()` + `get_entrypoint_coverage()` |
 
@@ -170,7 +172,7 @@ different strings and should drop the stripping. (Issue #320 covers the sibling 
 | `get_class_call_graph(class_sig, method_signature=)` | `List[Tuple[str, str]]` | | |
 | `get_callsites_for(signatures)` | `Dict[str, List[PyCallsite]]` | | `py.get_callsites_for(["…invoice_transaction"])` |
 | `get_external_symbols()` | `Dict[str, PyExternalSymbol]` | | out-of-project call targets |
-| `has_resolution_edges()` | `bool` | | can this graph resolve callees at all |
+| `has_resolution_edges` | `bool` (a **property**, not a call) | | can this graph resolve callees at all |
 | `get_call_graph(roots=None, depth=None)` | `nx.DiGraph` | 12s whole (**364,752 edges**); < 1s scoped | `py.get_call_graph(roots=["…invoice_transaction"], depth=2)` |
 | `get_call_graph_json()` | `str` | **26s**, ~144 MB of JSON | the whole application, serialised |
 
@@ -198,6 +200,10 @@ comes back as a graph of one node — and that holds for a callable with **no ca
 - A root is valid if the application **declares** it, or if it is a node of the call graph (an
   `@external` id is the second and not the first). Anything else raises `SelectorNotInGraph` — not
   the same answer as "this callable calls nothing". Both backends check that same domain.
+- **`roots=` is an exact filter, not a name.** Every other accessor here suffix-matches, so
+  `roots=["AccountMove.write"]` — correct as a name — misses exactly like a typo would. The error
+  says so. Resolve first: `py.get_call_graph(roots=[py.resolve_callable("write", in_class="AccountMove").callable])`,
+  or ask the name-based question directly (`backward_cone`, `callers_of`, `call_paths_between`).
 - `paths=` and `roots=` take *sequences*; a bare string raises `TypeError` rather than being
   iterated character by character. (`module=` is the single-valued one.)
 - `paths=` resolution is many-to-one: `"pkg/a.py"` and `"/abs/pkg/a.py"` are the same module, so
@@ -205,12 +211,13 @@ comes back as a graph of one node — and that holds for a callable with **no ca
 - `depth=` without `roots=`, `roots=[]`, and a non-integer `depth` all raise `ValueError`.
 - Over Neo4j this compiles to one query, scoped to the application at every hop, and needs
   **Neo4j 5.9+** — checked against the version read when the backend attached, and raised only by
-  this call, so an older server still serves every other accessor. A mistyped root is only visible
+  the hop-scoped walks (this call, `reaches` and `backward_cone`), so an older server still serves
+  every other accessor. A mistyped root is only visible
   *after* that query runs, so a partial miss costs the surviving roots' traversal first (5.11s for
   an unbounded walk out of odoo's busiest callable) rather than failing instantly (0.02s) the way
   an all-miss request does.
 
-**Gotcha:** `PyCallsite.callee_signature` may be `None`. Check `has_resolution_edges()` first — if
+**Gotcha:** `PyCallsite.callee_signature` may be `None`. Check `has_resolution_edges` (a property) first — if
 it is `False`, the graph carries no resolution data at all and *every* callee is `None` for that
 reason, not because those particular call sites are unresolvable.
 
@@ -289,12 +296,13 @@ This layer is identical across Python, Java and TypeScript — the queries port 
 
 ---
 
-## Dataflow — **leg 1.5, partly implemented**
+## Dataflow
 
-Shipped: the three per-callable graphs (`get_cfg` / `get_cdg` / `get_ddg`), the slices
-(`slice_backward` / `slice_forward` / `backward_cone`) and the call-graph questions (`reaches` /
-`callers_of` / `callees_of`). Still design: `paths_between`, `call_paths_between`,
-`flows_to_call`, `flows_to_argument`, `describe`.
+All implemented, on both backends: the three per-callable graphs (`get_cfg` / `get_cdg` /
+`get_ddg`), the slices (`slice_backward` / `slice_forward` / `backward_cone`), the call-graph
+questions (`reaches` / `callers_of` / `callees_of` / `call_paths_between`), the value-flow
+questions (`paths_between` / `flows_to_call` / `flows_to_argument`), the addressing step behind
+them (`resolve_callable` / `resolve_value`) and `describe`.
 
 Names in, names out. No `can://` URIs, no ordinals — you say `"invoice_id"`, not `"…@formal_in:1"`.
 
@@ -302,11 +310,13 @@ Names in, names out. No `can://` URIs, no ordinals — you say `"invoice_id"`, n
 | --- | --- | --- |
 | `slice_backward(src, within=, depth=5, max_nodes=)` | what affects this value | `py.slice_backward("invoice_id", within="PaymentPortal.invoice_transaction")` |
 | `slice_forward(src, within=, depth=5, max_nodes=)` | what this value affects | `py.slice_forward("access_token", within="PaymentPortal.invoice_transaction")` |
-| `paths_between(src, dst, within=, max_paths=)` | how one reaches the other | `py.paths_between("invoice_id", "kwargs", within="…invoice_transaction")` |
-| `flows_to_call(src, callee, within=)` | reaches **any call to** X | `py.flows_to_call("invoice_id", "execute", within="…invoice_transaction")` |
-| `flows_to_argument(src, callee, arg, within=)` | reaches X's **named argument** | `py.flows_to_argument("invoice_id", "execute", arg="query", within="…")` |
-| `reaches(src, dst, depth=None)` | is there a call path | `py.reaches("invoice_transaction", "execute")` |
-| `call_paths_between(src, dst, max_paths=)` | show the call chains | |
+| `paths_between(src, dst, src_within=, dst_within=, depth=None, max_paths=10)` | how one reaches the other | `py.paths_between("invoice_id", "invoice_ids", src_within="PaymentPortal.invoice_transaction", dst_within="PaymentPortal._process_transaction")` |
+| `flows_to_call(src, callee, within=, depth=None)` | reaches **any call to** X | `py.flows_to_call("invoice_id", "_process_transaction", within="PaymentPortal.invoice_transaction")` |
+| `flows_to_argument(src, callee, arg, within=, depth=None)` | reaches X's **named argument** | `py.flows_to_argument("invoice_id", "_process_transaction", arg="invoice_ids", within="…invoice_transaction")` |
+| `reaches(src, dst, depth=None)` | is there a call path | `py.reaches("invoice_transaction", "AccountMove.write")` |
+| `call_paths_between(src, dst, depth=None, max_paths=10)` | show the call chains | `py.call_paths_between("PaymentPortal.invoice_transaction", "AccountMove.write")` |
+| `resolve_callable(name, in_class=, in_module=)` | what a name means, before asking | `py.resolve_callable("write", in_class="AccountMove").callable` |
+| `resolve_value(name, within=)` | what a value name means | `py.resolve_value("AccessError", within="…invoice_transaction").defined_in` |
 | `backward_cone(sinks, depth=5, max_nodes=)` | everything reaching these | `py.backward_cone(["AccountMove.write"])` |
 | `callers_of(name, in_class=, in_module=)` | who calls this, by name | `py.callers_of("action_validate_step")` |
 | `callees_of(name, in_class=, in_module=)` | what this calls, by name | |
@@ -320,12 +330,23 @@ function without reaching the parameter that matters. Ask the one you mean.
 
 **A slice is a set; a path is a sequence.** `slice_backward` answers "what is in scope"; a 10k-node
 cone can contain millions of paths, so it never returns them. `paths_between` answers "how does A
-reach B", with each hop carrying the edge that justified it.
+reach B", with each hop carrying the edge that justified it — `hop.via` in your words (`data` /
+`control` / `argument` / `return` / `summary`; `call` on a call path), `hop.var`, `hop.prov` — and
+`path.weakest` is the hop that caps the claim: `ssa` > `reaching-defs` > `points-to`, the
+most approximate one. Only **shortest** paths come back, at most `max_paths` (10), in one stated
+order on both backends. `paths_between` takes **two** callables, `src_within=` and `dst_within=`,
+both required: two values of one callable are joined only through recursion, so there is no
+sensible default for the second. A path from a node to itself is refused with a `ValueError` that
+tells you the `reaches` call to ask instead.
 
 **Naming rules:**
 - A value name is scoped by its callable: `within="PaymentPortal.invoice_transaction"`. Parameter
   names are always unique inside a callable, so once scoped there is no ambiguity.
-- A callable name is *disambiguated*, not scoped: `in_class=`, `in_module=`.
+- A callable name is *disambiguated*, not scoped: `in_class=` (a dotted suffix of the owning
+  class), `in_module=` (a path — `"controllers/payment.py"` — **or** the dotted module name as it
+  appears in every signature — `"controllers.payment"`, `"payment"`).
+- When a keyword excludes every match, the error blames the keyword (`1 of 1 in_module not in
+  graph: …`), not the name — `callers_of("x", in_module=…)` no longer claims `x` does not exist.
 - Suffix matching works and is deterministic: `"execute"` matches anything ending `.execute`;
   `"cursor.execute"` narrows.
 - **Ambiguity raises with candidates. Nothing is guessed.** 86% of names in a real application are
@@ -340,17 +361,22 @@ return an `EdgePage`, and nothing is discarded to make it fit:
 ```python
 page = py.get_ddg("configurator_apply", in_class="Website")
 page.total          # 1386918 — the size of the whole answer, on the first page
-len(page.edges)     # 10000  — the default page_size
-page.has_more       # True
+len(page)           # 10000  — the default page_size; iterate the page to get the edges
+page.complete       # False
 
-while page.has_more:                                    # the rest is reachable, not thrown away
+while not page.complete:                                # the rest is reachable, not thrown away
     page = py.get_ddg("configurator_apply", in_class="Website", cursor=page.next_cursor)
 ```
 
-`total` and `next_cursor` are what make the bound non-silent: "this is everything" (`has_more`
-False) and "there is more" are distinguishable from one page, and an empty page whose `total` is 0
-still means "this callable has no data dependence". `next_cursor` is opaque — pass it back, do not
-read it. Edges come in one canonical order (source, target, then `kind` for CFG and `var`/`prov`
+**One completeness protocol, three shapes.** Every bounded result — `EdgePage`, `Slice`,
+`FlowPaths` — carries **`complete: bool`**, serialised (`model_dump()` and JSON keep it), and
+behaves as the list it holds: `for edge in page`, `len(slice)`, `paths[0]`, and `if paths:` is
+`False` when empty. Each keeps the extra fields its bound needs (`total` / `next_cursor` on a page,
+`total` / `roots` / `resolved` on a slice). There is no `has_more` and no `truncated`; one name for
+one fact. `total` and `complete` are what make the bound non-silent: "this is everything" and
+"there is more" are distinguishable from one page, and an empty page whose `total` is 0 still
+means "this callable has no data dependence". `next_cursor` is opaque — pass it back, do not read
+it. Edges come in one canonical order (source, target, then `kind` for CFG and `var`/`prov`
 for DDG), identical on both backends, so page *n* is the same page whichever backend answered.
 CFG and CDG page the same way even though they are small (402 and 314 edges at their largest) —
 three sibling accessors with two different shapes is a trap for anything composing them.
@@ -367,8 +393,8 @@ closure. `Slice.total` is what keeps the bound from being silent:
 ```python
 sl = py.slice_forward("kwargs", within="Website.configurator_apply", depth=None, max_nodes=10)
 sl.total        # 440270 — the whole answer's size, in the same call
-sl.truncated    # True — derived from total, so the two cannot disagree
-len(sl.nodes)   # 10
+sl.complete     # False — derived from total and len(nodes), so the two cannot disagree
+len(sl)         # 10
 ```
 
 **Which is why `depth` defaults to 5, not to `None`.** That `depth=None` above is deliberate: with
@@ -385,8 +411,8 @@ flagged, and still an unprincipled 5% of a cone. A hop bound answers a *narrower
 | 8 | 464 / 2,044 / 16,028 | 48 / 402 / 37,326 | 3 |
 | `None` | 195,786 / 195,787 / 198,306 | 71 / 440,269 / 440,645 | 131 |
 
-5 is the last depth at which nothing measured needs `max_nodes` at all. So `truncated` is normally
-`False` and `total` is normally the size of what you got; when you want the whole closure, say
+5 is the last depth at which nothing measured needs `max_nodes` at all. So `complete` is normally
+`True` and `total` is normally the size of what you got; when you want the whole closure, say
 `depth=None` and read `total` before `nodes`. Anything in between is a legitimate question too —
 `depth=` bounds the traversal, so what comes back is the *complete* slice of a smaller one.
 
@@ -402,22 +428,33 @@ are in the result, and a sink nothing calls comes back as its own one-node cone 
 empty answer you could not tell from a name that matched nothing. `sl.root` is the single seed for the
 slices; a multi-sink cone has `sl.roots` and raises if you ask it for one.
 
-**`reaches` stays unbounded by default**, alone among these. A hop budget on a *boolean* would
-report `False` for a path that is merely long, which is a wrong answer rather than a small one —
-and it is not a cost question either: measured over 200 random pairs, 20ms mean, 112ms worst.
+**Three bound themselves by default; five do not, and the split is the whole point.** The
+*slices* (`slice_backward`, `slice_forward`, `backward_cone`) default to `depth=5`: a bounded slice
+is a **complete** answer to a narrower question, and `total` tells you so. The *predicates*
+(`reaches`, `flows_to_call`, `flows_to_argument`) and the *path queries* (`paths_between`,
+`call_paths_between`) default to `depth=None`, unbounded: a hop budget on a boolean or a path list
+is not a smaller answer but a wrong one — "no flow" and "no flow within five hops" collapse into
+the same `False` / `[]` with nothing in the result to tell them apart. Measured:
+`flows_to_call("kwargs", "Website.create", within="Website.configurator_apply")` is `False` at five
+hops and `True` unbounded; the matching `paths_between` is `[]` at five hops and ten paths at
+eight. Unbounded is not a cost problem either — `reaches` over 200 random pairs: 20ms mean, 112ms
+worst. `depth=` is still there on all five as a narrowing *you* chose and can see in your own call.
 
 **`callees_of` includes calls out of the project.** They are 10% of the call edges on a real
 application (38,585 of 370,110) and usually the ones you are looking for. An external comes back
 `kind="external"` with a readable dotted name (`"odoo.exceptions.ValidationError.__init__"`) and
-no position — `file` is `""` and `line` is `0`, because it was never analysed. `callers_of` is
-declared callables only: an unanalysed symbol has no body to have called from.
+no position — `file` is `""` and `line` is `0`, because it was never analysed. `describe()` accepts
+them and hands them back with `source=None` (no text exists), so `py.describe(py.callees_of(x))`
+composes. `callers_of` is declared callables only: an unanalysed symbol has no body to have called
+from — and neither `reaches`, `backward_cone` nor `call_paths_between` will route *through* one,
+on either backend, even though the raw graph carries call edges out of ghosts.
 
 **Reading code from a slice is a second call:**
 
 ```python
 sl = py.slice_backward("invoice_id", within="PaymentPortal.invoice_transaction")
 len(sl.nodes)     # 47 — decide what you can afford
-sl.truncated      # False — a cap did not fire
+sl.complete       # True — a cap did not fire
 sl.resolved       # what "invoice_id" actually matched
 
 for n in py.describe(sl.nodes):
