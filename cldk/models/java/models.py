@@ -54,8 +54,9 @@ class _Base(BaseModel):
 
 
 class JSpan(_Base):
-    """``start``/``end`` are ``[line, column]`` (1-based); ``bytes`` are ``[from, to]`` offsets into the
-    owning unit's ``source``."""
+    """``start``/``end`` are ``[line, column]`` (1-based); ``bytes`` are ``[from, to]`` **UTF-8 byte**
+    offsets into the owning unit's ``source`` (the analyzer's ``Spans.java`` computes them as prefix
+    sums over ``getBytes(UTF_8)``)."""
 
     start: Tuple[int, int]
     end: Tuple[int, int]
@@ -64,9 +65,10 @@ class JSpan(_Base):
 
 class _Spanned(_Base):
     """A node with an optional span. ``start_line``/``end_line``/``start_column``/``end_column`` are
-    the 1.x attribute paths, read off ``span`` (``-1`` without one); ``code`` is the **character**
-    slice ``source[span.bytes[0]:span.bytes[1]]`` of the owning unit (J-15), ``""`` without a span or
-    before the owner has been threaded in (J-13)."""
+    the 1.x attribute paths, read off ``span`` (``-1`` without one); ``code`` is the UTF-8 byte slice
+    ``source_bytes[span.bytes[0]:span.bytes[1]]`` of the owning unit, decoded (J-15). ``""`` only for
+    the documented span-less case (implicit callables); a spanned node that was not threaded into a
+    :class:`JCompilationUnit` (J-13) raises rather than returning a silent empty."""
 
     span: Optional[JSpan] = None
     _unit: Optional["JCompilationUnit"] = PrivateAttr(default=None)
@@ -87,11 +89,38 @@ class _Spanned(_Base):
     def end_column(self) -> int:
         return self.span.end[1] if self.span else -1
 
+    def _slice(self, span: Optional[JSpan]) -> str:
+        if span is None:
+            return ""
+        if self._unit is None:
+            raise RuntimeError(f"{getattr(self, 'id', type(self).__name__)} is not threaded — construct through JApplication/JCompilationUnit")
+        return self._unit.slice(span)
+
     @property
     def code(self) -> str:
-        if self.span is None or self._unit is None:
-            return ""
-        return self._unit.source[self.span.bytes[0] : self.span.bytes[1]]
+        return self._slice(self.span)
+
+
+class _Node(_Spanned):
+    """A spanned node with a ``can://`` ``id``. Identity is the id: nodes from independent parses of the
+    same artifact compare equal and hash alike, and the owner back-references stay out of ``==``."""
+
+    id: str
+
+    def __eq__(self, other: object) -> bool:
+        return type(other) is type(self) and other.id == self.id
+
+    def __hash__(self) -> int:
+        return hash(self.id)
+
+
+def _decorator_names(decorators: List[JDecorator]) -> List[str]:
+    """The 1.x ``annotations`` spelling: ``@Name`` or ``@Name(arg, arg)`` with the source arguments."""
+    return ["@" + d.name + (f"({', '.join(d.args)})" if d.args else "") for d in decorators]
+
+
+def _first_comment(comments: List[JComment]) -> Optional[JComment]:
+    return comments[0] if comments else None
 
 
 # ----------------------------------------------------------------------------------------------
@@ -145,11 +174,11 @@ class JRecordComponent(_Spanned):
 
     @property
     def annotations(self) -> List[str]:
-        return [d.name for d in self.decorators]
+        return _decorator_names(self.decorators)
 
     @property
     def comment(self) -> Optional[JComment]:
-        return self.comments[0] if self.comments else None
+        return _first_comment(self.comments)
 
     @property
     def is_var_args(self) -> bool:
@@ -165,7 +194,7 @@ class JCallableParameter(_Spanned):
 
     @property
     def annotations(self) -> List[str]:
-        return [d.name for d in self.decorators]
+        return _decorator_names(self.decorators)
 
 
 class JLocalVariable(_Spanned):
@@ -178,11 +207,10 @@ class JLocalVariable(_Spanned):
 
     @property
     def comment(self) -> Optional[JComment]:
-        return self.comments[0] if self.comments else None
+        return _first_comment(self.comments)
 
 
-class JField(_Spanned):
-    id: str
+class JField(_Node):
     kind: Literal["field"] = "field"
     name: str
     type: str
@@ -193,7 +221,7 @@ class JField(_Spanned):
 
     @property
     def annotations(self) -> List[str]:
-        return [d.name for d in self.decorators]
+        return _decorator_names(self.decorators)
 
     @property
     def variables(self) -> List[str]:
@@ -205,7 +233,7 @@ class JField(_Spanned):
 
     @property
     def comment(self) -> Optional[JComment]:
-        return self.comments[0] if self.comments else None
+        return _first_comment(self.comments)
 
 
 class JMetrics(_Base):
@@ -222,13 +250,12 @@ class JRefs(_Base):
 # ----------------------------------------------------------------------------------------------
 
 
-class JBodyNode(_Base):
+class JBodyNode(_Spanned):
     """One entry of a callable's ``body{}`` map, keyed ``L:C``, ``@entry``/``@exit``/``@formal_in:N``/
     ``@formal_out`` or ``L:C/actual_in:N``/``L:C/actual_out``. Every attribute is optional: the
     analyzer writes the empty call-shaped fields on non-call nodes too."""
 
     kind: str  # call | statement | branch | loop | switch | return | entry | exit | formal_in | formal_out | actual_in | actual_out
-    span: Optional[JSpan] = None
     callee: Optional[str] = None
     arguments: List[str] = []
     receiver_expr: Optional[str] = None
@@ -333,10 +360,10 @@ class JCallSite(_Base):
             is_protected=None if acc is None else acc == "protected",
             is_unspecified=None if acc is None else acc == "package_private",
             is_constructor_call=node.is_constructor_call,
-            start_line=node.span.start[0] if node.span else -1,
-            start_column=node.span.start[1] if node.span else -1,
-            end_line=node.span.end[0] if node.span else -1,
-            end_column=node.span.end[1] if node.span else -1,
+            start_line=node.start_line,
+            start_column=node.start_column,
+            end_line=node.end_line,
+            end_column=node.end_column,
         )
 
 
@@ -345,12 +372,11 @@ class JCallSite(_Base):
 # ----------------------------------------------------------------------------------------------
 
 
-class JCallable(_Spanned):
+class JCallable(_Node):
     """A method, constructor or initializer (``<clinit>$N()``). ``cfg``/``cdg``/``ddg`` are present
     from L3, ``summary`` from L4; ``None`` means the level did not compute them. Implicit callables
     (default constructors) carry no span, body, parameters, metrics or declaration."""
 
-    id: str
     kind: str  # method | constructor | initializer
     signature: str
     parameters: List[JCallableParameter] = []
@@ -378,6 +404,13 @@ class JCallable(_Spanned):
     # -- 1.x views ----------------------------------------------------------------------------
 
     @property
+    def code(self) -> str:
+        """The 1.x ``code``: the **body block** (``body_span``), which is what ``code_start_line``
+        and ``TreesitterJava.get_calling_lines`` were written against; the declaration slice
+        (``span``) only when there is no body (abstract / interface methods)."""
+        return self._slice(self.body_span or self.span)
+
+    @property
     def code_start_line(self) -> int:
         if self.body_span is not None:
             return self.body_span.start[0]
@@ -385,7 +418,7 @@ class JCallable(_Spanned):
 
     @property
     def annotations(self) -> List[str]:
-        return [d.name for d in self.decorators]
+        return _decorator_names(self.decorators)
 
     @property
     def thrown_exceptions(self) -> List[str]:
@@ -427,15 +460,11 @@ class JCallable(_Spanned):
     def crud_queries(self) -> List[JCRUDQuery]:
         return []
 
-    def __hash__(self) -> int:
-        return hash(self.id)
 
-
-class JType(_Spanned):
+class JType(_Node):
     """A class, interface, enum, annotation or record. The wire has no ``name``: the map key is the
     simple name and the id's last segment; :attr:`name` is stamped from the key (J-13)."""
 
-    id: str
     kind: Literal["class", "interface", "enum", "annotation", "record"]
     span: JSpan
     comments: List[JComment] = []
@@ -520,7 +549,7 @@ class JType(_Spanned):
 
     @property
     def annotations(self) -> List[str]:
-        return [d.name for d in self.decorators]
+        return _decorator_names(self.decorators)
 
     @property
     def parent_type(self) -> str:
@@ -538,14 +567,12 @@ class JType(_Spanned):
 
     @property
     def nested_type_declarations(self) -> List[str]:
-        return list(self.types.keys())
+        """Qualified names of the member types (the 1.x value; both backends feed them to ``get_class``)."""
+        return [t.qualified_name for t in self.types.values()]
 
     @property
     def initialization_blocks(self) -> List[JCallable]:
         return [c for c in self.callables.values() if c.kind == "initializer"]
-
-    def __hash__(self) -> int:
-        return hash(self.id)
 
 
 # ----------------------------------------------------------------------------------------------
@@ -559,13 +586,15 @@ def _thread_type(t: JType, name: str, unit: "JCompilationUnit", owner: Union[JTy
         f._unit = unit
     for c in t.callables.values():
         c._unit, c._owner_type = unit, t
+        for n in c.body.values():
+            n._unit = unit
         for ln, lt in c.types.items():
             _thread_type(lt, ln, unit, c)
     for nn, nt in t.types.items():
         _thread_type(nt, nn, unit, t)
 
 
-class JCompilationUnit(_Spanned):
+class JCompilationUnit(_Node):
     """One ``.java`` file. The symbol-table key is its repo-relative path (:attr:`file_path`); the
     wire carries no ``file_path``/``package_name``. The wire key ``imports`` holds structured
     :class:`JImport` records, exposed as :attr:`import_declarations`; the 1.x ``imports`` (a list of
@@ -573,7 +602,6 @@ class JCompilationUnit(_Spanned):
 
     model_config = ConfigDict(extra="forbid", validate_by_name=True, validate_by_alias=True, serialize_by_alias=True)
 
-    id: str
     kind: Literal["module"] = "module"
     span: JSpan
     package: str
@@ -582,10 +610,12 @@ class JCompilationUnit(_Spanned):
     import_declarations: List[JImport] = Field(default=[], alias="imports")
     types: Dict[str, JType] = {}
     content_hash: Optional[str] = None
-    _file_path: str = PrivateAttr(default="")
+    _file_path: Optional[str] = PrivateAttr(default=None)
+    _source_bytes: Optional[bytes] = PrivateAttr(default=None)  # None when ``source`` is ASCII
 
     def model_post_init(self, __context: Any) -> None:
         # Private attrs are not dumped, so model_dump/model_validate round-trips are unaffected.
+        self._source_bytes = None if self.source.isascii() else self.source.encode("utf-8")
         for c in self.comments:
             c._unit = self
         for i in self.import_declarations:
@@ -593,10 +623,19 @@ class JCompilationUnit(_Spanned):
         for name, t in self.types.items():
             _thread_type(t, name, self, None)
 
+    def slice(self, span: JSpan) -> str:
+        """``source`` between the span's UTF-8 byte offsets (J-15); a plain index when the file is ASCII."""
+        b0, b1 = span.bytes
+        if self._source_bytes is None:
+            return self.source[b0:b1]
+        return self._source_bytes[b0:b1].decode("utf-8")
+
     # -- 1.x views ----------------------------------------------------------------------------
 
     @property
     def file_path(self) -> str:
+        if self._file_path is None:
+            raise RuntimeError(f"{self.id} has no file_path — it is the symbol-table key, stamped by JApplication")
         return self._file_path
 
     @property
