@@ -147,7 +147,16 @@ def check_selector(kind: str, requested: Sequence[str], missing: Sequence[str]) 
     if not requested:
         raise ValueError(f"{kind}= selected nothing; omit it to enumerate the whole application")
     if missing:
-        raise SelectorNotInGraph(kind, list(missing), len(requested))
+        # ``roots=`` is an exact filter, unlike every name-taking accessor on this surface, so a
+        # correct short name and a typo miss the same way -- the message has to say which
+        # vocabulary it wanted (see the assessment on PythonAnalysisBackend.get_call_graph).
+        detail = (
+            "roots= takes full signatures (as get_callables_overview() reports them) or @external ids, not bare names; "
+            "to address a callable by name use resolve_callable(name).callable, or backward_cone / callers_of / call_paths_between"
+            if kind == "roots"
+            else None
+        )
+        raise SelectorNotInGraph(kind, list(missing), len(requested), detail=detail)
 
 
 def scope_paths(paths: Sequence[str] | None, keys: Iterable[str], kind: str = "paths") -> List[str] | None:

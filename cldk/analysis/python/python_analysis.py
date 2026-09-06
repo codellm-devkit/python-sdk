@@ -898,6 +898,43 @@ class PythonAnalysis:
         """
         return self.backend.locate_many(positions)
 
+    # -----[ addressing ]-----
+    def resolve_callable(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> SliceNode:
+        """Resolve a callable name to the one callable it names, in the caller's vocabulary.
+
+        The addressing step every name-taking accessor performs, exposed so a caller can perform it
+        once and keep the answer::
+
+            node = py.resolve_callable("invoice_transaction", in_class="PaymentPortal")
+            node.callable   # the full dotted signature -- what get_call_graph(roots=[...]) wants
+            node.file, node.line
+
+        ``name`` matches whole or as a dotted suffix; ``in_class`` is a dotted suffix of the owning
+        class, ``in_module`` a path (``"controllers/payment.py"``) or a dotted module name
+        (``"controllers.payment"``). Ambiguity raises with every candidate; nothing is guessed.
+
+        Raises:
+            AmbiguousName: More than one callable matched.
+            SelectorNotInGraph: Nothing matched -- naming the argument that missed.
+        """
+        return self.backend.resolve_callable(name, in_class=in_class, in_module=in_module)
+
+    def resolve_value(self, name: str, *, within: str) -> SliceNode:
+        """Resolve a value name inside a callable -- a parameter, a captured global or a closure
+        capture -- to the position that carries it.
+
+        The same resolution ``slice_backward`` / ``flows_to_call`` perform on their ``src``,
+        exposed so a caller can check what a name means before asking a question of it::
+
+            py.resolve_value("invoice_id", within="PaymentPortal.invoice_transaction").kind  # "parameter"
+            py.resolve_value("AccessError", within="…invoice_transaction").defined_in         # "payment"
+
+        Raises:
+            AmbiguousName: ``within`` named more than one callable, or ``name`` more than one value.
+            SelectorNotInGraph: No such callable, or no such value in it.
+        """
+        return self.backend.resolve_value(name, within=within)
+
     # -----[ source access ]-----
     def get_source(self, node_id: str) -> str:
         """Return the source text named by ``node_id`` — a callable, or one of its body nodes.

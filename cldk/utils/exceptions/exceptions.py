@@ -164,18 +164,25 @@ class SelectorNotInGraph(ValueError):
             visible as a partial miss.
     """
 
-    def __init__(self, kind: str, missing: list[str], requested: int) -> None:
+    def __init__(self, kind: str, missing: list[str], requested: int, *, detail: str | None = None) -> None:
         """Initialize with the keyword, the values that missed, and how many were asked for.
 
         Args:
-            kind: The scoping keyword's name (``"paths"`` / ``"module"`` / ``"roots"``).
+            kind: The scoping keyword's name (``"paths"`` / ``"module"`` / ``"roots"``), or the
+                thing a name-taking accessor failed to resolve (``"callable"`` / ``"value"`` /
+                ``"in_class"`` / ``"in_module"``).
             missing: The unmatched values, in the caller's own spelling.
             requested: The total number of values the keyword carried.
+            detail: An optional sentence appended in parentheses: what the caller can do instead,
+                or which *other* argument the miss is relative to. Never a near-miss suggestion.
         """
         self.kind = kind
         self.missing = list(missing)
         self.requested = requested
+        self.detail = detail
         self.message = f"{len(self.missing)} of {requested} {kind} not in graph: " + ", ".join(repr(m) for m in self.missing)
+        if detail:
+            self.message += f" ({detail})"
         super().__init__(self.message)
 
 

@@ -34,7 +34,7 @@ import networkx as nx
 import pytest
 from codeanalyzer.schema.py_schema import PyApplication, PyCallable, PyClass, PyModule
 
-from cldk.analysis.python.backend import bounded_subgraph, call_graph_scope, scope_paths
+from cldk.analysis.python.backend import bounded_subgraph, call_graph_scope, check_selector, scope_paths
 from cldk.analysis.python.codeanalyzer.codeanalyzer import PyCodeanalyzer
 from cldk.analysis.python.neo4j import PyNeo4jBackend
 from cldk.utils.exceptions import CodeanalyzerExecutionException, SelectorNotInGraph
@@ -506,3 +506,18 @@ def test_neo4j_scoped_call_graph_does_not_poison_the_cache():
     backend, _ = _rows_backend([{"src": "pkg.a.go", "tgt": None, "p": None}], ["pkg/a.py"])
     backend.get_call_graph(roots=["pkg.a.go"], depth=1)
     assert backend._call_graph is None, "a scoped result was cached as if it were the whole graph"
+
+
+def test_a_missed_root_says_what_vocabulary_roots_take():
+    """``roots=`` is an exact filter while every name-taking accessor suffix-matches, so a correct
+    short name and a typo miss identically. The message must say which vocabulary it wanted and
+    where name-based addressing lives -- and still offer no near-miss guess."""
+    with pytest.raises(SelectorNotInGraph) as e:
+        check_selector("roots", ["AccountMove.write"], ["AccountMove.write"])
+    msg = str(e.value)
+    assert "full signatures" in msg and "resolve_callable" in msg and "@external" in msg
+    assert e.value.kind == "roots" and e.value.missing == ["AccountMove.write"]
+    assert "did you mean" not in msg.lower()
+    with pytest.raises(SelectorNotInGraph) as other:
+        check_selector("paths", ["nope.py"], ["nope.py"])
+    assert "full signatures" not in str(other.value), "the hint is roots-specific"

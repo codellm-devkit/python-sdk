@@ -47,8 +47,10 @@ from codeanalyzer.neo4j.project import _global_ordinal
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons import resolve as resolve_module
 
+from cldk.analysis.python.python_analysis import PythonAnalysis
 from cldk.analysis.commons.resolve import (
     CallableCandidate,
+    module_dotted,
     resolve_callable_signature,
     resolve_name,
     resolve_value_name,
@@ -512,3 +514,59 @@ def test_local_value_resolution_misses_and_ambiguity(py_params):
         py_params.resolve_value("no_such_value", within="Portal.charge")
     with pytest.raises(SelectorNotInGraph):
         py_params.resolve_value("invoice_id", within="NoSuchCallable")
+
+
+# ----------------------------------------------------------------------------------------------
+# Fix round: ``in_module`` in the vocabulary a caller reads, and errors that blame the right
+# argument.
+# ----------------------------------------------------------------------------------------------
+def test_in_module_takes_the_dotted_module_name_too():
+    """A signature reads ``odoo.tools.mail.email_domain_extract`` and ``in_class=`` is a dotted
+    suffix already, so the module named the way it appears in every signature must work. A
+    dotted ``"mail"`` names only a module whose dotted name *ends* in ``.mail`` -- not everything
+    under a ``mail/`` package -- so the widening adds no ambiguity."""
+    candidates = [
+        CallableCandidate("odoo.tools.mail.extract", None, "odoo/tools/mail.py"),
+        CallableCandidate("odoo.addons.mail.models.thread.extract", "odoo.addons.mail.models.thread.Thread", "odoo/addons/mail/models/thread.py"),
+    ]
+    for spelling in ("odoo.tools.mail", "tools.mail", "mail", "odoo/tools/mail.py", "tools/mail.py", "mail.py"):
+        assert resolve_callable_signature("extract", candidates, in_module=spelling) == "odoo.tools.mail.extract", spelling
+    assert resolve_callable_signature("extract", candidates, in_module="models.thread") == "odoo.addons.mail.models.thread.extract"
+    assert module_dotted("odoo/tools/mail.py") == "odoo.tools.mail"
+    assert module_dotted("pkg/__init__.py") == "pkg"
+
+
+def test_a_keyword_that_excludes_every_match_is_blamed_not_the_name():
+    """``callers_of("x", in_module=...)`` failed with ``callable not in graph: 'x'`` when ``x``
+    existed and the module was what missed. The raise names the argument that actually missed."""
+    candidates = [CallableCandidate("odoo.tools.mail.x", None, "odoo/tools/mail.py")]
+    with pytest.raises(SelectorNotInGraph) as by_module:
+        resolve_callable_signature("x", candidates, in_module="odoo/tools/other.py")
+    assert by_module.value.kind == "in_module" and by_module.value.missing == ["odoo/tools/other.py"]
+    assert "'x' matches 1 callable" in str(by_module.value)
+    with pytest.raises(SelectorNotInGraph) as by_class:
+        resolve_callable_signature("x", candidates, in_class="Nope")
+    assert by_class.value.kind == "in_class"
+    with pytest.raises(SelectorNotInGraph) as by_name:
+        resolve_callable_signature("nope", candidates, in_module="odoo/tools/mail.py")
+    assert by_name.value.kind == "callable" and by_name.value.missing == ["nope"]
+
+
+@live_only
+def test_in_module_resolves_the_dotted_spelling_on_the_graph(live_analysis):
+    dotted = live_analysis.callers_of("email_domain_extract", in_module="odoo.tools.mail")
+    by_path = live_analysis.callers_of("email_domain_extract", in_module="odoo/tools/mail.py")
+    assert [c.ref for c in dotted] == [c.ref for c in by_path]
+    with pytest.raises(SelectorNotInGraph) as e:
+        live_analysis.callers_of("email_domain_extract", in_module="odoo/tools/other.py")
+    assert e.value.kind == "in_module"
+
+
+def test_the_facade_exposes_resolution(py_local):
+    """Every other accessor is on the facade; ``py.resolve_callable`` was an ``AttributeError``."""
+    facade = object.__new__(PythonAnalysis)
+    facade.backend = py_local
+    assert facade.resolve_callable("key", in_module="app.py").callable == "src.app.Store.key"
+    assert facade.resolve_callable("key", in_module="src.app").callable == "src.app.Store.key"
+    with pytest.raises(SelectorNotInGraph):
+        facade.resolve_value("nope", within="key")

@@ -197,28 +197,63 @@ def resolve_callable_signature(
     ``in_class="PaymentPortal"`` and ``in_class="addons.account_payment.controllers.payment.PaymentPortal"``
     both work, and so do ``in_module="payment.py"`` and the full repo-relative path.
 
+    **``in_module`` also takes the dotted module name** (``"odoo.tools.mail"``, or a dotted suffix
+    of it such as ``"tools.mail"`` / ``"mail"``), derived from the path by :func:`module_dotted`.
+    That is the vocabulary a caller *reads*: a signature is ``odoo.tools.mail.email_domain_extract``,
+    and ``in_class=`` is a dotted suffix already, so a module named the way it appears in every
+    signature must work too. (The analyzer's ``module_name`` — what ``ModuleRef.module_name`` and
+    ``SliceNode.defined_in`` carry — is the *bare* last segment, ``"mail"``, which the dotted rule
+    also accepts.) A path spelling with ``/`` never matches dotted and vice versa, so the widening
+    adds no ambiguity: a dotted ``"mail"`` names only a module whose dotted name *ends* in
+    ``.mail``, not everything under a ``mail/`` package.
+
+    **The error names the argument that actually missed.** ``callers_of("x", in_module="…")``
+    used to fail with ``callable not in graph: 'x'`` when ``x`` plainly existed and it was the
+    module that matched nothing. When the name matches but a keyword filters every match away,
+    the raise is about that keyword.
+
     Args:
         name: The callable name, whole or a dotted suffix of the signature.
         candidates: Every callable in the domain (see the backends' docstrings for what that
             domain is — it must be the same one on both).
         in_class: Keep only callables whose owning class this names. A callable with no owning
             class is excluded outright, not silently kept.
-        in_module: Keep only callables whose module path this names.
+        in_module: Keep only callables whose module this names, by path or by dotted name.
 
     Raises:
         AmbiguousName: More than one callable matched.
-        SelectorNotInGraph: None did — including the case where ``in_class``/``in_module`` filtered
-            away the only match, which is a name that resolves to nothing *as asked*.
+        SelectorNotInGraph: None did. ``kind`` is ``"callable"`` when the name itself matched
+            nothing; ``"in_class"`` / ``"in_module"`` when the name matched and that keyword
+            excluded every match — a name that resolves to nothing *as asked*, blamed on the
+            argument that asked it.
     """
-    if in_class is not None:
-        candidates = [c for c in candidates if c.class_signature and segment_match(in_class, c.class_signature)]
-    if in_module is not None:
-        candidates = [c for c in candidates if segment_match(in_module, c.path, sep="/")]
+    filters = {
+        "in_class": (in_class, lambda c: bool(c.class_signature) and segment_match(in_class, c.class_signature)),
+        "in_module": (in_module, lambda c: segment_match(in_module, c.path, sep="/") or segment_match(in_module, module_dotted(c.path))),
+    }
+    by_name = set(_narrow(name, [c.signature for c in candidates]))
+    matched = [c for c in candidates if c.signature in by_name]
+    for keyword, (given, keep) in filters.items():
+        if given is None:
+            continue
+        candidates = [c for c in candidates if keep(c)]
+        if matched and not any(keep(c) for c in matched):
+            raise SelectorNotInGraph(keyword, [given], 1, detail=f"{name!r} matches {len(matched)} callable(s), none of them satisfying {keyword}={given!r}")
     # Only offer the keywords the caller has *not* already used: telling someone who wrote
     # ``in_class="ResPartner"`` to "narrow it with in_class=" is advice they have already taken.
     unused = [kw for kw, given in (("in_class=", in_class), ("in_module=", in_module)) if given is None]
     narrow_with = " or ".join(unused + ["by naming more of the dotted path"]) if unused else "by naming more of the dotted path"
     return resolve_name(name, [c.signature for c in candidates], kind="callable", narrow_with=narrow_with)
+
+
+def module_dotted(path: str) -> str:
+    """The dotted module name a repo-relative path spells: ``"odoo/tools/mail.py"`` →
+    ``"odoo.tools.mail"``, ``"pkg/__init__.py"`` → ``"pkg"``. The same derivation the analyzer's
+    signatures embody, so ``in_module=`` can be written the way a signature reads."""
+    stem = path[:-3] if path.endswith(".py") else path
+    if stem.endswith("/__init__"):
+        stem = stem[: -len("/__init__")]
+    return stem.replace("/", ".")
 
 
 def resolve_within(resolve_callable: Callable[[str], "T"], within: str) -> "T":
