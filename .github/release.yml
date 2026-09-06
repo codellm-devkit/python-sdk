@@ -1,0 +1,26 @@
+# Configures GitHub's auto-generated release notes — the "What's Changed" section
+# appended by `generate_release_notes` in .github/workflows/release.yml. Merged PRs
+# are grouped under these emoji headings by label, matching the sibling analyzer
+# repositories so a reader sees one shape across the org.
+changelog:
+  exclude:
+    authors:
+      - dependabot
+      - github-actions
+  categories:
+    - title: 🚀 Features
+      labels: [enhancement, kind/feature]
+    - title: 🐛 Fixes
+      labels: [bug, fix]
+    - title: ♻️ Refactoring
+      labels: [refactoring]
+    - title: ⚡️ Performance
+      labels: [performance]
+    - title: 📚 Documentation
+      labels: [documentation, doc]
+    - title: 🚦 Tests
+      labels: [test]
+    - title: 🚨 Breaking Changes
+      labels: [breaking]
+    - title: 🛠 Other Changes
+      labels: ["*"]
