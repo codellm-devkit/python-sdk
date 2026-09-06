@@ -76,7 +76,7 @@ def test_type_views(trade_direct: JType):
     assert t.is_enum_declaration is False and t.is_annotation_declaration is False and t.is_record_declaration is False
     assert t.extends_list == t.base_types == []
     assert t.implements_list == t.interfaces == ["TradeServices", "java.io.Serializable"]
-    assert t.annotations == ["Dependent", "TradeJDBC", "RuntimeMode", "Trace"]
+    assert t.annotations == ["@Dependent", "@TradeJDBC", '@RuntimeMode("Direct (JDBC)")', "@Trace"]  # v1 source spelling
     assert t.parent_type == ""
     assert t.callable_declarations is t.callables
     assert [f.name for f in t.field_declarations] == list(t.fields)
@@ -93,11 +93,14 @@ def test_interface_and_annotation_kinds(a1: JAnalysis):
     assert tradedb.is_interface is True and tradedb.is_concrete_class is False and tradedb.is_class_or_interface_declaration is True
     msu = st["src/main/java/com/ibm/websphere/samples/daytrader/interfaces/MarketSummaryUpdate.java"].types["MarketSummaryUpdate"]
     assert msu.is_annotation_declaration is True and msu.is_class_or_interface_declaration is False
+    # the v1 ``annotations`` spelling, pinned on a1
+    assert st[TRADE_DIRECT].types["TradeDirect"].annotations[2] == '@RuntimeMode("Direct (JDBC)")'
+    assert st[TRADE_DIRECT].types["TradeDirect"].callables[CANCEL_ORDER].annotations == ["@Override"]
 
 
 def test_nested_type_views(a1: JAnalysis):
     outer = a1.application.symbol_table["src/main/java/com/ibm/websphere/samples/daytrader/impl/ejb3/TradeSLSBBean.java"].types["TradeSLSBBean"]
-    assert outer.nested_type_declarations == ["quotePriceComparator"]
+    assert outer.nested_type_declarations == ["com.ibm.websphere.samples.daytrader.impl.ejb3.TradeSLSBBean.quotePriceComparator"]  # v1: FQNs
     inner = outer.types["quotePriceComparator"]
     assert inner.name == "quotePriceComparator"
     assert inner.is_nested_type is True
@@ -117,8 +120,7 @@ def test_local_anonymous_class_under_a_callable(a1: JAnalysis):
     assert anon.is_local_class is True and anon.is_nested_type is False
     assert anon.parent_type == "com.ibm.websphere.samples.daytrader.web.prims.PingManagedExecutor"
     run = anon.callables["run()"]
-    assert run.code.startswith("@Override") or run.code.startswith("public void run()")
-    assert run.code.endswith("}")
+    assert run.code.startswith("{\n") and run.code.endswith("}")  # the body block
 
 
 def test_initialization_blocks_are_initializer_callables(a1: JAnalysis):
@@ -127,7 +129,7 @@ def test_initialization_blocks_are_initializer_callables(a1: JAnalysis):
     assert [b.signature for b in blocks] == ["<clinit>$0()", "<clinit>$1()"]
     assert all(isinstance(b, InitializationBlock) for b in blocks)
     assert blocks[0].is_static is True
-    assert blocks[0].code.startswith("static {") and blocks[0].code.endswith("}")
+    assert blocks[0].code.startswith("{\n") and blocks[0].code.endswith("}")  # the block, not ``static {``
     assert blocks[0].declaration is None  # 3.0.1 emits no declaration for initializers
 
 
@@ -136,8 +138,9 @@ def test_initialization_blocks_are_initializer_callables(a1: JAnalysis):
 
 def test_callable_code_is_the_span_slice(cancel_order: JCallable):
     c = cancel_order
-    assert c.code.startswith("@Override\n  public void cancelOrder(") or c.code.startswith("public")
-    assert c.code.endswith("}")
+    # v1 ``code`` is the body block: ``body_span``, coherent with ``code_start_line``
+    assert c.code.startswith("{\n\n    Connection conn = null;") and c.code.endswith("\n  }")
+    assert c.code == c._unit.slice(c.body_span)
     assert c.start_line == 646 and c.end_line == 665
     assert c.code_start_line == 647  # body_span start, not span start
     assert c.declaration == "public void cancelOrder(Integer orderID, boolean twoPhase) throws Exception"
@@ -147,7 +150,7 @@ def test_callable_v1_views(cancel_order: JCallable):
     c = cancel_order
     assert c.thrown_exceptions == c.error_channel == ["java.lang.Exception"]
     assert c.cyclomatic_complexity == 2 == c.metrics.cyclomatic
-    assert c.annotations == ["Override"]
+    assert c.annotations == ["@Override"]
     assert c.referenced_types == c.refs.types == ["java.lang.Exception", "java.sql.Connection"]
     assert c.accessed_fields == c.refs.fields
     assert c.is_constructor is False
@@ -184,7 +187,8 @@ def test_call_sites_are_views_over_call_body_nodes(cancel_order: JCallable):
     assert all(s.receiver_expr == "" and s.receiver_type == "" and s.is_static_call is False for s in resolved)
     s = next(x for x in resolved if x.method_name == "cancelOrder")
     assert s.callee_signature == "cancelOrder(java.sql.Connection, java.lang.Integer)"
-    assert (s.start_line, s.start_column, s.end_line, s.end_column) == (656, 7, 656, s.end_column) and s.end_column > 7
+    assert (s.start_line, s.start_column, s.end_line, s.end_column) == (656, 7, 656, 32)
+    assert cancel_order.body["656:7"].code == "cancelOrder(conn, orderID)"  # body nodes slice too
     assert s.crud_operation is None and s.crud_query is None
 
 
@@ -238,3 +242,73 @@ def test_parameter_views(cancel_order: JCallable):
     assert p.annotations == []
     assert (p.start_line, p.start_column, p.end_line, p.end_column) == (647, 27, 647, 41)
     assert p.is_variadic is False
+
+
+# ---- J-15: byte offsets; J-13: identity and threading ---------------------------------------------
+
+
+def _unit_payload(src: str) -> dict:
+    b = src.encode("utf-8")
+    t0, t1 = b.index(b"class A"), b.rindex(b"}") + 1
+    m0, mb0 = b.index(b"void m"), b.index(b"{ }")
+    return {
+        "id": "can://java/x/A.java",
+        "kind": "module",
+        "span": {"start": [1, 1], "end": [4, 2], "bytes": [0, len(b)]},
+        "package": "",
+        "source": src,
+        "types": {
+            "A": {
+                "id": "can://java/x/A.java/A",
+                "kind": "class",
+                "span": {"start": [2, 1], "end": [4, 2], "bytes": [t0, t1]},
+                "callables": {
+                    "m()": {
+                        "id": "can://java/x/A.java/A/m()",
+                        "kind": "method",
+                        "signature": "m()",
+                        "span": {"start": [3, 3], "end": [3, 15], "bytes": [m0, mb0 + 3]},
+                        "body_span": {"start": [3, 12], "end": [3, 15], "bytes": [mb0, mb0 + 3]},
+                    }
+                },
+            }
+        },
+    }
+
+
+def test_code_slices_by_utf8_byte_offsets():
+    src = "// \u00a9 IBM\nclass A {\n  void m() { }\n}\n"
+    unit = JCompilationUnit.model_validate(_unit_payload(src))
+    a = unit.types["A"]
+    assert a.code == "class A {\n  void m() { }\n}"
+    assert a.callables["m()"].code == "{ }"
+    # the naive character slice is off by one after the two-byte ``\u00a9``
+    b0, b1 = a.span.bytes
+    assert src[b0:b1] == "lass A {\n  void m() { }\n}\n"
+    # an ASCII unit takes the plain-index path and agrees with the byte slice
+    ascii_unit = JCompilationUnit.model_validate(_unit_payload(src.replace("\u00a9", "(c)")))
+    assert ascii_unit.types["A"].code == "class A {\n  void m() { }\n}"
+
+
+def test_identity_is_the_id_across_independent_parses(a4: JAnalysis, analysis_json_a4: str):
+    from cldk.models.java.models import JMethodDetail
+
+    other = JAnalysis.model_validate_json(analysis_json_a4)
+    u1, u2 = a4.application.symbol_table[TRADE_DIRECT], other.application.symbol_table[TRADE_DIRECT]
+    t1, t2 = u1.types["TradeDirect"], u2.types["TradeDirect"]
+    c1, c2 = t1.callables[CANCEL_ORDER], t2.callables[CANCEL_ORDER]
+    f1, f2 = t1.fields["serialVersionUID"], t2.fields["serialVersionUID"]
+    assert c1 == c2 and t1 == t2 and u1 == u2 and f1 == f2
+    assert c1 is not c2 and c1 in [c2] and len({c1, c2}) == 1
+    assert c1 != t2.callables["cancelOrder(java.sql.Connection, java.lang.Integer)"]
+    assert JMethodDetail(method_declaration=c1.declaration, klass="TradeDirect", method=c1) == JMethodDetail(method_declaration=c2.declaration, klass="TradeDirect", method=c2)
+    assert a4.application == other.application
+
+
+def test_unthreaded_nodes_raise_instead_of_returning_empty(cancel_order: JCallable):
+    lone = JCallable.model_validate(cancel_order.model_dump(by_alias=True))
+    with pytest.raises(RuntimeError, match="not threaded"):
+        lone.code
+    unit = JCompilationUnit.model_validate(_unit_payload("class A {\n  void m() { }\n}\n"))
+    with pytest.raises(RuntimeError, match="file_path"):
+        unit.file_path
