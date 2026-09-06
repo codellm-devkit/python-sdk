@@ -21,9 +21,14 @@ issues with zero rows and no error: 2.4.1 wrote ``:JCompilationUnit`` under ``J_
 ``<fqn>#<signature>`` ids and no ``can://`` anywhere, so nothing the 3.0.1 backend matches on
 exists. The probe catches that once, at attach -- the relationship-type fingerprint first, then the
 ``analyzer_version`` the ``:JApplication`` anchor stamps, against the floor.
+
+Every case here drives a fake driver, except the last: a *real* graph emitted by another
+analyzer -- the leg-1.6 codeanalyzer-python database -- is attached to for real, because a fake
+graph can only prove that the probe reads what the fake was told to say.
 """
 
 import logging
+import os
 
 import pytest
 
@@ -139,3 +144,27 @@ def test_application_name_is_required(fake_driver):
 
     with pytest.raises(CodeanalyzerExecutionException, match="application_name"):
         JNeo4jBackend._from_driver(fake_driver, application_name=None)
+
+
+#: The one live case: a graph another analyzer emitted, read-only, skipped unless pointed at one.
+#: ``bolt://localhost:7689`` in the leg-3 environment (codeanalyzer-python, ``odoo-slim-19``).
+PYTHON_GRAPH_URI = os.environ.get("CLDK_TEST_PYTHON_NEO4J_URI")
+PYTHON_GRAPH_USER = os.environ.get("CLDK_TEST_PYTHON_NEO4J_USER", "neo4j")
+PYTHON_GRAPH_PASSWORD = os.environ.get("CLDK_TEST_PYTHON_NEO4J_PASSWORD")
+PYTHON_GRAPH_APP = os.environ.get("CLDK_TEST_PYTHON_NEO4J_APP", "odoo-slim-19")
+
+
+@pytest.mark.skipif(
+    not (PYTHON_GRAPH_URI and PYTHON_GRAPH_PASSWORD),
+    reason="needs a live codeanalyzer-python graph to attach to (set CLDK_TEST_PYTHON_NEO4J_URI / _PASSWORD)",
+)
+@pytest.mark.parametrize("app", [PYTHON_GRAPH_APP, "daytrader8"], ids=["an-application-the-graph-holds", "one-it-does-not"])
+def test_a_python_graph_is_refused_live_naming_the_missing_java_types(app):
+    """A real Python graph, both for the application it holds and for one it does not: the
+    fingerprint is checked before the anchor, so the refusal is about the *vocabulary*, never the
+    name -- and it names all four ``J_*`` types it wanted plus the ``PY_*`` ones it found."""
+    logging.getLogger("neo4j").setLevel(logging.ERROR)
+    with pytest.raises(GraphSchemaMismatch) as e:
+        JNeo4jBackend(neo4j_uri=PYTHON_GRAPH_URI, neo4j_username=PYTHON_GRAPH_USER, neo4j_password=PYTHON_GRAPH_PASSWORD, application_name=app)
+    assert e.value.missing == REQUIRED
+    assert "PY_HAS_MODULE" in str(e.value)

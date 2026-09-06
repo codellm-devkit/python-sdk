@@ -134,10 +134,119 @@ paths, entrypoints) is 2.5b, on codeanalyzer-typescript 1.3.0 when it is cut.
   `JSpan.start`/`end` column and both `JSpan.bytes` offsets are the model's own "not known" on
   types, callables, fields, local variables, call sites and compilation units. `start_line` /
   `end_line` are unaffected.
+- **`TSAnalysisBackend` inherits the generic `AnalysisBackend`** (`P = "TS"`, `N = "TS"`), so the
+  in-process backend now also answers `get_artifacts` / `get_dependencies` / `get_config_keys` /
+  `get_config_uses` / `get_unresolved_config_reads` with the shared `PyArtifact` / `PyDependency` /
+  `PyConfigKey` / `PyConfigUseEdge` / `PyConfigRead` models (a TypeScript dependency's `ecosystem` is
+  `"npm"`; a non-string config value is rendered as its JSON text).
+- The backend drives the 1.2.0 CLI: `-i <project> --app-name <project.name> -a <1..4> -o <cache>
+  --cache-dir <cache> --skip-tests [--eager] [-t <file>]...`. Every `AnalysisLevel` is sent as its
+  integer (the old cap at level 2 is gone). **`TSCodeAnalyzerConfig.tsc_only` is a deprecated no-op**
+  (the flag was removed upstream in 1.0.0); `True` emits a `DeprecationWarning`.
+- **Pinned `codeanalyzer-java` 2.4.1 → 3.0.1** (`pyproject.toml` `[tool.backend-versions]`), and
+  `cldk.models.java` is rewritten as an `extra="forbid"` mirror of the canonical schema v2 that
+  analyzer emits: `analysis.json` is the `JAnalysis` envelope (`schema_version 2.0.0`, `language`,
+  `max_level`, `analyzer`, `application`); every node carries a `can://` `id`, a `kind` and a
+  `span`; a type's `callables` map is keyed by the signature with its erased parameter tail
+  (`cancelOrder(java.lang.Integer, boolean)`) and its nested `types` map by simple name;
+  initializers are callables (`<clinit>$0()`), and implicit callables carry no span and no body.
+  The 1.x field names survive as read-only views over that shape — `code`,
+  `start_line`/`end_line`/`code_start_line`, `annotations`, `thrown_exceptions` (← `error_channel`),
+  `cyclomatic_complexity` (← `metrics`), `variable_declarations` (← `local_variables`),
+  `referenced_types`/`accessed_fields` (← `refs`), `call_sites` (← the `call` body nodes) — so no
+  accessor changes name, signature or return type beyond the breaking items below. **A 1.x
+  `analysis.json` no longer validates:** a cached one is refused at construction with `cached
+  analysis.json at <path> predates schema v2 (no schema_version); delete it or pass
+  eager_analysis=True`, rather than parsed into an empty application.
+- **Java reaches analysis levels 3 and 4.** `analysis_level` is passed through to the analyzer's
+  `-a` (`symbol_table` → 1, `call_graph` → 2, `program_dependency_graph` → 3,
+  `system_dependency_graph` → 4); 1.x clamped it to `--analysis-level=1` for `symbol_table` and `2`
+  for everything else, so levels 3 and 4 were unreachable from the SDK. A callable therefore now
+  carries `body`, `cfg`, `cdg`, `ddg` and `summary`, and an application `param_in`/`param_out`,
+  when the level asks for them. The accessors that read those graphs arrive with the Java query
+  surface (leg 3b); this release exposes them on the models.
+- **BREAKING: `get_call_graph()` node keys are strings, not `(signature, klass)` tuples.** A node is
+  `"<type fqn>.<signature>"` —
+  `com.ibm.websphere.samples.daytrader.impl.direct.TradeDirect.cancelOrder(java.lang.Integer, boolean)` —
+  on both Java backends, because every string-addressed helper in the 2.0 query surface needs a
+  string and `can://` ids stay out of the public surface. Node attributes are `method_detail`
+  (`JMethodDetail`) and `kind="callable"`; edge attributes (`type="CALL_DEP"`, `weight`,
+  `calling_lines`) are unchanged. External callees are still dropped from this graph.
+  ***Migration:*** read the parts off the node instead of parsing the key —
+  `cg.nodes[key]["method_detail"].klass` and `.method` (a `JCallable`, so `.method.signature`). If
+  you must split the string, split at the **last** `(`, not the first, and never on the last `.`:
+  `head = key[: key.rindex("(")]; klass, _ = head.rsplit(".", 1); sig = key[len(klass) + 1 :]`.
+  `key.rsplit(".", 1)` is wrong on any signature with a dotted parameter type (67 of the 100 nodes
+  in the L4 test fixture), and splitting at the first `(` is wrong for a local class, whose fully
+  qualified name itself contains a signature (`p.Outer.m(int).$anon$0.n()`).
+- **BREAKING by value: `JGraphEdges` is `JCallGraphEdge{src, dst, prov, weight}`** — the wire edge
+  the analyzer emits, with `can://` ids as endpoints and an integer `weight`, in place of 1.x's
+  `{source: JMethodDetail, target: JMethodDetail, type: str, weight: str, source_kind,
+  destination_kind}` (and with it the module-global `_CALLABLES_LOOKUP_TABLE` that synthesised
+  those `JMethodDetail`s during validation — inventing an implicit `JCallable` whenever the lookup
+  missed — and `JGraphEdgesST`, which was a byte-identical copy of the same class). The 1.x name stays importable. `JMethodDetail{method_declaration, klass,
+  method}` survives and is built on demand by `get_call_graph()` / `get_class_call_graph()`.
+  ***Migration:*** `edge.source.method` → `cg.nodes[edge.src]["method_detail"].method` off the
+  graph, or resolve `edge.src` / `edge.dst` yourself; `edge.type` is `edge.prov`
+  (`["declared"]` / `["rta"]`).
+- **Java CRUD accessors raise instead of answering empty.** `get_all_crud_operations` and the four
+  kind-specific accessors (`get_all_create_operations`, `..._read_...`, `..._update_...`,
+  `..._delete_...`) raise `CodeanalyzerExecutionException` naming
+  **codeanalyzer-java#187** on both backends: schema v2 carries no CRUD enrichment, and an empty
+  list would read as "this application touches no database". They keep their names and signatures
+  and start answering again when the analyzer emits the data.
+- **Java comment accessors: a file-keyed one refuses on Neo4j, a declaration-keyed one narrows.**
+  The Neo4j projection has no comment nodes at all — one `docstring` per declaration and nothing
+  file-level — so on `JNeo4jBackend` `get_all_comments()` and `get_comment_in_file()` raise naming
+  the gap and pointing at `get_all_docstrings()`, while `get_comments_in_a_class()`,
+  `get_comments_in_a_method()` and `get_all_docstrings()` return the javadoc-only subset. Both are
+  stated on the method you call (the Java backend ABC and the `JavaAnalysis` docstrings). The
+  `analysis.json` backend is unaffected: it still returns every comment.
+- **`JCallable.code` differs by backend, and now says so.** Off `analysis.json` it is the **body
+  block** (`body_span`); off the Neo4j projection it is the whole **declaration**, which *ends with*
+  the body block, because the projection carries one line range per callable and no `body_span` —
+  the body block is not recoverable from the graph (upstream **codeanalyzer-java#176**).
+  `code_start_line` therefore agrees except where the opening brace sits below the declaration's
+  first line, and `get_calling_lines()` offsets — offsets *into* `code` — shift by the same prefix
+  (identical on 1,301 of daytrader8's 1,862 call edges, shifted on the rest). Documented on the
+  model, the backend ABC and the facade rather than papered over.
+- **Java `JNeo4jBackend` speaks the 3.0.1 graph vocabulary and refuses any other.** Every statement
+  reads `:JModule` / `J_HAS_MODULE` / `J_HAS_METHOD` / `J_HAS_BODY_NODE` / `J_CALLS` and is scoped
+  to the application by its id prefix (`n.id STARTS WITH 'can://java/<app>/'`) or by walking out
+  from the `(:JApplication {name: $app})` anchor; the pre-3.0.1 `:JCompilationUnit` / `J_HAS_UNIT` /
+  `J_HAS_CALLABLE` / `:JParameter` / `:JCallSite` / `:JComment` vocabulary, the `<fqn>#<signature>`
+  id grammar and the `_module` scoping property are all gone. A graph emitted by an older analyzer
+  used to answer every query with zero rows; attaching to one — or to a graph with no
+  `:JApplication` node of that name, or one stamped below **3.0.1** — now raises
+  `GraphSchemaMismatch` at attach naming what was found and the floor. ***Migration:*** re-ingest
+  with `codeanalyzer-java 3.0.1 --emit neo4j`; there is no in-place graph upgrade.
+- **`JavaAnalysisBackend` inherits the generic `AnalysisBackend`** (`P = "J"`, `N = "J"`), so both
+  Java backends also answer `get_artifacts` / `get_dependencies` / `get_config_keys` /
+  `get_config_uses` / `get_unresolved_config_reads` with the shared `PyArtifact` / `PyDependency` /
+  `PyConfigKey` / `PyConfigUseEdge` / `PyConfigRead` models (a Java dependency's `ecosystem` is
+  `"maven"`; `get_config_uses` and `get_unresolved_config_reads` are `[]` — the analyzer emits
+  neither). `JArtifact.text_truncated` and `JDependency.group` have no home on the shared models and
+  are dropped by those accessors; read them off `get_application_view()` if you need them.
 
 ### Removed
+- **BREAKING: Java single-file `source_code` mode.** The `source_code` parameter is gone from
+  `CLDK.java(...)`, `JavaAnalysis` and `JCodeanalyzer`, with the `_codeanalyzer_single_file` path
+  and the four facade guards behind it; `CLDK(language="java").analysis(source_code=...)` raises
+  `CldkInitializationException("source_code mode was removed in 2.0; pass project_path")`. It was
+  won't-fix (#256) and 2.0 is the major that can drop it.
+  ***Migration:*** analyse the project directory — `CLDK.java(project_path=<dir>)` — and read the
+  file you care about out of `get_symbol_table()`. `get_test_methods()` now reads every module's
+  `source` from the symbol table instead of a source string, and `JavaAnalysis.remove_all_comments()`
+  — the one accessor that only ever worked in single-file mode — raises `NotImplementedError`
+  pointing at `TreesitterJava.remove_all_comments`, which takes the source directly.
 - `TypeScriptAnalysis.get_entry_point_methods` and `get_service_entry_point_methods`, which only ever
   raised `NotImplementedError`. Working entrypoint accessors arrive with the query surface (2.5b).
+
+### Fixed
+- **`JavaAnalysis.get_method_parameters()` is annotated `List[JCallableParameter]`**, which is what
+  it has always returned; the 1.x annotation said `List[str]`. Behaviour is unchanged — the
+  annotation was the bug. Off the Neo4j backend the list round-trips exactly, parameter annotations
+  included: `:JCallable.parameters_json` is the analyzer's own serialisation of it.
 
 ## [v2.0.0-rc.2] - 2026-09-06
 Python legs 1, 1.5 and 1.6 of the CLDK 2.0 agent-facing query facade (see

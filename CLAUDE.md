@@ -10,9 +10,17 @@ an optional read-only Neo4j backend — selected by the *type* of the `backend=`
 
 | Language | Entry point | Local backend | Neo4j backend | Models |
 |----------|-------------|---------------|---------------|--------|
-| Java | `CLDK.java(...)` | `JCodeanalyzer` (codeanalyzer-java 3.0.1 JAR, subprocess) | `JNeo4jBackend` | `cldk/models/java/` |
+| Java | `CLDK.java(...)` | `JCodeanalyzer` (codeanalyzer-java 3.0.1 JAR, subprocess, `-a 1..4`) | `JNeo4jBackend` (3.0.1 graph, probed at attach) | `cldk/models/java/` (schema v2 mirror) |
 | Python | `CLDK.python(...)` | `PyCodeanalyzer` (in-process `codeanalyzer-python`) | `PyNeo4jBackend` | re-exported from `codeanalyzer-python` |
 | TypeScript (+ JavaScript modules) | `CLDK.typescript(...)` | `TSCodeanalyzer` (`codeanalyzer-typescript` 1.2.0 binary from the wheel, subprocess; `-a 1..4`) | `TSNeo4jBackend` (graphs emitted by ≥ 1.2.0; older refused at attach) | `cldk/models/typescript/` (schema v2 mirror) |
+
+**Java, since leg 3a (#310):** the models are an `extra="forbid"` mirror of canonical schema v2, so
+a 1.x `analysis.json` (and a pre-3.0.1 Neo4j graph) is refused, not parsed; `get_call_graph()` keys
+nodes by the string `"<type fqn>.<signature>"`; the `source_code` single-file mode is gone; the CRUD
+accessors raise (codeanalyzer-java#187). The leg-1.5/1.6 query surface reaches Java in 3b (#311).
+The jar committed under `cldk/analysis/java/codeanalyzer/jar/` is still the 1.x one until #339 moves
+the exec path onto the `codeanalyzer-java` wheel; `$CLDK_CODEANALYZER_JAVA_JAR` points `_locate_jar`
+at a real 3.0.1 jar meanwhile, and the Java e2e test skips when it is unset.
 
 The legacy `CLDK(language="<lang>").analysis(...)` entry still works as a compat shim. Adding a
 language means a new factory method + facade + backend ABC/impl(s) + models + tests — **update this

@@ -116,6 +116,75 @@ on superset-frontend.
 
 ---
 
+## Java — what attaches today
+
+Everything above and below this section is the **Python** surface. Java is one leg behind: leg 3a
+(this release) moved the Java layer onto canonical schema v2, and the query surface documented in
+the rest of this file — `locate` / `locate_many`, `resolve_callable`, `get_source`, `get_cfg` /
+`get_cdg` / `get_ddg`, `slice_backward` / `slice_forward`, `reaches`, `paths_between`,
+`flows_to_call` / `flows_to_argument`, `describe`, the entrypoint trio, the scoping keywords
+(`paths=` / `module=` / `roots=` / `depth=`) and the leaf accessors — **arrives for Java in leg 3b**
+(python-sdk#311). Calling those names on a `JavaAnalysis` today either does not exist or raises
+`NotImplementedError`; nothing silently answers half a question.
+
+```python
+from cldk import CLDK
+from cldk.analysis.commons.backend_config import Neo4jConnectionConfig
+
+# In-process, over the analyzer's analysis.json (levels 1-4; 4 for cfg/cdg/ddg/summary)
+java = CLDK.java(project_path="/path/to/project", analysis_level="system_dependency_graph")
+
+# Against a deployed graph (read-only), keyed by the --app-name it was emitted with
+java = CLDK.java(backend=Neo4jConnectionConfig(
+    uri="bolt://localhost:7687", username="neo4j", password="…",
+    application_name="daytrader8"))
+```
+
+**Analyzer floor: codeanalyzer-java 3.0.1** (pinned; `--emit neo4j` always runs at level 4 and
+forces external calls). Attaching to a graph refuses rather than answering empty, and the message
+names what it found and the floor:
+
+| graph | attach |
+| --- | --- |
+| no `J_HAS_MODULE` / `J_HAS_METHOD` / `J_HAS_BODY_NODE` / `J_CALLS` (a pre-3.0.1 Java graph, a graph from another language's analyzer, an empty database) | refused — `GraphSchemaMismatch`, naming the missing types and the ones found |
+| no `:JApplication {name: <application_name>}` | refused — the name is the anchor every statement walks out from, so a wrong one would make every answer empty |
+| `analyzer_version` below 3.0.1, unreadable, or absent | refused |
+| 3.0.1 and newer | served, silent |
+
+Locally the same rule applies to the cache: an `analysis.json` with no `schema_version` (1.x
+output) is refused with a re-run message, not parsed into an empty application.
+
+What Java answers today is the 1.x accessor surface, on the v2 models: `get_symbol_table` /
+`get_compilation_units` / `get_java_compilation_unit`, `get_classes` / `get_class` /
+`get_classes_by_criteria` / `get_nested_classes` / `get_sub_classes` / `get_extended_classes` /
+`get_implemented_interfaces`, `get_methods` / `get_methods_in_class` / `get_method` /
+`get_constructors` / `get_method_parameters`, `get_fields`, `get_call_graph` /
+`get_call_graph_json` / `get_callers` / `get_callees` / `get_class_call_graph`,
+`get_entry_point_classes` / `get_entry_point_methods`, `get_test_methods`, the comment and
+docstring accessors, and — new in 3a, from the generic backend ABC — `get_artifacts` /
+`get_dependencies` / `get_config_keys` (`get_config_uses` and `get_unresolved_config_reads` are
+`[]`: the Java analyzer emits neither). Still raising `NotImplementedError` until 3b:
+`get_imports`, `get_variables`, `get_class_hierarchy`, `get_methods_with_annotations`,
+`get_calling_lines`, `get_call_targets`, `get_service_entry_point_classes` /
+`get_service_entry_point_methods`, and `remove_all_comments` (which only ever worked in the removed
+single-file mode). Four things will mislead you if you don't know them:
+
+- **Call-graph nodes are strings** — `"<type fqn>.<signature>"` — not `(signature, klass)` tuples.
+  Read the parts off `cg.nodes[key]["method_detail"]` rather than parsing the key. A local or
+  anonymous class's fully qualified name contains the signature of the callable that declares it
+  (`p.Outer.m(int).$anon$0`). External callees are not in this graph.
+- **CRUD accessors raise** (`codeanalyzer-java#187`): schema v2 carries no CRUD enrichment, and an
+  empty list would read as "this application touches no database".
+- **Over Neo4j, `JCallable.code` is the whole declaration**, not the body block (upstream
+  `codeanalyzer-java#176`), a module carries no `source` at all, and every column and byte offset
+  is `-1` — "not known", never zero. Line numbers are exact.
+- **Over Neo4j, comments are one `docstring` per declaration**: `get_all_comments` and
+  `get_comment_in_file` raise (a file-keyed answer would be empty and read as "no comments"), while
+  `get_comments_in_a_class` / `get_comments_in_a_method` / `get_all_docstrings` return the
+  javadoc-only subset. The `analysis.json` backend returns every comment.
+
+---
+
 ## The four moves
 
 Most questions decompose into these. Start here, then use the tables below.
