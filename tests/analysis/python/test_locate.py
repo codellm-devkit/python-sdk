@@ -21,6 +21,8 @@ enclosing callable *and its source*. The three outcomes below must stay distingu
 ambiguous empty is a defect (see ``cldk/analysis/commons/results.py``).
 """
 
+from cldk.analysis.python.neo4j import PyNeo4jBackend
+
 
 def test_locate_inside_callable(py):
     r = py.locate("src/app.py", 19)
@@ -261,6 +263,22 @@ def test_locate_query_is_scoped_to_the_application(py, fake_driver):
     statement = next(s for s in fake_driver.statements if "UNWIND $positions AS pos" in s)
     assert "c.id STARTS WITH pos.module_prefix" in statement
     assert "_module" not in statement, "the graph stores no _module property to match on"
+
+
+def test_locate_names_pycannode_only_on_a_graph_that_has_it(py, fake_driver):
+    """The per-module prefix seeks the ``:PyCanNode(id)`` range index a 1.4.1 graph carries
+    (measured on odoo: 40 positions 399 -> 89 ms); a 1.4.0 graph has no such label and naming it
+    would match nothing. Both spellings are pinned because the swap is a string edit on the
+    statement -- a renamed anchor would silently lose the seek, never the answer."""
+    py.locate("src/app.py", 21)
+    assert "OPTIONAL MATCH (c:PyCallable:PyCanNode) " in next(s for s in fake_driver.statements if "UNWIND $positions AS pos" in s)
+
+    fake_driver.statements.clear()
+    fake_driver.analyzer_version = "1.4.0"
+    old = PyNeo4jBackend._from_driver(fake_driver, application_name="app")
+    assert old.locate("src/app.py", 21).callable is not None, "the 1.4.0 spelling must still answer"
+    statement = next(s for s in fake_driver.statements if "UNWIND $positions AS pos" in s)
+    assert "OPTIONAL MATCH (c:PyCallable) " in statement and "PyCanNode" not in statement
 
 
 def test_locate_scope_is_actually_honoured(py):

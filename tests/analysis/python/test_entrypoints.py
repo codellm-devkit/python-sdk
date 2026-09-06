@@ -272,9 +272,9 @@ def test_entrypoint_coverage_over_neo4j_is_read_from_the_application_node():
     )
     local = object.__new__(PyCodeanalyzer)
     local.application = PyApplication(symbol_table={}, entrypoint_report=report)
-    row = {"j": json.dumps(report.model_dump(mode="json"), sort_keys=True)}
+    row = {"p": {"analyzer_version": "1.4.1", "entrypoint_report_json": json.dumps(report.model_dump(mode="json"), sort_keys=True)}}
     backend = _neo4j_backend()
-    with patch.object(PyNeo4jBackend, "_run", side_effect=_run_keyed({"a.entrypoint_report_json AS j": [row]})):
+    with patch.object(PyNeo4jBackend, "_run", side_effect=_run_keyed({"RETURN properties(a) AS p": [row]})):
         coverage = backend.get_entrypoint_coverage()
     assert coverage == local.get_entrypoint_coverage()
     assert coverage.diagnostics == []
@@ -284,7 +284,7 @@ def test_entrypoint_coverage_over_a_graph_without_the_report_says_it_cannot_answ
     """A 1.4.0 graph never had the property -- say so via a diagnostic rather than fabricate a
     clean-looking empty report."""
     backend = _neo4j_backend()
-    with patch.object(PyNeo4jBackend, "_run", side_effect=_run_keyed({"a.entrypoint_report_json AS j": [{"j": None}]})):
+    with patch.object(PyNeo4jBackend, "_run", side_effect=_run_keyed({"RETURN properties(a) AS p": [{"p": {"analyzer_version": "1.4.0"}}]})):
         coverage = backend.get_entrypoint_coverage()
     assert len(coverage.diagnostics) == 1
     assert coverage.diagnostics[0].code == "entrypoint_report_unavailable"

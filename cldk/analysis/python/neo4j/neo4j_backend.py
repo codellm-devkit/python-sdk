@@ -44,9 +44,11 @@ Identity model (must match the in-memory backend; see ``codeanalyzer/neo4j/proje
 * call-graph edges are ``(:PyCallable|:PyExternal)-[:PY_CALLS {weight, prov}]->(...)`` with a
   constant ``CALL_DEP`` type;
 * class inheritance is ``(:PyClass)-[:PY_EXTENDS]->(:PyClass)`` (plus a ``base_classes`` property);
-* every project-owned node carries a ``_module`` provenance property, so a single database may hold
-  several applications — all queries here are scoped to this backend's application, anchored on
-  ``(:PyApplication {name})-[:PY_HAS_MODULE]->(:PyModule)``.
+* every node the analyzer emits for an application — module, class, callable, body node and
+  ``@external`` ghost — carries an id under ``can://python/<app>/``, so a single database may hold
+  several applications; every statement here is scoped to this backend's application by that id
+  prefix. (1.4.0 graphs also stamped a ``_module`` provenance property on project-owned nodes;
+  1.4.1 retired it, and nothing here reads it.)
 
 In-memory dict keys this backend reproduces exactly (the projection stores nodes by ``signature``
 only, so the keys are rebuilt from node properties): ``module.types`` / a class's own ``types`` →
@@ -159,11 +161,12 @@ def _semver(raw: Any) -> Tuple[int, int, int] | None:
 # / ``_module_full``, and reproduce those statements' row shapes exactly so either source can feed
 # the same reconstruction code (see ``PyNeo4jBackend._children``).
 #
-# Scoping: the module-level buckets key on ``m.file_key``, the rest on the parent's ``_module``
-# provenance property -- which the emitter indexes for every module-owned label (see
-# ``codeanalyzer/neo4j/schema.py``'s ``INDEXES``). Both confine the result to this backend's
-# application. The per-parent statements carry the *same* ``IN $mods`` predicate on the parent
-# (``PyNeo4jBackend._children`` supplies ``mods`` to every unprimed run), because a bare
+# Scoping: the module-level buckets key on ``m.file_key IN $mods`` plus the application prefix on
+# the module's id; the signature-keyed buckets on the parent's id prefix -- the application's when
+# the whole application is read, the per-module prefixes when a scoped accessor narrows the fetch
+# (``$prefixes``, see ``PyNeo4jBackend._module_prefixes``). Both confine the result to this
+# backend's application. The per-parent statements carry the *same* prefix predicate on the parent
+# (``PyNeo4jBackend._children`` supplies ``prefix`` to every unprimed run), because a bare
 # ``{signature: $sig}`` would also match a same-signature node belonging to another application
 # in a shared database -- and a Unified Knowledge Graph holding several applications is the
 # expected deployment. Without it the two paths provably disagree there: ``get_class`` would
@@ -385,6 +388,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
                 missing=set(),
                 message=f"The graph for application {self.application_name!r} {what}; this backend needs a graph emitted by codeanalyzer-python {floor} or newer.",
             )
+        self._analyzer_version = version
         if version < self._ANALYZER_INDEXED:
             logger.warning(
                 "The graph for application %r was emitted by codeanalyzer-python %s, which carries no :PyCanNode index on id: "
@@ -481,6 +485,30 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         """
         return application_id(self.application_name) + "/"
 
+    #: The codeanalyzer-python generation that emitted this application, set by
+    #: :meth:`_probe_schema` (which refuses anything below :attr:`_ANALYZER_FLOOR`). The class-level
+    #: ``None`` is for the ``object.__new__`` seam the unit tests build backends through: an unknown
+    #: generation names no optional label.
+    _analyzer_version: Tuple[int, ...] | None = None
+
+    @property
+    def _can_node(self) -> str:
+        """``":PyCanNode"`` when the attached graph carries that label's range index on ``id``
+        (codeanalyzer-python 1.4.1+), else ``""``. Interpolated into ONE statement, ``_LOCATE_QUERY``.
+
+        Naming the label makes the planner seek ``:PyCanNode(id)`` for a prefix instead of scanning
+        ``:PyCallable``, and that pays only when the prefix is narrow. Measured on the 1.4.1 odoo
+        graph: ``locate_many`` over 40 positions (per-module prefixes) 399 -> 89 ms; every statement
+        whose prefix is the whole application -- ``resolve_callable``, ``get_source``,
+        ``resolve_value``, ``get_class``, the per-parent child fetches, the callers/callees
+        neighbourhoods -- 2-20x *slower* (``_RESOLVE_CALLABLE_QUERY`` 16.7 -> 198 ms), because the
+        seek then walks all 955,961 nodes under ``can://python/<app>/`` before the label and
+        signature filters apply, where the label scan touched 15,549. Those stay unlabelled by
+        measurement, not oversight. On a 1.4.0 graph the label does not exist and naming it would
+        match nothing, hence the gate.
+        """
+        return ":PyCanNode" if self._analyzer_version is not None and self._analyzer_version >= self._ANALYZER_INDEXED else ""
+
     @cached_property
     def _module_set(self) -> FrozenSet[str]:
         """:attr:`_modules` as a set -- the membership side of :func:`~cldk.analysis.python.neo4j.reconstruct.module_key_of`.
@@ -567,11 +595,10 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     #
     # **On nesting depth:** there is none to bound. The recursion is real (an inner class has
     # methods, a nested callable has call sites), but it never happens *in Cypher*: every bulk
-    # statement is a single flat hop scoped by the parent's ``_module`` provenance property, which
-    # every projected node carries at every nesting depth — ``codeanalyzer/neo4j/project.py``
-    # threads the module's ``file_key`` down through ``_project_class`` / ``_project_callable``'s
-    # own recursion, so a class nested five levels deep appears in the ``class_inner_classes`` rows
-    # exactly like a top-level one. The tree is then rebuilt in Python by the same recursive calls
+    # statement is a single flat hop scoped by the parent's id prefix, and every projected node's
+    # id embeds its application and module at every nesting depth — ``codeanalyzer/neo4j/project.py``
+    # mints a nested declaration's id under its module's, so a class nested five levels deep
+    # appears in the ``class_inner_classes`` rows exactly like a top-level one. The tree is then rebuilt in Python by the same recursive calls
     # as before, to whatever depth the graph actually has. No variable-length path, no depth
     # ceiling, and therefore no depth at which a deeply nested declaration would be silently
     # truncated.
@@ -580,8 +607,8 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         """The child rows of one parent node — from the bulk index when primed, one query when not.
 
         Unprimed (the default, and what every single-node accessor pays) runs ``query``: the
-        statement naming this one parent, application-scoped by the ``mods`` parameter this
-        method supplies, exactly as its bulk twin is scoped. Primed
+        statement naming this one parent, application-scoped by the ``prefix`` parameter this
+        method supplies (plus ``mods`` for the module-keyed ones), exactly as its bulk twin is scoped. Primed
         (inside :meth:`_bulk`) answers from ``_BULK_CHILD_QUERIES[bucket]``, fetched
         lazily on first use so an accessor is never charged for a collection it does not read —
         ``get_all_classes`` never touches the four module-level buckets. Both paths yield the same
@@ -835,9 +862,9 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         The walk is **application-scoped at every hop**, which is why it is a quantified path
         pattern (Cypher 5.9+) rather than a ``*0..n`` variable-length one: a variable-length
         pattern can constrain only its endpoint, so the walk could step out through an external
-        ghost. ``:PyExternal`` carries no ``_module``, so no per-hop module predicate can be
-        expressed about it, and it has 5,307 outgoing ``PY_CALLS`` edges on this graph, 5,108 of
-        them landing on another ghost. The leak is traversal **through** the ghost layer *inside*
+        ghost. A ghost's id sits under the same application prefix as a callable's, so the prefix
+        alone cannot keep the walk out of it -- the per-hop ``a:PyCallable`` label does -- and it
+        has 5,307 outgoing ``PY_CALLS`` edges on this graph, 5,108 of them landing on another ghost. The leak is traversal **through** the ghost layer *inside*
         this one application — a two-hop budget spent walking ghost-to-ghost instead of through the
         application's own callables — not a hop into a neighbouring application: every ghost id
         embeds the application name (``can://python/odoo-slim-19/@external/IPython/start_ipython``),
@@ -1163,11 +1190,14 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     # Field-projected RETURNs that sidestep the per-entity reconstruction fan-out: each is a single
     # Cypher statement, not the N+1 walk get_symbol_table()/get_all_methods_in_application() pays.
     #
-    # ``path`` comes from ``c._module``, not ``c.path``: the latter is the absolute path on the
-    # machine that ran the analysis (``/Users/…/checkout/addons/…``), which joins to nothing a
-    # caller holds -- not ``locate().module.path``, not ``PyClassOverview.path`` (already
-    # ``cl._module``), not ``get_symbol_table()``'s keys, and not any path on another host.
-    # ``_module`` is the repo-relative module key, i.e. the one vocabulary the whole facade speaks.
+    # ``path`` is derived from ``c.id`` (:meth:`_module_key`), never read from ``c.path``: the
+    # latter is the absolute path on the machine that ran the analysis
+    # (``/Users/…/checkout/addons/…``), which joins to nothing a caller holds -- not
+    # ``locate().module.path``, not ``PyClassOverview.path`` (derived the same way), not
+    # ``get_symbol_table()``'s keys, and not any path on another host. The derived key is the
+    # repo-relative module key, i.e. the one vocabulary the whole facade speaks. (Leg 1 projected
+    # the 1.4.0 graphs' ``_module`` property for this; 1.4.1 retired the property, and the id
+    # embeds the same key.)
     _OVERVIEW_PROJECTION = (
         "OPTIONAL MATCH (owner:PyClass)-[:PY_HAS_METHOD]->(c) "
         "RETURN c.signature AS signature, c.name AS name, c.decorators AS decorators, "
@@ -1423,7 +1453,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         The two differ only in which way the arrows point, so they share a query and a builder --
         a second copy would be a second place for the node vocabulary to drift.
 
-        **Not scoped by ``_module``,** unlike the per-callable accessors. A body-node id is stamped
+        **Not scoped by the application prefix,** unlike the per-callable accessors. A body-node id is stamped
         with its application (``can://python/<app>/…``) and the emitter only ever links nodes from
         its own run, so the traversal cannot leave the application it started in; adding
         ``m.id STARTS WITH $prefix`` would cost a string-prefix test on every one of 195,784 reached
@@ -1502,7 +1532,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         return Slice(nodes=nodes, roots=roots, resolved=slice_resolved(roots), total=row["total"])
 
     #: ``t`` may be a ``:PyExternal`` ghost, which carries ``module``/``name``/``id`` and no
-    #: ``signature``, ``_module`` or ``start_line`` -- so the projection names each property
+    #: ``signature`` or ``start_line`` -- so the projection names each property
     #: explicitly and :func:`_call_neighbour` decides what a row means from whether ``signature``
     #: came back. ``(s:PyCallable)`` pins the *caller* side by label -- a ghost's id sits under
     #: the same prefix -- which is how a call originating at a ghost stays out of ``callers_of``.
@@ -1610,7 +1640,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         return self._paths(self._CALL_PATHS, _call_neighbour, a, b, src=a.callable, dst=b.callable, depth=depth, max_paths=max_paths)
 
     #: ``WITH DISTINCT m`` before the membership test, for :attr:`_REACHES`' measured reason: it is
-    #: what makes this a pruning BFS instead of a trail enumeration. Not scoped by ``_module``, for
+    #: what makes this a pruning BFS instead of a trail enumeration. Not scoped by the application prefix, for
     #: :meth:`_slice`'s reason: body-node ids embed the application, so both the seed and every
     #: ``$dsts`` id are this application's by construction.
     _VALUE_REACHES = "MATCH (a:PyBodyNode {{id:$src}})-[:{rels}*1..{depth}]->(m:PyBodyNode) WITH DISTINCT m WHERE m.id IN $dsts RETURN count(m) > 0 AS ok"
@@ -1648,7 +1678,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     #: ``null`` code deliberately: the graph carries no text below callable granularity, and a
     #: ghost was never analysed, so those rows say "found, and there is nothing to read", which is
     #: what keeps that apart from "not found" (see :meth:`PythonAnalysisBackend.describe`). Only
-    #: the callable arm is ``_module``-scoped: a body-node id and a ghost id both embed the
+    #: the callable arm carries the prefix predicate: a body-node id and a ghost id both embed the
     #: application, while a signature does not.
     _SOURCES = (
         "MATCH (c:PyCallable) WHERE c.id STARTS WITH $prefix AND (c.id IN $refs OR c.signature IN $refs) "
@@ -1707,8 +1737,10 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         ``entrypoint_report_unavailable`` rather than fabricated as empty-but-clean-looking fields
         -- same precedent as ``LocateResult``'s ``module_source_unavailable`` for the module-text gap.
         """
-        rows = self._run("MATCH (a:PyApplication {name: $app}) RETURN a.entrypoint_report_json AS j", app=self.application_name)
-        raw = rows[0].get("j") if rows else None
+        # ``properties(a)`` rather than ``a.entrypoint_report_json``: a 1.4.0 graph has no such
+        # property key at all, and naming one statically makes the server log a warning per call.
+        rows = self._run("MATCH (a:PyApplication {name: $app}) RETURN properties(a) AS p", app=self.application_name)
+        raw = rows[0]["p"].get("entrypoint_report_json") if rows else None
         if raw is not None:
             r = PyEntrypointReport.model_validate_json(raw)
             return EntrypointCoverage(
@@ -1760,11 +1792,10 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         return out
 
     def get_external_symbols(self) -> Dict[str, PyExternalSymbol]:
-        # :PyExternal carries no `_module` property (it isn't owned by one module -- see this
-        # file's module docstring on MODULE_OWNED_LABELS), so it can't be scoped the way every
-        # other query here is. Its id embeds this application's own can:// id by construction
-        # (`<app-id>/@external/<module>/<name>`), which is app-scoping enough on its own -- a
-        # second application in the same database mints a disjoint id prefix.
+        # A ghost is owned by no module, so there is no module key to narrow on; its id embeds this
+        # application's own can:// id by construction (`<app-id>/@external/<module>/<name>`), and
+        # that prefix is the whole scope -- a second application in the same database mints a
+        # disjoint one. (This was the one prefix-scoped statement before leg 1.6 made it the rule.)
         prefix = f"{application_id(self.application_name)}/@external/"
         rows = self._run(
             "MATCH (e:PyExternal) WHERE e.id STARTS WITH $prefix RETURN properties(e) AS p",
@@ -1890,9 +1921,12 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     #   no span, so the emitter prunes their start_line/end_line away entirely — the
     #   ``IS NOT NULL`` guard is what stops a span-less vertex being read as "contains everything".
     #
-    # Every other query in this file is scoped to the application with ``_module IN $mods``, and so
-    # is this one: a database may hold several applications, and a same-valued ``file_key`` from a
-    # different application would otherwise win the ``{_module: pos.path}`` match.
+    # Every other query in this file is scoped to the application by id prefix, and this one
+    # narrows further, to the position's own module: ``pos.module_prefix`` is
+    # ``module_id(app, key) + "/"``, so a same-valued ``file_key`` from a different application
+    # cannot win, and neither can a module whose key merely extends this one's spelling. On a
+    # 1.4.1+ graph ``locate_many`` names ``:PyCanNode`` on the callable so that per-module prefix
+    # seeks the ``:PyCanNode(id)`` range index (see :attr:`_can_node`).
     _LOCATE_QUERY = (
         "UNWIND $positions AS pos "
         "OPTIONAL MATCH (:PyApplication {name: $app})-[:PY_HAS_MODULE]->(m:PyModule {file_key: pos.path}) "
@@ -2047,7 +2081,9 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         # ``module_prefix`` is the exact inverse of ``_module_key``: ``module_id(app, key) + "/"``
         # selects the module's own callables and nothing under a longer key sharing the spelling.
         rows = self._run(
-            self._LOCATE_QUERY,
+            # One label, swapped in per graph generation (see _can_node); the class-level statement
+            # keeps the spelling every served graph accepts, and test_locate pins both.
+            self._LOCATE_QUERY.replace("OPTIONAL MATCH (c:PyCallable) ", f"OPTIONAL MATCH (c:PyCallable{self._can_node}) ", 1),
             app=self.application_name,
             positions=[
                 {"idx": i, "path": key, "module_prefix": module_id(self.application_name, key) + "/", "line": line}
