@@ -384,6 +384,7 @@ def test_neo4j_scoped_prefetch_does_not_fetch_the_whole_application():
     with backend._bulk(["pkg/b.py"]):
         backend._children("class_methods", "sig", "unused")
     assert [s["mods"] for s in seen] == [["pkg/b.py"]]
+    assert [s["prefixes"] for s in seen] == [["can://python/app/pkg/b.py/"]], "the signature-keyed buckets narrow on per-module id prefixes"
 
 
 def test_neo4j_bulk_scope_is_the_application_by_default():
@@ -391,6 +392,7 @@ def test_neo4j_bulk_scope_is_the_application_by_default():
     with backend._bulk():
         backend._children("class_methods", "sig", "unused")
     assert seen[0]["mods"] == ["pkg/a.py", "pkg/b.py"]
+    assert seen[0]["prefixes"] == ["can://python/app/"], "the whole application is one prefix, not one per module"
 
 
 def test_neo4j_nested_bulk_keeps_the_outer_scope():
@@ -401,6 +403,7 @@ def test_neo4j_nested_bulk_keeps_the_outer_scope():
         with backend._bulk(["pkg/b.py"]):
             backend._children("class_methods", "sig", "unused")
     assert seen[0]["mods"] == ["pkg/a.py", "pkg/b.py"]
+    assert seen[0]["prefixes"] == ["can://python/app/"]
 
 
 def _rows_backend(rows: List[Dict[str, Any]], modules: List[str]) -> tuple[PyNeo4jBackend, List[Dict[str, Any]]]:
@@ -435,16 +438,18 @@ def test_neo4j_unbounded_depth_leaves_the_upper_bound_open():
 
 def test_neo4j_walk_is_scoped_to_the_application_at_every_hop():
     """Not just at the endpoint. A ``*0..n`` variable-length pattern can only constrain where it
-    lands, so the walk could step out through a ``:PyExternal`` ghost — which carries no
-    ``_module`` for a per-hop predicate to test, and has 5,307 outgoing ``PY_CALLS`` edges on the
-    live graph, 5,108 of them to another ghost — and spend the rest of its hop budget walking the
-    ghost layer instead of this application's own callables. Not a hop into a *neighbouring*
-    application: every ghost id embeds the application name, so ghosts are not shared."""
+    lands, so the walk could step out through a ``:PyExternal`` ghost — which has 5,307 outgoing
+    ``PY_CALLS`` edges on the live graph, 5,108 of them to another ghost — and spend the rest of its
+    hop budget walking the ghost layer instead of this application's own callables. A ghost's id
+    sits under the same application prefix as a callable's, so the prefix alone would admit it as a
+    hop *source*: every hop's source is pinned to ``:PyCallable`` by label. Not a hop into a
+    *neighbouring* application: every ghost id embeds the application name, so ghosts are not
+    shared."""
     backend, seen = _recording_backend(["pkg/a.py"])
     with pytest.raises(SelectorNotInGraph):
         backend.get_call_graph(roots=["pkg.a.go"], depth=2)
     query = seen[0]["query"]
-    assert "(a:PyCallable|PyExternal)-[:PY_CALLS]->(b:PyCallable|PyExternal) WHERE a._module IN $mods" in query
+    assert "(a:PyCallable)-[:PY_CALLS]->(b:PyCallable|PyExternal) WHERE a.id STARTS WITH $prefix" in query
     assert "*0.." not in query, "a variable-length hop cannot carry a per-hop scope predicate"
 
 

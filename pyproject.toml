@@ -35,7 +35,7 @@ dependencies = [
     "tree-sitter-java==0.23.5",
     "tree-sitter-python==0.23.6",
     "tree-sitter-javascript==0.23.1",
-    "codeanalyzer-python==1.4.0",
+    "codeanalyzer-python==1.4.1",
     "codeanalyzer-typescript==0.4.3",
 ]
 
@@ -90,7 +90,7 @@ include = [
 
 [tool.backend-versions]
 codeanalyzer-java = "2.4.1"
-codeanalyzer-python = "1.4.0"
+codeanalyzer-python = "1.4.1"
 codeanalyzer-typescript = "0.4.3"
 
 ########################################

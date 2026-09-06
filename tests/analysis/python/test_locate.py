@@ -21,6 +21,8 @@ enclosing callable *and its source*. The three outcomes below must stay distingu
 ambiguous empty is a defect (see ``cldk/analysis/commons/results.py``).
 """
 
+from cldk.analysis.python.neo4j import PyNeo4jBackend
+
 
 def test_locate_inside_callable(py):
     r = py.locate("src/app.py", 19)
@@ -253,16 +255,36 @@ def test_locate_parity_documented_module_source_divergence(py, py_local):
 # Application scope, path normalisation, and the file_not_in_graph distinction.
 # ================================================================================================
 def test_locate_query_is_scoped_to_the_application(py, fake_driver):
-    """Every other query in neo4j_backend.py constrains ``_module IN $mods``; so must this one, or
-    a same-valued file_key from another application in the same database can win."""
+    """Every other query in neo4j_backend.py constrains ``.id STARTS WITH $prefix``; this one
+    narrows further, to the position's own module: ``module_id(app, key) + "/"`` per position, so a
+    same-valued file_key from another application in the same database cannot win, and neither can
+    a module whose key merely extends this one's spelling."""
     py.locate("src/app.py", 21)
     statement = next(s for s in fake_driver.statements if "UNWIND $positions AS pos" in s)
-    assert "c._module IN $mods" in statement
+    assert "c.id STARTS WITH pos.module_prefix" in statement
+    assert "_module" not in statement, "the graph stores no _module property to match on"
+
+
+def test_locate_and_resolve_seek_the_pysymbol_index(py, fake_driver):
+    """The per-module prefix seeks the unique ``:PySymbol(id)`` range index every served graph
+    carries (1.4.0 and 1.4.1 alike; measured on odoo, 40 positions: 381 -> 46 ms and 427 -> 53 ms).
+    The anchor is pinned as text because dropping the label loses the seek and never the answer --
+    a scan is a silent 8x, not a failure. ``resolve_callable`` names it for the same reason; both
+    are the same statement whatever generation the graph is."""
+    py.locate("src/app.py", 21)
+    assert "OPTIONAL MATCH (c:PyCallable:PySymbol) " in next(s for s in fake_driver.statements if "UNWIND $positions AS pos" in s)
+    assert PyNeo4jBackend._RESOLVE_CALLABLE_QUERY.startswith("MATCH (c:PyCallable:PySymbol) WHERE c.id STARTS WITH $prefix")
+
+    fake_driver.statements.clear()
+    fake_driver.analyzer_version = "1.4.0"
+    old = PyNeo4jBackend._from_driver(fake_driver, application_name="app")
+    assert old.locate("src/app.py", 21).callable is not None
+    assert "OPTIONAL MATCH (c:PyCallable:PySymbol) " in next(s for s in fake_driver.statements if "UNWIND $positions AS pos" in s)
 
 
 def test_locate_scope_is_actually_honoured(py):
-    """Not just present in the text: drop the application's module keys and no callable matches."""
-    py._modules = []
+    """Not just present in the text: attach as another application and no callable matches."""
+    py.application_name = "some_other_application"
     r = py.locate("src/app.py", 21)
     assert r.callable is None
     assert "module_scope" in [d.code for d in r.diagnostics]

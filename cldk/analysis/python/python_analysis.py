@@ -664,8 +664,9 @@ class PythonAnalysis:
 
         Returns:
             An :class:`~cldk.analysis.commons.results.EntrypointCoverage`. Non-empty
-            ``diagnostics`` means this backend cannot supply the report at all (the Neo4j
-            projection does not carry it) rather than the pass having run clean — see the model's
+            ``diagnostics`` means this backend cannot supply the report at all (a Neo4j graph
+            emitted by codeanalyzer-python 1.4.0 does not carry it) rather than the pass having
+            run clean — see the model's
             own docstring for the field-by-field contract.
 
         See Also:

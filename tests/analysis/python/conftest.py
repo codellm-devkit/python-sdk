@@ -41,12 +41,11 @@ from cldk.models.python import BodyNode, PyApplication, PyCallable, PyClass, PyM
 # that don't care about the schema probe (e.g. a future round-trip-counting test) don't have to set
 # rel_types themselves.
 #
-# PY_EXTENDS is documented (schema/neo4j_backend.py's module docstring) as the class-inheritance
-# edge type, but is NOT observed on a real emitted graph: the live 1.4.0 Odoo application used for
-# the e2e suite has 0 PY_EXTENDS edges across 1,656 classes, and `CALL db.relationshipTypes()`
-# there doesn't even register the type. Kept here as the *documented* vocabulary the schema probe
-# would accept, not as evidence codeanalyzer-python 1.4.0 actually emits it -- if you need a fixture
-# graph that matches a real emitted one, drop PY_EXTENDS.
+# PY_EXTENDS is the class-inheritance edge type. codeanalyzer-python 1.4.0 never landed one on a
+# real graph (the live Odoo application had 0 PY_EXTENDS edges across 1,656 classes: its emitter
+# looked bases up by signature while `base_classes` held the written spelling, so every row was
+# dropped as dangling); 1.4.1 (#181) resolves bases per module and emits them. A 1.4.0-emitted graph
+# still has none, so a fixture meant to match one drops PY_EXTENDS.
 _V2_RELATIONSHIP_TYPES = frozenset(
     {
         "PY_CALLS",
@@ -78,6 +77,30 @@ _V2_RELATIONSHIP_TYPES = frozenset(
 )
 
 
+def pytest_configure(config):
+    config.addinivalue_line("markers", "timed: the test asserts on a wall clock; coverage is paused around its call")
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_call(item):
+    """Pause the coverage tracer around a ``timed`` test's call -- when there is one to pause.
+
+    pytest-cov's own ``no_cover`` marker does the same, but its hook (through 7.1.0) dereferences
+    ``cov_controller`` unguarded, and under ``--no-cov`` that is ``None``: the marked test dies with
+    ``AttributeError`` before it runs. This checks for the plugin *and* a live controller.
+    """
+    cov = item.config.pluginmanager.get_plugin("_cov")
+    controller = getattr(cov, "cov_controller", None)
+    if item.get_closest_marker("timed") and controller is not None:
+        controller.pause()
+        try:
+            yield
+        finally:
+            controller.resume()
+    else:
+        yield
+
+
 class _FakeRecord:
     """Stands in for ``neo4j.Record``: ``PyNeo4jBackend._run`` calls ``.data()`` on every row."""
 
@@ -101,6 +124,8 @@ class FakeSession:
         self._driver.statements.append(query)
         if "db.relationshipTypes" in query:
             return [_FakeRecord({"relationshipType": rt}) for rt in self._driver.rel_types]
+        if "RETURN a.analyzer_version AS v" in query:
+            return [] if self._driver.analyzer_version is None else [_FakeRecord({"v": self._driver.analyzer_version})]
         if self._driver.responder is not None:
             return [_FakeRecord(d) for d in self._driver.responder(query, params)]
         return []
@@ -110,8 +135,9 @@ class FakeSession:
 
 
 class FakeDriver:
-    """Stub Neo4j driver with a settable ``rel_types`` set, standing in for a real
-    ``neo4j.GraphDatabase`` driver in unit tests.
+    """Stub Neo4j driver with a settable ``rel_types`` set and ``analyzer_version`` (``None``
+    means "no :PyApplication of that name"), standing in for a real ``neo4j.GraphDatabase``
+    driver in unit tests.
 
     ``responder``, when set, answers every statement that isn't the schema probe — a tiny
     in-memory Cypher stub (query text, params) -> rows, the same shape as the ad hoc
@@ -123,8 +149,10 @@ class FakeDriver:
         self,
         rel_types: set[str] | frozenset[str] = _V2_RELATIONSHIP_TYPES,
         responder: Callable[[str, dict], list[dict]] | None = None,
+        analyzer_version: str | None = "1.4.1",
     ) -> None:
         self.rel_types: set[str] = set(rel_types)
+        self.analyzer_version = analyzer_version
         self.statements: list[str] = []
         self.responder = responder
 
@@ -354,7 +382,7 @@ def _locate_callable_id(signature: str) -> str:
     """A stand-in for the analyzer's ``can://`` id. Only its shape matters here: a body node's graph
     ``id`` is ``<callable id>@<body key>``, which is what the Neo4j backend's innermost-node tie
     break splits on."""
-    return f"can://{_LOCATE_MODULE_PATH}#{signature}"
+    return f"can://python/app/{_LOCATE_MODULE_PATH}/{signature}"
 
 
 # -----[ the local backend's view: a real in-memory PyApplication ]-----
@@ -463,17 +491,18 @@ def _locate_responder(query: str, params: dict) -> list[dict]:
     ``get_source`` for the ``py`` fixture.
 
     This evaluates the query's WHERE clauses rather than short-circuiting them, so the assertions it
-    backs are about the query the backend actually sends: ``$mods`` really gates the callable match
-    (drop the application's module keys and the callables disappear), a callable row repeats once per
-    matching body node, and every containment decision is made on lines the way Cypher would.
+    backs are about the query the backend actually sends: ``$prefix`` really gates the callable
+    match (attach as another application and the callables disappear), a callable row repeats once
+    per matching body node, and every containment decision is made on lines the way Cypher would.
     """
+    in_scope = "prefix" in params and _locate_callable_id("").startswith(params["prefix"])  # get_method_bodies / get_source
     if "RETURN m.file_key AS k" in query:
         return [{"k": _LOCATE_MODULE_PATH}]
     if "c.code IS NOT NULL" in query:
         # get_method_bodies (bulk, "c.signature IN $sigs") and get_source (single, "c.signature =
-        # $sig") both gate on $mods and on a real code property -- a bodyless callable (has_span
+        # $sig") both gate on $prefix and on a real code property -- a bodyless callable (has_span
         # False, e.g. Store.stub) has none, so it is simply absent from the rows, never "".
-        if _LOCATE_MODULE_PATH not in params.get("mods", []):
+        if not in_scope:
             return []
         if "IN $sigs" in query:
             return [
@@ -490,9 +519,8 @@ def _locate_responder(query: str, params: dict) -> list[dict]:
         if pos["path"] != _LOCATE_MODULE_PATH:
             rows.append(_locate_row(pos["idx"]))  # no :PyModule for this file_key
             continue
-        # ``OPTIONAL MATCH (c:PyCallable {_module: pos.path}) WHERE c._module IN $mods AND ...``
-        in_scope = _LOCATE_MODULE_PATH in params["mods"]
-        matches = [c for c in _LOCATE_CALLABLE_SPECS if in_scope and c["start_line"] <= pos["line"] <= c["end_line"]]
+        # ``OPTIONAL MATCH (c:PyCallable) WHERE c.id STARTS WITH pos.module_prefix AND ...``
+        matches = [c for c in _LOCATE_CALLABLE_SPECS if _locate_callable_id(c["signature"]).startswith(pos["module_prefix"]) and c["start_line"] <= pos["line"] <= c["end_line"]]
         if not matches:
             rows.append(_locate_row(pos["idx"], _LOCATE_MODULE_PROPS))
             continue
@@ -565,6 +593,14 @@ def live_analysis():
     )
     yield facade
     facade.backend.close()
+
+
+@pytest.fixture(scope="session")
+def live_analyzer_version(live_analysis) -> str:
+    """The ``analyzer_version`` the live graph's ``:PyApplication`` carries (``"1.4.0"`` on 7688,
+    ``"1.4.1"`` on 7689) -- the key a count recorded against one emitter run is looked up by."""
+    rows = live_analysis.backend._run("MATCH (a:PyApplication {name: $app}) RETURN a.analyzer_version AS v", app=LIVE_NEO4J_APP)
+    return rows[0]["v"]
 
 
 @pytest.fixture

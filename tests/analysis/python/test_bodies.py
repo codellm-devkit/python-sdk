@@ -86,7 +86,7 @@ def test_get_source_of_a_body_node_local(py_local):
     ``signature`` produced a string that named nothing in the graph.
     """
     r = py_local.locate("src/app.py", 11)
-    assert r.node_id == "can://src/app.py#src.app.Store.Meta.tag@11:12"
+    assert r.node_id == "can://python/app/src/app.py/src.app.Store.Meta.tag@11:12"
     assert py_local.get_source(r.node_id) == _locate_code(11, 11)
     assert "café" in py_local.get_source(r.node_id)
 
