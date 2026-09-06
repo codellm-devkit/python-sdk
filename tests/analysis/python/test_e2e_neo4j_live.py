@@ -836,20 +836,16 @@ def test_entrypoint_report_presence_matches_the_analyzer_generation(cypher):
 # =====================================================================================
 # The analyzer-version probe (leg 1.6, F2), on whichever generation this graph is
 # =====================================================================================
-def test_attach_warns_on_a_1_4_0_graph_and_is_silent_from_1_4_1(cypher, caplog):
-    """1.4.0 graphs are served (same id grammar) with one warning that scoped queries scan, since
-    they carry no ``:PyCanNode`` index; 1.4.1 and newer attach silently. Which branch this graph
-    exercises is read off the graph, so the same test is the back-compat gate on 7688 and the
-    silence check on 7689."""
+def test_attach_is_silent_on_every_served_generation(cypher, caplog):
+    """A 1.4.0 graph and a 1.4.1 graph are served identically -- same id grammar, same
+    ``:PySymbol(id)`` index behind the point lookups -- so attaching logs nothing on either. The
+    version is read off the graph and recorded in the failure, so the same test is the back-compat
+    gate on 7688 and the check on 7689; the ``:PySymbol`` anchor behind the seek is pinned in ``test_locate.py``."""
     version = cypher("MATCH (a:PyApplication {name: $n}) RETURN a.analyzer_version AS v", n=APP_NAME)[0]["v"]
-    with caplog.at_level(logging.WARNING, logger="cldk.analysis.python.neo4j.neo4j_backend"):
+    with caplog.at_level(logging.INFO, logger="cldk.analysis.python.neo4j.neo4j_backend"):
         facade = CLDK.python(backend=Neo4jConnectionConfig(uri=NEO4J_URI, username=NEO4J_USER, password=NEO4J_PASSWORD, application_name=APP_NAME))
         facade.backend.close()
-    warnings = [r.getMessage() for r in caplog.records if "scan rather than seek" in r.getMessage()]
-    if version == "1.4.0":
-        assert len(warnings) == 1 and "1.4.0" in warnings[0]
-    else:
-        assert not warnings, f"a {version} graph should attach silently"
+    assert not caplog.records, f"attaching to a {version} graph logged {[r.getMessage() for r in caplog.records]}"
 
 
 def test_attaching_to_an_absent_application_is_refused_not_served_empty():
@@ -1304,12 +1300,23 @@ def ghost_chain(cypher) -> Dict[str, str]:
         prefix=APP_PREFIX,
     )
     for chain in chains:
+        args = dict(a=chain["src"], b=chain["dst"], prefix=APP_PREFIX)
         routed = cypher(
             "MATCH (a:PyCallable {signature:$a}) WHERE a.id STARTS WITH $prefix "
             "MATCH (a) ((x:PyCallable)-[:PY_CALLS]->(y:PyCallable) WHERE x.id STARTS WITH $prefix){1,} (m:PyCallable) "
             "WITH DISTINCT m WHERE m.signature = $b RETURN count(m) > 0 AS ok",
-            a=chain["src"], b=chain["dst"], prefix=APP_PREFIX,
+            **args,
         )[0]["ok"]
+        # A second opinion from a pattern ``_REACHES`` does not use: a shortest path whose every
+        # node is a callable. If the two disagree the fixture is wrong, not the rule.
+        routed_by_shortest_path = cypher(
+            "MATCH (a:PyCallable {signature:$a}), (b:PyCallable {signature:$b}) "
+            "WHERE a.id STARTS WITH $prefix AND b.id STARTS WITH $prefix "
+            "MATCH p = shortestPath((a)-[:PY_CALLS*1..12]->(b)) WHERE all(n IN nodes(p) WHERE n:PyCallable) "
+            "RETURN count(p) > 0 AS ok",
+            **args,
+        )[0]["ok"]
+        assert routed == routed_by_shortest_path, f"the two all-callable route checks disagree on {chain['src']} -> {chain['dst']}"
         if not routed:
             return dict(chain)
     pytest.skip("every callable -> ghost -> callable chain on this graph also has an all-callable route, so none isolates the ghost rule")

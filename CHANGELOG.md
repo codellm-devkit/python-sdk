@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Python legs 1, 1.5 and 1.6 of the CLDK 2.0 agent-facing query facade (see
 `docs/design/specs/2026-09-03-agent-facing-query-facade.md`,
 `docs/design/specs/2026-09-05-leg-1.5-bounded-queries-and-dataflow.md` and
-`docs/design/specs/2026-09-06-leg-1.6-id-prefix-scoping.md`). Targets `2.0.0-rc.1`.
+`docs/design/specs/2026-09-06-leg-1.6-id-prefix-scoping.md`). Targets `2.0.0-rc.2`.
 
 ### Changed
 - **Pinned `codeanalyzer-python` 1.4.0 → 1.4.1** (`pyproject.toml` `dependencies` and
@@ -25,12 +25,13 @@ Python legs 1, 1.5 and 1.6 of the CLDK 2.0 agent-facing query facade (see
 - **The schema probe reads the graph's analyzer generation.** Attaching to a graph whose
   `:PyApplication.analyzer_version` is below **1.4.0** (or missing) raises `GraphSchemaMismatch`
   naming the version found and the floor -- before this it was served with silent empties. A
-  **1.4.0** graph is served with identical results and one `WARNING` that scoped statements scan
-  rather than seek (it carries no `:PyCanNode` index). A **1.4.1** graph attaches silently, and
-  `locate` / `locate_many` name `:PyCanNode` on it so the per-module prefix seeks the range index
-  (40 positions: 399 → 89 ms). Statements whose prefix is the whole application stay unlabelled:
-  measured, the seek over 955,961 application nodes is 2–20× slower than the `:PyCallable` label
-  scan they use.
+  **1.4.0** graph and a **1.4.1** graph are served identically and silently: both carry the unique
+  `:PySymbol(id)` range index, so `locate` / `locate_many` and `resolve_callable` anchor on
+  `(c:PyCallable:PySymbol)` and the prefix *seeks* on either generation (40 positions: 381 → 46 ms
+  on 1.4.1, 427 → 53 ms on 1.4.0; `resolve_callable` 19.2 → 15.3 ms on 1.4.1, a wash on 1.4.0).
+  1.4.1's `:PyCanNode(id)` index was measured and rejected -- it spans all 955,961 application
+  nodes, so seeking it made `resolve_callable` 10× slower -- and no statement names it. Statements
+  whose prefix is the whole application stay on the `:PyCallable` label scan, which is faster there.
 - **BREAKING: Neo4j graph vocabulary migration.** The Python Neo4j backend
   (`cldk.analysis.python.neo4j.PyNeo4jBackend`) now queries `PyBodyNode` / `PY_HAS_BODY_NODE`
   instead of the pre-1.4.0 `PyCallSite` / `PY_HAS_CALLSITE` / `PySymbol` vocabulary, matching what
@@ -124,7 +125,7 @@ Python legs 1, 1.5 and 1.6 of the CLDK 2.0 agent-facing query facade (see
 | SDK version | Requires `codeanalyzer-python` | Graph vocabulary |
 | --- | --- | --- |
 | <= 1.5.0 | 0.3.x | `PyCallSite` / `PY_HAS_CALLSITE` / `PySymbol` |
-| 2.0.0-rc.1 (this) | 1.4.1 pinned; graphs emitted by >= 1.4.0 served (1.4.0 scanned, 1.4.1 indexed) | `PyBodyNode` / `PY_HAS_BODY_NODE`, scope by `can://` id prefix |
+| 2.0.0-rc.2 (this) | 1.4.1 pinned; graphs emitted by >= 1.4.0 served identically | `PyBodyNode` / `PY_HAS_BODY_NODE`, scope by `can://` id prefix |
 
 ### Added
 - **Slices and reachability: `slice_backward(src, within=)` / `slice_forward(src, within=)` /
@@ -344,7 +345,7 @@ Python legs 1, 1.5 and 1.6 of the CLDK 2.0 agent-facing query facade (see
   (entrypoint report projected, Odoo `@http.route` / `http.Controller` detected: 534 callables and
   94 classes on the same checkout that 1.4.0 flagged 0 / 0), #181 (`PY_EXTENDS` is actually emitted:
   1,573 edges where every 2.0.0 graph had none) and #183 (`_module` retired, `:PyCanNode` range
-  index on `id`, `:PyExternal` ghosts under the application prefix).
+  index on `id`).
 - **The N+1 timing assertion measured the coverage tracer, not the query.** The two timed live
   tests (`get_symbol_table` / `get_classes` under 15 s) ran under `sys.settrace`, which adds ~5 s
   to a ~10 s Python-side reconstruction; they passed the ceiling by luck. They now run with coverage

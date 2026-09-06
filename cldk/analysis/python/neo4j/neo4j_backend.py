@@ -34,11 +34,13 @@ backend.
 Identity model (must match the in-memory backend; see ``codeanalyzer/neo4j/project.py``):
 
 * a class/callable/external is keyed by ``id``, under its specific label — ``:PyClass`` /
-  ``:PyCallable`` / ``:PyExternal`` — which is all this backend ever matches on: the producer also
-  stamps a shared secondary label across all three (a declared symbol is id-keyed there too, not
-  signature-keyed, unlike 0.3.x — the one exception is an unresolved ``PY_EXTENDS`` base-class
-  ghost, still merged by ``signature``, irrelevant to every query below), but the specific labels
-  already uniquely identify these nodes so the shared one goes unqueried;
+  ``:PyCallable`` / ``:PyExternal`` — which is what this backend matches on. The producer also
+  stamps a shared secondary label, ``:PySymbol``, across all three (a declared symbol is id-keyed
+  there too, not signature-keyed, unlike 0.3.x — the one exception is an unresolved ``PY_EXTENDS``
+  base-class ghost, still merged by ``signature``, irrelevant to every query below), backed by a
+  unique range index on ``id`` that every served generation carries. Two point lookups name it
+  (``_RESOLVE_CALLABLE_QUERY``, ``_LOCATE_QUERY``) so their prefix predicate seeks that index
+  instead of scanning ``:PyCallable``; see the note above ``_LOCATE_QUERY``;
 * a module is a ``:PyModule`` keyed by ``file_key`` (which equals the original ``PyModule.file_path``
   and the symbol-table key);
 * call-graph edges are ``(:PyCallable|:PyExternal)-[:PY_CALLS {weight, prov}]->(...)`` with a
@@ -345,10 +347,9 @@ class PyNeo4jBackend(PythonAnalysisBackend):
 
     #: The oldest codeanalyzer-python whose graph this backend serves. 1.4.0 introduced the
     #: ``can://`` id grammar every statement here scopes on; 1.4.1 dropped the ``_module`` property
-    #: and added the ``:PyCanNode`` range index on ``id`` that lets a prefix predicate seek. A
-    #: 1.4.0 graph is therefore served correctly but scanned (see :meth:`_probe_schema`).
+    #: this backend once read. Both generations carry the ``:PySymbol(id)`` index the point lookups
+    #: seek, so they are served identically -- results and cost alike (see :meth:`_probe_schema`).
     _ANALYZER_FLOOR = (1, 4, 0)
-    _ANALYZER_INDEXED = (1, 4, 1)
 
     def _probe_schema(self) -> None:
         """Verify the connected graph's vocabulary once, at connection time, and record the
@@ -389,14 +390,6 @@ class PyNeo4jBackend(PythonAnalysisBackend):
                 message=f"The graph for application {self.application_name!r} {what}; this backend needs a graph emitted by codeanalyzer-python {floor} or newer.",
             )
         self._analyzer_version = version
-        if version < self._ANALYZER_INDEXED:
-            logger.warning(
-                "The graph for application %r was emitted by codeanalyzer-python %s, which carries no :PyCanNode index on id: "
-                "scoped queries scan rather than seek. Results are identical; re-emit with %s or newer for the index.",
-                self.application_name,
-                raw,
-                ".".join(map(str, self._ANALYZER_INDEXED)),
-            )
 
     def _read_server_version(self) -> Tuple[int, ...] | None:
         """The attached server's version as an int tuple, or ``None`` when it cannot be read.
@@ -487,27 +480,8 @@ class PyNeo4jBackend(PythonAnalysisBackend):
 
     #: The codeanalyzer-python generation that emitted this application, set by
     #: :meth:`_probe_schema` (which refuses anything below :attr:`_ANALYZER_FLOOR`). The class-level
-    #: ``None`` is for the ``object.__new__`` seam the unit tests build backends through: an unknown
-    #: generation names no optional label.
+    #: ``None`` is for the ``object.__new__`` seam the unit tests build backends through.
     _analyzer_version: Tuple[int, ...] | None = None
-
-    @property
-    def _can_node(self) -> str:
-        """``":PyCanNode"`` when the attached graph carries that label's range index on ``id``
-        (codeanalyzer-python 1.4.1+), else ``""``. Interpolated into ONE statement, ``_LOCATE_QUERY``.
-
-        Naming the label makes the planner seek ``:PyCanNode(id)`` for a prefix instead of scanning
-        ``:PyCallable``, and that pays only when the prefix is narrow. Measured on the 1.4.1 odoo
-        graph: ``locate_many`` over 40 positions (per-module prefixes) 399 -> 89 ms; every statement
-        whose prefix is the whole application -- ``resolve_callable``, ``get_source``,
-        ``resolve_value``, ``get_class``, the per-parent child fetches, the callers/callees
-        neighbourhoods -- 2-20x *slower* (``_RESOLVE_CALLABLE_QUERY`` 16.7 -> 198 ms), because the
-        seek then walks all 955,961 nodes under ``can://python/<app>/`` before the label and
-        signature filters apply, where the label scan touched 15,549. Those stay unlabelled by
-        measurement, not oversight. On a 1.4.0 graph the label does not exist and naming it would
-        match nothing, hence the gate.
-        """
-        return ":PyCanNode" if self._analyzer_version is not None and self._analyzer_version >= self._ANALYZER_INDEXED else ""
 
     @cached_property
     def _module_set(self) -> FrozenSet[str]:
@@ -1253,8 +1227,10 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         return rows[0]["code"]
 
     # -----[ addressing ]-----
+    #: ``:PySymbol`` is named so the prefix seeks its unique ``id`` range index (see the note above
+    #: ``_LOCATE_QUERY``): 19.2 -> 15.3 ms on the 1.4.1 graph, 17.4 -> 17.9 ms on 1.4.0 (a wash).
     _RESOLVE_CALLABLE_QUERY = (
-        "MATCH (c:PyCallable) WHERE c.id STARTS WITH $prefix AND (c.signature = $name OR c.signature ENDS WITH $dotted) "
+        "MATCH (c:PyCallable:PySymbol) WHERE c.id STARTS WITH $prefix AND (c.signature = $name OR c.signature ENDS WITH $dotted) "
         "OPTIONAL MATCH (owner:PyClass)-[:PY_HAS_METHOD]->(c) "
         "RETURN c.signature AS signature, c.name AS name, c.id AS id, "
         "c.start_line AS start_line, owner.signature AS class_signature"
@@ -1924,14 +1900,21 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     # Every other query in this file is scoped to the application by id prefix, and this one
     # narrows further, to the position's own module: ``pos.module_prefix`` is
     # ``module_id(app, key) + "/"``, so a same-valued ``file_key`` from a different application
-    # cannot win, and neither can a module whose key merely extends this one's spelling. On a
-    # 1.4.1+ graph ``locate_many`` names ``:PyCanNode`` on the callable so that per-module prefix
-    # seeks the ``:PyCanNode(id)`` range index (see :attr:`_can_node`).
+    # cannot win, and neither can a module whose key merely extends this one's spelling.
+    #
+    # ``:PySymbol`` is named on the callable so that per-module prefix *seeks*: the producer stamps
+    # the label on every class, callable and external and backs it with a unique range index on
+    # ``id`` (``pysymbol_id``) on every served generation -- 1.4.0 and 1.4.1 alike -- so the planner
+    # emits ``NodeUniqueIndexSeekByRange`` where the bare ``:PyCallable`` anchor scanned the label.
+    # Measured, 40 positions, median of 5: 381 -> 46 ms on the 1.4.1 graph, 427 -> 53 ms on 1.4.0.
+    # 1.4.1's own ``:PyCanNode(id)`` range index was measured and rejected: it spans all 955,961
+    # application nodes, so seeking it walked a 40x larger range (locate 54 ms, but
+    # ``_RESOLVE_CALLABLE_QUERY`` 19 -> 210 ms), and 1.4.0 graphs have no such label at all.
     _LOCATE_QUERY = (
         "UNWIND $positions AS pos "
         "OPTIONAL MATCH (:PyApplication {name: $app})-[:PY_HAS_MODULE]->(m:PyModule {file_key: pos.path}) "
         "WITH pos, m "
-        "OPTIONAL MATCH (c:PyCallable) "
+        "OPTIONAL MATCH (c:PyCallable:PySymbol) "
         "WHERE c.id STARTS WITH pos.module_prefix "
         "AND c.start_line IS NOT NULL AND c.end_line IS NOT NULL "
         "AND c.start_line <= pos.line AND pos.line <= c.end_line "
@@ -2081,9 +2064,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         # ``module_prefix`` is the exact inverse of ``_module_key``: ``module_id(app, key) + "/"``
         # selects the module's own callables and nothing under a longer key sharing the spelling.
         rows = self._run(
-            # One label, swapped in per graph generation (see _can_node); the class-level statement
-            # keeps the spelling every served graph accepts, and test_locate pins both.
-            self._LOCATE_QUERY.replace("OPTIONAL MATCH (c:PyCallable) ", f"OPTIONAL MATCH (c:PyCallable{self._can_node}) ", 1),
+            self._LOCATE_QUERY,
             app=self.application_name,
             positions=[
                 {"idx": i, "path": key, "module_prefix": module_id(self.application_name, key) + "/", "line": line}

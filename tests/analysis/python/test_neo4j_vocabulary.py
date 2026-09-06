@@ -21,12 +21,25 @@ import pathlib
 
 SRC = pathlib.Path("cldk/analysis/python/neo4j/neo4j_backend.py").read_text()
 
-RETIRED = ["PyCallSite", "PY_HAS_CALLSITE", "PySymbol"]
+#: 0.3.x's call-site vocabulary. ``PySymbol`` is deliberately *not* here: 0.3.x used it as the
+#: primary, signature-keyed label, and 1.4.x kept the name for the shared secondary label it stamps
+#: on every class, callable and external, backed by the unique ``pysymbol_id`` range index on ``id``
+#: (22,920 nodes on the 1.4.0 odoo graph, 23,138 on 1.4.1). The backend names it on two point
+#: lookups so their prefix predicate seeks that index; what must not come back is matching a
+#: symbol *by signature* through it.
+RETIRED = ["PyCallSite", "PY_HAS_CALLSITE"]
 
 
 def test_no_retired_labels_in_cypher():
     for name in RETIRED:
         assert name not in SRC, f"{name} is not emitted by codeanalyzer-python 1.4.0"
+
+
+def test_pysymbol_is_only_ever_a_seek_anchor_beside_pycallable():
+    """Every mention of ``:PySymbol`` in a statement is the compound anchor ``(c:PyCallable:PySymbol)``
+    -- never a node matched on its own, and never keyed by signature the 0.3.x way."""
+    assert re.findall(r"\(\w+:PySymbol\)|PySymbol \{signature", SRC) == []
+    assert SRC.count("(c:PyCallable:PySymbol)") == 2, "the two measured point lookups (_LOCATE_QUERY, _RESOLVE_CALLABLE_QUERY)"
 
 
 def test_call_sites_query_uses_body_nodes():

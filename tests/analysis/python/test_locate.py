@@ -265,20 +265,21 @@ def test_locate_query_is_scoped_to_the_application(py, fake_driver):
     assert "_module" not in statement, "the graph stores no _module property to match on"
 
 
-def test_locate_names_pycannode_only_on_a_graph_that_has_it(py, fake_driver):
-    """The per-module prefix seeks the ``:PyCanNode(id)`` range index a 1.4.1 graph carries
-    (measured on odoo: 40 positions 399 -> 89 ms); a 1.4.0 graph has no such label and naming it
-    would match nothing. Both spellings are pinned because the swap is a string edit on the
-    statement -- a renamed anchor would silently lose the seek, never the answer."""
+def test_locate_and_resolve_seek_the_pysymbol_index(py, fake_driver):
+    """The per-module prefix seeks the unique ``:PySymbol(id)`` range index every served graph
+    carries (1.4.0 and 1.4.1 alike; measured on odoo, 40 positions: 381 -> 46 ms and 427 -> 53 ms).
+    The anchor is pinned as text because dropping the label loses the seek and never the answer --
+    a scan is a silent 8x, not a failure. ``resolve_callable`` names it for the same reason; both
+    are the same statement whatever generation the graph is."""
     py.locate("src/app.py", 21)
-    assert "OPTIONAL MATCH (c:PyCallable:PyCanNode) " in next(s for s in fake_driver.statements if "UNWIND $positions AS pos" in s)
+    assert "OPTIONAL MATCH (c:PyCallable:PySymbol) " in next(s for s in fake_driver.statements if "UNWIND $positions AS pos" in s)
+    assert PyNeo4jBackend._RESOLVE_CALLABLE_QUERY.startswith("MATCH (c:PyCallable:PySymbol) WHERE c.id STARTS WITH $prefix")
 
     fake_driver.statements.clear()
     fake_driver.analyzer_version = "1.4.0"
     old = PyNeo4jBackend._from_driver(fake_driver, application_name="app")
-    assert old.locate("src/app.py", 21).callable is not None, "the 1.4.0 spelling must still answer"
-    statement = next(s for s in fake_driver.statements if "UNWIND $positions AS pos" in s)
-    assert "OPTIONAL MATCH (c:PyCallable) " in statement and "PyCanNode" not in statement
+    assert old.locate("src/app.py", 21).callable is not None
+    assert "OPTIONAL MATCH (c:PyCallable:PySymbol) " in next(s for s in fake_driver.statements if "UNWIND $positions AS pos" in s)
 
 
 def test_locate_scope_is_actually_honoured(py):

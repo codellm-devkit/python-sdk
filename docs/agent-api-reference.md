@@ -36,8 +36,8 @@ and the message names what it found and the floor. What attaching to each genera
 | graph emitted by | attach | behaviour |
 | --- | --- | --- |
 | < 1.4.0, or no `analyzer_version` | refused (`GraphSchemaMismatch`) | the `can://` id grammar every query scopes on does not exist there |
-| 1.4.0 | served, one `WARNING` logged | identical results; the graph has no `:PyCanNode` index, so scoped statements scan rather than seek, and `get_entrypoint_coverage()` reports `entrypoint_report_unavailable` (the report was not projected yet) |
-| 1.4.1 and newer | served, silent | `locate` seeks the `:PyCanNode(id)` index; the entrypoint report is read off the graph |
+| 1.4.0 | served, silent | identical results and plans (`locate` / `resolve_callable` seek the `:PySymbol(id)` index both generations carry); `get_entrypoint_coverage()` reports `entrypoint_report_unavailable` (the report was not projected yet) |
+| 1.4.1 and newer | served, silent | as 1.4.0, and the entrypoint report is read off the graph |
 
 ---
 
