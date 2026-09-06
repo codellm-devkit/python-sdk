@@ -24,6 +24,7 @@ Maven on ``PATH`` and read the verdict off the backend. The third needs no analy
 state that has no verdict at all, which must read as *unknown* and never as clean.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -88,9 +89,12 @@ def test_l4_without_compiled_classes_reports_the_analyzers_own_words(test_fixtur
     assert analysis.get_call_graph().number_of_edges() > 0
     assert analysis.backend.analysis.max_level == 4
 
-    # The verdict lives beside analysis.json in the SDK's cache, not inside the analyzer's payload.
+    # The verdict lives beside analysis.json in the SDK's cache, not inside the analyzer's payload,
+    # and is bound to that payload by its sha256 so it cannot be read against a different one.
     verdict_file = cache / "java" / VERDICT_FILE
-    assert json.loads(verdict_file.read_text(encoding="utf-8")) == [d.model_dump() for d in diagnostics]
+    recorded = json.loads(verdict_file.read_text(encoding="utf-8"))
+    assert recorded["diagnostics"] == [d.model_dump() for d in diagnostics]
+    assert recorded["payload_sha256"] == hashlib.sha256((cache / "java" / "analysis.json").read_bytes()).hexdigest()
     assert "analyzer_diagnostics" not in (cache / "java" / "analysis.json").read_text(encoding="utf-8")
 
     # And a cache hit — no analyzer run, so no log to read — still knows.
@@ -124,7 +128,7 @@ def test_l4_with_compiled_classes_is_silent(test_fixture, tmp_path, caplog):
     assert (project / "target" / "classes").is_dir(), "the analyzer's auto-build did not produce classes"
     assert analysis.backend.analyzer_diagnostics == []
     assert _warnings(caplog) == []
-    assert json.loads((cache / "java" / VERDICT_FILE).read_text(encoding="utf-8")) == []
+    assert json.loads((cache / "java" / VERDICT_FILE).read_text(encoding="utf-8"))["diagnostics"] == []
     assert any("rta" in edge.prov for edge in analysis.backend.application.call_graph)
 
 
@@ -169,3 +173,78 @@ def test_symbol_table_does_not_warn_about_a_missing_verdict(test_fixture, analys
 
     assert backend.analyzer_diagnostics is None
     assert _warnings(caplog) == []
+
+
+def _cache_with_verdict(tmp_path: Path, analysis_json: str, verdict: object) -> Path:
+    """A cache directory holding a payload and a hand-written verdict file beside it."""
+    (tmp_path / "analysis.json").write_text(analysis_json, encoding="utf-8")
+    (tmp_path / VERDICT_FILE).write_text(json.dumps(verdict), encoding="utf-8")
+    return tmp_path
+
+
+def _backend(test_fixture, cache: Path) -> JCodeanalyzer:
+    return JCodeanalyzer(
+        project_dir=test_fixture,
+        analysis_json_path=cache,
+        analysis_level=AnalysisLevel.system_dependency_graph,
+        eager_analysis=False,
+        target_files=None,
+    )
+
+
+def test_a_verdict_written_for_another_payload_reads_as_unknown(test_fixture, analysis_json_a4, tmp_path):
+    """The sidecar has no relation to the ``analysis.json`` beside it other than the one this
+    backend gives it, so a verdict paired with a payload it did not describe — the analyzer re-run
+    by hand, a payload copied in over the one it was written for — would otherwise report a stale
+    verdict as current. It is bound by the payload's sha256: a mismatch is *no verdict*, ``None``.
+    """
+    cache = _cache_with_verdict(
+        tmp_path,
+        analysis_json_a4,
+        {
+            "payload_sha256": hashlib.sha256(b"a different analysis.json").hexdigest(),
+            "diagnostics": [{"code": "level_too_low", "message": "RTA call graph unavailable (x); emitting declared edges only"}],
+        },
+    )
+    assert _backend(test_fixture, cache).analyzer_diagnostics is None
+
+
+def test_a_verdict_written_for_this_payload_is_read_back(test_fixture, analysis_json_a4, tmp_path):
+    """The other half of the binding: the digest matches, so the recorded verdict is this run's."""
+    cache = _cache_with_verdict(tmp_path, analysis_json_a4, {"payload_sha256": "", "diagnostics": []})
+    digest = hashlib.sha256((tmp_path / "analysis.json").read_bytes()).hexdigest()
+    (tmp_path / VERDICT_FILE).write_text(
+        json.dumps(
+            {
+                "payload_sha256": digest,
+                "diagnostics": [{"code": "level_too_low", "message": "L4 semantic ddg unavailable (WALA build failed); emitting the derived SDG vertices and param edges only"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    diagnostics = _backend(test_fixture, cache).analyzer_diagnostics
+    assert [d.code for d in diagnostics] == ["level_too_low"]
+
+
+@pytest.mark.parametrize(
+    "diagnostics",
+    [
+        pytest.param([{"code": "level_too_low"}], id="a Diagnostic missing a field"),
+        pytest.param("not a list", id="diagnostics of the wrong type"),
+    ],
+)
+def test_a_wrong_shaped_verdict_reads_as_unknown_rather_than_failing(test_fixture, analysis_json_a4, tmp_path, diagnostics):
+    """A verdict file that *is* this payload's — the digest matches — but whose contents no longer
+    validate. ``None``, the honest third state: a ``ValidationError`` out of here would turn a
+    working cache hit into a constructor failure over a file the payload does not need."""
+    cache = _cache_with_verdict(tmp_path, analysis_json_a4, {})
+    digest = hashlib.sha256((tmp_path / "analysis.json").read_bytes()).hexdigest()
+    (tmp_path / VERDICT_FILE).write_text(json.dumps({"payload_sha256": digest, "diagnostics": diagnostics}), encoding="utf-8")
+    assert _backend(test_fixture, cache).analyzer_diagnostics is None
+
+
+def test_the_pre_binding_bare_list_verdict_reads_as_unknown(test_fixture, analysis_json_a4, tmp_path):
+    """The shape this backend wrote before the payload binding existed. It cannot be shown to
+    describe the payload beside it, so it is not read as describing it."""
+    cache = _cache_with_verdict(tmp_path, analysis_json_a4, [{"code": "level_too_low", "message": "m"}])
+    assert _backend(test_fixture, cache).analyzer_diagnostics is None

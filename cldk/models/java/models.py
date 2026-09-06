@@ -15,7 +15,7 @@
 ################################################################################
 
 """Java schema models — a pydantic mirror of ``codeanalyzer-java/src/main/java/com/ibm/cldk/schema``
-at the pinned release (3.0.1), schema v2.
+at the 3.0.1 floor, schema v2 (the pin itself is ``[tool.backend-versions]`` in ``pyproject.toml``).
 
 The wire is one containment tree: ``JAnalysis{analyzer, application}`` →
 ``JApplication{symbol_table{path → JCompilationUnit}, call_graph, param_in, param_out, artifacts,
@@ -56,7 +56,14 @@ class _Base(BaseModel):
 class JSpan(_Base):
     """``start``/``end`` are ``[line, column]`` (1-based); ``bytes`` are ``[from, to]`` **UTF-8 byte**
     offsets into the owning unit's ``source`` (the analyzer's ``Spans.java`` computes them as prefix
-    sums over ``getBytes(UTF_8)``)."""
+    sums over ``getBytes(UTF_8)``).
+
+    **``-1`` in any position means "not known", never zero.** A span rebuilt from the Neo4j
+    projection carries real lines and ``-1`` for both columns and both byte offsets, because the
+    graph writes ``start_line``/``end_line`` and nothing else -- a ``0`` there would read as column
+    one, offset zero, which is a position, and a wrong one. Off ``analysis.json`` every position is
+    the analyzer's own.
+    """
 
     start: Tuple[int, int]
     end: Tuple[int, int]
@@ -373,9 +380,16 @@ class JCallSite(_Base):
 
 
 class JCallable(_Node):
-    """A method, constructor or initializer (``<clinit>$N()``). ``cfg``/``cdg``/``ddg`` are present
-    from L3, ``summary`` from L4; ``None`` means the level did not compute them. Implicit callables
-    (default constructors) carry no span, body, parameters, metrics or declaration."""
+    """A method, constructor or initializer (``<clinit>$N()``). Implicit callables (default
+    constructors) carry no span, body, parameters, metrics or declaration.
+
+    ``cfg``/``cdg``/``ddg`` are present from L3 and ``summary`` from L4 **off ``analysis.json``**,
+    where ``None`` means the run was below that level and re-running higher fills them in.
+    **Off the Neo4j projection all four are ``None`` at every level**, and re-ingesting does not
+    change that: ``--emit neo4j`` already forces L4, and this leg's projection does not rebuild the
+    per-callable graphs from it (leg 3b reads them on demand). So ``None`` here is "this backend
+    does not carry it", not "analyse deeper".
+    """
 
     kind: str  # method | constructor | initializer
     signature: str
@@ -393,6 +407,9 @@ class JCallable(_Node):
     metrics: Optional[JMetrics] = None
     refs: Optional[JRefs] = None
     local_variables: List[JLocalVariable] = []
+    #: Every body node off ``analysis.json``; the ``call`` nodes **only** off the Neo4j projection
+    #: (~30% of what the graph holds), so :attr:`call_sites` is complete there and nothing else
+    #: about the body is.
     body: Dict[str, JBodyNode] = {}
     cfg: Optional[List[JCfgEdge]] = None
     cdg: Optional[List[JCdgEdge]] = None
@@ -420,6 +437,15 @@ class JCallable(_Node):
 
     @property
     def code_start_line(self) -> int:
+        """The file line :attr:`code` starts on: the body block's first line, or the declaration's
+        when there is no body.
+
+        **It differs by backend wherever the opening brace does not sit on the declaration's first
+        line** — 398 of daytrader8's 1,216 callables. The Neo4j projection carries one line range
+        per callable and no ``body_span``, so this is the *declaration's* first line there and the
+        *body block's* here, exactly as :attr:`code` is the declaration there and the body block
+        here. The two agree on every callable whose ``{`` is on the signature's own line.
+        """
         if self.body_span is not None:
             return self.body_span.start[0]
         return self.start_line
@@ -750,7 +776,13 @@ class JDependency(_Base):
 
 class JApplication(_Base):
     """The application root. ``call_graph``/``param_in``/``param_out`` are absent below the level
-    that computes them — empty here, never ``None``."""
+    that computes them — empty here, never ``None``.
+
+    That reading is exact for ``call_graph`` on both backends. ``param_in``/``param_out`` are
+    **always empty off the Neo4j projection**, at every level: ``--emit neo4j`` forces L4, so the
+    dataflow overlay was computed, but this leg does not project the port lattice back out (leg 3b
+    does). An empty pair there is this backend's silence, not the analyzer's.
+    """
 
     id: str
     kind: Literal["application"] = "application"

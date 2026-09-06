@@ -17,7 +17,7 @@
 """The frozen public surface of :class:`JavaAnalysis` (spec leg 3, the Iron Rule).
 
 Every public accessor's name and signature is pinned here, derived from the 1.x facade at
-``1375b55`` with exactly two deliberate differences: the constructor lost ``source_code`` (J-10)
+``6f9c84d`` with exactly two deliberate differences: the constructor lost ``source_code`` (J-10)
 and ``get_method_parameters`` is annotated with what it always returned
 (``List[JCallableParameter]``, a latent 1.x annotation bug). A change to this list is a public-API
 change and must be deliberate; the query surface (3b) extends it.
