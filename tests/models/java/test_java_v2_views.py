@@ -130,7 +130,7 @@ def test_initialization_blocks_are_initializer_callables(a1: JAnalysis):
     assert all(isinstance(b, InitializationBlock) for b in blocks)
     assert blocks[0].is_static is True
     assert blocks[0].code.startswith("{\n") and blocks[0].code.endswith("}")  # the block, not ``static {``
-    assert blocks[0].declaration is None  # 3.0.1 emits no declaration for initializers
+    assert blocks[0].declaration is None  # 3.0.x emits no declaration for initializers
 
 
 # ---- JCallable --------------------------------------------------------------------------------------
