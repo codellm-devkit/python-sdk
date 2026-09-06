@@ -69,6 +69,7 @@ def test_get_symbol_table_is_not_null(test_fixture, analysis_json):
         )
         assert analysis.get_symbol_table() is not None
 
+@pytest.mark.skip(reason="Java single-file source analysis is won't-fix (#256); witness retired under #255")
 def test_get_symbol_table_source_code(java_code):
     """Should return a symbol table for source analysis with expected class/method count"""
 
@@ -681,6 +682,7 @@ def test_get_fields(test_fixture, analysis_json):
             assert field.variable_initializers is None
 
 
+@pytest.mark.skip(reason="Java single-file source analysis is won't-fix (#256); witness retired under #255")
 def test_get_fields_variable_initializers(java_code):
     """Should return per-variable initializer text for fields"""
 

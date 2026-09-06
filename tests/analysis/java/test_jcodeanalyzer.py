@@ -23,11 +23,14 @@ import json
 from typing import Dict, List, Tuple
 from unittest.mock import patch, MagicMock
 import networkx as nx
+import pytest
 
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.java.codeanalyzer import JCodeanalyzer
 from cldk.models.java.models import JApplication, JCRUDOperation, JType, JCallable, JCompilationUnit, JImport, JMethodDetail
 from cldk.models.java import JGraphEdges
+from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
+from cldk.analysis.java.codeanalyzer import _jdk
 
 
 def _build_analysis_json_payload(version: str, imports: list[dict[str, object] | str], include_call_graph: bool = False) -> dict:
@@ -223,6 +226,31 @@ def test_generate_call_graph(test_fixture, analysis_json):
         assert isinstance(int(edge[2]["weight"]), int)
         assert isinstance(edge[2]["calling_lines"], list)
         # assert all(isinstance(line, str) for line in edge[2]["calling_lines"])
+
+
+def test_source_mode_without_project_dir_is_refused_before_jdk_lookup():
+    """Should raise CodeanalyzerExecutionException, not TypeError, when neither cache nor project dir exists (#328)"""
+    with pytest.raises(CodeanalyzerExecutionException, match="no cache directory and no project directory"):
+        JCodeanalyzer(
+            project_dir=None,
+            source_code="class A {}",
+            analysis_json_path=None,
+            analysis_level=AnalysisLevel.symbol_table,
+            eager_analysis=False,
+            target_files=None,
+        )
+
+
+def test_ensure_jdk_reuses_the_nested_extracted_jdk_without_downloading(tmp_path, monkeypatch):
+    """Should find the cached JDK in its extracted (nested) layout instead of re-downloading over it (#328)"""
+    home = tmp_path / "jdk" / _jdk.JDK_RELEASE / _jdk.JDK_RELEASE / "Contents" / "Home"
+    (home / "bin").mkdir(parents=True)
+    (home / "bin" / "java").touch()
+    (home / "jmods").mkdir()
+    monkeypatch.delenv("JAVA_HOME", raising=False)
+    monkeypatch.setattr(_jdk.JdkLoader, "download_and_extract", lambda *a, **k: pytest.fail("attempted a JDK download"))
+
+    assert _jdk.ensure_jdk(tmp_path) == home.resolve()
 
 
 def test_codeanalyzer_single_file(test_fixture, analysis_json):

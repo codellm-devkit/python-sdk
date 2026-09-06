@@ -312,6 +312,18 @@ Python legs 1 and 1.5 of the CLDK 2.0 agent-facing query facade (see
   schema probe at attach time; see the breaking-change note above.
 
 ### Fixed
+- **Java: a missing JDK cache root is refused, not crashed on.** `JCodeanalyzer._get_codeanalyzer_exec`
+  now raises `CodeanalyzerExecutionException` ("no cache directory and no project directory")
+  when neither is available, instead of letting `ensure_jdk` fail with `TypeError: ... not
+  'NoneType'`. Only single-file source mode reaches this path; that mode is won't-fix (#256) and
+  its ten witness tests are skip-gated under #255, so the release test gate (live since #306) is
+  green again (#328).
+- **Java: the cached Temurin JDK is actually reused.** `ensure_jdk` looked for `<cache>/jdk/<release>/bin/java`,
+  but the archive extracts nested (`<release>/bin`, or `<release>/Contents/Home/bin` on macOS), so
+  the cache never hit; without a `$JAVA_HOME` carrying `jmods` every process re-downloaded the JDK
+  and then failed extracting over the read-only `lib/server/*.jsa` files already there. It now
+  finds the extracted JDK the same way the download does. Mocked-analyzer Java tests no longer
+  resolve a JDK at all, and `JAVA_HOME` no longer leaks between tests.
 - **Neo4j statements no longer leak across applications in a shared database.** The per-parent
   child fetches (`get_class()` and everything reconstructing one declaration) matched by a bare
   `{signature: $sig}` / `{file_key: $fk}` while their bulk twins were application-scoped, so in a

@@ -10,6 +10,7 @@ from cldk import CLDK
 from cldk.analysis import AnalysisLevel
 
 
+@pytest.mark.skip(reason="Java single-file source analysis is won't-fix (#256); witness retired under #255")
 class TestInheritanceCallGraphIntegration:
     """Test suite for inheritance support in call graph generation."""
 

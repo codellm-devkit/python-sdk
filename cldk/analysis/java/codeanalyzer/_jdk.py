@@ -164,10 +164,15 @@ def ensure_jdk(java_cache_dir: Path) -> Path:
       3. otherwise download + extract the pinned Temurin JDK into the cache.
     """
     home = Path(java_cache_dir) / "jdk" / JDK_RELEASE
-    java = home / "bin" / ("java.exe" if os.name == "nt" else "java")
-    if java.exists() and (home / "jmods").is_dir():
-        logger.debug(f"Reusing cached JDK at {home}")
-        return home
+    # The archive extracts nested (<home>/<release>/bin, or .../Contents/Home/bin on mac), so look
+    # for the JDK the same way download_and_extract did rather than at <home>/bin.
+    try:
+        cached = JdkLoader._java_home(home)
+    except FileNotFoundError:
+        pass
+    else:
+        logger.debug(f"Reusing cached JDK at {cached}")
+        return cached
 
     sys_home = os.environ.get("JAVA_HOME")
     if sys_home and (Path(sys_home) / "jmods").is_dir():
