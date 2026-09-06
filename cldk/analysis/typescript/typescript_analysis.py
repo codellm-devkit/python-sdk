@@ -106,11 +106,11 @@ class TypeScriptAnalysis:
                 target_files=target_files,
                 tsc_only=getattr(self.backend_config, "tsc_only", False),
             )
-        self.application: TSApplication = self.backend.get_application()
+        self.application: TSApplication = self.backend.get_application_view()
 
     # -----[ Tier A: lifecycle / whole-program ]-----
     def get_application_view(self) -> TSApplication:
-        return self.backend.get_application()
+        return self.backend.get_application_view()
 
     def get_symbol_table(self) -> Dict[str, TSModule]:
         return self.backend.get_symbol_table()
@@ -119,14 +119,18 @@ class TypeScriptAnalysis:
         return self.backend.get_modules()
 
     def get_call_graph(self) -> nx.DiGraph:
-        """NetworkX DiGraph of callable signatures (and phantom external symbols) connected by the
-        identity-only call edges."""
+        """NetworkX DiGraph of the call edges, keyed as every other accessor keys things (module
+        file key, type/callable signature, ``"<module>.<name>"`` for an external), each node
+        tagged ``kind`` (``module | class | interface | enum | type_alias | namespace | callable | external``) and ``id``. TypeScript's own
+        endpoints are kept: a module is the caller of its top-level code and a class the callee of
+        ``new X()``; filter on ``kind == "callable"`` for Python's shape."""
         return self.backend.get_call_graph()
 
     def get_external_symbols(self) -> Dict[str, TSExternalSymbol]:
-        """The phantom (external) call targets — imported/required library members the call graph
-        points at (e.g. ``node:fs.readFileSync``, ``js-yaml.load``). Useful for source→sink
-        reachability."""
+        """The phantom (external) call targets — imported/required library members and builtins
+        the call graph points at — keyed ``"<module>.<name>"`` (e.g. ``node:fs.readFileSync``,
+        ``(builtin).push``) as the call graph keys them, the wire's ``can://`` id on the value.
+        Useful for source→sink reachability."""
         return self.backend.get_external_symbols()
 
     def get_synthesized_callables(self) -> Dict[str, TSSynthesizedCallable]:
@@ -169,30 +173,6 @@ class TypeScriptAnalysis:
     def get_call_targets(self, source_signature: str) -> Set[str]:
         """The call targets invoked from a callable, derived from its call sites."""
         return self.backend.get_call_targets(source_signature)
-
-    # -----[ entrypoints (not yet supported) ]-----
-    def get_entry_point_methods(self) -> Dict[str, Dict[str, TSCallable]]:
-        """Return methods identified as application entry points.
-
-        Not yet supported: the codeanalyzer-typescript backend's entrypoint detection is a stub
-        placeholder — the ``entrypoints`` list on each ``TSCallable``/``TSClass`` is always empty
-        (level-2 finders are not implemented) — so this method exists for API parity with
-        :class:`PythonAnalysis` / :class:`JavaAnalysis` but raises.
-
-        Raises:
-            NotImplementedError: Always.
-        """
-        raise NotImplementedError("Entrypoint detection is not implemented in the codeanalyzer-typescript backend yet.")
-
-    def get_service_entry_point_methods(self, **kwargs) -> Dict[str, Dict[str, TSCallable]]:
-        """Return methods that serve as service entry points (e.g. Express/NestJS routes).
-
-        Not yet supported; see :meth:`get_entry_point_methods`.
-
-        Raises:
-            NotImplementedError: Always.
-        """
-        raise NotImplementedError("Entrypoint detection is not implemented in the codeanalyzer-typescript backend yet.")
 
     # -----[ Tier B: navigation ]-----
     def get_classes(self) -> Dict[str, TSClass]:
@@ -269,6 +249,10 @@ class TypeScriptAnalysis:
         return self.backend.get_typescript_module(file_path)
 
     def get_nested_classes(self, qualified_class_name: str) -> List[TSClass]:
+        """Always ``[]`` on schema v2, on both backends -- permanently, not for want of data. A
+        v2 class node holds only ``callables`` and ``fields``: the tree gives a class no ``types``
+        bucket, so no class can nest a class. A class declared inside a *callable* is the surviving
+        case and reads as ``TSCallable.inner_classes``. Kept because the 1.x surface had it (G3)."""
         return self.backend.get_all_nested_classes(qualified_class_name)
 
     def get_sub_classes(self, qualified_class_name: str) -> Dict[str, TSClass]:

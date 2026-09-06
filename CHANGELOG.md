@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+**Leg 2.5a — TypeScript on codeanalyzer-typescript 1.2.0's schema v2**, on both backends, with the
+public API frozen. Ships in `2.0.0-rc.3`. Design record:
+`docs/design/specs/2026-09-06-leg-2.5-typescript.md`.
+
+### Breaking
+
+- **A graph emitted by codeanalyzer-typescript below 1.2.0, or holding no matching application, is
+  refused at attach** with `GraphSchemaMismatch` instead of answering every query with zero rows.
+  Re-ingest with `codeanalyzer-typescript>=1.2.0 --emit neo4j`; there is no in-place upgrade.
+- **`TSNeo4jBackend` speaks the 1.2.0 graph vocabulary**, which shares nothing with 0.4.3's.
+- **Values that changed shape:** `TSCallEdge` is `{src, dst, prov, weight}`; `TSCallable` no longer
+  carries `path`, `call_sites`, `accessed_symbols`, `local_variables` or `code_start_line`, and
+  `TSModule` no longer carries `file_path` or `module_name`, since v2 keys modules by path and stores
+  source once per module; `TSCallableOverview.from_callable` takes a required keyword-only `path`.
+- **Removed:** `get_entry_point_methods` and `get_service_entry_point_methods`, which only ever raised
+  `NotImplementedError`. Working entrypoint accessors arrive with the query surface (leg 2.5b).
+
+Every other accessor keeps its name, signature and return type; a test freezes all 46.
+
+### Added
+
+- **JavaScript modules are in scope** (`.js/.jsx/.mjs/.cjs`), under their own `can://javascript/` id
+  prefix, in the same application as the TypeScript ones.
+- **Both backends answer the shared artifact, dependency and configuration accessors**, now that
+  `TSAnalysisBackend` inherits the generic `AnalysisBackend`.
+
+### Changed
+
+- **Pin: `codeanalyzer-typescript` 0.4.3 → 1.2.0.** The backend drives the 1.2.0 CLI and every
+  analysis level now reaches the analyzer; `TSCodeAnalyzerConfig.tsc_only` is a deprecated no-op.
+- **`get_call_graph()` keys nodes as every other accessor does** and tags each with a `kind`
+  (`module | class | interface | enum | type_alias | namespace | callable | external`). TypeScript
+  keeps module callers and class callees, unlike Python — filter on `kind == "callable"` for that shape.
+- **Where the graph cannot answer, the backend says so instead of returning an empty value:**
+  `get_imports`, `get_all_exports`, `get_unresolved_config_reads`, `get_method_parameters` for a found
+  method, and `get_extended_classes`/`get_implemented_interfaces` when the relationship type is absent.
+  The remaining documented gaps, and where the two backends legitimately differ, are in
+  `docs/agent-api-reference.md`.
+- Internal: the language-neutral query helpers moved from `cldk/analysis/python/` to
+  `cldk/analysis/commons/`; Python re-imports every name unchanged.
+
+### Known limitations
+
+- codeanalyzer-typescript mints one id for a value and a type of the same name under declaration
+  merging (codeanalyzer-typescript#177); such a node resolves to the facet its `kind` names, or not at
+  all, and never comes back described as something it is not.
+- A graph emitted from an unreleased `main` build stamps `1.2.0` and cannot be told from a release
+  graph.
+
 ## [v2.0.0-rc.2] - 2026-09-06
 Python legs 1, 1.5 and 1.6 of the CLDK 2.0 agent-facing query facade (see
 `docs/design/specs/2026-09-03-agent-facing-query-facade.md`,

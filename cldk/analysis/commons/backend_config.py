@@ -77,13 +77,14 @@ class PyCodeAnalyzerConfig(CodeAnalyzerConfig):
 class TSCodeAnalyzerConfig(CodeAnalyzerConfig):
     """Select the in-process codeanalyzer backend for TypeScript.
 
-    Adds the TypeScript-only call-graph knob on top of :class:`CodeAnalyzerConfig`.
+    Kept distinct from :class:`CodeAnalyzerConfig` for the one knob it used to add; that knob is
+    now a no-op, and the class stays so existing call sites keep constructing it.
 
     Attributes:
-        tsc_only: If ``True``, restrict the analyzer to the tsc resolver call graph by passing
-            ``--tsc-only`` (codeanalyzer-typescript >= 0.4.2). Defaults to ``False`` (let the
-            binary choose its default). This is the supported replacement for the obsolete
-            ``--call-graph-provider both``.
+        tsc_only: **Deprecated, no-op.** codeanalyzer-typescript removed ``--tsc-only`` in 1.0.0:
+            the call graph always carries both resolvers, each edge tagged with its provenance
+            (``tsc`` / ``defuse`` / ``import``). Passing ``True`` emits a :class:`DeprecationWarning`
+            and changes nothing; filter edges by ``provenance`` instead.
     """
 
     tsc_only: bool = False

@@ -81,7 +81,6 @@ Everything else round-trips identically to ``PyCodeanalyzer``.
 from __future__ import annotations
 
 import logging
-import re
 from collections import defaultdict
 from contextlib import contextmanager
 from functools import cached_property
@@ -92,6 +91,8 @@ from codeanalyzer.schema import model_dump_json
 from codeanalyzer.schema.ids import application_id, module_id
 from codeanalyzer.schema.py_schema import PyEntrypointReport
 
+from cldk.analysis.commons.backend import semver as _semver
+from cldk.analysis.commons.keys import module_key_of
 from cldk.analysis.commons.resolve import CallableCandidate, body_node_kind, resolve_callable_signature, resolve_value_name, resolve_within, value_candidate
 from cldk.analysis.commons.results import CallableRef, Diagnostic, EdgePage, EntrypointCoverage, FlowPath, FlowPaths, LocateResult, ModuleRef, PathHop, Slice, SliceNode, TypeRef
 from cldk.analysis.python.backend import (
@@ -151,11 +152,6 @@ from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException, Gra
 logger = logging.getLogger(__name__)
 
 
-def _semver(raw: Any) -> Tuple[int, int, int] | None:
-    """``"1.4.1"`` (or ``"1.4.1.post0"``) as ``(1, 4, 1)``; ``None`` for anything that does not
-    start with three dotted integers, so an unparsable version is *unknown*, never silently zero."""
-    m = re.match(r"(\d+)\.(\d+)\.(\d+)", raw) if isinstance(raw, str) else None
-    return (int(m[1]), int(m[2]), int(m[3])) if m else None
 
 # One statement per parent->child collection, each fetching that whole collection for the *entire*
 # application in a single round trip and returning the parent's key as ``pk``. These are the bulk
@@ -485,7 +481,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
 
     @cached_property
     def _module_set(self) -> FrozenSet[str]:
-        """:attr:`_modules` as a set -- the membership side of :func:`~cldk.analysis.python.neo4j.reconstruct.module_key_of`.
+        """:attr:`_modules` as a set -- the membership side of :func:`~cldk.analysis.commons.keys.module_key_of`.
         The list stays the Cypher parameter (the driver does not pack a set); this is the view every
         projected row's key is verified against, built once."""
         return frozenset(self._modules)
@@ -502,13 +498,13 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         miss is a genuine defect and is raised as such, without the id (E6).
         """
         try:
-            return R.module_key_of(node_id, self._scope_prefix, self._module_set)
+            return module_key_of(node_id, self._scope_prefix, self._module_set)
         except KeyError:
             pass
         self._modules = self._load_module_keys()
         self.__dict__.pop("_module_set", None)  # drop the cached frozenset; rebuilt on next read
         try:
-            return R.module_key_of(node_id, self._scope_prefix, self._module_set)
+            return module_key_of(node_id, self._scope_prefix, self._module_set)
         except KeyError:
             raise CodeanalyzerExecutionException(
                 f"A node of application {self.application_name!r} belongs to none of the {len(self._module_set)} module keys the graph "
@@ -1612,7 +1608,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         are the keys the query matches them by."""
         check_distinct_endpoints(a, b)
         rows = self._run(query.format(rels=SDG_REL_PATTERN, depth="" if depth is None else depth), src=src, dst=dst, cap=max_paths + 1, prefix=self._scope_prefix)
-        paths = [flow_path([node_of(n, self._module_key) for n in r["ns"]], [(e["via"], e["var"], e["prov"]) for e in r["rs"]]) for r in rows[:max_paths]]
+        paths = [flow_path([node_of(n, self._module_key) for n in r["ns"]], [(e["via"], e["var"], e["prov"]) for e in r["rs"]], via=VIA) for r in rows[:max_paths]]
         return FlowPaths(paths=paths, complete=len(rows) <= max_paths)
 
     # Argument validation precedes name resolution on every accessor below, as it does on the

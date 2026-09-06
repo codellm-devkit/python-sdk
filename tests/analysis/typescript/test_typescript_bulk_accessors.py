@@ -18,7 +18,7 @@
 ``get_callables_overview`` / ``get_method_bodies`` / ``get_decorated_callables`` /
 ``get_callsites_for`` — on the in-memory backend and the facade delegates.
 
-Built against the real sample-app fixture (``tests/resources/typescript/analysis_json/slim``)
+Built against the real sample-app fixture (``tests/resources/typescript/analysis_json/v2/a4``)
 already used elsewhere in this package. Expected sets below were derived by reading that fixture's
 JSON directly (see the exploration notes in the task brief), never by running the implementation
 and copying its output.
@@ -63,19 +63,22 @@ def ts_analysis(typescript_application, typescript_analysis_json, tmp_path, monk
         )
 
 
-# The fixture app has exactly 33 callables total (module functions, namespace functions, class and
-# interface methods -- including nested classes' methods -- and inner/nested callables), 13 of
-# which are owner-less: module-level functions, the one inner function
-# (``src/util.classify.keyOf``), and the two namespace-owned functions on ``StringUtil``
+# The fixture app has exactly 35 callables total (module functions, namespace functions, class and
+# interface methods -- including nested classes' methods -- and inner/nested callables), 15 of
+# which are owner-less: module-level functions and arrows, the inner function
+# (``src/util.classify.keyOf``), the four anonymous callbacks the v2 tree homes under their
+# enclosing callable (``<anon@L:C>``), and the two namespace-owned functions on ``StringUtil``
 # (``repeat``/``slug``) per the ruling that namespace-owned functions carry no owner pair.
-TOTAL_CALLABLES = 33
+TOTAL_CALLABLES = 35
 OWNERLESS_SIGNATURES = {
     "src/controllers.Controller",
+    "src/controllers.Controller.<anon@5:10>",
     "src/controllers.Get",
+    "src/controllers.Get.<anon@8:10>",
     "src/controllers.Param",
-    "src/external.extensionOf",
-    "src/external.fingerprint",
+    "src/controllers.Param.<anon@11:10>",
     "src/index.main",
+    "src/services.UserService.describeAll.<anon@37:27>",
     "src/services.announce",
     "src/services.makeGuestName",
     "src/services.nextId",
@@ -179,8 +182,9 @@ def test_method_bodies_empty_for_no_matches(ts_analysis):
 
 def test_method_bodies_omits_code_less_callables(ts_analysis):
     """The implicit ``Builder`` constructor exists (it's a real callable in the symbol table) but
-    the analyzer never synthesized source text for it -- ``code`` is ``None``. It must be omitted
-    from the result, not surfaced as ``{sig: None}``, so every returned value is a real ``str``."""
+    the analyzer never synthesized source text for it -- its span is empty, so ``code`` is ``""``
+    (1.x carried ``None``). It must be omitted from the result, not surfaced as ``{sig: ""}``, so
+    every returned value is a real, non-empty body."""
     bodies = ts_analysis.get_method_bodies(
         [
             "src/services.UserService.create",
@@ -222,7 +226,8 @@ def test_callsites_for_exact_per_signature_lists_and_empty_entry(ts_analysis):
     # existing-but-callsite-less callable gets an empty list, not omitted
     assert result["src/models.Entity.constructor"] == []
     create_targets = {cs.callee_signature or cs.method_name for cs in result["src/services.UserService.create"]}
-    assert create_targets == {"src/services.nextId", "src/models.User.constructor", "push"}
+    # the builtin is a resolved external now, keyed as the call graph keys it
+    assert create_targets == {"src/services.nextId", "src/models.User.constructor", "(builtin).push"}
 
 
 # -----[ facade delegates to the same backend objects ]-----
