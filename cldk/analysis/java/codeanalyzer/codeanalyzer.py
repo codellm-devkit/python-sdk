@@ -38,7 +38,7 @@ import networkx as nx
 from cldk.analysis.commons.backend_config import cache_subdir
 from cldk.analysis.commons.levels import analyzer_level
 from cldk.analysis.commons.treesitter import TreesitterJava
-from cldk.analysis.java.backend import CRUD_UNAVAILABLE, CRUDRow, JavaAnalysisBackend
+from cldk.analysis.java.backend import CRUD_UNAVAILABLE, CRUDRow, JavaAnalysisBackend, duplicate_type_name, unhomed_endpoint
 from cldk.analysis.java.codeanalyzer._jdk import ensure_jdk
 from cldk.models.java import JGraphEdges
 from cldk.models.java.models import JAnalysis, JApplication, JCallable, JCallableParameter, JCallSite, JComment, JCompilationUnit, JField, JMethodDetail, JType
@@ -192,9 +192,7 @@ class JCodeanalyzer(JavaAnalysisBackend):
     def _add_type(self, t: JType, path: str) -> None:
         name = t.qualified_name
         if name in self._types:
-            # Two declarations spelling the same qualified name would make the node key ambiguous;
-            # surfaced rather than letting the second silently shadow the first.
-            raise CodeanalyzerExecutionException(f"type qualified name {name!r} is declared twice: {self._types[name].id!r} and {t.id!r}")
+            raise CodeanalyzerExecutionException(duplicate_type_name(name))
         self._types[name] = t
         self._file_of[name] = path
         for c in t.callables.values():
@@ -211,13 +209,12 @@ class JCodeanalyzer(JavaAnalysisBackend):
     def _node_of(self, node_id: str) -> Tuple[str, JMethodDetail]:
         """The (node key, method detail) a call-graph endpoint id resolves to. Every endpoint the
         analyzer emits is homed on the tree; one that is not is the analyzer's defect, surfaced
-        rather than skipped or keyed by a raw id."""
+        rather than skipped — named by the signature and module key its id spells, never by the id
+        (E6), in the same words the Neo4j backend uses."""
         try:
             t, c = self._callables[node_id]
         except KeyError:
-            raise CodeanalyzerExecutionException(
-                f"call-graph endpoint {node_id!r} is not a callable of application {self.application.id!r}: " f"codeanalyzer-java {self.analysis.analyzer.version} emitted an unhomed endpoint"
-            ) from None
+            raise CodeanalyzerExecutionException(unhomed_endpoint(node_id)) from None
         return f"{t.qualified_name}.{c.signature}", self._detail(t.qualified_name, c)
 
     def _is_external(self, node_id: str) -> bool:

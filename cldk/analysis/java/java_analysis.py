@@ -611,6 +611,16 @@ class JavaAnalysis:
             analyzed information about the method. Returns ``None`` if the
             method is not found.
 
+        Note:
+            Two fields depend on which backend answered. On the
+            ``analysis.json`` backend ``code`` is the **body block** and
+            ``body`` holds every body node. On the Neo4j backend ``code`` is
+            the whole **declaration** (it *ends with* the body block, because
+            the graph projects one line range per callable and no
+            ``body_span``) and ``body`` holds the ``call`` nodes only — about
+            30% of the graph's body nodes, which is what ``call_sites`` needs
+            and all it needs.
+
         See Also:
             :meth:`get_methods_in_class`: For all methods of a class.
             :meth:`get_method_parameters`: For just the parameter list.
@@ -1120,6 +1130,14 @@ class JavaAnalysis:
             A list of :class:`~cldk.models.java.JComment` objects found
             within the method body. Returns empty list if method not found.
 
+        Note:
+            On a backend whose source keeps only per-declaration javadoc — the
+            Neo4j backend — this narrows to **the method's javadoc alone**: a
+            strictly smaller set than every comment in the body, and still a
+            real answer about a real declaration, which is why this accessor
+            narrows where :meth:`get_all_comments` and
+            :meth:`get_comment_in_file` refuse (J-16).
+
         See Also:
             :meth:`get_comments_in_a_class`: For class-level comments.
             :meth:`get_all_comments`: For all comments in the project.
@@ -1140,6 +1158,10 @@ class JavaAnalysis:
             A list of :class:`~cldk.models.java.JComment` objects found
             within the class. Returns empty list if class not found.
 
+        Note:
+            Narrows to the class's javadoc alone on a javadoc-only backend, in
+            exactly the way :meth:`get_comments_in_a_method` does (J-16).
+
         See Also:
             :meth:`get_comments_in_a_method`: For method-specific comments.
             :meth:`get_comment_in_file`: For file-level comments.
@@ -1159,6 +1181,12 @@ class JavaAnalysis:
             A list of :class:`~cldk.models.java.JComment` objects found
             in the file. Returns empty list if file not found.
 
+        Raises:
+            CodeanalyzerExecutionException: If the backend's source carries no
+                file-level comments at all — the Neo4j projection does not —
+                naming what is missing and what to read instead. An empty list
+                would read as "this file has no comments" (J-16).
+
         See Also:
             :meth:`get_all_comments`: For comments across all files.
         """
@@ -1173,6 +1201,10 @@ class JavaAnalysis:
         Returns:
             A dictionary mapping file paths (strings) to lists of
             :class:`~cldk.models.java.JComment` objects.
+
+        Raises:
+            CodeanalyzerExecutionException: As :meth:`get_comment_in_file`
+                does, and for the same reason (J-16).
 
         See Also:
             :meth:`get_all_docstrings`: For Javadoc comments only.
@@ -1190,6 +1222,14 @@ class JavaAnalysis:
             A dictionary mapping file paths (strings) to lists of
             :class:`~cldk.models.java.JComment` objects where
             ``is_javadoc`` is ``True``.
+
+        Note:
+            *Which* javadoc depends on the backend: the ``analysis.json``
+            backend reports each compilation unit's own comment list, holding
+            the **file-level** javadoc; the Neo4j backend reports the javadoc of
+            each **declaration** in the file (type, callable, field, enum
+            constant, record component). Both are javadoc keyed by file, and
+            they are different sets for the same file (J-16).
 
         See Also:
             :meth:`get_all_comments`: For all comment types.

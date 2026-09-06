@@ -41,15 +41,26 @@ graph that still speaks it is refused at attach by :meth:`_probe_schema` (J-9).
 statement walks out from. Nothing else distinguishes two applications in one database: a module
 ``file_key``, a qualified class name and a method signature are all shared vocabulary.
 
-**Seek labels.** Every keyed label already owns a uniqueness constraint on ``id``, so each
-statement anchors on the bare specific label. ``:JCanNode`` is measurably never better here — see
-``test_seek_labels_follow_the_measured_rule`` and the table in Task 3 of the leg-3a plan.
+**Seek labels.** Every statement anchors on the bare specific label; ``:JCanNode`` is used
+nowhere. Not because the bare label always seeks — ``:JCallable`` owns no id index at all (only a
+range index on ``name`` and the ``code``/``docstring`` fulltext), so bare ``:JCallable`` plans a
+label scan — but because of what the statements here actually are. The two prefix-scoped ones both
+fan out over relationships from every matched callable, and measured on ThingsBoard the traversal
+dominates: swapping the anchor moves the wall clock by under 1% while ``:JCanNode`` adds a quarter
+again as many db hits (5.65M against 4.55M on the call sites, 1.89M against 0.73M on the call
+edges). Everything else is anchored on ``(:JApplication {name: $app})`` and never scans at all.
+``:JCanNode``'s own index is not a constraint and spans 615,329 nodes, so where it *is* the only
+seek it still loses — 118 ms against 24 on a whole-application prefix; it wins only a per-module
+prefix, which no statement here issues. See ``test_no_statement_anchors_on_the_marker_label`` and
+the table in Task 3 of the leg-3a plan.
 
 **Strategy.** Unlike the Python and TypeScript Neo4j backends, which answer each accessor with its
-own statement, this one rebuilds the canonical :class:`JApplication` from the graph in eight
-statements (one containment-subtree traversal, not one query per parent) and then answers every
-query with the *same* logic the in-memory backend runs over the same models. The application is
-built on first use, not at attach, and cached.
+own statement, this one rebuilds the canonical :class:`JApplication` from the graph and then answers
+every query with the *same* logic the in-memory backend runs over the same models. The application
+is built on first use, not at attach, and cached — **nine round trips in all**: three at attach (the
+relationship-type fingerprint, the version probe, the module fetch) and six on first use (one
+containment-subtree traversal instead of one query per parent, then call sites, imports, call edges,
+artifacts and dependencies).
 
 **Lossiness** relative to the in-memory backend (the projection's, not this client's; see
 :mod:`reconstruct` for the per-node detail): a module carries no ``source`` and no span, so
@@ -79,7 +90,7 @@ from typing import Any, Dict, FrozenSet, Iterable, List, Tuple
 import networkx as nx
 
 from cldk.analysis.commons.treesitter import TreesitterJava
-from cldk.analysis.java.backend import CRUD_UNAVAILABLE, CRUDRow, JavaAnalysisBackend
+from cldk.analysis.java.backend import CRUD_UNAVAILABLE, CRUDRow, JavaAnalysisBackend, duplicate_type_name, unhomed_endpoint
 from cldk.analysis.java.neo4j import reconstruct as R
 from cldk.models.java import JGraphEdges
 from cldk.models.java.models import (
@@ -334,24 +345,6 @@ class JNeo4jBackend(JavaAnalysisBackend):
 
     # -----[ the containment tree ]-----
     @staticmethod
-    def _facet(props: Dict[str, Any]) -> str:
-        """``"type"`` or ``"callable"`` for a ``:JSymbol`` row, from its own labels and ``kind``.
-
-        Dispatch is on the node's own discriminator both ways round — never a default facet: a row
-        whose label and ``kind`` disagree, or name neither, is an emitter defect and is raised as
-        one, named by signature/name, labels and kind (never by its id, E6).
-        """
-        labels, kind = props.get("_labels", []), props.get("kind")
-        if "JType" in labels and kind in R.TYPE_KINDS:
-            return "type"
-        if "JCallable" in labels and kind in R.CALLABLE_KINDS:
-            return "callable"
-        raise CodeanalyzerExecutionException(
-            f"symbol {props.get('signature') or props.get('name')!r} (labels {sorted(labels)}, kind {kind!r}) is neither a type nor a callable: "
-            f"codeanalyzer-java emitted a declaration this backend cannot rebuild"
-        )
-
-    @staticmethod
     def _child_key(parent_id: str, props: Dict[str, Any]) -> str:
         """A declared type's container key: the id segment under its parent, which is its simple
         name. A child id is minted under its parent's by construction, so a mismatch is an emitter
@@ -416,7 +409,8 @@ class JNeo4jBackend(JavaAnalysisBackend):
             for rel, p, _ in children.get(module_id, []):
                 if rel != "J_DECLARES":
                     continue
-                self._facet(p)  # a module declares types only; anything else is a defect
+                # A module declares types only; ``kind`` is a ``Literal`` on :class:`JType`, so a
+                # row that is not one is refused by the model.
                 types[self._child_key(module_id, p)] = self._type(p, children, sites)
             unit = R.compilation_unit(props, import_declarations=[i for e in imports.get(key, []) for i in R.imports(e)], types=types)
             R.thread_code(unit, self._projected_code(children, module_id))
@@ -453,10 +447,18 @@ class JNeo4jBackend(JavaAnalysisBackend):
     # The reconstructed view and its index (both built on first use)
     # =====================================================================================
     @cached_property
-    def application(self) -> JApplication:
-        """The application view, rebuilt from the graph on first use and cached. Assignable — the
-        miss-path unit tests seed it directly instead of attaching to a server."""
+    def _application(self) -> JApplication:
+        """The application view, rebuilt from the graph on first use and cached. Private because
+        :attr:`_idx` and :attr:`_call_graph` are derived from it and cached beside it: rebinding it
+        would leave them answering from the object it replaced. Tests that need a seeded view
+        without a server write ``backend.__dict__["_application"]``, which is exactly what this
+        ``cached_property`` would have stored."""
         return self._reconstruct()
+
+    @property
+    def application(self) -> JApplication:
+        """The application view (read-only; see :attr:`_application`)."""
+        return self._application
 
     @cached_property
     def _idx(self) -> Tuple[Dict[str, JType], Dict[str, str], Dict[str, Tuple[JType, JCallable]]]:
@@ -471,7 +473,7 @@ class JNeo4jBackend(JavaAnalysisBackend):
         def add(t: JType, path: str) -> None:
             name = t.qualified_name
             if name in types:
-                raise CodeanalyzerExecutionException(f"type qualified name {name!r} is declared twice in application {self.application_name!r}")
+                raise CodeanalyzerExecutionException(duplicate_type_name(name))
             types[name] = t
             file_of[name] = path
             for c in t.callables.values():
@@ -481,7 +483,7 @@ class JNeo4jBackend(JavaAnalysisBackend):
             for nested in t.types.values():
                 add(nested, path)
 
-        for path, unit in self.application.symbol_table.items():
+        for path, unit in self._application.symbol_table.items():
             for t in unit.types.values():
                 add(t, path)
         return types, file_of, callables
@@ -518,13 +520,12 @@ class JNeo4jBackend(JavaAnalysisBackend):
     def _node_of(self, node_id: str) -> Tuple[str, JMethodDetail]:
         """The (node key, method detail) a call-graph endpoint id resolves to. Every endpoint the
         projection writes is homed on the tree; one that is not is a defect, surfaced rather than
-        skipped or keyed by a raw id."""
+        skipped — named by the signature and module key its id spells, never by the id (E6), in the
+        same words the in-memory backend uses."""
         try:
             t, c = self._idx[2][node_id]
         except KeyError:
-            raise CodeanalyzerExecutionException(
-                f"a J_CALLS endpoint of application {self.application_name!r} is not one of its callables: codeanalyzer-java emitted an unhomed endpoint"
-            ) from None
+            raise CodeanalyzerExecutionException(unhomed_endpoint(node_id)) from None
         return f"{t.qualified_name}.{c.signature}", self._detail(t.qualified_name, c)
 
     @staticmethod
@@ -694,6 +695,11 @@ class JNeo4jBackend(JavaAnalysisBackend):
         return {sig: c for sig, c in klass.callables.items() if c.is_constructor}
 
     def get_method(self, qualified_class_name: str, qualified_method_name: str) -> JCallable | None:
+        """The callable, or ``None``. Two fields differ from the in-memory backend's, because the
+        projection differs: ``code`` is the whole **declaration** (the graph carries one line range
+        per callable and no ``body_span``), where the in-memory backend's is the body block; and
+        ``body`` holds the ``call`` nodes **only** — about 30% of the graph's body nodes (4,006 of
+        daytrader8's 13,436) — which is what ``call_sites`` is a view over."""
         klass = self.get_class(qualified_class_name)
         return klass.callables.get(qualified_method_name) if klass is not None else None
 
@@ -788,14 +794,18 @@ class JNeo4jBackend(JavaAnalysisBackend):
 
     # -----[ comments ]-----
     def get_comments_in_a_method(self, qualified_class_name: str, method_signature: str) -> List[JComment]:
-        """The method's javadoc, which is all the projection keeps of its comments (see the module
-        docstring). ``[]`` both for a method with no javadoc and for a missing one, as on the
+        """The method's javadoc — **narrower than the ABC's "the comments in a method"**: the graph
+        keeps one ``docstring`` per declaration and no other comment, so a non-javadoc comment in
+        the body is not here (see the module docstring). A javadoc-only subset is still a real
+        answer under this name, which is why this one narrows where the two file-keyed accessors
+        refuse (J-16). ``[]`` both for a method with no javadoc and for a missing one, as on the
         in-memory backend."""
         method = self.get_method(qualified_class_name, method_signature)
         return method.comments if method is not None else []
 
     def get_comments_in_a_class(self, qualified_class_name: str) -> List[JComment]:
-        """The class's javadoc — see :meth:`get_comments_in_a_method`."""
+        """The class's javadoc, narrower than the ABC's "the comments in a class" in exactly the
+        way :meth:`get_comments_in_a_method` is (J-16)."""
         klass = self.get_class(qualified_class_name)
         return klass.comments if klass is not None else []
 
@@ -811,10 +821,12 @@ class JNeo4jBackend(JavaAnalysisBackend):
         raise CodeanalyzerExecutionException(_COMMENTS_UNAVAILABLE.format(app=self.application_name))
 
     def get_all_docstrings(self) -> Dict[str, List[JComment]]:
-        """The javadoc of each file's *declarations* — types, their callables and their fields — the
-        only comments the projection carries. The in-memory backend reads the compilation unit's own
-        comment list instead, which additionally holds every file-level javadoc (a licence header,
-        say) and nothing per declaration; the two therefore report different sets for the same file.
+        """The javadoc of each file's *declarations* — every declaration the projection gives a
+        ``docstring``: types, their callables, fields, enum constants and record components. That
+        is the only comment text in the graph. The in-memory backend reads the compilation unit's
+        own comment list instead, which additionally holds every file-level javadoc (a licence
+        header, say) and nothing per declaration; the two therefore report different sets for the
+        same file.
         """
         out: Dict[str, List[JComment]] = {}
         for name, t in self._types.items():
@@ -822,6 +834,8 @@ class JNeo4jBackend(JavaAnalysisBackend):
             javadoc = list(t.comments)
             javadoc += [c for member in t.callables.values() for c in member.comments]
             javadoc += [c for f in t.fields.values() for c in f.comments]
+            javadoc += [c for k in t.enum_constants for c in k.comments]
+            javadoc += [c for rc in t.record_components for c in rc.comments]
             if javadoc:
                 out.setdefault(path, []).extend(javadoc)
         return out

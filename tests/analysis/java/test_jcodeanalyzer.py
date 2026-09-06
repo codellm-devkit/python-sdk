@@ -35,7 +35,7 @@ from cldk.analysis.java.codeanalyzer import JCodeanalyzer
 from cldk.analysis.java.codeanalyzer import _jdk
 from cldk.analysis.java.neo4j import JNeo4jBackend
 from cldk.models.java import JGraphEdges
-from cldk.models.java.models import JApplication, JCallGraphEdge, JComment, JType, JCallable, JCompilationUnit, JMethodDetail
+from cldk.models.java.models import JAnalysis, JApplication, JCallGraphEdge, JComment, JType, JCallable, JCompilationUnit, JMethodDetail
 from cldk.models.python import PyArtifact, PyConfigKey, PyDependency
 from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 
@@ -202,8 +202,10 @@ def test_unhomed_call_graph_endpoint_raises_naming_it(analysis_json_a4):
     payload = json.loads(analysis_json_a4)
     payload["application"]["call_graph"].append({"src": "can://java/daytrader8/nowhere/X.java/X/m()", "dst": payload["application"]["call_graph"][0]["dst"], "prov": ["declared"], "weight": 1})
     analyzer, _ = _analyzer(json.dumps(payload), level=AnalysisLevel.call_graph)
-    with pytest.raises(CodeanalyzerExecutionException, match=re.escape("can://java/daytrader8/nowhere/X.java/X/m()")):
+    with pytest.raises(CodeanalyzerExecutionException, match=re.escape("call-graph endpoint 'm()' in 'nowhere/X.java'")) as e:
         analyzer.get_call_graph()
+    # E6: the defect is named by the signature and module key the id spells, never by the id.
+    assert "can://" not in str(e.value)
 
 
 def test_external_endpoints_are_dropped(analysis_json_a4):
@@ -290,7 +292,73 @@ def test_get_all_classes_is_keyed_by_qualified_name_including_nested_and_local(a
     assert all(isinstance(t, JType) for t in classes.values())
     assert TRADE_DIRECT in classes
     assert "com.ibm.websphere.samples.daytrader.impl.ejb3.TradeSLSBBean.quotePriceComparator" in classes
-    assert "com.ibm.websphere.samples.daytrader.web.prims.PingManagedExecutor.$anon$0" in classes
+    assert "com.ibm.websphere.samples.daytrader.web.prims.PingManagedExecutor.doGet(javax.servlet.http.HttpServletRequest, javax.servlet.http.HttpServletResponse).$anon$0" in classes
+
+
+def _local_class_collision_payload() -> dict:
+    """Two sibling callables of one type, each declaring an anonymous class the analyzer numbers
+    ``$anon$0``. Hand-built, so the shape is catchable with no analyzer and no graph: on ThingsBoard
+    it is 97 colliding names shadowing 381 of 5,102 type declarations."""
+    module = "can://java/app/src/main/java/p/Outer.java"
+    span = lambda a, b: {"start": [a, 1], "end": [b, 1], "bytes": [0, 0]}
+
+    def method(signature: str) -> dict:
+        node_id = f"{module}/Outer/{signature}"
+        return {
+            "id": node_id,
+            "kind": "method",
+            "signature": signature,
+            "span": span(2, 4),
+            "types": {"$anon$0": {"id": f"{node_id}/$anon$0", "kind": "class", "span": span(3, 3)}},
+        }
+
+    return {
+        "schema_version": "2.0.0",
+        "language": "java",
+        "max_level": 1,
+        "analyzer": {"name": "codeanalyzer-java", "version": "3.0.1"},
+        "application": {
+            "id": "can://java/app",
+            "kind": "application",
+            "symbol_table": {
+                "src/main/java/p/Outer.java": {
+                    "id": module,
+                    "kind": "module",
+                    "span": span(1, 9),
+                    "package": "p",
+                    "source": "",
+                    "types": {
+                        "Outer": {
+                            "id": f"{module}/Outer",
+                            "kind": "class",
+                            "span": span(1, 9),
+                            "callables": {"one()": method("one()"), "two()": method("two()")},
+                        }
+                    },
+                }
+            },
+        },
+    }
+
+
+def test_a_local_class_is_keyed_by_its_declaring_callable_on_both_backends():
+    """J-1 erratum: a local or anonymous class's qualified name carries the signature of the
+    callable that declares it. ``$anon$N`` is numbered **per declaring callable**, so two sibling
+    callables of one type each declare ``$anon$0``; without the callable segment the two spell one
+    name — the second shadows the first on the in-memory backend and makes every ``_idx``-routed
+    accessor on the graph backend raise."""
+    payload = _local_class_collision_payload()
+    expected = {"p.Outer", "p.Outer.one().$anon$0", "p.Outer.two().$anon$0"}
+
+    analyzer, _ = _analyzer(json.dumps(payload))
+    assert set(analyzer.get_all_classes()) == expected
+    assert analyzer.get_class("p.Outer.one().$anon$0").id == "can://java/app/src/main/java/p/Outer.java/Outer/one()/$anon$0"
+    assert analyzer.get_class("p.Outer.one().$anon$0").is_local_class
+
+    neo = JNeo4jBackend.__new__(JNeo4jBackend)
+    neo.application_name = "app"
+    neo.__dict__["_application"] = JAnalysis.model_validate(payload).application
+    assert set(neo.get_all_classes()) == expected
 
 
 def test_get_class(analysis_json):

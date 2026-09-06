@@ -51,11 +51,17 @@ see :mod:`cldk.analysis.java.neo4j.reconstruct` for the projection's side of eac
   a line but no column in the graph, so a declaration's ``field_declarations`` and
   ``local_variables`` are compared as multisets. Annotation order is not recoverable at all
   (``J_ANNOTATED_BY`` carries only ``arguments``), so ``annotations`` is compared as a multiset.
+* **Every column and every byte offset is ``-1``** on every node, not ``0``: the projection writes
+  ``start_line``/``end_line`` and nothing else, so a position within a line and an offset into a
+  ``source`` the graph does not carry are *not known*. The sentinel is asserted, not skipped, on
+  types, callables, fields and call sites — a ``0`` would read as column one, offset zero.
 * ``imports`` are aggregated per import target, so a file's import order is not recoverable; the
   set is.
-* ``get_all_docstrings`` reports the javadoc of each file's *declarations*; the local backend
-  reports the compilation unit's own comment list, which holds every file-level javadoc instead.
-  The two are compared against each other's actual contents, not assumed equal.
+* ``get_all_docstrings`` reports the javadoc of each file's *declarations* — type, callable, field,
+  enum constant and record component; the local backend reports the compilation unit's own comment
+  list, which holds every file-level javadoc instead. The two are compared against each other's
+  actual contents, not assumed equal. daytrader8 declares no enum constants and no record
+  components, so those two arms of the loop are exercised by ThingsBoard, not here.
 * ``get_all_comments`` / ``get_comment_in_file`` raise on the graph (no comment nodes at all).
 * ``param_in`` / ``param_out``, ``cfg`` / ``cdg`` / ``ddg`` / ``summary``, ``type_parameters`` and
   the non-``call`` body nodes are not rebuilt in 3a.
@@ -177,6 +183,8 @@ def test_type_parity(backends):
         assert (o.id, o.kind, o.modifiers, o.base_types, o.interfaces) == (t.id, t.kind, t.modifiers, t.base_types, t.interfaces), name
         assert (o.is_entrypoint_class, o.qualified_name, o.parent_type, o.name) == (t.is_entrypoint_class, t.qualified_name, t.parent_type, t.name), name
         assert (o.start_line, o.end_line) == (t.start_line, t.end_line), name
+        assert (o.start_column, o.end_column) == (-1, -1), f"{name}: a column the graph does not carry must be -1, not 0"
+        assert o.span.bytes == (-1, -1), f"{name}: a byte offset into a source the graph does not carry must be -1, not 0"
         assert _annotations(o) == _annotations(t), name
         assert sorted(o.fields) == sorted(t.fields) and sorted(o.callables) == sorted(t.callables) and sorted(o.types) == sorted(t.types), name
         assert sorted(o.nested_type_declarations) == sorted(t.nested_type_declarations), name
@@ -192,6 +200,7 @@ def test_field_parity(backends):
         assert [f.name for f in fr] == [f.name for f in fn], name
         for a, b in zip(fr, fn):
             assert (b.id, b.type, b.modifiers, b.initializer, b.start_line, b.end_line) == (a.id, a.type, a.modifiers, a.initializer, a.start_line, a.end_line), f"{name}.{a.name}"
+            assert (b.start_column, b.end_column) == (-1, -1) and b.span.bytes == (-1, -1), f"{name}.{a.name}: columns and byte offsets are not projected"
             assert _annotations(b) == _annotations(a), f"{name}.{a.name}"
             assert b.variables == a.variables and b.variable_initializers == a.variable_initializers
 
@@ -208,6 +217,8 @@ def test_callable_parity(backends):
             assert (o.id, o.kind, o.signature, o.declaration, o.return_type, o.modifiers) == (m.id, m.kind, m.signature, m.declaration, m.return_type, m.modifiers), where
             assert (o.is_implicit, o.is_entrypoint, o.is_constructor, o.is_static) == (m.is_implicit, m.is_entrypoint, m.is_constructor, m.is_static), where
             assert (o.start_line, o.end_line) == (m.start_line, m.end_line), where
+            if o.span is not None:  # absent on the implicit callables, on both backends
+                assert (o.start_column, o.end_column) == (-1, -1) and o.span.bytes == (-1, -1), f"{where}: columns and byte offsets are not projected"
             assert o.thrown_exceptions == m.thrown_exceptions and o.cyclomatic_complexity == m.cyclomatic_complexity, where
             assert sorted(o.referenced_types) == sorted(m.referenced_types) and sorted(o.accessed_fields) == sorted(m.accessed_fields), where
             assert (o.refs is None) == (m.refs is None), where
@@ -372,7 +383,13 @@ def test_artifact_layer_parity(backends):
 def test_docstring_parity_within_the_documented_lossiness(backends):
     """The graph's docstrings are exactly the reference's *declaration-level* javadoc, file by
     file — which is a different set from the reference's own ``get_all_docstrings`` (the
-    compilation unit's comment list, holding the file-level javadoc instead)."""
+    compilation unit's comment list, holding the file-level javadoc instead).
+
+    "Declaration" means every declaration the projection gives a ``docstring`` to, which is all
+    five: type, callable, field, enum constant and record component. daytrader8 has none of the
+    last two, so their absence here is not evidence that the loop covers them — ThingsBoard
+    (1,248 enum constants, 29 of them documented) is where that is seen.
+    """
     ref, neo = backends
     expected: dict[str, list[str]] = {}
     for name, t in ref.get_all_classes().items():
@@ -380,6 +397,8 @@ def test_docstring_parity_within_the_documented_lossiness(backends):
         javadoc = [c.content for c in t.comments if c.is_javadoc]
         javadoc += [c.content for m in t.callables.values() for c in m.comments if c.is_javadoc]
         javadoc += [c.content for f in t.fields.values() for c in f.comments if c.is_javadoc]
+        javadoc += [c.content for k in t.enum_constants for c in k.comments if c.is_javadoc]
+        javadoc += [c.content for rc in t.record_components for c in rc.comments if c.is_javadoc]
         if javadoc:
             expected.setdefault(path, []).extend(javadoc)
     actual = {path: [c.content for c in comments] for path, comments in neo.get_all_docstrings().items()}
