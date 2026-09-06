@@ -73,9 +73,9 @@ from typing import Any, Dict, FrozenSet, List, Set, Tuple
 
 import networkx as nx
 
+from cldk.analysis.commons import artifacts as shared  # the artifact layer every analyzer projects identically
+from cldk.analysis.commons.backend import semver
 from cldk.analysis.commons.keys import module_key_of
-from cldk.analysis.python.neo4j import reconstruct as PyR  # the artifact layer is shared verbatim (commons/backend.py)
-from cldk.analysis.python.neo4j.neo4j_backend import _semver
 from cldk.analysis.typescript.backend import TSAnalysisBackend
 from cldk.analysis.typescript.neo4j import reconstruct as R
 from cldk.analysis.typescript.neo4j.reconstruct import CALLABLE_KINDS, TYPE_KINDS, TYPE_LABEL_KINDS
@@ -245,7 +245,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
         rows = self._run("OPTIONAL MATCH (a:Application {id: $app_id}) RETURN count(a) AS n, a.analyzer_version AS v", app_id=self._app_id)
         present = bool(rows and rows[0].get("n"))
         raw = rows[0].get("v") if rows else None
-        version = _semver(raw)
+        version = semver(raw)
         floor = ".".join(map(str, self._ANALYZER_FLOOR))
         if version is None or version < self._ANALYZER_FLOOR:
             if not present:
@@ -346,7 +346,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
             return R.namespace(props, types=types, functions=functions, fields=self._fields(nid, children))
         raise CodeanalyzerExecutionException(self._merged_defect(props, "is matched as a type but its kind is none of the five type kinds"))
 
-    def _module(self, props: Dict[str, Any], children: Dict[str, List[_Child]]) -> TSModule:
+    def _build_module(self, props: Dict[str, Any], children: Dict[str, List[_Child]]) -> TSModule:
         types, functions = self._declared(props["id"], children)
         return R.module(props, types=types, functions=functions, fields=self._fields(props["id"], children))
 
@@ -380,7 +380,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
 
     def get_symbol_table(self) -> Dict[str, TSModule]:
         roots, children = self._fetch("(:Application {id: $app_id})-[:TS_HAS_MODULE]->(root:TSModule)", app_id=self._app_id)
-        return {p["name"]: self._module(p, children) for p in roots}
+        return {p["name"]: self._build_module(p, children) for p in roots}
 
     def get_modules(self) -> List[TSModule]:
         return list(self.get_symbol_table().values())
@@ -390,7 +390,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
         if module_id is None:
             return None
         roots, children = self._fetch("(root:CanNode:TSModule {id: $id})", id=module_id)
-        return self._module(roots[0], children) if roots else None
+        return self._build_module(roots[0], children) if roots else None
 
     def get_typescript_file(self, qualified_name: str) -> str | None:
         rows = self._run(
@@ -688,7 +688,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
             "MATCH (:Application {id: $app_id})-[:HAS_ARTIFACT]->(a:Artifact) OPTIONAL MATCH (a)-[:DEFINES_CONFIG]->(ck:ConfigKey) RETURN properties(a) AS p, collect(properties(ck)) AS cks",
             app_id=self._app_id,
         ):
-            art = PyR.artifact(r["p"], config_keys=[PyR.config_key(p) for p in r["cks"] if p])
+            art = shared.artifact(r["p"], config_keys=[shared.config_key(p) for p in r["cks"] if p])
             result[art.path] = art
         return result
 
@@ -709,11 +709,11 @@ class TSNeo4jBackend(TSAnalysisBackend):
             + where
             + " RETURN properties(r) AS rel, p.name AS name, p.ecosystem AS ecosystem, a.id AS declared_in"
         )
-        return [PyR.dependency(r["rel"], name=r["name"], ecosystem=r["ecosystem"], declared_in=r["declared_in"]) for r in self._run(query, **params)]
+        return [shared.dependency(r["rel"], name=r["name"], ecosystem=r["ecosystem"], declared_in=r["declared_in"]) for r in self._run(query, **params)]
 
     def get_config_keys(self) -> Dict[str, PyConfigKey]:
         rows = self._run("MATCH (:Application {id: $app_id})-[:HAS_ARTIFACT]->(:Artifact)-[:DEFINES_CONFIG]->(ck:ConfigKey) RETURN properties(ck) AS p", app_id=self._app_id)
-        return {ck.id: ck for ck in (PyR.config_key(r["p"]) for r in rows)}
+        return {ck.id: ck for ck in (shared.config_key(r["p"]) for r in rows)}
 
     def get_config_uses(self, key: str | None = None) -> List[PyConfigUseEdge]:
         query = f"MATCH (bn:TSBodyNode)-[u:TS_USES_CONFIG]->(ck:ConfigKey) WHERE {_scoped('bn')}"

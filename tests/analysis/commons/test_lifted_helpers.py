@@ -31,3 +31,15 @@ def test_module_dotted_defaults_to_python_and_takes_other_extensions():
     from cldk.analysis.commons.keys import module_dotted
     assert module_dotted("odoo/tools/mail.py") == "odoo.tools.mail"
     assert module_dotted("src/pages/Home.tsx", extensions=(".ts", ".tsx")) == "src.pages.Home"
+
+
+def test_semver_and_the_artifact_reconstructors_are_lifted_and_python_reexports_them():
+    """Task 4 lift: the version-floor parser and the shared artifact layer's reconstructors live in
+    commons; the Python Neo4j backend and its reconstruct module bind the same objects."""
+    from cldk.analysis.commons import artifacts, backend
+    from cldk.analysis.python.neo4j import neo4j_backend, reconstruct
+
+    assert neo4j_backend._semver is backend.semver
+    for n in ("artifact", "config_key", "dependency"):
+        assert getattr(reconstruct, n) is getattr(artifacts, n), f"{n} re-exported from python reconstruct is a copy"
+    assert backend.semver("1.4.1.post0") == (1, 4, 1) and backend.semver("garbage") is None

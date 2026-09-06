@@ -81,7 +81,6 @@ Everything else round-trips identically to ``PyCodeanalyzer``.
 from __future__ import annotations
 
 import logging
-import re
 from collections import defaultdict
 from contextlib import contextmanager
 from functools import cached_property
@@ -92,6 +91,7 @@ from codeanalyzer.schema import model_dump_json
 from codeanalyzer.schema.ids import application_id, module_id
 from codeanalyzer.schema.py_schema import PyEntrypointReport
 
+from cldk.analysis.commons.backend import semver as _semver
 from cldk.analysis.commons.keys import module_key_of
 from cldk.analysis.commons.resolve import CallableCandidate, body_node_kind, resolve_callable_signature, resolve_value_name, resolve_within, value_candidate
 from cldk.analysis.commons.results import CallableRef, Diagnostic, EdgePage, EntrypointCoverage, FlowPath, FlowPaths, LocateResult, ModuleRef, PathHop, Slice, SliceNode, TypeRef
@@ -152,11 +152,6 @@ from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException, Gra
 logger = logging.getLogger(__name__)
 
 
-def _semver(raw: Any) -> Tuple[int, int, int] | None:
-    """``"1.4.1"`` (or ``"1.4.1.post0"``) as ``(1, 4, 1)``; ``None`` for anything that does not
-    start with three dotted integers, so an unparsable version is *unknown*, never silently zero."""
-    m = re.match(r"(\d+)\.(\d+)\.(\d+)", raw) if isinstance(raw, str) else None
-    return (int(m[1]), int(m[2]), int(m[3])) if m else None
 
 # One statement per parent->child collection, each fetching that whole collection for the *entire*
 # application in a single round trip and returning the parent's key as ``pk``. These are the bulk
