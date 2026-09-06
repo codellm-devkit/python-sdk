@@ -34,6 +34,7 @@ from cldk import CLDK
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.backend_config import CodeAnalyzerConfig
 from cldk.analysis.typescript.neo4j import TSNeo4jBackend
+from cldk.analysis.typescript.neo4j.neo4j_backend import _scoped
 from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 from cldk.models.typescript import (
     TSAnalysis,
@@ -267,10 +268,12 @@ def test_unhomed_synthesized_entry_raises_at_load(entry, typescript_application,
 
 def _neo4j_backend_with_stubbed_run(rows_by_call: dict) -> TSNeo4jBackend:
     """A TSNeo4jBackend with __init__ (and its real driver connection) bypassed, ``_run`` stubbed
-    to return canned rows keyed by (query, frozenset(params.items()))."""
+    to return canned rows keyed by (query, frozenset(params.items())); anything else (the subtree
+    statement ``_fetch`` issues after a root is found) returns no rows."""
     backend = object.__new__(TSNeo4jBackend)
-    backend.application_name = "test-app"
+    backend.application_name = "t"
     backend._database = None
+    backend._module_ids = {"src/mod.ts": MOD}
     backend._modules = ["src/mod.ts"]
 
     def _normalize(value):
@@ -288,21 +291,12 @@ def _neo4j_backend_with_stubbed_run(rows_by_call: dict) -> TSNeo4jBackend:
 
 
 def _callable_props(c: TSCallable) -> dict:
-    """The flattened Neo4j node property shape ``reconstruct.callable_`` expects (see
-    ``codeanalyzer-ts/src/build/neo4j/project.ts``): JSON-encoded ``*_json`` scalars rather than
-    nested lists, matching what a real projection would have written."""
-    import json as _json
+    """The ``:TSCallable`` node property shape (codeanalyzer-typescript 1.2.0 ``schema.neo4j.json``):
+    flat scalars, no parameters -- the projection does not carry them."""
+    return {"id": c.id, "kind": c.kind, "signature": c.signature, "name": c.name, "return_type": c.return_type, "start_line": c.start_line, "end_line": c.end_line, "code": ""}
 
-    return {
-        "name": c.name,
-        "path": "src/mod.ts",
-        "signature": c.signature,
-        "parameters_json": _json.dumps([p.model_dump() for p in c.parameters]),
-        "return_type": c.return_type,
-        "start_line": c.start_line,
-        "end_line": c.end_line,
-        "kind": c.kind,
-    }
+
+SCOPE = (("p1", "can://typescript/t/"), ("p2", "can://javascript/t/"))
 
 
 @pytest.fixture
@@ -311,33 +305,20 @@ def stub_neo4j_backend():
     baz_props = _callable_props(_baz())
     qux_props = _callable_props(_qux())
 
-    has_method_query = "MATCH (o:Symbol {signature: $sig})-[:HAS_METHOD]->(m:Callable {name: $name}) RETURN properties(m) AS p LIMIT 1"
-    exact_sig_query = (
-        "MATCH (parent)-[:DECLARES]->(c:Callable {signature: $sig}) " "WHERE (parent:Module OR parent:Namespace) AND c._module IN $mods " "RETURN properties(c) AS p LIMIT 1"
+    has_method_query = (
+        f"MATCH (o:TSClass|TSInterface {{signature: $sig}}) WHERE {_scoped('o')} MATCH (o)-[:TS_HAS_METHOD]->(root:TSCallable {{name: $name}}) RETURN properties(root) AS p"
     )
-    short_name_query = (
-        "MATCH (parent)-[:DECLARES]->(c:Callable {name: $name}) "
-        "WHERE (parent:Module OR parent:Namespace) AND c._module IN $mods AND c.signature STARTS WITH $prefix "
-        "RETURN properties(c) AS p LIMIT 1"
-    )
+    exact_sig_query = f"MATCH (p:TSModule|TSNamespace)-[:TS_DECLARES]->(root:TSCallable {{signature: $sig}}) WHERE {_scoped('root')} RETURN properties(root) AS p"
+    short_name_query = f"MATCH (p:TSModule|TSNamespace)-[:TS_DECLARES]->(root:TSCallable {{name: $name}}) WHERE {_scoped('root')} AND root.signature STARTS WITH $sig_prefix RETURN properties(root) AS p"
 
     rows_by_call = {
         # class method lookup: hits
-        (has_method_query, (("sig", "src/mod.Foo"), ("name", "bar"))): [{"p": bar_props}],
-        # class method lookup: misses for module/namespace scopes
-        (has_method_query, (("sig", "src/mod"), ("name", "baz"))): [],
-        (has_method_query, (("sig", "whatever"), ("name", "src/mod.baz"))): [],
-        (has_method_query, (("sig", "src/mod"), ("name", "qux"))): [],
-        (has_method_query, (("sig", "src/mod"), ("name", "does_not_exist"))): [],
-        # exact-signature DECLARES fallback
-        (exact_sig_query, (("mods", ("src/mod.ts",)), ("sig", "src/mod.baz"))): [{"p": baz_props}],
-        (exact_sig_query, (("mods", ("src/mod.ts",)), ("sig", "baz"))): [],
-        (exact_sig_query, (("mods", ("src/mod.ts",)), ("sig", "does_not_exist"))): [],
-        (exact_sig_query, (("mods", ("src/mod.ts",)), ("sig", "qux"))): [],
-        # short-name DECLARES fallback, scoped under the given scope
-        (short_name_query, (("mods", ("src/mod.ts",)), ("name", "baz"), ("prefix", "src/mod."))): [{"p": baz_props}],
-        (short_name_query, (("mods", ("src/mod.ts",)), ("name", "qux"), ("prefix", "src/mod."))): [{"p": qux_props}],
-        (short_name_query, (("mods", ("src/mod.ts",)), ("name", "does_not_exist"), ("prefix", "src/mod."))): [],
+        (has_method_query, (("sig", "src/mod.Foo"), ("name", "bar")) + SCOPE): [{"p": bar_props}],
+        # exact-signature TS_DECLARES fallback
+        (exact_sig_query, (("sig", "src/mod.baz"),) + SCOPE): [{"p": baz_props}],
+        # short-name TS_DECLARES fallback, scoped under the given scope
+        (short_name_query, (("name", "baz"), ("sig_prefix", "src/mod.")) + SCOPE): [{"p": baz_props}],
+        (short_name_query, (("name", "qux"), ("sig_prefix", "src/mod.")) + SCOPE): [{"p": qux_props}],
     }
     return _neo4j_backend_with_stubbed_run(rows_by_call)
 
@@ -367,7 +348,10 @@ def test_neo4j_get_method_resolves_namespace_nested_function_by_short_name(stub_
 
 
 def test_neo4j_get_method_parameters_module_level_function(stub_neo4j_backend):
-    assert stub_neo4j_backend.get_method_parameters("src/mod", "baz") == ["x"]
+    # The 1.2.0 projection carries no parameters on :TSCallable, so a *found* function answers [];
+    # the local backend answers ["x"] for the same fixture (documented lossiness, not a miss).
+    assert stub_neo4j_backend.get_method("src/mod", "baz") is not None
+    assert stub_neo4j_backend.get_method_parameters("src/mod", "baz") == []
 
 
 def test_neo4j_get_method_genuine_miss_returns_none(stub_neo4j_backend):
@@ -383,7 +367,9 @@ def test_backend_parity_module_level_function(ts_analysis, stub_neo4j_backend):
     remote = stub_neo4j_backend.get_method("src/mod", "baz")
     assert local.signature == remote.signature
     assert local.name == remote.name
-    assert ts_analysis.get_method_parameters("src/mod", "baz") == stub_neo4j_backend.get_method_parameters("src/mod", "baz")
+    # Parameters are the one documented divergence: analysis.json carries them, the graph does not.
+    assert ts_analysis.get_method_parameters("src/mod", "baz") == ["x"]
+    assert stub_neo4j_backend.get_method_parameters("src/mod", "baz") == []
 
 
 def test_backend_parity_namespace_nested_function(ts_analysis, stub_neo4j_backend):
