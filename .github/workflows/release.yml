@@ -39,6 +39,14 @@ jobs:
       - name: Install Python package dependencies
         run: uv sync --all-groups --frozen
 
+      # codeanalyzer-python provisions a virtualenv for the project it analyses and
+      # discovers a base interpreter for it (SYSTEM_PYTHON, else PATH/pyenv/conda/asdf).
+      # A uv-managed interpreter is on none of those on a runner, so every test that
+      # runs the real analyzer errored at setup (release run 34023739548). Point it
+      # at the interpreter uv just installed -- the override the analyzer documents.
+      - name: Point codeanalyzer-python at the analysis interpreter
+        run: echo "SYSTEM_PYTHON=$(uv python find 3.11)" >> "$GITHUB_ENV"
+
       - name: Run Tests
         id: test
         # continue-on-error is deliberate: without it a red suite fails the job
