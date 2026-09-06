@@ -14,126 +14,115 @@
 # limitations under the License.
 ################################################################################
 
-"""Miss-path unit tests for JNeo4jBackend lookups (#248).
+"""Miss-path unit tests for JNeo4jBackend lookups (#248), on the schema-v2 seed.
 
-These do not need a live Neo4j server: :class:`JNeo4jBackend` only needs ``self.application``
-populated to answer ``get_class``/``get_method``/``get_java_file``/``get_method_parameters`` (see
-``get_symbol_table`` -> ``self.application.symbol_table``), so we bypass ``__init__`` (which opens a
-driver connection) and seed ``.application`` directly from the same ``analysis.json`` fixture the
-in-memory :class:`JCodeanalyzer` tests use — its shape is exactly the ``JApplication`` constructor's
-kwargs (mirrors ``JCodeanalyzer._init_japplication``).
+These need no live Neo4j: every lookup here is answered from the reconstructed
+:class:`JApplication` and its index, so the test seeds ``.application`` directly from the same
+codeanalyzer-java 3.0.1 fixture the in-memory :class:`JCodeanalyzer` tests use, bypassing the
+attach (which opens a driver and probes the graph). ``application`` is a ``cached_property``, so
+assigning it is the documented seam -- what a reconstruction would have produced, without one.
 """
 
-import json
+import pytest
 
 from cldk.analysis.java.neo4j import JNeo4jBackend
-from cldk.models.java.models import JApplication, JCallable, JType
+from cldk.models.java.models import JAnalysis, JCallable, JType
+from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 
 _LOG_CLASS = "com.ibm.websphere.samples.daytrader.util.Log"
 _LOG_TRACE_METHOD = "trace(java.lang.String)"
 
 
-def _backend_from_analysis_json(analysis_json: str) -> JNeo4jBackend:
+@pytest.fixture
+def backend(analysis_json) -> JNeo4jBackend:
     backend = JNeo4jBackend.__new__(JNeo4jBackend)
-    backend.application = JApplication(**json.loads(analysis_json))
-    backend.analysis_level = "call_graph" if backend.application.call_graph else "symbol_table"
-    backend.call_graph = None
+    backend.application_name = "daytrader8"
+    backend.application = JAnalysis.model_validate_json(analysis_json).application
     return backend
 
 
-def test_get_class_miss_returns_none(analysis_json):
-    backend = _backend_from_analysis_json(analysis_json)
+def test_get_class_miss_returns_none(backend):
     assert backend.get_class("com.example.NoSuchClass") is None
 
 
-def test_get_method_miss_returns_none(analysis_json):
-    backend = _backend_from_analysis_json(analysis_json)
+def test_get_method_miss_returns_none(backend):
     # Known class, typo'd signature.
     assert backend.get_method(_LOG_CLASS, "noSuchMethod()") is None
     # Unknown class altogether.
     assert backend.get_method("com.example.NoSuchClass", _LOG_TRACE_METHOD) is None
 
 
-def test_get_java_file_miss_returns_none(analysis_json):
-    backend = _backend_from_analysis_json(analysis_json)
+def test_get_java_file_miss_returns_none(backend):
     assert backend.get_java_file("com.example.NoSuchClass") is None
 
 
-def test_get_method_parameters_miss_returns_empty_list(analysis_json):
+def test_get_method_parameters_miss_returns_empty_list(backend):
     """Before the fix: AttributeError: 'NoneType' object has no attribute 'parameters'."""
-    backend = _backend_from_analysis_json(analysis_json)
     assert backend.get_method_parameters(_LOG_CLASS, "noSuchMethod()") == []
     assert backend.get_method_parameters("com.example.NoSuchClass", _LOG_TRACE_METHOD) == []
 
 
-def test_get_comments_in_a_method_miss_returns_empty_list(analysis_json):
+def test_get_comments_in_a_method_miss_returns_empty_list(backend):
     """Before the fix: AttributeError: 'NoneType' object has no attribute 'comments'."""
-    backend = _backend_from_analysis_json(analysis_json)
     assert backend.get_comments_in_a_method(_LOG_CLASS, "noSuchMethod()") == []
 
 
-def test_get_comments_in_a_class_miss_returns_empty_list(analysis_json):
+def test_get_comments_in_a_class_miss_returns_empty_list(backend):
     """Before the fix: AttributeError: 'NoneType' object has no attribute 'comments'."""
-    backend = _backend_from_analysis_json(analysis_json)
     assert backend.get_comments_in_a_class("com.example.NoSuchClass") == []
 
 
-def test_call_graph_target_method_miss_mid_construction_no_crash(analysis_json):
+def test_call_graph_target_method_miss_mid_construction_no_crash(backend):
     """A get_method miss for the *target* method of a symbol-table call graph must not crash.
 
-    Exercises JNeo4jBackend.__raw_call_graph_using_symbol_table_target_method, reached through the
-    public get_all_callers(using_symbol_table=True) path. Mirrors the JCodeanalyzer fix (#248).
+    Exercises ``_st_edges_into`` through the public ``get_all_callers(using_symbol_table=True)``
+    path. Mirrors the JCodeanalyzer fix (#248).
     """
-    backend = _backend_from_analysis_json(analysis_json)
-
-    result = backend.get_all_callers(
-        target_class_name=_LOG_CLASS,
-        target_method_signature="noSuchMethod()",
-        using_symbol_table=True,
-    )
-    assert result == {}
+    assert backend.get_all_callers(target_class_name=_LOG_CLASS, target_method_signature="noSuchMethod()", using_symbol_table=True) == {}
 
 
-def test_call_graph_source_method_miss_mid_construction_no_crash(analysis_json):
-    """A get_method miss for a *candidate source* method mid-construction must be skipped, not crash.
-
-    Makes a single (class, signature) pair momentarily miss while the target method is real,
-    simulating a symbol table that disagrees with itself mid-construction.
-    """
-    backend = _backend_from_analysis_json(analysis_json)
+def test_call_graph_source_method_miss_mid_construction_no_crash(backend):
+    """A get_method miss for a *candidate source* method mid-construction must be skipped, not
+    crash: one (class, signature) pair momentarily misses while the target method is real."""
     original_get_method = backend.get_method
-    flaky_class, flaky_signature = _LOG_CLASS, "log(java.lang.String)"
+    flaky = (_LOG_CLASS, "log(java.lang.String)")
 
-    def flaky_get_method(qualified_class_name, method_signature):
-        if qualified_class_name == flaky_class and method_signature == flaky_signature:
+    def flaky_get_method(qualified_class_name, qualified_method_name):
+        if (qualified_class_name, qualified_method_name) == flaky:
             return None
-        return original_get_method(qualified_class_name, method_signature)
+        return original_get_method(qualified_class_name, qualified_method_name)
 
     backend.get_method = flaky_get_method
     try:
-        result = backend.get_all_callers(
-            target_class_name=_LOG_CLASS,
-            target_method_signature=_LOG_TRACE_METHOD,
-            using_symbol_table=True,
-        )
+        result = backend.get_all_callers(target_class_name=_LOG_CLASS, target_method_signature=_LOG_TRACE_METHOD, using_symbol_table=True)
     finally:
-        backend.get_method = original_get_method
-
+        del backend.get_method
     assert isinstance(result, dict)
 
 
-def test_get_class_and_method_hit_behavior_unchanged(analysis_json):
-    """Sanity: the miss-path fix must not change hit behavior."""
-    backend = _backend_from_analysis_json(analysis_json)
-
+def test_get_class_and_method_hit_behavior_unchanged(backend):
+    """Sanity: the miss-path handling must not change hit behaviour."""
     the_class = backend.get_class(_LOG_CLASS)
-    assert the_class is not None
     assert isinstance(the_class, JType)
 
     the_method = backend.get_method(_LOG_CLASS, _LOG_TRACE_METHOD)
-    assert the_method is not None
     assert isinstance(the_method, JCallable)
     assert the_method.declaration == "public static void trace(String message)"
+    assert len(backend.get_method_parameters(_LOG_CLASS, _LOG_TRACE_METHOD)) == 1
 
-    the_method_parameters = backend.get_method_parameters(_LOG_CLASS, _LOG_TRACE_METHOD)
-    assert len(the_method_parameters) == 1
+
+def test_comment_accessors_the_projection_cannot_serve_raise_naming_the_gap(backend):
+    """D7: file-level comments are not projected at all, so an empty list would read as "this file
+    has no comments". Both file-keyed accessors raise instead, naming what is missing and what to
+    read instead -- and never an id (E6)."""
+    for call in (lambda: backend.get_all_comments(), lambda: backend.get_comment_in_file("does/not/matter.java")):
+        with pytest.raises(CodeanalyzerExecutionException, match="carries no comment nodes for application 'daytrader8'") as e:
+            call()
+        assert "get_all_docstrings()" in str(e.value) and "can://" not in str(e.value)
+
+
+def test_crud_accessors_raise_naming_the_upstream_issue(backend):
+    """J-4: the same refusal on both backends, from the one shared message."""
+    for name in ("get_all_crud_operations", "get_all_create_operations", "get_all_read_operations", "get_all_update_operations", "get_all_delete_operations"):
+        with pytest.raises(CodeanalyzerExecutionException, match="codeanalyzer-java#187"):
+            getattr(backend, name)()
