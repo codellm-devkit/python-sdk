@@ -7,6 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [v2.0.0-rc.2] - 2026-09-06
 Python legs 1, 1.5 and 1.6 of the CLDK 2.0 agent-facing query facade (see
 `docs/design/specs/2026-09-03-agent-facing-query-facade.md`,
 `docs/design/specs/2026-09-05-leg-1.5-bounded-queries-and-dataflow.md` and

@@ -131,6 +131,8 @@ jobs:
         with:
           files: dist/*
           body: ${{ steps.notes.outputs.notes }}
+          # An rc tag is a candidate, not the repository's latest release.
+          prerelease: ${{ contains(github.ref_name, '-rc') }}
           # Auto-open a repo-level Discussion linked to this release, seeded with
           # the same notes. Requires Discussions enabled and this category to exist.
           discussion_category_name: Announcements
