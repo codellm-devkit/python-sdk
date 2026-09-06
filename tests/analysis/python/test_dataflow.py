@@ -267,7 +267,8 @@ def test_below_level_three_the_backend_refuses_rather_than_returning_empty(local
 
 # ----------------------------------------------------------------------------------------------
 # Pagination (E5). Per-callable is a *scoping* bound, not a *size* one: measured on odoo-slim-19
-# one callable's DDG is 1,386,918 edges, 27% of the whole application's 5,134,655. The bound that
+# one callable's DDG is 1,386,918 edges, 27% of the whole application's 5,134,655 (1.4.0 graph;
+# 5,129,295 on 1.4.1). The bound that
 # was missing is on the response, and the ruling is to paginate rather than truncate — truncation
 # throws away edges a caller may need, a page keeps every one of them reachable.
 #
@@ -375,7 +376,7 @@ def test_local_pages_are_the_emitter_rows_sliced_by_the_same_order(local_l4):
 def test_the_local_sort_key_is_total_on_a_real_analyzer_run(local_l4):
     """Keyset paging resumes *after* a key, so a repeated key would drop its twin. Both backends
     are safe only while the key is unique; on the live graph it is (measured: 0 duplicate tuples
-    across all 5,134,655 PY_DDG, 247,906 PY_CFG_NEXT and 139,065 PY_CDG edges, and the emitter's
+    across all 5,134,655 PY_DDG, 247,906 PY_CFG_NEXT and 139,065 PY_CDG edges of the 1.4.0 graph, and the emitter's
     MERGE makes it structurally so there), and this is the same claim for the local path, where
     nothing dedupes."""
     for get, key in ((local_l4.get_cfg, cfg_sort_key), (local_l4.get_cdg, cdg_sort_key), (local_l4.get_ddg, ddg_sort_key)):
@@ -417,7 +418,7 @@ def test_a_cursor_from_somewhere_else_is_refused_rather_than_answered(local_l4):
 #
 # WHAT THE MEASUREMENT DECIDED. The sibling accessors above paginate; these cap. The reason is
 # the measured shape of a slice on odoo-slim-19, over the five SDG relationship types
-# (PY_DDG 5,134,655 / PY_CDG 139,065 / PY_PARAM_IN 229,035 / PY_PARAM_OUT 133,267 /
+# (1.4.0 graph: PY_DDG 5,134,655 / PY_CDG 139,065 / PY_PARAM_IN 229,035 / PY_PARAM_OUT 133,267 /
 # PY_SUMMARY 453,398 -- all five present, verified against ``CALL db.relationshipTypes()``):
 #
 #   slice_backward over 200 random ``formal_in`` seeds:  median 1, p95 195,790, max 196,117
@@ -437,7 +438,20 @@ def test_a_cursor_from_somewhere_else_is_refused_rather_than_answered(local_l4):
 # two rather than stored, so they cannot disagree.
 # ==============================================================================================
 HEAVY_STATEMENT_SLICE = 195_785  # backward slice of any statement in configurator_apply
-HEAVY_FORWARD_SLICE = 440_270   # forward slice of its ``kwargs`` -- half the application
+
+#: Whole-closure sizes recorded per analyzer generation, keyed by the graph's ``analyzer_version``
+#: (the ``live_analyzer_version`` fixture). They are facts about an emitter run, not contracts:
+#: the 1.4.0 and 1.4.1 graphs of the same checkout differ by 2,724 body nodes, every one a level-4
+#: ``formal_in``/``formal_out``/``actual_in``/``actual_out`` vertex (the level-1 node set is
+#: identical), because which callee a call lands on decides whose globals become formals up the
+#: chain, and 869 ``PY_CALLS`` edges resolve differently between the two runs. A closure over
+#: those vertices moves with them; the tests' claims -- bounded, true size reported, complete at
+#: the default depth -- do not. An unrecorded generation fails on the lookup rather than passing
+#: against a stale number.
+RECORDED = {
+    "1.4.0": {"ddg_edges": 5_134_655, "heavy_forward_slice": 440_270, "depth_seed_unbounded": 195_790},
+    "1.4.1": {"ddg_edges": 5_129_295, "heavy_forward_slice": 438_017, "depth_seed_unbounded": 195_263},
+}
 
 
 @live_only
@@ -510,31 +524,32 @@ def test_depth_bounds_a_slice_without_capping_it(live_analysis, busy_callable):
 
 
 @live_only
-def test_the_pathological_slice_is_bounded_and_reports_its_true_size(live_analysis):
+def test_the_pathological_slice_is_bounded_and_reports_its_true_size(live_analysis, live_analyzer_version):
     """The case the cap exists for, on the callable this leg keeps returning to.
 
-    ``kwargs`` of ``configurator_apply`` reaches 440,270 nodes — **half** of the application's
-    885,218 body nodes — and 27% of its DDG edges live in this one callable. Ten nodes come back,
+    ``kwargs`` of ``configurator_apply`` reaches 440,270 nodes on the 1.4.0 graph (438,017 on 1.4.1)
+    — **half** of the application's 885,218 body nodes — and 27% of its DDG edges live in this one
+    callable. Ten nodes come back,
     and the result says how many there were, in one call and in about a second. Backward from the
     same value is one node, because nothing calls it: the two directions of the same seed differ
     by five orders of magnitude, which is the distribution the cap exists for."""
     fwd = live_analysis.slice_forward("kwargs", within=HEAVY_CALLABLE, depth=None, max_nodes=10)
-    assert len(fwd.nodes) == 10 and fwd.total == HEAVY_FORWARD_SLICE and not fwd.complete
+    assert len(fwd.nodes) == 10 and fwd.total == RECORDED[live_analyzer_version]["heavy_forward_slice"] and not fwd.complete
     back = live_analysis.slice_backward("kwargs", within=HEAVY_CALLABLE, depth=None)
     assert back.total == 1 and back.complete
 
 
 #: A *global* the callable reads, in a callable nothing about this test needs to be heavy: its
-#: backward slice is 195,790 nodes unbounded and 76 at the default depth. The callable name is
-#: unique in the application, so the seed is addressable the way a caller would say it.
+#: backward slice is 195,790 nodes unbounded (1.4.0 graph; 195,263 on 1.4.1 -- see ``RECORDED``)
+#: and 76 at the default depth on both. The callable name is unique in the application, so the
+#: seed is addressable the way a caller would say it.
 DEPTH_SEED_CALLABLE = "odoo.tools.mail.email_domain_extract"
 DEPTH_SEED_VALUE = "found_email"
 DEPTH_SEED_AT_DEFAULT = 76
-DEPTH_SEED_UNBOUNDED = 195_790
 
 
 @live_only
-def test_the_default_depth_answers_completely_where_unbounded_truncates(live_analysis):
+def test_the_default_depth_answers_completely_where_unbounded_truncates(live_analysis, live_analyzer_version):
     """The reason the default is finite (Task 6.1). Unbounded, this seed's backward slice is a
     fifth of the application and the caller gets 10,000 arbitrary nodes of it — 5% of a closure,
     flagged incomplete and useless. At the default depth the same call answers the narrower
@@ -545,7 +560,7 @@ def test_the_default_depth_answers_completely_where_unbounded_truncates(live_ana
     assert len(near.nodes) == near.total and near.complete
 
     whole = live_analysis.slice_backward(DEPTH_SEED_VALUE, within=DEPTH_SEED_CALLABLE, depth=None)
-    assert whole.total == DEPTH_SEED_UNBOUNDED, "depth=None still means the whole closure"
+    assert whole.total == RECORDED[live_analyzer_version]["depth_seed_unbounded"], "depth=None still means the whole closure"
     assert len(whole.nodes) == 10_000 and not whole.complete
     assert {n.ref for n in near.nodes} <= {n.ref for n in whole.nodes} or near.total < whole.total
 
@@ -1074,15 +1089,16 @@ def test_an_empty_describe_costs_nothing(live_analysis, count_round_trips):
 
 
 @live_only
-def test_prov_is_a_singleton_on_every_ddg_edge(live_analysis):
+def test_prov_is_a_singleton_on_every_ddg_edge(live_analysis, live_analyzer_version):
     """The measurement ``weakest`` rests on, re-checked against the graph rather than trusted.
 
     If a future analyzer generation started emitting several provenances on one edge, "the weakest
     hop" would become a question about how to *combine* a set, and :func:`prov_rank`'s conservative
-    choice would start being observable.
+    choice would start being observable. The one row is the claim; its count is the generation's
+    whole ``PY_DDG`` (``RECORDED``), so a graph that lost half its edges could not pass either.
     """
     rows = live_analysis.backend._run("MATCH ()-[r:PY_DDG]->() RETURN size(r.prov) AS n, count(*) AS c ORDER BY n")
-    assert [(r["n"], r["c"]) for r in rows] == [(1, 5_134_655)]
+    assert [(r["n"], r["c"]) for r in rows] == [(1, RECORDED[live_analyzer_version]["ddg_edges"])]
 
 
 def test_weakest_is_the_most_approximate_hop_not_the_alphabetically_first():

@@ -571,6 +571,14 @@ def live_analysis():
     facade.backend.close()
 
 
+@pytest.fixture(scope="session")
+def live_analyzer_version(live_analysis) -> str:
+    """The ``analyzer_version`` the live graph's ``:PyApplication`` carries (``"1.4.0"`` on 7688,
+    ``"1.4.1"`` on 7689) -- the key a count recorded against one emitter run is looked up by."""
+    rows = live_analysis.backend._run("MATCH (a:PyApplication {name: $app}) RETURN a.analyzer_version AS v", app=LIVE_NEO4J_APP)
+    return rows[0]["v"]
+
+
 @pytest.fixture
 def busy_callable() -> str:
     """A live-graph callable with a non-trivial data dependence, named the way a caller would.

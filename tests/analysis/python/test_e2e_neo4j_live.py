@@ -778,11 +778,12 @@ def test_get_unresolved_config_reads_returns_real_edges(analysis, cypher):
 def test_entrypoints_faithfully_report_what_the_graph_says(analysis, cypher):
     """**Not** an assertion that Odoo has entrypoints.
 
-    ``is_entrypoint`` is ``FALSE`` on all 15,549 callables and all 1,656 classes of this graph: the
-    analyzer's detection pass found nothing on a framework built entirely from HTTP routes. That is
-    upstream under-detection, not an SDK defect, and this suite must not paper over it by demanding
-    a non-zero count. What the SDK owes the caller is fidelity — exactly as many entrypoints as the
-    graph flags, no more and no fewer.
+    What the graph flags depends on the analyzer generation. The 1.4.0 graph has ``is_entrypoint``
+    ``FALSE`` on all 15,549 callables and all 1,656 classes: the pass shipped no Odoo rules, on a
+    framework built entirely from HTTP routes (upstream under-detection, python-sdk#177). The
+    1.4.1 graph flags 534 callables and 94 classes (#182/#185: ``@http.route`` methods and
+    ``http.Controller`` subclasses). Neither number is this suite's to demand. What the SDK owes
+    the caller is fidelity — exactly as many entrypoints as the graph flags, no more and no fewer.
     """
     flagged_callables = cypher("MATCH (c:PyCallable) WHERE c.is_entrypoint = true RETURN count(c) AS c")[0]["c"]
     flagged_classes = cypher("MATCH (c:PyClass) WHERE c.is_entrypoint = true RETURN count(c) AS c")[0]["c"]

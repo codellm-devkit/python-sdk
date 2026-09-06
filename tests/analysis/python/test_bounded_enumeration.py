@@ -69,6 +69,12 @@ _ROUND_TRIP_CEILING = 20
 #: Spec §8's wall-clock target for ``get_symbol_table`` / ``get_classes`` on the odoo graph, and
 #: the ceiling asserted: headroom over the measured ~10s so a slow machine does not flake at the
 #: boundary, low enough to catch a regression back towards the minutes this leg removed.
+#:
+#: The two timed tests run with coverage paused (pytest-cov's ``no_cover`` marker) because the
+#: clock is meant to measure the query, not the tracer: measured on both live graphs, the same
+#: call is 10.2-10.5 s under ``--no-cov`` and ~15.3 s with the coverage tracer on -- the
+#: reconstruction is a Python-side walk over ~950k rows, and ``sys.settrace`` costs it half again.
+#: Under the tracer the ceiling passed by luck, and only sometimes.
 _WALL_CLOCK_TARGET = 10
 _WALL_CLOCK_CEILING = 15
 
@@ -104,6 +110,7 @@ def _assert_children_survived(classes: List[PyClass], callables: List[PyCallable
     assert any(m.callables for m in callables), "no nested callables survived the collapse"
 
 
+@pytest.mark.no_cover  # the clock measures the query, not the tracer -- see _WALL_CLOCK_CEILING
 def test_symbol_table_is_not_n_plus_one(live_analysis, count_round_trips):
     n = count_round_trips(live_analysis)
     started = time.monotonic()
@@ -122,6 +129,7 @@ def test_symbol_table_is_not_n_plus_one(live_analysis, count_round_trips):
     assert any(m.variables for m in table.values()), "no module variables survived the collapse"
 
 
+@pytest.mark.no_cover  # as above
 def test_classes_is_not_n_plus_one(live_analysis, count_round_trips):
     n = count_round_trips(live_analysis)
     started = time.monotonic()
