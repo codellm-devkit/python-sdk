@@ -41,19 +41,28 @@ import json
 from typing import Any, Dict, List, Mapping
 
 from cldk.models.python import (
+    BodyNode,
+    PyArtifact,
     PyCallable,
     PyCallableOverview,
     PyClass,
     PyClassAttribute,
+    PyClassOverview,
     PyComment,
+    PyConfigKey,
+    PyConfigRead,
+    PyDependency,
+    PyExternalSymbol,
     PyImport,
     PyModule,
 )
 from cldk.models.python import (
     PyCallableParameter,
     PyCallsite,
+    PyDecorator,
     PySymbol,
     PyVariableDeclaration,
+    Span,
 )
 
 Props = Mapping[str, Any]
@@ -111,20 +120,160 @@ def variable(props: Props) -> PyVariableDeclaration:
     )
 
 
-def callsite(props: Props) -> PyCallsite:
-    """Rebuild a :class:`PyCallsite` from a ``:PyCallSite`` node's properties."""
+def callsite(props: Props, *, callee_signature: str | None = None) -> PyCallsite:
+    """Rebuild a :class:`PyCallsite` from a ``:PyBodyNode {kind: 'call'}`` node's properties.
+
+    1.4.0 emits one call site as a body node (#120), not a dedicated ``:PyCallSite`` label — the
+    graph carries ``method_name`` / ``receiver_expr`` / ``receiver_type`` / ``return_type`` /
+    ``is_constructor_call`` and the line span, same as before. It does not project
+    ``argument_types`` or ``start_column``/``end_column`` — those fall back to their existing
+    empty/``-1`` defaults below, the same "projection-lossy field" shape as everything else in
+    this module.
+
+    ``callee_signature`` is NOT one of ``props`` (the call node itself carries no such property —
+    callee resolution lives on the separate ``PY_RESOLVES_TO`` edge to the resolved target, a
+    declared ``:PyCallable`` or an ``:PyExternal`` ghost). The caller resolves that edge and passes
+    the result in explicitly (``t.signature`` for a declared target, ``t.id`` — the
+    ``can://…/@external/…`` id — for an external one; ``None`` when the edge doesn't exist, either
+    because the call is genuinely unresolved or because the graph was populated at an analysis
+    level below the one where the defuse-linker backfill runs — see
+    :meth:`~cldk.analysis.python.backend.PythonAnalysisBackend.get_callsites_for`).
+    """
     return PyCallsite(
         method_name=props.get("method_name", ""),
         receiver_expr=props.get("receiver_expr"),
         receiver_type=props.get("receiver_type"),
         argument_types=list(props.get("argument_types", []) or []),
         return_type=props.get("return_type"),
-        callee_signature=props.get("callee_signature"),
+        callee_signature=callee_signature,
         is_constructor_call=props.get("is_constructor_call", False),
         start_line=props.get("start_line", -1),
         start_column=props.get("start_column", -1),
         end_line=props.get("end_line", -1),
         end_column=props.get("end_column", -1),
+    )
+
+
+def external_symbol(props: Props) -> PyExternalSymbol:
+    """Rebuild a :class:`PyExternalSymbol` from a ``:PyExternal`` node's properties. A 1:1 field
+    map (``id``/``name``/``module``) — the node carries no ``kind``, so the model's own
+    ``"external"`` default supplies it."""
+    return PyExternalSymbol(id=props.get("id", ""), name=props.get("name", ""), module=props.get("module"))
+
+
+def body_node(props: Props) -> BodyNode:
+    """Rebuild a :class:`BodyNode` from a ``:PyBodyNode`` node's properties.
+
+    Line-only ``span``: the projection writes ``start_line`` / ``end_line`` and nothing finer, so
+    the columns and UTF-8 ``bytes`` offsets rehydrate as ``0`` — the same projection-lossy shape as
+    :func:`callsite`, and the reason ``LocateResult.span`` documents which of its fields are real
+    per backend. ``span`` stays ``None`` when the node carries no lines at all: the emitter prunes
+    them from synthetic analysis vertices (``@entry`` / ``@exit`` / ``@formal_in:N``), which have no
+    source region, and a fabricated ``0``-line span would make one look like it contained line 0.
+    ``callee`` is not a property (callee resolution is the separate ``PY_RESOLVES_TO`` edge), and
+    ``arguments`` is left empty — the graph stores it JSON-encoded in ``arguments_json``, but
+    ``PyCallArgument`` is not among the models CLDK re-exports and no caller of this function reads
+    it, so it stays a projection-lossy field like :func:`callsite`'s ``argument_types``.
+    """
+    lines = (props.get("start_line"), props.get("end_line"))
+    return BodyNode(
+        kind=props.get("kind", ""),
+        span=Span(start=(lines[0], 0), end=(lines[1], 0), bytes=(0, 0)) if None not in lines else None,
+        of=props.get("var"),
+        parent=props.get("call_node"),
+        method_name=props.get("method_name"),
+        receiver_expr=props.get("receiver_expr"),
+        receiver_type=props.get("receiver_type"),
+        return_type=props.get("return_type"),
+        is_constructor_call=props.get("is_constructor_call"),
+    )
+
+
+def config_key(props: Props) -> PyConfigKey:
+    """Rebuild a :class:`PyConfigKey` from a ``:ConfigKey`` node's properties.
+
+    Line-only ``span`` (see :func:`body_node`): the projection writes ``start_line``/``end_line``
+    and nothing finer, so the columns and byte offsets rehydrate as ``0``. ``span`` stays ``None``
+    when the node carries no lines at all (best-effort extraction never located the key in the
+    artifact's source).
+    """
+    lines = (props.get("start_line"), props.get("end_line"))
+    return PyConfigKey(
+        id=props.get("id", ""),
+        key=props.get("key", ""),
+        namespace=props.get("namespace", ""),
+        value=props.get("value"),
+        span=Span(start=(lines[0], 0), end=(lines[1], 0), bytes=(0, 0)) if None not in lines else None,
+        references=list(props.get("references", []) or []),
+    )
+
+
+def artifact(props: Props, *, config_keys: List[PyConfigKey] | None = None) -> PyArtifact:
+    """Rebuild a :class:`PyArtifact` from an ``:Artifact`` node's properties plus its fetched
+    :class:`PyConfigKey` children (``[:DEFINES_CONFIG]``).
+
+    ``kind`` is not a projected property — every ``PyArtifact`` the analyzer emits carries the
+    model's own default (``"artifact"``; see ``codeanalyzer/artifacts/discovery.py``), so it is
+    supplied here rather than queried for.
+    """
+    return PyArtifact(
+        id=props.get("id", ""),
+        kind="artifact",
+        path=props.get("path", ""),
+        format=props.get("format", ""),
+        roles=list(props.get("roles", []) or []),
+        size_bytes=props.get("size_bytes", 0),
+        sha256=props.get("sha256", ""),
+        source=props.get("source", ""),
+        extraction=props.get("extraction", "none"),
+        config_keys=config_keys or [],
+    )
+
+
+def dependency(props: Props, *, name: str, ecosystem: str, declared_in: str) -> PyDependency:
+    """Rebuild a :class:`PyDependency` from a ``[:DECLARES_DEPENDENCY]`` edge's properties plus its
+    endpoints (``name``/``ecosystem`` off the ``:Package`` node, ``declared_in`` off the
+    ``:Artifact`` node). ``ecosystem`` is a real ``Package`` property (``neo4j/schema.py``'s
+    ``Package`` node type carries it); ``"pypi"`` is only ever what the analyzer happens to write
+    there today (its only ecosystem, per ``PyDependency.ecosystem``'s own docstring) — read off the
+    node rather than hardcoded, so this doesn't silently go stale the day a second ecosystem ships.
+
+    ``locked_version``/``provides_imports`` are projection-lossy here: the graph carries them on
+    the separate ``[:LOCKS]``/``[:PY_PROVIDES]`` edges (per-package facts, not per-declaration), and
+    no caller of this reconstruction chases those yet, so they come back at the model's own empty
+    defaults — the same class of gap :func:`callsite` documents for ``argument_types``.
+    """
+    return PyDependency(
+        name=name,
+        ecosystem=ecosystem,
+        spec=props.get("spec", ""),
+        kind=props.get("kind", "runtime"),
+        extras=list(props.get("extras", []) or []),
+        declared_in=declared_in,
+        direct=props.get("direct", True),
+        provides_imports=[],
+        prov=list(props.get("prov", []) or []),
+    )
+
+
+def unresolved_config_read(props: Props, *, callee: str) -> PyConfigRead:
+    """Rebuild a :class:`PyConfigRead` from a ``[:PY_READS_CONFIG_UNRESOLVED]`` edge's properties
+    plus its ``:PyExternal`` ghost endpoint (``callee``).
+
+    ``site`` (the reading call's own body-node id) is projection-lossy here, always ``""``: unlike
+    ``PY_USES_CONFIG``, this edge runs application-to-ghost (``:PyApplication`` -> ``:PyExternal``),
+    never touching the actual :PyBodyNode that made the call, so there is no node id to recover it
+    from. The edge's own discriminant is ``(key, reason)``, not per-site (see
+    ``codeanalyzer/neo4j/project.py``'s own comment on this), so several distinct call sites
+    sharing a ``(callee, key, reason)`` triple also collapse into one edge -- a count/site gap, not
+    a presence/absence one: any unresolved read for that triple guarantees at least one edge here.
+    """
+    return PyConfigRead(
+        site="",
+        callee=callee,
+        key=props.get("key"),
+        reason=props.get("reason", "non-literal"),
+        prov=list(props.get("prov", []) or []),
     )
 
 
@@ -153,6 +302,24 @@ def overview(row: Props) -> PyCallableOverview:
     )
 
 
+def class_overview(row: Props) -> PyClassOverview:
+    """Build a :class:`PyClassOverview` from a projected class row (see :func:`overview` for the
+    callable equivalent).
+
+    ``row`` is a flat ``RETURN`` projection: ``signature``, ``name``, ``decorators``,
+    ``start_line``, ``end_line``, and ``path`` -- sourced from ``:PyClass``'s ``_module`` property,
+    since (unlike ``:PyCallable``) the node itself carries no ``path`` property.
+    """
+    return PyClassOverview(
+        signature=row.get("signature", ""),
+        name=row.get("name", ""),
+        path=row.get("path", ""),
+        start_line=row.get("start_line", -1),
+        end_line=row.get("end_line", -1),
+        decorators=list(row.get("decorators", []) or []),
+    )
+
+
 # -----[ declarations ]-----
 def callable_(
     props: Props,
@@ -162,23 +329,30 @@ def callable_(
     inner_classes: Dict[str, PyClass] | None = None,
     local_variables: List[PyVariableDeclaration] | None = None,
 ) -> PyCallable:
-    """Rebuild a :class:`PyCallable` from a ``:PyCallable`` node plus its fetched children."""
+    """Rebuild a :class:`PyCallable` from a ``:PyCallable`` node plus its fetched children.
+
+    Two 1.4.0 shape changes from the node's flat properties: ``decorators`` (graph: flat
+    ``string[]`` of names) rewraps into the model's structured ``List[PyDecorator]``, name-only
+    (the graph doesn't project a decorator's arguments/qualified name); and ``code`` has no model
+    field to receive it at all any more (superseded by ``span`` + ``PyModule.source`` — this
+    backend's ``get_method_bodies`` instead reads the graph's own flat ``code`` property directly,
+    unaffected by the model shape).
+    """
     return PyCallable(
         name=props.get("name", ""),
         path=props.get("path", ""),
         signature=props.get("signature", ""),
         comments=comments(props),
-        decorators=list(props.get("decorators", []) or []),
+        decorators=[PyDecorator(name=d) for d in props.get("decorators", []) or []],
         parameters=parameters(props),
         return_type=props.get("return_type"),
-        code=props.get("code"),
         start_line=props.get("start_line", -1),
         end_line=props.get("end_line", -1),
         code_start_line=props.get("code_start_line", -1),
         accessed_symbols=accessed_symbols(props),
         call_sites=call_sites or [],
-        inner_callables=inner_callables or {},
-        inner_classes=inner_classes or {},
+        callables=inner_callables or {},
+        types=inner_classes or {},
         local_variables=local_variables or [],
         cyclomatic_complexity=props.get("cyclomatic_complexity", 0),
     )
@@ -191,16 +365,19 @@ def class_(
     attributes: Dict[str, PyClassAttribute] | None = None,
     inner_classes: Dict[str, PyClass] | None = None,
 ) -> PyClass:
-    """Rebuild a :class:`PyClass` from a ``:PyClass`` node plus its fetched children."""
+    """Rebuild a :class:`PyClass` from a ``:PyClass`` node plus its fetched children.
+
+    Like :func:`callable_`: no model field receives the graph's flat ``code`` property any more
+    (superseded by ``span`` + ``PyModule.source``, unused on this read-only reconstruction path).
+    """
     return PyClass(
         name=props.get("name", ""),
         signature=props.get("signature", ""),
         comments=comments(props),
-        code=props.get("code"),
         base_classes=list(props.get("base_classes", []) or []),
-        methods=methods or {},
+        callables=methods or {},
         attributes=attributes or {},
-        inner_classes=inner_classes or {},
+        types=inner_classes or {},
         start_line=props.get("start_line", -1),
         end_line=props.get("end_line", -1),
     )
@@ -225,7 +402,7 @@ def module(
         module_name=props.get("module_name", ""),
         imports=imports or [],
         comments=[],
-        classes=classes or {},
+        types=classes or {},
         functions=functions or {},
         variables=variables or [],
         content_hash=props.get("content_hash"),

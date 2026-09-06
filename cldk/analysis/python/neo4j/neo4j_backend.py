@@ -33,11 +33,15 @@ backend.
 
 Identity model (must match the in-memory backend; see ``codeanalyzer/neo4j/project.py``):
 
-* a class/callable/external is a ``:PySymbol`` keyed by ``signature``
-  (also carrying its specific label ``:PyClass`` / ``:PyCallable`` / ``:PyExternal``);
+* a class/callable/external is keyed by ``id``, under its specific label — ``:PyClass`` /
+  ``:PyCallable`` / ``:PyExternal`` — which is all this backend ever matches on: the producer also
+  stamps a shared secondary label across all three (a declared symbol is id-keyed there too, not
+  signature-keyed, unlike 0.3.x — the one exception is an unresolved ``PY_EXTENDS`` base-class
+  ghost, still merged by ``signature``, irrelevant to every query below), but the specific labels
+  already uniquely identify these nodes so the shared one goes unqueried;
 * a module is a ``:PyModule`` keyed by ``file_key`` (which equals the original ``PyModule.file_path``
   and the symbol-table key);
-* call-graph edges are ``(:PyCallable|:PyExternal)-[:PY_CALLS {weight, provenance}]->(...)`` with a
+* call-graph edges are ``(:PyCallable|:PyExternal)-[:PY_CALLS {weight, prov}]->(...)`` with a
   constant ``CALL_DEP`` type;
 * class inheritance is ``(:PyClass)-[:PY_EXTENDS]->(:PyClass)`` (plus a ``base_classes`` property);
 * every project-owned node carries a ``_module`` provenance property, so a single database may hold
@@ -45,9 +49,10 @@ Identity model (must match the in-memory backend; see ``codeanalyzer/neo4j/proje
   ``(:PyApplication {name})-[:PY_HAS_MODULE]->(:PyModule)``.
 
 In-memory dict keys this backend reproduces exactly (the projection stores nodes by ``signature``
-only, so the keys are rebuilt from node properties): ``module.classes`` / ``inner_classes`` →
-``signature``; ``module.functions`` / ``methods`` / ``inner_callables`` → short ``name``;
-``attributes`` → ``name``. ``get_all_classes`` / ``get_class`` return **top-level** classes only
+only, so the keys are rebuilt from node properties): ``module.types`` / a class's own ``types`` →
+``signature``; ``module.functions`` / a class's own ``callables`` / a callable's own ``callables``
+→ short ``name``; ``attributes`` → ``name``. ``get_all_classes`` / ``get_class`` return
+**top-level** classes only
 (``PyModule-[:PY_DECLARES]->PyClass``), matching the in-memory backend.
 
 Parity: verified against a real 57-module project — every node and edge **present in the graph**
@@ -57,8 +62,9 @@ present in both, zero weight/provenance mismatches). The residual gap is not in 
 * **Upstream emitter gap (not recoverable here):** ``codeanalyzer-python``'s projection drops call
   edges whose target is a bare module name that is *also* imported (e.g. a call to ``os`` /
   ``re`` / ``json`` when ``import os`` is present) — its ``RowBuilder`` keys ``:PyPackage`` names
-  and call-target signatures in one namespace, so the edge gets a dangling ``:PySymbol`` reference
-  and is silently dropped by the writer. Those edges never reach Neo4j, so the call graph here can
+  and call-target signatures in the same id namespace as declared symbols, so the edge gets a
+  dangling reference and is silently dropped by the writer. Those edges never reach Neo4j, so the
+  call graph here can
   be missing a small fraction of external-target edges. This is a producer bug, not a query bug.
 * **Projection-lossy fields** (inherent to what the graph stores — see :mod:`reconstruct`): comments
   collapse to a single docstring (module-level comments dropped); ``PyVariableDeclaration.value`` and
@@ -71,24 +77,36 @@ Everything else round-trips identically to ``PyCodeanalyzer``.
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Tuple
+from collections import defaultdict
+from typing import Any, Dict, List, Sequence, Tuple
 
 import networkx as nx
 from codeanalyzer.schema import model_dump_json
+from codeanalyzer.schema.ids import application_id
 
-from cldk.analysis.python.backend import PythonAnalysisBackend
+from cldk.analysis.commons.results import CallableRef, Diagnostic, EntrypointCoverage, LocateResult, ModuleRef, TypeRef
+from cldk.analysis.python.backend import PythonAnalysisBackend, body_key_column, resolve_module_key
 from cldk.analysis.python.neo4j import reconstruct as R
 from cldk.models.python import (
+    BodyNode,
     PyApplication,
+    PyArtifact,
     PyCallEdge,
     PyCallable,
     PyCallableOverview,
     PyCallsite,
     PyClass,
     PyClassAttribute,
+    PyClassOverview,
+    PyConfigKey,
+    PyConfigRead,
+    PyConfigUseEdge,
+    PyDependency,
+    PyExternalSymbol,
     PyModule,
+    Span,
 )
-from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
+from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException, GraphSchemaMismatch
 
 logger = logging.getLogger(__name__)
 
@@ -106,13 +124,34 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         neo4j_database: Database name (None ⇒ server default).
         application_name: The ``:PyApplication`` anchor name to scope every query to. Matches the
             ``--app-name`` the graph was loaded with (defaults to the project directory name).
+
+    ``has_resolution_edges`` (see :meth:`PythonAnalysisBackend.has_resolution_edges`) is ``True``
+    iff this application's graph has at least one ``PY_RESOLVES_TO`` edge — probed once at
+    construction (see :meth:`_probe_resolution_edges`).
     """
+
+    #: Neo4j relationship-type and node-label prefixes for codeanalyzer-python's graph vocabulary
+    #: (see :class:`~cldk.analysis.commons.backend.AnalysisBackend`).
+    P = "PY"
+    N = "Py"
+
+    #: Relationship types every supported graph must have. A graph missing any of these was
+    #: built by a different codeanalyzer-python generation (see ``_probe_schema``); their
+    #: absence is not exercised individually, they are just the cheapest reliable fingerprint.
+    #: ``HAS_ARTIFACT`` is deliberately NOT added here even though it is what
+    #: get_artifacts()/get_dependencies()/get_config_keys()/get_config_uses() query: it was
+    #: introduced in the very same codeanalyzer-python generation as ``PY_HAS_BODY_NODE`` (both
+    #: Task 6/#152/#162, both 1.4.0-only), so a pre-1.4.0 graph is already caught by the existing
+    #: fingerprint. Adding it too would make a *genuinely* artifact-less v2 project (no non-.py
+    #: files at all) fail schema probing outright, for a layer that was never in that project to
+    #: begin with -- the wrong kind of "absence is never null".
+    _REQUIRED_RELATIONSHIP_TYPES: frozenset[str] = frozenset({"PY_HAS_MODULE", "PY_HAS_METHOD", "PY_HAS_BODY_NODE", "PY_CALLS"})
 
     def __init__(
         self,
         neo4j_uri: str,
-        neo4j_username: str,
-        neo4j_password: str,
+        neo4j_username: str | None = None,
+        neo4j_password: str | None = None,
         neo4j_database: str | None = None,
         application_name: str | None = None,
     ) -> None:
@@ -123,20 +162,91 @@ class PyNeo4jBackend(PythonAnalysisBackend):
                 "The Neo4j backend requires the 'neo4j' driver. Install it with "
                 "`pip install neo4j` (or `pip install cldk[neo4j]`)."
             ) from e
+        driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_username, neo4j_password))
+        self._init_with_driver(driver, application_name=application_name, neo4j_database=neo4j_database)
 
+    @classmethod
+    def _from_driver(cls, driver: Any, *, application_name: str | None = None, neo4j_database: str | None = None) -> "PyNeo4jBackend":
+        """Construct directly from an already-built driver — exists for tests injecting a fake driver."""
+        self = cls.__new__(cls)
+        self._init_with_driver(driver, application_name=application_name, neo4j_database=neo4j_database)
+        return self
+
+    def _init_with_driver(self, driver: Any, *, application_name: str | None = None, neo4j_database: str | None = None) -> None:
         if not application_name:
             raise CodeanalyzerExecutionException("application_name is required to scope queries to an application.")
         self.application_name = application_name
         self._database = neo4j_database
-        self._driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_username, neo4j_password))
+        self._driver = driver
         # One long-lived read session reused across queries (see _run). Reconstruction is an N+1
         # fan-out, so reopening a session per query added real per-call overhead. Created lazily.
         self._session_obj: Any | None = None
 
+        # Fail fast if the attached graph doesn't speak this backend's vocabulary — one round
+        # trip, run once per connection, before any query can silently come back empty.
+        self._probe_schema()
+
         # The application's module file_keys, used to scope every query to this app.
         self._modules: List[str] = self._load_module_keys()
+        # Whether this application's graph carries any per-callsite resolution data at all --
+        # probed once here, same pattern as _probe_schema (see _probe_resolution_edges).
+        self._has_resolution_edges: bool = self._probe_resolution_edges()
         # Lazily-built call graph cache (mirrors PyCodeanalyzer.call_graph).
         self._call_graph: nx.DiGraph | None = None
+
+    def _probe_schema(self) -> None:
+        """Verify the connected graph's vocabulary once, at connection time.
+
+        A graph built by a different ``codeanalyzer-python`` generation (or an empty/asset-only
+        database) answers every one of this backend's Cypher queries with zero rows — no error,
+        nothing to distinguish it from "this codebase has no callables". This runs
+        ``CALL db.relationshipTypes()`` (one round trip, read-only) and compares the result
+        against :attr:`_REQUIRED_RELATIONSHIP_TYPES`, raising :class:`GraphSchemaMismatch` if any
+        are absent.
+        """
+        found = {r["relationshipType"] for r in self._run("CALL db.relationshipTypes()")}
+        missing = self._REQUIRED_RELATIONSHIP_TYPES - found
+        if missing:
+            raise GraphSchemaMismatch(expected=set(self._REQUIRED_RELATIONSHIP_TYPES), found=found, missing=missing)
+
+    def _probe_resolution_edges(self) -> bool:
+        """Whether this application's graph carries any ``PY_RESOLVES_TO`` edge at all — probed
+        once here, same "one round trip at construction" pattern as :meth:`_probe_schema`.
+
+        ``get_callsites_for``'s per-site ``callee_signature`` is ``None`` both for "genuinely
+        unresolved" and, in principle, for "this graph was populated at an analysis level below the
+        one where the defuse-linker backfill runs, so ``PY_RESOLVES_TO`` doesn't exist at all" —
+        ``PyCallsite`` is the analyzer's own frozen model with no field to carry that distinction
+        (see :meth:`PythonAnalysisBackend.get_callsites_for`). ``:PyApplication`` carries no
+        ``max_level``/provenance marker either (its projected properties are ``name``,
+        ``schema_version``, ``analyzer_name``, ``analyzer_version``, ``repo_uri``,
+        ``source_revision``, ``repo_dirty`` — verified against ``codeanalyzer/neo4j/schema.py``,
+        nothing else), so this probe is the only way this backend could learn which situation a
+        caller is in, if that second situation were ever real.
+
+        It is not, on the documented ingestion path: ``codeanalyzer/__main__.py`` forces
+        ``analysis_level = 4`` unconditionally for ``--emit neo4j`` (level/``--graphs`` cannot even
+        be passed alongside it — a ``typer.Exit`` if you try), so ``backfill_callees`` (gated on
+        ``analysis_level >= 2``) always runs and ``PY_RESOLVES_TO`` always exists on any graph
+        built that way. ``has_resolution_edges`` is expected to be ``True`` on every such graph;
+        this probe is defensive against a graph built some other way (a hand-populated database, an
+        older/forked emitter generation) rather than a gap in the documented pipeline — a corrected
+        finding from this leg's own review ledger, which had assumed the SDK's own local-backend
+        default analysis level (1) also applied to Neo4j ingestion.
+
+        This is information, not an error — this never raises the way :meth:`_probe_schema` does.
+        """
+        rows = self._run(
+            "MATCH (s:PyBodyNode)-[:PY_RESOLVES_TO]->() WHERE s._module IN $mods RETURN s LIMIT 1",
+            mods=self._modules,
+        )
+        return bool(rows)
+
+    @property
+    def has_resolution_edges(self) -> bool:
+        """See :meth:`PythonAnalysisBackend.has_resolution_edges`. Fixed at construction by
+        :meth:`_probe_resolution_edges`."""
+        return self._has_resolution_edges
 
     # -----[ lifecycle ]-----
     def close(self) -> None:
@@ -188,13 +298,24 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     # Reconstruction helpers — fetch a node's children over Cypher, then assemble via R.
     # =====================================================================================
     def _callable_full(self, props: Dict[str, Any]) -> PyCallable:
-        """Rebuild a full :class:`PyCallable` (call sites, inner callables/classes, locals)."""
+        """Rebuild a full :class:`PyCallable` (call sites, inner callables/classes, locals).
+
+        Call sites are built with ``R.callsite(r["p"])`` — no ``callee_signature`` keyword — so
+        every call site reconstructed this way carries ``callee_signature=None`` *forever*, not
+        merely for the genuinely-unresolved case: this method never follows ``PY_RESOLVES_TO`` at
+        all. Every public accessor that bottoms out here (directly or via :meth:`_class_full` /
+        :meth:`_module_full`) inherits that — ``get_method``, ``get_all_methods_in_class``,
+        ``get_all_constructors``, ``get_all_methods_in_application``, ``get_class`` /
+        ``get_all_classes`` and their siblings, ``get_symbol_table`` / ``get_python_module``.
+        :meth:`get_callsites_for` is the only accessor on this backend that resolves the identical
+        underlying call site — use it when a caller needs ``callee_signature`` populated.
+        """
         sig = props["signature"]
         call_sites = [
             R.callsite(r["p"])
             for r in self._run(
-                "MATCH (:PyCallable {signature: $sig})-[:PY_HAS_CALLSITE]->(s:PyCallSite) "
-                "RETURN properties(s) AS p ORDER BY s.start_line, s.start_column",
+                "MATCH (:PyCallable {signature: $sig})-[:PY_HAS_BODY_NODE]->(s:PyBodyNode {kind: 'call'}) "
+                "RETURN properties(s) AS p ORDER BY s.start_line",
                 sig=sig,
             )
         ]
@@ -239,7 +360,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         classes: Dict[str, PyClass] = {}
         for r in self._run("MATCH (:PyModule {file_key: $fk})-[:PY_DECLARES]->(c:PyClass) RETURN properties(c) AS p", fk=file_key):
             c = self._class_full(r["p"])
-            classes[c.signature] = c  # module.classes keyed by signature
+            classes[c.signature] = c  # module.types keyed by signature
         functions: Dict[str, PyCallable] = {}
         for r in self._run("MATCH (:PyModule {file_key: $fk})-[:PY_DECLARES]->(f:PyCallable) RETURN properties(f) AS p", fk=file_key):
             fn = self._callable_full(r["p"])
@@ -270,10 +391,27 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         return out
 
     def _call_rows(self) -> List[Dict[str, Any]]:
-        """Raw ``PY_CALLS`` edge rows scoped to this application (by source module)."""
+        """Raw ``PY_CALLS`` edge rows scoped to this application (by source module).
+
+        ``PY_CALLS`` only ever connects declared callables and external-symbol ghosts (see
+        ``codeanalyzer.neo4j.schema.REL_TYPES``), so matching either label directly is both
+        sufficient and cheaper than matching on the shared secondary label 1.4.0 also stamps these
+        nodes with (a declared symbol is id-keyed there, not signature-keyed, so this Cypher
+        doesn't depend on it at all).
+
+        ``t`` may land on a ``:PyExternal`` ghost (a call to a builtin or a library member), and
+        ``:PyExternal`` carries no ``signature`` property at all -- only ``id``/``name``/``module``.
+        ``coalesce(t.signature, t.id)`` resolves it to its addressable ``@external`` can-id instead
+        of projecting ``None``, same idiom ``get_callsites_for`` already uses for the identical
+        situation one screen below. ``s`` is never external here: ``:PyExternal`` carries no
+        ``_module`` property, so ``s._module IN $mods`` is already false for it -- a call
+        *originating* at an external ghost exists in the raw graph (5,307 edges on the live Odoo
+        graph) but is filtered out by this scoping before it ever reaches the RETURN, so ``s``
+        needs no coalesce.
+        """
         return self._run(
-            "MATCH (s:PySymbol)-[r:PY_CALLS]->(t:PySymbol) WHERE s._module IN $mods "
-            "RETURN s.signature AS src, t.signature AS tgt, properties(r) AS p",
+            "MATCH (s:PyCallable|PyExternal)-[r:PY_CALLS]->(t:PyCallable|PyExternal) WHERE s._module IN $mods "
+            "RETURN s.signature AS src, coalesce(t.signature, t.id) AS tgt, properties(r) AS p",
             mods=self._modules,
         )
 
@@ -305,7 +443,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         return self._module_full(rows[0]["p"]) if rows else None
 
     def get_python_file(self, qualified_class_name: str) -> str | None:
-        # Only top-level classes are in the in-memory _class_to_file map (module.classes).
+        # Only top-level classes are in the in-memory _class_to_file map (module.types).
         rows = self._run(
             "MATCH (:PyModule)-[:PY_DECLARES]->(c:PyClass {signature: $sig}) WHERE c._module IN $mods RETURN c._module AS fk LIMIT 1",
             sig=qualified_class_name,
@@ -317,13 +455,19 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     # call graph
     # =====================================================================================
     def _call_edges(self) -> List[PyCallEdge]:
-        """The application's call edges as ``PyCallEdge`` records (``PyApplication.call_graph``)."""
+        """The application's call edges as ``PyCallEdge`` records (``PyApplication.call_graph``).
+
+        ``PyCallEdge`` itself is a v2 model (fields ``src``/``dst``/``weight``/``prov`` — 0.3.x's
+        ``source``/``target``/``provenance`` don't exist on it), and the Cypher property carrying
+        provenance on the graph is ``prov``, not ``provenance``. Same vocabulary migration as the
+        label/relationship rename above, just one level down (model kwargs / property keys).
+        """
         return [
             PyCallEdge(
-                source=r["src"],
-                target=r["tgt"],
+                src=r["src"],
+                dst=r["tgt"],
                 weight=r["p"].get("weight", 1),
-                provenance=list(r["p"].get("provenance", []) or []),
+                prov=list(r["p"].get("prov", []) or []),
             )
             for r in self._call_rows()
         ]
@@ -332,7 +476,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         graph = nx.DiGraph()
         for r in self._call_rows():
             p = r["p"]
-            graph.add_edge(r["src"], r["tgt"], type="CALL_DEP", weight=p.get("weight", 1), provenance=tuple(p.get("provenance", []) or []))
+            graph.add_edge(r["src"], r["tgt"], type="CALL_DEP", weight=p.get("weight", 1), provenance=tuple(p.get("prov", []) or []))
         return graph
 
     def get_call_graph(self) -> nx.DiGraph:
@@ -370,7 +514,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
                 return []
             return list(nx.edge_dfs(graph, source=method.signature))
         edges: List[Tuple[str, str]] = []
-        for method in cls.methods.values():
+        for method in cls.callables.values():
             if method.signature in graph:
                 edges.extend(nx.edge_dfs(graph, source=method.signature))
         return edges
@@ -399,7 +543,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
 
     def get_all_nested_classes(self, qualified_class_name: str) -> List[PyClass]:
         cls = self.get_class(qualified_class_name)
-        return list(cls.inner_classes.values()) if cls else []
+        return list(cls.types.values()) if cls else []
 
     def get_all_sub_classes(self, qualified_class_name: str) -> Dict[str, PyClass]:
         cls = self.get_class(qualified_class_name)
@@ -426,15 +570,21 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     def get_all_methods_in_application(self) -> Dict[str, Dict[str, PyCallable]]:
         result: Dict[str, Dict[str, PyCallable]] = {}
         for module in self.get_symbol_table().values():
-            for class_sig, cls in module.classes.items():
-                result[class_sig] = dict(cls.methods)
+            for class_sig, cls in module.types.items():
+                result[class_sig] = dict(cls.callables)
             if module.functions:
                 result.setdefault(module.module_name, {}).update(module.functions)
         return result
 
     def get_all_methods_in_class(self, qualified_class_name: str) -> Dict[str, PyCallable]:
+        """The methods of a class (see :meth:`~cldk.analysis.commons.backend.AnalysisBackend.get_all_methods_in_class`).
+
+        Every returned ``PyCallable``'s call sites have ``callee_signature=None`` — this
+        reconstruction never follows ``PY_RESOLVES_TO`` (see :meth:`_callable_full`). Use
+        :meth:`get_callsites_for` for the identical call sites with resolved signatures.
+        """
         cls = self.get_class(qualified_class_name)
-        return dict(cls.methods) if cls else {}
+        return dict(cls.callables) if cls else {}
 
     def _get_module_functions(self, module_name: str) -> Dict[str, PyCallable]:
         """Fetch a module's top-level functions by ``module_name`` (not ``file_key``) — the scope
@@ -456,9 +606,13 @@ class PyNeo4jBackend(PythonAnalysisBackend):
 
         ``qualified_class_name`` resolves as a class signature first; if no such class exists it
         is treated as a module name and resolved against that module's top-level functions.
+
+        The returned ``PyCallable``'s call sites have ``callee_signature=None`` — this
+        reconstruction never follows ``PY_RESOLVES_TO`` (see :meth:`_callable_full`). Use
+        :meth:`get_callsites_for` for the identical call sites with resolved signatures.
         """
         cls = self.get_class(qualified_class_name)
-        methods = dict(cls.methods) if cls is not None else self._get_module_functions(qualified_class_name)
+        methods = dict(cls.callables) if cls is not None else self._get_module_functions(qualified_class_name)
         if qualified_method_name in methods:
             return methods[qualified_method_name]
         for sig, callable_ in methods.items():
@@ -471,6 +625,11 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         return [p.name for p in method.parameters] if method else []
 
     def get_all_constructors(self, qualified_class_name: str) -> Dict[str, PyCallable]:
+        """The constructors of a class (see :meth:`~cldk.analysis.python.backend.PythonAnalysisBackend.get_all_constructors`).
+
+        Routed through :meth:`get_all_methods_in_class`, so the same caveat applies: call sites
+        have ``callee_signature=None`` here. Use :meth:`get_callsites_for` for resolved signatures.
+        """
         return {sig: c for sig, c in self.get_all_methods_in_class(qualified_class_name).items() if c.name == "__init__"}
 
     def get_all_fields(self, qualified_class_name: str) -> List[PyClassAttribute]:
@@ -505,6 +664,34 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         )
         return {r["signature"]: r["code"] for r in rows}
 
+    def get_source(self, node_id: str) -> str:
+        """Return the source text named by ``node_id`` (see
+        :meth:`PythonAnalysisBackend.get_source`).
+
+        Only a callable-granularity ``node_id`` (no ``"@"``) is answerable here: ``:PyCallable.code``
+        is a real, precomputed property. A body-node id names something the graph structurally
+        cannot supply text for — no per-statement ``code`` property exists, and ``:PyModule`` has no
+        source to slice one out of either — so that case raises rather than silently substituting
+        the enclosing callable's (too much) text.
+        """
+        sig, sep, _ = node_id.partition("@")
+        if sep:
+            raise NotImplementedError(
+                f"get_source({node_id!r}): the attached graph carries no source text below callable "
+                "granularity -- :PyBodyNode has a line span and no code/text property, and :PyModule "
+                "has no source to slice one out of. Only the local codeanalyzer backend can answer "
+                "for a statement or call site."
+            )
+        rows = self._run(
+            "MATCH (c:PyCallable) WHERE c._module IN $mods AND c.signature = $sig AND c.code IS NOT NULL "
+            "RETURN c.code AS code",
+            mods=self._modules,
+            sig=sig,
+        )
+        if not rows:
+            raise KeyError(f"no callable with signature {sig!r} (or it has no code)")
+        return rows[0]["code"]
+
     def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:
         rows = self._run(
             "MATCH (c:PyCallable) WHERE c._module IN $mods "
@@ -514,15 +701,61 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         )
         return [R.overview(r) for r in rows]
 
+    def get_entrypoints(self) -> List[PyCallableOverview]:
+        rows = self._run(
+            "MATCH (c:PyCallable) WHERE c._module IN $mods AND c.is_entrypoint = true " + self._OVERVIEW_PROJECTION,
+            mods=self._modules,
+        )
+        return [R.overview(r) for r in rows]
+
+    def get_entrypoint_classes(self) -> List[PyClassOverview]:
+        rows = self._run(
+            "MATCH (cl:PyClass) WHERE cl._module IN $mods AND cl.is_entrypoint = true "
+            "RETURN cl.signature AS signature, cl.name AS name, cl.decorators AS decorators, "
+            "cl._module AS path, cl.start_line AS start_line, cl.end_line AS end_line",
+            mods=self._modules,
+        )
+        return [R.class_overview(r) for r in rows]
+
+    def get_entrypoint_coverage(self) -> EntrypointCoverage:
+        # codeanalyzer-python's neo4j/project.py projects only the derived is_entrypoint /
+        # entrypoint_frameworks properties onto :PyCallable/:PyClass -- it never projects
+        # PyApplication.entrypoint_report (frameworks_detected/rulesets/unresolved/errors) onto the
+        # graph at all (confirmed: no such property or node anywhere in neo4j/project.py). Say so
+        # rather than fabricate empty-but-clean-looking coverage fields -- same precedent as
+        # LocateResult's module_source_unavailable for the module-text gap.
+        return EntrypointCoverage(
+            diagnostics=[
+                Diagnostic(
+                    code="entrypoint_report_unavailable",
+                    message=(
+                        "The Neo4j projection does not carry PyApplication.entrypoint_report "
+                        "(frameworks_detected/rulesets/unresolved/errors) -- only the derived "
+                        "is_entrypoint/entrypoint_frameworks properties are projected onto "
+                        ":PyCallable/:PyClass nodes. Use the local codeanalyzer backend for "
+                        "entrypoint-pass coverage."
+                    ),
+                )
+            ]
+        )
+
     def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:
         # OPTIONAL MATCH so a requested callable with no call sites still yields a row (p is null),
         # giving it an empty-list entry — parity with the in-process backend, which keys every
-        # existing signature. ORDER mirrors _callable_full's call-site ordering.
+        # existing signature. ORDER mirrors _callable_full's call-site ordering. The second
+        # OPTIONAL MATCH follows PY_RESOLVES_TO to the call's resolved target: a declared
+        # :PyCallable (carries `signature`) or a :PyExternal ghost (no `signature`, only
+        # `id`/`name`/`module`) -- coalesce picks whichever property the target actually has, so
+        # an external target resolves to its addressable @external can-id (see
+        # PythonAnalysisBackend.get_callsites_for). Absent (null) when the call is genuinely
+        # unresolved, or when the graph was populated at an analysis level below the one where the
+        # defuse-linker backfill runs (see that same docstring's caveat).
         rows = self._run(
             "MATCH (c:PyCallable) WHERE c._module IN $mods AND c.signature IN $sigs "
-            "OPTIONAL MATCH (c)-[:PY_HAS_CALLSITE]->(s:PyCallSite) "
-            "RETURN c.signature AS owner, properties(s) AS p "
-            "ORDER BY s.start_line, s.start_column",
+            "OPTIONAL MATCH (c)-[:PY_HAS_BODY_NODE]->(s:PyBodyNode {kind: 'call'}) "
+            "OPTIONAL MATCH (s)-[:PY_RESOLVES_TO]->(t) "
+            "RETURN c.signature AS owner, properties(s) AS p, coalesce(t.signature, t.id) AS callee "
+            "ORDER BY s.start_line",
             mods=self._modules,
             sigs=list(signatures),
         )
@@ -530,5 +763,306 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         for r in rows:
             sites = out.setdefault(r["owner"], [])
             if r["p"] is not None:
-                sites.append(R.callsite(r["p"]))
+                sites.append(R.callsite(r["p"], callee_signature=r["callee"]))
         return out
+
+    def get_external_symbols(self) -> Dict[str, PyExternalSymbol]:
+        # :PyExternal carries no `_module` property (it isn't owned by one module -- see this
+        # file's module docstring on MODULE_OWNED_LABELS), so it can't be scoped the way every
+        # other query here is. Its id embeds this application's own can:// id by construction
+        # (`<app-id>/@external/<module>/<name>`), which is app-scoping enough on its own -- a
+        # second application in the same database mints a disjoint id prefix.
+        prefix = f"{application_id(self.application_name)}/@external/"
+        rows = self._run(
+            "MATCH (e:PyExternal) WHERE e.id STARTS WITH $prefix RETURN properties(e) AS p",
+            prefix=prefix,
+        )
+        return {r["p"]["id"]: R.external_symbol(r["p"]) for r in rows}
+
+    # =====================================================================================
+    # PythonAnalysisBackend — repository artifacts (Artifact/ConfigKey/Package, unprefixed —
+    # see cldk/analysis/commons/backend.py's module docstring)
+    # =====================================================================================
+    def get_artifacts(self) -> Dict[str, PyArtifact]:
+        result: Dict[str, PyArtifact] = {}
+        for r in self._run(
+            "MATCH (:PyApplication {name: $app})-[:HAS_ARTIFACT]->(a:Artifact) "
+            "OPTIONAL MATCH (a)-[:DEFINES_CONFIG]->(ck:ConfigKey) "
+            "RETURN properties(a) AS p, collect(properties(ck)) AS cks",
+            app=self.application_name,
+        ):
+            art = R.artifact(r["p"], config_keys=[R.config_key(p) for p in r["cks"]])
+            result[art.path] = art
+        return result
+
+    def get_dependencies(
+        self, *, direct_only: bool = False, ecosystem: str | None = None, declared_in: str | None = None
+    ) -> List[PyDependency]:
+        conditions: list[str] = []
+        params: Dict[str, Any] = {"app": self.application_name}
+        if direct_only:
+            conditions.append("r.direct = true")
+        if ecosystem is not None:
+            conditions.append("p.ecosystem = $ecosystem")
+            params["ecosystem"] = ecosystem
+        if declared_in is not None:
+            conditions.append("a.id = $declared_in")
+            params["declared_in"] = declared_in
+        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+        query = (
+            "MATCH (:PyApplication {name: $app})-[:HAS_ARTIFACT]->(a:Artifact)-[r:DECLARES_DEPENDENCY]->(p:Package)"
+            + where
+            + " RETURN properties(r) AS rel, p.name AS name, p.ecosystem AS ecosystem, a.id AS declared_in"
+        )
+        return [
+            R.dependency(r["rel"], name=r["name"], ecosystem=r["ecosystem"], declared_in=r["declared_in"])
+            for r in self._run(query, **params)
+        ]
+
+    def get_config_keys(self) -> Dict[str, PyConfigKey]:
+        result: Dict[str, PyConfigKey] = {}
+        for r in self._run(
+            "MATCH (:PyApplication {name: $app})-[:HAS_ARTIFACT]->(:Artifact)-[:DEFINES_CONFIG]->(ck:ConfigKey) "
+            "RETURN properties(ck) AS p",
+            app=self.application_name,
+        ):
+            ck = R.config_key(r["p"])
+            result[ck.id] = ck
+        return result
+
+    def get_config_uses(self, key: str | None = None) -> List[PyConfigUseEdge]:
+        # PY_USES_CONFIG (the one prefixed edge in this layer, per the leg-1 brief) connects
+        # (:PyBodyNode)-->(:ConfigKey) directly, so its endpoints ARE src/dst -- no reconstruction
+        # helper needed, unlike artifact()/dependency()/config_key() above. Scoped like every other
+        # body-node query in this file (`bn._module IN $mods`), not via the Artifact/ConfigKey path,
+        # since a config key can be read from a module outside this application's declared modules
+        # only if it were mis-scoped -- $mods is the same guard get_method_bodies/_call_rows use.
+        query = "MATCH (bn:PyBodyNode)-[u:PY_USES_CONFIG]->(ck:ConfigKey) WHERE bn._module IN $mods"
+        params: Dict[str, Any] = {"mods": self._modules}
+        if key is not None:
+            query += " AND ck.key = $key"
+            params["key"] = key
+        query += " RETURN bn.id AS src, ck.id AS dst, u.prov AS prov"
+        return [PyConfigUseEdge(src=r["src"], dst=r["dst"], prov=list(r["prov"] or [])) for r in self._run(query, **params)]
+
+    def get_unresolved_config_reads(self) -> List[PyConfigRead]:
+        # PY_READS_CONFIG_UNRESOLVED (app.config_reads_unresolved) DOES reach the graph -- verified
+        # against codeanalyzer/neo4j/project.py's _project_config_uses -- but two things are lossy
+        # here relative to the local backend's list, both documented rather than silently eaten:
+        # (1) PyConfigRead.site (the reading call's own body-node id) is not an edge property at
+        #     all; the edge runs (:PyApplication)-[:PY_READS_CONFIG_UNRESOLVED]->(:PyExternal ghost)
+        #     with key/reason/prov as edge properties, no site. `site` comes back "" here.
+        # (2) the edge's own discriminant is `_k=(key, reason)` (per project.py's comment: "does
+        #     not per-site discriminate the non-literal bucket"), so several distinct call sites
+        #     reading the same (callee, key, reason) collapse into ONE edge under MERGE -- a count
+        #     mismatch against the local backend's one-entry-per-occurrence list is expected, not a
+        #     bug. Presence/absence still agrees: any unresolved read for a (callee, key, reason)
+        #     triple guarantees at least one edge, so "no rows" here still means "no unresolved
+        #     reads," never a false negative -- unlike finding 1's entrypoint_report, which the
+        #     graph doesn't carry at all.
+        rows = self._run(
+            "MATCH (:PyApplication {name: $app})-[u:PY_READS_CONFIG_UNRESOLVED]->(ghost:PyExternal) "
+            "RETURN properties(u) AS p, ghost.id AS callee",
+            app=self.application_name,
+        )
+        return [R.unresolved_config_read(r["p"], callee=r["callee"]) for r in rows]
+
+    def get_config_readers(self, key: str) -> List[PyCallableOverview]:
+        # PyConfigUseEdge.src IS the reading call's :PyBodyNode.id (see get_config_uses's own
+        # comment), and _project_program_graphs adds PY_HAS_BODY_NODE from a callable to every
+        # PyBodyNode it creates in the same loop iteration that creates the node -- so any
+        # PyBodyNode a PY_USES_CONFIG edge points at is guaranteed to already have that edge to its
+        # owner. DISTINCT because one callable can read the same key at several call sites.
+        rows = self._run(
+            "MATCH (bn:PyBodyNode)-[:PY_USES_CONFIG]->(ck:ConfigKey) WHERE bn._module IN $mods AND ck.key = $key "
+            "MATCH (reader:PyCallable)-[:PY_HAS_BODY_NODE]->(bn) "
+            "OPTIONAL MATCH (cls:PyClass)-[:PY_HAS_METHOD]->(reader) "
+            "RETURN DISTINCT reader.signature AS signature, reader.name AS name, reader.decorators AS decorators, "
+            "reader.path AS path, reader.start_line AS start_line, reader.end_line AS end_line, "
+            "cls.signature AS class_signature",
+            mods=self._modules,
+            key=key,
+        )
+        return [R.overview(r) for r in rows]
+
+    # =====================================================================================
+    # locate / locate_many — one round trip, UNWIND over the position list
+    # =====================================================================================
+    # Two layers of containment, both in the same statement so the whole resolution is still one
+    # round trip:
+    #
+    # * the **callable** comes from PyCallable's own start_line/end_line (present at every analysis
+    #   level, unlike PyBodyNode, which only exists from L1 up) — the smallest line span containing
+    #   the position is the innermost callable, which naturally treats a gap between two callables
+    #   (or a module top-level line) the same way: no callable matches, so it falls through to
+    #   module_scope rather than snapping to a neighbour. PY_HAS_METHOD is walked reversed for the
+    #   owning class (``type``);
+    # * the **body node** comes from PY_HAS_BODY_NODE off that same candidate callable, again by
+    #   line containment, innermost first. Synthetic vertices (@entry / @exit / @formal_in:N) carry
+    #   no span, so the emitter prunes their start_line/end_line away entirely — the
+    #   ``IS NOT NULL`` guard is what stops a span-less vertex being read as "contains everything".
+    #
+    # Every other query in this file is scoped to the application with ``_module IN $mods``, and so
+    # is this one: a database may hold several applications, and a same-valued ``file_key`` from a
+    # different application would otherwise win the ``{_module: pos.path}`` match.
+    _LOCATE_QUERY = (
+        "UNWIND $positions AS pos "
+        "OPTIONAL MATCH (:PyApplication {name: $app})-[:PY_HAS_MODULE]->(m:PyModule {file_key: pos.path}) "
+        "WITH pos, m "
+        "OPTIONAL MATCH (c:PyCallable {_module: pos.path}) "
+        "WHERE c._module IN $mods "
+        "AND c.start_line IS NOT NULL AND c.end_line IS NOT NULL "
+        "AND c.start_line <= pos.line AND pos.line <= c.end_line "
+        "WITH pos, m, c "
+        "OPTIONAL MATCH (cls:PyClass)-[:PY_HAS_METHOD]->(c) "
+        "WITH pos, m, c, cls "
+        "OPTIONAL MATCH (c)-[:PY_HAS_BODY_NODE]->(b:PyBodyNode) "
+        "WHERE b.start_line IS NOT NULL AND b.end_line IS NOT NULL "
+        "AND b.start_line <= pos.line AND pos.line <= b.end_line "
+        "RETURN pos.idx AS idx, properties(m) AS module_props, properties(c) AS callable_props, "
+        "properties(cls) AS class_props, properties(b) AS body_props"
+    )
+
+    @staticmethod
+    def _line_span(start_line: int, end_line: int) -> Span:
+        """A :class:`Span` over the only positional data the graph carries: line numbers.
+
+        ``codeanalyzer-python``'s projection writes ``start_line`` / ``end_line`` on ``:PyCallable``
+        and ``:PyBodyNode`` and nothing finer — no columns, no UTF-8 byte offsets into the module
+        source (see ``codeanalyzer/neo4j/project.py``'s ``_callable_props`` /
+        ``_project_program_graphs``). The columns and ``bytes`` here are therefore ``0``
+        placeholders, not offsets: they are documented as meaningless on this backend rather than
+        dressed up as real (see :class:`~cldk.analysis.commons.results.LocateResult`).
+        """
+        return Span(start=(start_line, 0), end=(end_line, 0), bytes=(0, 0))
+
+    def _locate_result(self, path: str, line: int, rows: List[Dict[str, Any]]) -> LocateResult:
+        module_props = next((r["module_props"] for r in rows if r["module_props"] is not None), None)
+        if module_props is None:
+            return LocateResult(
+                node=None,
+                callable=None,
+                type=None,
+                module=ModuleRef(path=path),
+                source="",
+                span=self._line_span(line, line),
+                diagnostics=[
+                    Diagnostic(
+                        code="file_not_in_graph",
+                        message=(
+                            f"{path} is not covered by any analysed module of application "
+                            f"{self.application_name!r}. This backend reads an attached graph and has no "
+                            f"access to the project sources, so it cannot tell a file that was never "
+                            f"analysed from one that is not on disk."
+                        ),
+                    )
+                ],
+            )
+        module_ref = ModuleRef(path=module_props.get("file_key", path), module_name=module_props.get("module_name"))
+        # Innermost callable = smallest line span containing the position. Rows with a null
+        # callable are the OPTIONAL MATCH misses; there is one row per (callable, body node) pair,
+        # so the same callable can repeat. Equal widths (a lambda inside a one-line def) tie, and
+        # `min` would then be decided by Cypher's row order — nondeterministic here and different
+        # from the local walk's order. Break it on the longer signature, deeper first, exactly as
+        # _find_innermost does: a nested callable's signature extends its owner's.
+        best_row = min(
+            (r for r in rows if r["callable_props"] is not None),
+            key=lambda r: (
+                r["callable_props"]["end_line"] - r["callable_props"]["start_line"],
+                -len(r["callable_props"]["signature"]),
+                r["callable_props"]["signature"],
+            ),
+            default=None,
+        )
+        if best_row is None:
+            # Module scope is a real position, not an absence — but the graph genuinely does not
+            # carry module text, so say so instead of returning something invented. Reading the
+            # file from disk is not an option (this backend attaches to a graph someone else
+            # built and may not have the project checked out), and concatenating the callables'
+            # ``code`` would silently drop every module-level statement.
+            return LocateResult(
+                node=None,
+                callable=None,
+                type=None,
+                module=module_ref,
+                source="",
+                span=self._line_span(line, line),
+                diagnostics=[
+                    Diagnostic(code="module_scope", message=f"line {line} is at module scope in {path}."),
+                    Diagnostic(
+                        code="module_source_unavailable",
+                        message=(
+                            "The attached graph does not carry module text: :PyModule nodes project "
+                            "file_key/module_name/content_hash/last_modified/file_size and no source. "
+                            "The local codeanalyzer backend returns the module's text for this position."
+                        ),
+                    ),
+                ],
+            )
+        cprops, clsprops = best_row["callable_props"], best_row["class_props"]
+        found_body = self._innermost_body_node(rows, cprops["signature"])
+        node, node_id = (found_body[1], f"{cprops['signature']}@{found_body[0]}") if found_body else (None, None)
+        return LocateResult(
+            node=node,
+            node_id=node_id,
+            callable=CallableRef(signature=cprops["signature"], name=cprops["name"], class_signature=clsprops["signature"] if clsprops else None),
+            type=TypeRef(signature=clsprops["signature"], name=clsprops["name"]) if clsprops else None,
+            module=module_ref,
+            source=cprops.get("code") or "",
+            span=self._line_span(cprops["start_line"], cprops["end_line"]),
+            diagnostics=[],
+        )
+
+    @staticmethod
+    def _innermost_body_node(rows: List[Dict[str, Any]], signature: str) -> "Tuple[str, BodyNode] | None":
+        """The tightest ``:PyBodyNode`` of ``signature`` the query matched, plus its local body key
+        (the trailing segment of its graph ``id``), or ``None``. The key rides along so a caller can
+        build the node's ``get_source`` id (``"<signature>@<key>"``) without re-deriving it.
+
+        ``None`` is a real outcome, not an error: a position on a callable's ``def`` line or on a
+        blank line inside it is contained by the callable and by no body node, and the caller still
+        gets the callable. Ties break on the trailing local key of the node's global ``id``
+        (``<callable can:// id>@<body key>``) — the same key the local backend's ``body`` dict is
+        keyed by, ranked the same way (deeper column first, see
+        :func:`~cldk.analysis.python.backend.body_key_column`), so both backends resolve a tie to the
+        same node.
+        """
+        matches = [r["body_props"] for r in rows if r["body_props"] is not None and r["callable_props"] is not None and r["callable_props"]["signature"] == signature]
+        if not matches:
+            return None
+
+        def rank(b: Dict[str, Any]) -> Tuple[int, int, str]:
+            key = str(b.get("id", "")).rsplit("@", 1)[-1]
+            return (b["end_line"] - b["start_line"], -body_key_column(key), key)
+
+        best = min(matches, key=rank)
+        key = str(best.get("id", "")).rsplit("@", 1)[-1]
+        return (key, R.body_node(best))
+
+    def locate(self, path: str, line: int) -> LocateResult:
+        """Resolve a source position to its enclosing callable (see
+        :meth:`PythonAnalysisBackend.locate`)."""
+        return self.locate_many([(path, line)])[0]
+
+    def locate_many(self, positions: Sequence[Tuple[str, int]]) -> List[LocateResult]:
+        """Resolve many positions in **one** Cypher round trip (see
+        :meth:`PythonAnalysisBackend.locate_many`) — the position list travels as a single
+        parameter via ``UNWIND``, never a loop over :meth:`locate`. Results come back in input
+        order regardless of the order Neo4j returns rows in."""
+        positions = list(positions)
+        if not positions:
+            return []
+        # Whatever the caller's scanner printed ("./src/app.py", an absolute path) is normalised to
+        # the graph's file_key before it becomes a Cypher parameter — an unnormalised path would
+        # match no :PyModule and read back as file_not_in_graph.
+        keys = [resolve_module_key(path, self._modules) for path, _ in positions]
+        rows = self._run(
+            self._LOCATE_QUERY,
+            app=self.application_name,
+            mods=self._modules,
+            positions=[{"idx": i, "path": key, "line": line} for i, (key, (_, line)) in enumerate(zip(keys, positions))],
+        )
+        by_idx: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+        for r in rows:
+            by_idx[r["idx"]].append(r)
+        return [self._locate_result(key, line, by_idx.get(i, [])) for i, (key, (_, line)) in enumerate(zip(keys, positions))]

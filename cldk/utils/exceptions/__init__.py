@@ -21,9 +21,11 @@ Exceptions package
 from .exceptions import (
     CldkInitializationException,
     CodeanalyzerExecutionException,
+    GraphSchemaMismatch,
 )
 
 __all__ = [
     "CodeanalyzerExecutionException",
     "CldkInitializationException",
+    "GraphSchemaMismatch",
 ]

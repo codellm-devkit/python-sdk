@@ -1,5 +1,5 @@
 ################################################################################
-# Copyright IBM Corporation 2024, 2025
+# Copyright IBM Corporation 2026
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,13 +14,21 @@
 # limitations under the License.
 ################################################################################
 
-"""
-C/C++ Tests
-"""
-from cldk.analysis.c.c_analysis import CAnalysis
+import pytest
+from cldk import CLDK
 
 
-def test_get_c_application(test_fixture_binutils):
-    """Should return a CAnalysis object"""
-    analysis = CAnalysis(test_fixture_binutils)
-    assert isinstance(analysis, CAnalysis), "get_c_application should return a CAnalysis object"
+def test_c_factory_is_gone():
+    assert not hasattr(CLDK, "c")
+
+
+def test_c_modules_are_gone():
+    with pytest.raises(ModuleNotFoundError):
+        __import__("cldk.analysis.c")
+    with pytest.raises(ModuleNotFoundError):
+        __import__("cldk.models.c")
+
+
+def test_legacy_shim_rejects_c():
+    with pytest.raises(NotImplementedError):
+        CLDK(language="c").analysis(project_path=".")

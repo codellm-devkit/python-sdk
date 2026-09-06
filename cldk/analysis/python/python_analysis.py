@@ -47,24 +47,32 @@ See Also:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Sequence, Set, Tuple
 
 import networkx as nx
 from tree_sitter import Tree
 
 from cldk.analysis.commons.backend_config import Neo4jConnectionConfig, PyBackend, PyCodeAnalyzerConfig, cache_subdir
+from cldk.analysis.commons.results import EntrypointCoverage, LocateResult
 from cldk.analysis.commons.treesitter import TreesitterPython
 from cldk.analysis.python.backend import PythonAnalysisBackend
 from cldk.analysis.python.codeanalyzer import PyCodeanalyzer
 from cldk.analysis.python.neo4j import PyNeo4jBackend
 from cldk.models.python import (
     PyApplication,
+    PyArtifact,
     PyCallable,
     PyCallableOverview,
     PyCallsite,
     PyClass,
     PyClassAttribute,
+    PyClassOverview,
     PyComment,
+    PyConfigKey,
+    PyConfigRead,
+    PyConfigUseEdge,
+    PyDependency,
+    PyExternalSymbol,
     PyModule,
 )
 
@@ -572,6 +580,84 @@ class PythonAnalysis:
         """
         return self.backend.get_decorated_callables(markers)
 
+    def get_entrypoints(self) -> List[PyCallableOverview]:
+        """Return overviews of every callable the analyzer marked as an entrypoint, in one bulk read.
+
+        The analyzer's own entrypoint-detection pass already finds route handlers, CLI commands,
+        and other externally-invoked callables (``PyCallable.is_entrypoint``); this just surfaces
+        that mark instead of making a caller rediscover it (e.g. by sharding
+        :meth:`get_callables_overview` across workers to guess which callables are reachable from
+        outside the application).
+
+        Returns:
+            A list of :class:`~cldk.models.python.PyCallableOverview` for every entrypoint
+            callable. Empty means the project genuinely has none, not that the graph lacks the mark.
+
+        See Also:
+            :meth:`get_callables_overview`: The unfiltered projection.
+            :meth:`get_decorated_callables`: The same projection filtered by decorator instead.
+            :meth:`get_entrypoint_classes`: The class-level sibling this walk never sees.
+            :meth:`get_entrypoint_coverage`: Whether the detection pass itself had gaps.
+            :meth:`get_entry_point_methods`: Not this. Differs by a space and an underscore in
+                the name and raises ``NotImplementedError`` — a pre-existing, unrelated accessor.
+                Use this method instead.
+        """
+        return self.backend.get_entrypoints()
+
+    def get_entrypoint_classes(self) -> List[PyClassOverview]:
+        """Return overviews of every class the analyzer marked as an entrypoint in its own right,
+        in one bulk read.
+
+        :meth:`get_entrypoints` walks callables only, so a class-based view (a Django/Flask CBV,
+        say) marked ``is_entrypoint`` at the class with no individually-marked method is invisible
+        to it. This is that sibling.
+
+        Returns:
+            A list of :class:`~cldk.models.python.PyClassOverview` for every entrypoint class.
+            Empty means the project genuinely has none, not that the graph lacks the mark.
+
+        See Also:
+            :meth:`get_entrypoints`: The callable-level projection.
+            :meth:`get_entry_point_classes`: Not this. Differs by one space in the name and
+                raises ``NotImplementedError`` — a pre-existing, unrelated accessor. Use this
+                method instead.
+        """
+        return self.backend.get_entrypoint_classes()
+
+    def get_entrypoint_coverage(self) -> EntrypointCoverage:
+        """Return the entrypoint-detection pass's own coverage/failure record, in one bulk read.
+
+        The analyzer's detection pass "under-approximates by design, so silence is its failure
+        mode" (its own ``PyEntrypointReport`` docstring); :meth:`get_entrypoints` returning ``[]``
+        cannot, on its own, distinguish "ran clean, found none" from "had gaps". This can.
+
+        Returns:
+            An :class:`~cldk.analysis.commons.results.EntrypointCoverage`. Non-empty
+            ``diagnostics`` means this backend cannot supply the report at all (the Neo4j
+            projection does not carry it) rather than the pass having run clean — see the model's
+            own docstring for the field-by-field contract.
+
+        See Also:
+            :meth:`get_entrypoints`: The accessor whose empty result this disambiguates.
+        """
+        return self.backend.get_entrypoint_coverage()
+
+    @property
+    def has_resolution_edges(self) -> bool:
+        """Whether :meth:`get_callsites_for` can resolve call sites on this backend right now.
+
+        ``False`` is only possible on the Neo4j backend, and only when the attached graph has no
+        ``PY_RESOLVES_TO`` edge anywhere (populated at an analysis level below the one where the
+        defuse-linker backfill runs) — in that case every ``callee_signature=None`` from
+        :meth:`get_callsites_for` is explained by the graph's analysis level, not by individual
+        call sites failing to resolve. The local backend is always ``True`` here: it attempts
+        Jedi resolution on every call site regardless of analysis level.
+
+        See Also:
+            :meth:`get_callsites_for`: The accessor whose ``None`` this disambiguates.
+        """
+        return self.backend.has_resolution_edges
+
     def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[PyCallsite]]:
         """Return the call sites of the given callables, keyed by signature, in one bulk read.
 
@@ -585,8 +671,27 @@ class PythonAnalysis:
             A dict mapping each existing signature to its list of
             :class:`~cldk.models.python.PyCallsite` (empty if the callable has no call sites).
             Signatures with no matching callable are omitted.
+
+        See Also:
+            :attr:`has_resolution_edges`: Distinguishes a genuinely unresolved call site from a
+                graph with no resolution data at all.
         """
         return self.backend.get_callsites_for(signatures)
+
+    def get_external_symbols(self) -> Dict[str, PyExternalSymbol]:
+        """Every call-graph endpoint outside the analyzed project (an imported library or builtin
+        member), keyed by its ``can://…/@external/…`` id.
+
+        The analyzer mints one of these ghost symbols for every call target that isn't a declared
+        class/callable, so no call-graph edge dangles; :meth:`get_callsites_for`'s resolved
+        ``callee_signature`` for an external target is exactly this dict's key.
+
+        Returns:
+            A dict mapping each ``@external`` can-id to its
+            :class:`~cldk.models.python.PyExternalSymbol`. Empty means this project's call graph
+            makes no calls outside itself.
+        """
+        return self.backend.get_external_symbols()
 
     def get_methods_in_class(self, qualified_class_name: str) -> Dict[str, PyCallable]:
         """Return all methods defined in a specific class.
@@ -603,6 +708,13 @@ class PythonAnalysis:
             A dictionary mapping method names (strings) to
             :class:`~cldk.models.python.PyCallable` objects. Returns an
             empty dictionary if the class is not found or has no methods.
+
+        Note:
+            Returned callables' call sites are not resolved the way :meth:`get_callsites_for`
+            resolves them: on the Neo4j backend ``callee_signature`` is always ``None`` here; on
+            the local backend an external target keeps Jedi's raw, unaddressable dotted guess
+            instead of the resolved ``@external`` can-id. Use :meth:`get_callsites_for` for the
+            same call sites with resolved signatures.
 
         See Also:
             :meth:`get_method`: For a single method by name.
@@ -634,6 +746,13 @@ class PythonAnalysis:
             A :class:`~cldk.models.python.PyCallable` object containing
             all analyzed information about the method, or ``None`` if
             neither a matching class nor a matching module resolves.
+
+        Note:
+            The returned callable's call sites are not resolved the way :meth:`get_callsites_for`
+            resolves them: on the Neo4j backend ``callee_signature`` is always ``None`` here; on
+            the local backend an external target keeps Jedi's raw, unaddressable dotted guess
+            instead of the resolved ``@external`` can-id. Use :meth:`get_callsites_for` for the
+            same call sites with resolved signatures.
 
         See Also:
             :meth:`get_methods_in_class`: For all methods of a class.
@@ -686,11 +805,187 @@ class PythonAnalysis:
             to :class:`~cldk.models.python.PyCallable` objects. Returns an
             empty dictionary if the class has no explicit constructor.
 
+        Note:
+            Returned callables' call sites are not resolved the way :meth:`get_callsites_for`
+            resolves them: on the Neo4j backend ``callee_signature`` is always ``None`` here; on
+            the local backend an external target keeps Jedi's raw, unaddressable dotted guess
+            instead of the resolved ``@external`` can-id. Use :meth:`get_callsites_for` for the
+            same call sites with resolved signatures.
+
         See Also:
             :meth:`get_method`: For any method by name.
             :meth:`get_methods_in_class`: For all methods including constructors.
         """
         return self.backend.get_all_constructors(qualified_class_name)
+
+    # -----[ locate ]-----
+    def locate(self, path: str, line: int) -> LocateResult:
+        """Resolve a source position to its enclosing callable, with the source in hand.
+
+        The single most-needed query for triaging a scanner alert: an alert arrives as
+        ``file:line`` and this resolves it to the enclosing callable in one call, rather than
+        ``get_method``, falling back to ``get_callers``, falling back to scanning the symbol table
+        by hand. Four outcomes stay distinguishable — see
+        :class:`~cldk.analysis.commons.results.LocateResult`: inside a callable (``callable`` set,
+        plus ``node`` when a body node is that precise), at real module scope (``module_scope``
+        diagnostic), in the gap between two callables (also module scope, never snapped to the
+        nearest callable), or in a file the graph has no module for (``file_not_in_graph``).
+
+        There is no ``col`` parameter. Column-level disambiguation would have to be honoured by
+        both backends to mean anything, and the Neo4j graph projects only ``start_line`` /
+        ``end_line`` on ``:PyCallable`` and ``:PyBodyNode`` — so a ``col`` would work in-process
+        and be silently ignored over Neo4j. Better absent than documented and inert.
+
+        Args:
+            path: The file path. Normalised against the backend's module keys, so a
+                ``./``-prefixed or absolute path resolves rather than reading back as
+                ``file_not_in_graph``.
+            line: The 1-based line number.
+
+        Returns:
+            A :class:`~cldk.analysis.commons.results.LocateResult` carrying the innermost body
+            node, the enclosing callable, its owning type, its module, and the source slice —
+            never an ambiguous empty.
+
+        See Also:
+            :meth:`locate_many`: The bulk form — the point, not an optimisation.
+        """
+        return self.backend.locate(path, line)
+
+    def locate_many(self, positions: Sequence[Tuple[str, int]]) -> List[LocateResult]:
+        """Resolve many ``(path, line)`` positions in one round trip, in input order.
+
+        Args:
+            positions: The ``(path, line)`` pairs to resolve, e.g. from a scanner's alert list.
+
+        Returns:
+            One :class:`~cldk.analysis.commons.results.LocateResult` per input position, in the
+            same order.
+
+        See Also:
+            :meth:`locate`: The single-position form.
+        """
+        return self.backend.locate_many(positions)
+
+    # -----[ source access ]-----
+    def get_source(self, node_id: str) -> str:
+        """Return the source text named by ``node_id`` — a callable, or one of its body nodes.
+
+        Generalises :meth:`get_method_bodies` below callable granularity: ``node_id`` is either a
+        callable's signature, or ``"<signature>@<body key>"`` for one of that callable's body
+        nodes — exactly the string :attr:`~cldk.analysis.commons.results.LocateResult.node_id`
+        hands back alongside :attr:`~cldk.analysis.commons.results.LocateResult.node`, so a
+        statement or call site :meth:`locate` found can be re-fetched precisely, not just the
+        callable enclosing it.
+
+        Args:
+            node_id: A callable signature, or ``"<signature>@<body key>"``.
+
+        Returns:
+            The source text, never an ambiguous empty string.
+
+        Raises:
+            KeyError: No callable/body node matches ``node_id``, or it has no recoverable source
+                (no span).
+            NotImplementedError: (Neo4j backend only) ``node_id`` names a body node — the attached
+                graph carries no source text below callable granularity.
+
+        See Also:
+            :meth:`get_method_bodies`: The bulk, callable-only, omit-if-absent form.
+            :meth:`locate`: The usual way to obtain a ``node_id`` in the first place.
+        """
+        return self.backend.get_source(node_id)
+
+    # -----[ repository artifacts ]-----
+    def get_artifacts(self) -> Dict[str, PyArtifact]:
+        """Return every non-code project artifact (manifest, config file, lockfile, ...), keyed by
+        its repo-relative path.
+
+        This layer (``Artifact``/``ConfigKey``/``Package`` nodes, ``HAS_ARTIFACT``/
+        ``DECLARES_DEPENDENCY``/``DEFINES_CONFIG``/``LOCKS`` edges) is the one part of the graph
+        every ``codeanalyzer-<lang>`` projects identically and unprefixed.
+
+        See Also:
+            :meth:`get_dependencies`, :meth:`get_config_keys`, :meth:`get_config_uses`.
+        """
+        return self.backend.get_artifacts()
+
+    def get_dependencies(
+        self, *, direct_only: bool = False, ecosystem: str | None = None, declared_in: str | None = None
+    ) -> List[PyDependency]:
+        """Return every declared third-party dependency, one entry per declaring manifest,
+        optionally filtered.
+
+        All three filters default to "don't filter" — a pure widening, so existing calls are
+        unaffected.
+
+        Args:
+            direct_only: When ``True``, excludes lockfile-only transitive pins.
+            ecosystem: When given, only dependencies from this package ecosystem (e.g. ``"pypi"``).
+            declared_in: When given, only dependencies declared by this artifact id (see
+                :meth:`get_artifacts`).
+        """
+        return self.backend.get_dependencies(direct_only=direct_only, ecosystem=ecosystem, declared_in=declared_in)
+
+    def get_config_keys(self) -> Dict[str, PyConfigKey]:
+        """Return every configuration key flattened out of a config-bearing artifact, keyed by its
+        id (``<artifact-id>@key/<dotted.key>``) — a bare ``key`` (e.g. ``"DB_URL"``) is not unique
+        across artifacts/namespaces, so the id is the dict key."""
+        return self.backend.get_config_keys()
+
+    def get_config_uses(self, key: str | None = None) -> List[PyConfigUseEdge]:
+        """Return resolved code-to-config edges: which body node reads which config key.
+
+        Args:
+            key: When given, only edges whose target :class:`PyConfigKey` has this bare ``key``
+                (e.g. ``"DB_URL"``) — matched against :meth:`get_config_keys`, since
+                :class:`PyConfigUseEdge` itself carries only ``src``/``dst``/``prov``, not the key
+                text. ``None`` (default) returns every edge.
+
+        See Also:
+            :meth:`get_config_readers`: The same edges, resolved to their reading callables.
+            :meth:`get_unresolved_config_reads`: The reads this can't show — a match the detector
+                found but never closed on a declared key.
+        """
+        return self.backend.get_config_uses(key)
+
+    def get_unresolved_config_reads(self) -> List[PyConfigRead]:
+        """Return every detector-matched config read that never closed on exactly one declared
+        key, in one bulk read.
+
+        :meth:`get_config_uses` (and :meth:`get_config_readers`) can only show reads that
+        *resolved*; a call the detector matched but couldn't pin to a key (a dynamic key
+        expression, or a key with no matching declaration) is otherwise invisible — an empty
+        :meth:`get_config_uses` for some key cannot then distinguish "nothing reads this" from "a
+        read exists but the analyzer couldn't resolve it." This is that missing signal.
+
+        Returns:
+            A list of :class:`~cldk.models.python.PyConfigRead`, each naming *why* resolution
+            failed (``reason="non-literal"`` or ``"undefined-key"``). Over the Neo4j backend,
+            ``site`` always comes back ``""`` and several call sites sharing the same
+            ``(callee, key, reason)`` may collapse into one entry — the graph doesn't carry the
+            call site on this edge (see :meth:`~cldk.analysis.python.neo4j.PyNeo4jBackend.get_unresolved_config_reads`'s
+            comment) — but "no unresolved reads" here is never a false negative.
+        """
+        return self.backend.get_unresolved_config_reads()
+
+    def get_config_readers(self, key: str) -> List[PyCallableOverview]:
+        """Return overviews of every callable reading configuration key ``key``, in one bulk read.
+
+        :meth:`get_config_uses` hands back ``PyConfigUseEdge.src``/``dst`` as opaque ordinal ids —
+        answering "which callable reads this" otherwise means parsing
+        ``codeanalyzer-python``'s id grammar yourself. This does that resolution for you.
+
+        Args:
+            key: The bare configuration key (e.g. ``"DB_URL"``), matched the same way
+                :meth:`get_config_uses` matches it.
+
+        Returns:
+            A list of :class:`~cldk.models.python.PyCallableOverview`, one per distinct reading
+            callable. Empty means no callable reads this key — see :meth:`get_unresolved_config_reads`
+            if you need to rule out "a read exists but never resolved" too.
+        """
+        return self.backend.get_config_readers(key)
 
     # -----[ classes ]-----
     def get_classes(self) -> Dict[str, PyClass]:
@@ -940,6 +1235,11 @@ class PythonAnalysis:
         Raises:
             NotImplementedError: This functionality is not yet implemented
                 for Python analysis.
+
+        See Also:
+            :meth:`get_entrypoint_classes`: Not this. Differs by one space in the name and
+                actually works — returns :class:`~cldk.models.python.PyClassOverview` objects
+                for every entrypoint class. Use that instead.
         """
         raise NotImplementedError(
             "Support for this functionality has not been implemented yet."
@@ -958,6 +1258,11 @@ class PythonAnalysis:
         Raises:
             NotImplementedError: This functionality is not yet implemented
                 for Python analysis.
+
+        See Also:
+            :meth:`get_entrypoints`: Not this. Differs by a space and an underscore in the name
+                and actually works — returns :class:`~cldk.models.python.PyCallableOverview`
+                objects for every entrypoint callable. Use that instead.
         """
         raise NotImplementedError(
             "Support for this functionality has not been implemented yet."

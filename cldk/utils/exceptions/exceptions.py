@@ -87,6 +87,57 @@ class CodeanalyzerExecutionException(Exception):
         super().__init__(self.message)
 
 
+class GraphSchemaMismatch(RuntimeError):
+    """Raised when a Neo4j backend's attached graph doesn't speak its expected vocabulary.
+
+    A Neo4j-backed analysis facade queries a graph some other process built with a
+    ``codeanalyzer-*`` analyzer. If that analyzer's generation predates (or postdates) the
+    vocabulary the querying backend was written against, every query silently returns zero
+    rows — indistinguishable from "this codebase genuinely has no callables". This exception
+    makes that mismatch loud: it names what the backend expected, what it actually found on
+    the graph, and which relationship types are missing.
+
+    Raised by a one-time schema probe run at connection time (e.g.
+    :meth:`~cldk.analysis.python.neo4j.neo4j_backend.PyNeo4jBackend._probe_schema`), never by
+    an individual query.
+
+    Attributes:
+        expected (set[str]): The relationship types the backend requires.
+        found (set[str]): The relationship types actually present on the connected graph.
+        missing (set[str]): ``expected - found`` — what the graph is missing.
+    """
+
+    def __init__(self, expected: set[str], found: set[str], missing: set[str], message: str | None = None) -> None:
+        """Initialize the exception with the expected/found/missing vocabulary sets.
+
+        Args:
+            expected: The relationship types the backend requires to be present.
+            found: The relationship types actually present on the connected graph.
+            missing: The subset of ``expected`` absent from ``found``.
+            message: A precomputed, human-readable message. If omitted, one is built from
+                ``expected``/``found``/``missing`` naming the likely analyzer generation.
+        """
+        self.expected = expected
+        self.found = found
+        self.missing = missing
+        self.message = message or self._describe(expected, found, missing)
+        super().__init__(self.message)
+
+    @staticmethod
+    def _describe(expected: set[str], found: set[str], missing: set[str]) -> str:
+        if "PY_HAS_CALLSITE" in found:
+            generation = (
+                "This looks like a graph built by codeanalyzer-python 0.3.x (it has "
+                "PY_HAS_CALLSITE / :PyCallSite instead of PY_HAS_BODY_NODE / :PyBodyNode). "
+                "Re-ingest the project with codeanalyzer-python>=1.4.0."
+            )
+        elif not found:
+            generation = "The graph has no relationship types at all — an empty or asset-only database, not a codeanalyzer-python application graph."
+        else:
+            generation = "This does not match any known codeanalyzer-python generation this backend supports."
+        return f"Graph schema mismatch: expected relationship types {sorted(expected)}, missing {sorted(missing)}. Found on the graph: {sorted(found)}. {generation}"
+
+
 class CodeanalyzerUsageException(Exception):
     """Exception raised for incorrect CodeAnalyzer usage.
 

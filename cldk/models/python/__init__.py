@@ -22,7 +22,14 @@ data model.
 """
 
 from codeanalyzer.schema.py_schema import (
+    BodyNode,
+    CdgEdge,
+    CfgEdge,
+    DdgEdge,
+    ParamEdge,
+    PyAnalyzerInfo,
     PyApplication,
+    PyArtifact,
     PyCallEdge,
     PyCallable,
     PyCallableParameter,
@@ -30,16 +37,32 @@ from codeanalyzer.schema.py_schema import (
     PyClass,
     PyClassAttribute,
     PyComment,
+    PyConfigKey,
+    PyConfigRead,
+    PyConfigUseEdge,
+    PyDecorator,
+    PyDependency,
+    PyEntrypoint,
+    PyExternalSymbol,
     PyImport,
     PyModule,
     PySymbol,
     PyVariableDeclaration,
+    Span,
+    SummaryEdge,
 )
 
-from .projections import PyCallableOverview
+from .projections import PyCallableOverview, PyClassOverview
 
 __all__ = [
+    "BodyNode",
+    "CdgEdge",
+    "CfgEdge",
+    "DdgEdge",
+    "ParamEdge",
+    "PyAnalyzerInfo",
     "PyApplication",
+    "PyArtifact",
     "PyCallEdge",
     "PyCallable",
     "PyCallableOverview",
@@ -47,9 +70,19 @@ __all__ = [
     "PyCallsite",
     "PyClass",
     "PyClassAttribute",
+    "PyClassOverview",
     "PyComment",
+    "PyConfigKey",
+    "PyConfigRead",
+    "PyConfigUseEdge",
+    "PyDecorator",
+    "PyDependency",
+    "PyEntrypoint",
+    "PyExternalSymbol",
     "PyImport",
     "PyModule",
     "PySymbol",
     "PyVariableDeclaration",
+    "Span",
+    "SummaryEdge",
 ]

@@ -48,11 +48,6 @@ def test_fixture_pbw():  # noqa: D401 - override
     yield None
 
 
-@pytest.fixture(scope="session", autouse=True)
-def test_fixture_binutils():  # noqa: D401 - override
-    yield None
-
-
 # --- TypeScript-specific fixtures ---
 @pytest.fixture(scope="session")
 def typescript_application() -> Path:

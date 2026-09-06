@@ -33,13 +33,9 @@ dependencies = [
     "wget==3.2",
     "requests>=2.32.3,<3",
     "tree-sitter-java==0.23.5",
-    "tree-sitter-c==0.23.5",
-    "tree-sitter-go==0.23.4",
     "tree-sitter-python==0.23.6",
     "tree-sitter-javascript==0.23.1",
-    "clang==17.0.6",
-    "libclang==17.0.6",
-    "codeanalyzer-python==0.3.1",
+    "codeanalyzer-python==1.4.0",
     "codeanalyzer-typescript==0.4.3",
 ]
 
@@ -94,7 +90,7 @@ include = [
 
 [tool.backend-versions]
 codeanalyzer-java = "2.4.1"
-codeanalyzer-python = "0.3.1"
+codeanalyzer-python = "1.4.0"
 codeanalyzer-typescript = "0.4.3"
 
 ########################################
@@ -145,7 +141,6 @@ title = "Test Coverage Report"
 directory = "coverage_html_report"
 
 [tool.cldk.testing]
-sample-c-application = "tests/resources/c/application/"
 sample-application = "tests/resources/java/application/"
 sample-application-analysis-json = "tests/resources/java/analysis_json/"
 sample-typescript-application = "tests/resources/typescript/application/"
