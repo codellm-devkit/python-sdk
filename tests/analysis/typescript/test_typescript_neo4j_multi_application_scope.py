@@ -73,7 +73,8 @@ class _Graph:
         return node_id
 
     def edge(self, src: str, rel: str, dst: str, **props: Any) -> None:
-        self.edges.append((src, rel, dst, props))
+        if not any(e[:3] == (src, rel, dst) for e in self.edges):  # MERGE: one edge per (src, type, dst)
+            self.edges.append((src, rel, dst, props))
 
 
 def _build() -> _Graph:
@@ -97,7 +98,9 @@ def _build() -> _Graph:
         g.edge(method, "TS_HAS_BODY_NODE", call)
         g.edge(call, "TS_RESOLVES_TO", inner)
         g.edge(method, "TS_CALLS", inner, weight=1, prov=["tsc"])
-        ext = g.node(f"can://typescript/{app}/@external/os/path", ["TSExternal"], kind="external", name="path", module="os")
+        ext = g.node(
+            f"can://typescript/{app}/@external/os/{'path' if app == APP_A else 'join'}", ["TSExternal"], kind="external", name="path" if app == APP_A else "join", module="os"
+        )
         g.edge(method, "TS_CALLS", ext, weight=1, prov=["import"])
         # The module-key collision: both applications declare src/index.ts.
         shared = g.node(f"can://typescript/{app}/{SHARED_MODULE}", ["TSModule"], kind="module", name=SHARED_MODULE, start_line=1, end_line=9)
@@ -115,6 +118,17 @@ def _build() -> _Graph:
     g.edge(f"can://typescript/{APP_A}", "TS_HAS_MODULE", js)
     legacy = g.node(f"{js}/legacy_fn", ["TSCallable"], kind="function", signature="a/legacy.legacy_fn", name="legacy_fn", start_line=1, end_line=2, code="legacy")
     g.edge(js, "TS_DECLARES", legacy)
+    # Declaration-merged nodes (one id for two declarations, both labels, the last writer's kind):
+    # a `const Option = () => …` + `interface Option {…}` whose interface fields hang off an arrow,
+    # and a `type Gran = …` + a field `Gran` -- only in application A.
+    mod_a = f"can://typescript/{APP_A}/a/mod.ts"
+    merged = g.node(f"{mod_a}/Option", ["TSCallable", "TSInterface"], kind="arrow", signature="a/mod.Option", name="Option", start_line=11, end_line=12, code="() => 1")
+    g.edge(mod_a, "TS_DECLARES", merged)
+    g.edge(mod_a, "TS_DECLARES", merged)  # the emitter writes one edge per facet; MERGE keeps one
+    g.edge(merged, "TS_HAS_FIELD", g.node(f"{merged}/label", ["TSField"], kind="field", name="label", start_line=11, end_line=11))
+    gran = g.node(f"{mod_a}/Gran", ["TSTypeAlias", "TSField"], kind="field", signature="a/mod.Gran", name="Gran", aliased_type="string", start_line=13, end_line=13)
+    g.edge(mod_a, "TS_DECLARES", gran)
+    g.edge(mod_a, "TS_HAS_FIELD", gran)
     # TSDecorator is keyed by name and shared by every application in the database.
     g.node("Deco", ["TSDecorator"], name="Deco", qualified_name="Deco")
     return g
@@ -330,14 +344,21 @@ def fake_cypher(query: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
     raise AssertionError(f"statement has no RETURN: {query!r}")
 
 
-def _backend(record: List[str] | None = None) -> TSNeo4jBackend:
+_A_PREFIXES = (f"can://typescript/{APP_A}/", f"can://javascript/{APP_A}/")
+
+
+def _responder(query: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """:func:`fake_cypher`, after asserting every prefix parameter bound at run time is one of
+    application A's -- the audit below judges spellings; this judges the values."""
+    for name in ("prefix", "p1", "p2"):
+        if name in params:
+            assert params[name].startswith(_A_PREFIXES), f"${name} bound to {params[name]!r}, outside application A's scope"
+    return fake_cypher(query, params)
+
+
+def _backend() -> TSNeo4jBackend:
     """A backend scoped to application A over a fake driver holding A and B."""
-    driver = FakeDriver(responder=fake_cypher)
-    backend = TSNeo4jBackend._from_driver(driver, application_name=APP_A)
-    if record is not None:
-        record.extend(driver.statements)
-        backend._run = lambda q, **p: (record.append(q), [r for r in fake_cypher(q, p)])[1]
-    return backend
+    return TSNeo4jBackend._from_driver(FakeDriver(responder=_responder), application_name=APP_A)
 
 
 # =====================================================================================
@@ -382,6 +403,8 @@ def test_symbol_table_honours_both_prefixes_and_a_shared_module_key():
     assert set(table[SHARED_MODULE].functions["alpha_fn"].callables) == {"<anon@2:2>"}
     assert [v.name for v in table[SHARED_MODULE].variables] == ["alpha_var"]
     assert set(table["a/legacy.js"].functions) == {"legacy_fn"}
+    assert set(table["a/mod.ts"].functions) == {"Option"} and table["a/mod.ts"].functions["Option"].kind == "arrow"
+    assert set(table["a/mod.ts"].types) == {"Widget", "Gran"} and table["a/mod.ts"].types["Gran"].kind == "type_alias"
 
 
 def test_get_typescript_module_on_a_shared_key_returns_this_applications():
@@ -401,13 +424,20 @@ def test_get_method_resolves_inside_the_application_only():
 
 def test_get_all_functions_and_methods_in_application():
     backend = _backend()
-    assert set(backend.get_all_functions()) == {"src/index.alpha_fn", "a/legacy.legacy_fn"}
+    assert set(backend.get_all_functions()) == {"src/index.alpha_fn", "a/legacy.legacy_fn", "a/mod.Option"}
     assert {k: set(v) for k, v in backend.get_all_methods_in_application().items()} == {CLASS_SIG: {"alpha_method"}}
 
 
 def test_bulk_accessors_are_application_scoped():
     backend = _backend()
-    assert {o.signature for o in backend.get_callables_overview()} == {METHOD_SIG, "alpha.inner_fn", "src/index.alpha_fn", "src/index.<anon@2:2>", "a/legacy.legacy_fn"}
+    assert {o.signature for o in backend.get_callables_overview()} == {
+        METHOD_SIG,
+        "alpha.inner_fn",
+        "src/index.alpha_fn",
+        "src/index.<anon@2:2>",
+        "a/legacy.legacy_fn",
+        "a/mod.Option",
+    }
     assert {o.path for o in backend.get_callables_overview()} == {"a/mod.ts", SHARED_MODULE, "a/legacy.js"}
     assert backend.get_method_bodies([METHOD_SIG, "nope"]) == {METHOD_SIG: "alpha code"}
     sites = backend.get_callsites_for([METHOD_SIG, "src/index.alpha_fn"])
@@ -422,11 +452,37 @@ def test_call_graph_and_externals_are_application_scoped():
     graph = backend.get_call_graph()
     assert set(graph.edges) == {(METHOD_SIG, "alpha.inner_fn"), (METHOD_SIG, "os.path")}
     assert graph.nodes["os.path"]["kind"] == "external"
-    assert list(backend.get_external_symbols()) == ["os.path"]
+    assert list(backend.get_external_symbols()) == ["os.path"], "application B's external (os.join) leaked"
     assert backend.get_external_symbols()["os.path"].id == f"can://typescript/{APP_A}/@external/os/path"
     assert backend.get_calling_lines("alpha.inner_fn") == [5]
     assert backend.get_calling_lines("beta.inner_fn") == []
     assert set(backend.get_synthesized_callables()) == {f"can://typescript/{APP_A}/{SHARED_MODULE}/alpha_fn/<anon@2:2>"}
+
+
+def test_a_declaration_merged_node_is_the_facet_its_edge_and_labels_name_and_nothing_else():
+    """``Option`` is one node carrying ``TSCallable`` and ``TSInterface`` with ``kind: arrow``: it
+    is a function to every accessor, an interface to none, and never a namespace."""
+    backend = _backend()
+    assert "a/mod.Option" not in backend.get_all_interfaces()
+    assert backend.get_interface_properties("a/mod.Option") == []
+    assert backend.get_all_functions()["a/mod.Option"].kind == "arrow"
+    assert "a/mod.Gran" not in backend.get_all_functions()
+    assert backend.get_all_type_aliases() == {}, "Gran's kind is 'field': it is not served as a type alias by signature"
+    assert backend.get_symbol_table()["a/mod.ts"].types["Gran"].kind == "type_alias"
+    assert [f.name for f in backend.get_symbol_table()["a/mod.ts"].fields.values()] == ["Gran"]
+
+
+def test_a_merged_node_whose_labels_name_no_single_facet_is_raised_as_a_defect():
+    from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
+
+    backend = _backend()
+    parent = "can://typescript/app_a/x/y.ts"
+    undecidable = {"id": f"{parent}/Z", "kind": "field", "name": "Z", "_labels": ["CanNode", "TSClass", "TSInterface"]}
+    with pytest.raises(CodeanalyzerExecutionException, match=r"'Z' \(labels \['CanNode', 'TSClass', 'TSInterface'\], kind 'field'\).*one id for two declarations") as e:
+        backend._declared(parent, {parent: [("TS_DECLARES", undecidable, {})]})
+    assert "can://" not in str(e.value)
+    with pytest.raises(CodeanalyzerExecutionException, match="none of the five type kinds"):
+        backend._type({"id": f"{parent}/W", "kind": "arrow", "name": "W", "signature": "x/y.W", "_labels": ["TSCallable"]}, {})
 
 
 def test_get_typescript_file_derives_the_module_key_from_the_id():
@@ -534,6 +590,7 @@ def test_the_audit_sees_every_inline_statement_too():
     ``_run`` calls (their ``<anchor>`` is judged at every ``self._fetch(`` call site). A helper
     parameterised on a label (``<label>``) is judged as written."""
     source = inspect.getsource(TSNeo4jBackend)
+    assert source.count(".run(") == 1, "only _run may touch the session"
     inline = _inline_statements()
     assert len(inline) == source.count("self._run(") + source.count("self._fetch("), "a statement site the harvester did not see"
     indirect = sorted({name.split("@")[0] for name, s in inline.items() if "<anchor>" in s})
@@ -616,10 +673,10 @@ def test_seek_labels_follow_the_measured_rule():
     """Measured on the superset graph (7690): a ``:TSCallable`` lookup by signature under the
     two-prefix scope plans best on the bare label (7.9 ms; ``:CanNode`` turns it into a 44 ms
     range-seek union), while an id-equality point lookup is a 1.5 ms unique-index seek only with
-    ``:CanNode`` (a 9 ms label scan without). So: signature/prefix statements never name
-    ``:CanNode``; ``{id: $…}`` point lookups always do."""
+    ``:CanNode`` (a 9 ms label scan without). So: every prefix-scoped statement without an id
+    equality never names ``:CanNode``; ``{id: $…}`` point lookups always do."""
     for name, s in _every_statement().items():
         for m in re.finditer(r"\(\w*:([\w:|]+) \{id: \$\w+\}\)", s):
             assert m.group(1).startswith("CanNode:") or m.group(1) in ("Application",), f"{name}: id point lookup without :CanNode -- {m.group(0)}"
-        if _MATCHES_BY_SIGNATURE.search(s):
-            assert "CanNode" not in s, f"{name}: a signature lookup names :CanNode -- {s[:120]!r}"
+        if _is_scoped(s) and not re.search(r"\{id: \$\w+\}", s):
+            assert "CanNode" not in s, f"{name}: a prefix-scoped statement names :CanNode (measured: bare 1.62 ms vs 32.35 ms) -- {s[:120]!r}"

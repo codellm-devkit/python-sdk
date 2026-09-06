@@ -53,11 +53,15 @@ callables it walks -- never one statement per parent.
 bodies and the L3/L4 graphs are not on ``:TSCallable``; enum member values, imports and exports
 are not projected at all; call sites keep lines and the resolved callee only; the anonymous-callable
 index is keyed by the tree node's own id rather than the analyzer's older compatibility key;
-``config_reads`` are not projected (see :meth:`get_unresolved_config_reads`). One more is the
-emitter's: a value and a type of the same name (TypeScript declaration merging, ``const X = …`` +
-``interface X``) share one id, so ``MERGE`` collapses them onto one node whose ``kind`` is one of
-the two; the tree rebuilds it as that kind and the other declaration's members under it are lost
-(three nodes on the superset graph).
+``config_reads`` are not projected (see :meth:`get_unresolved_config_reads`); an unresolved
+call site contributes ``""`` to :meth:`get_call_targets` where the in-memory backend contributes
+the call's ``method_name``. One more is the emitter's: two declarations of one name (TypeScript
+declaration merging -- ``const X = …`` + ``interface X``, ``const X = …`` + ``type X``, ``type X`` +
+a field ``X``) share one id, so ``MERGE`` collapses them onto one node carrying both labels and the
+``kind`` of whichever was written last. Such a node is rebuilt as the facet the containment edge
+declares (``TS_DECLARES`` names a type or callable; its labels say which) and the other facet's
+members under it are lost; a node whose labels cannot name the facet is raised as the defect it is
+(three merged nodes on the superset graph).
 """
 
 from __future__ import annotations
@@ -74,7 +78,7 @@ from cldk.analysis.python.neo4j import reconstruct as PyR  # the artifact layer 
 from cldk.analysis.python.neo4j.neo4j_backend import _semver
 from cldk.analysis.typescript.backend import TSAnalysisBackend
 from cldk.analysis.typescript.neo4j import reconstruct as R
-from cldk.analysis.typescript.neo4j.reconstruct import TYPE_KINDS
+from cldk.analysis.typescript.neo4j.reconstruct import CALLABLE_KINDS, TYPE_KINDS, TYPE_LABEL_KINDS
 from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
 from cldk.models.typescript import (
     TSApplication,
@@ -107,6 +111,10 @@ def _scoped(var: str) -> str:
     (which plans as a label scan). Bound from :attr:`TSNeo4jBackend._scope_params`."""
     return f"({var}.id STARTS WITH $p1 OR {var}.id STARTS WITH $p2)"
 
+
+#: The kinds a method owner may have -- alongside the label, so a declaration-merged node carrying
+#: ``TSClass``/``TSInterface`` with another declaration's kind is not an owner.
+_OWNER_KINDS = ["class", "interface"]
 
 #: A child row of the containment subtree: (relationship type, child properties, edge properties).
 _Child = Tuple[str, Dict[str, Any], Dict[str, Any]]
@@ -234,16 +242,20 @@ class TSNeo4jBackend(TSAnalysisBackend):
         missing = self._REQUIRED_RELATIONSHIP_TYPES - found
         if missing:
             raise GraphSchemaMismatch(expected=set(self._REQUIRED_RELATIONSHIP_TYPES), found=found, missing=missing)
-        rows = self._run("MATCH (a:Application {id: $app_id}) RETURN a.analyzer_version AS v", app_id=self._app_id)
+        rows = self._run("OPTIONAL MATCH (a:Application {id: $app_id}) RETURN count(a) AS n, a.analyzer_version AS v", app_id=self._app_id)
+        present = bool(rows and rows[0].get("n"))
         raw = rows[0].get("v") if rows else None
         version = _semver(raw)
         floor = ".".join(map(str, self._ANALYZER_FLOOR))
         if version is None or version < self._ANALYZER_FLOOR:
-            what = (
-                f"was emitted by codeanalyzer-typescript {raw}"
-                if version
-                else (f"reports analyzer_version {raw!r}" if raw else f"carries no analyzer_version (no :Application with id {self._app_id!r})")
-            )
+            if not present:
+                what = "has no :Application node"
+            elif version:
+                what = f"was emitted by codeanalyzer-typescript {raw}"
+            elif raw:
+                what = f"reports analyzer_version {raw!r}"
+            else:
+                what = "has an :Application node that carries no analyzer_version"
             raise GraphSchemaMismatch(
                 expected=set(self._REQUIRED_RELATIONSHIP_TYPES),
                 found=found,
@@ -264,16 +276,16 @@ class TSNeo4jBackend(TSAnalysisBackend):
     #: beneath every root, at any depth, plus the decorator edges, as ``(parent id, child)`` rows.
     _SUBTREE = (
         "MATCH (root)-[:TS_DECLARES|TS_HAS_METHOD|TS_HAS_FIELD*0..]->(par)-[r:TS_DECLARES|TS_HAS_METHOD|TS_HAS_FIELD|TS_DECORATED_BY]->(n) "
-        "RETURN par.id AS pk, type(r) AS rel, properties(n) AS p, properties(r) AS e"
+        "RETURN par.id AS pk, type(r) AS rel, properties(n) AS p, properties(r) AS e, labels(n) AS labels"
     )
 
     def _fetch(self, anchor: str, **params: Any) -> Tuple[List[Dict[str, Any]], Dict[str, List[_Child]]]:
         """The properties of every ``root`` the anchor pattern binds, and the containment subtree
         beneath them indexed by parent id. ``anchor`` is a scoped ``MATCH`` body binding ``root``."""
-        roots = [r["p"] for r in self._run(f"MATCH {anchor} RETURN properties(root) AS p", **params)]
+        roots = [{**r["p"], "_labels": r["labels"]} for r in self._run(f"MATCH {anchor} RETURN properties(root) AS p, labels(root) AS labels", **params)]
         children: Dict[str, List[_Child]] = defaultdict(list)
         for r in self._run(f"MATCH {anchor} " + self._SUBTREE, **params):
-            children[r["pk"]].append((r["rel"], r["p"], r["e"] or {}))
+            children[r["pk"]].append((r["rel"], {**r["p"], "_labels": r["labels"]}, r["e"] or {}))
         return roots, children
 
     def _decorators(self, node_id: str, children: Dict[str, List[_Child]]) -> List[TSDecorator]:
@@ -290,11 +302,27 @@ class TSNeo4jBackend(TSAnalysisBackend):
         for rel, p, _ in children.get(node_id, []):
             if rel != "TS_DECLARES":
                 continue
-            if p.get("kind") in TYPE_KINDS:
-                types[R.child_key(node_id, p)] = self._type(p, children)
+            kind = p["kind"]
+            if kind not in TYPE_KINDS and kind not in CALLABLE_KINDS:
+                # A declaration-merged node (see the module docstring): TS_DECLARES says type or
+                # callable; the labels must name exactly one type facet, else it is a defect.
+                facets = [TYPE_LABEL_KINDS[l] for l in p.get("_labels", []) if l in TYPE_LABEL_KINDS]
+                if len(facets) != 1:
+                    raise CodeanalyzerExecutionException(
+                        self._merged_defect(p, "is declared by its parent but its kind is neither a type nor a callable kind, and its labels do not name one type facet")
+                    )
+                kind = facets[0]
+            if kind in TYPE_KINDS:
+                types[R.child_key(node_id, p)] = self._type({**p, "kind": kind}, children)
             else:
                 callables[R.child_key(node_id, p)] = self._callable(p, children)
         return types, callables
+
+    @staticmethod
+    def _merged_defect(props: Dict[str, Any], what: str) -> str:
+        """The message for a node the emitter merged from two declarations. Names the node by
+        signature/name, labels and kind -- never by its id (E6)."""
+        return f"node {props.get('signature') or props.get('name')!r} (labels {sorted(props.get('_labels', []))}, kind {props.get('kind')!r}) {what}: codeanalyzer-typescript minted one id for two declarations"
 
     def _methods(self, node_id: str, children: Dict[str, List[_Child]]) -> Dict[str, TSCallable]:
         return {R.child_key(node_id, p): self._callable(p, children) for rel, p, _ in children.get(node_id, []) if rel == "TS_HAS_METHOD"}
@@ -313,19 +341,25 @@ class TSNeo4jBackend(TSAnalysisBackend):
             return R.enum(props, fields=self._fields(nid, children))
         if kind == "type_alias":
             return R.type_alias(props)
-        types, functions = self._declared(nid, children)
-        return R.namespace(props, types=types, functions=functions, fields=self._fields(nid, children))
+        if kind == "namespace":
+            types, functions = self._declared(nid, children)
+            return R.namespace(props, types=types, functions=functions, fields=self._fields(nid, children))
+        raise CodeanalyzerExecutionException(self._merged_defect(props, "is matched as a type but its kind is none of the five type kinds"))
 
     def _module(self, props: Dict[str, Any], children: Dict[str, List[_Child]]) -> TSModule:
         types, functions = self._declared(props["id"], children)
         return R.module(props, types=types, functions=functions, fields=self._fields(props["id"], children))
 
+    # The kind predicate alongside the label keeps a declaration-merged node (two labels, one kind)
+    # out of the accessor for the facet it is not; ``cannode_kind`` is indexed on every generation.
     def _types_by_signature(self, label: str) -> Dict[str, Any]:
-        roots, children = self._fetch(f"(root:{label}) WHERE {_scoped('root')}", **self._scope_params)
+        roots, children = self._fetch(f"(root:{label}) WHERE {_scoped('root')} AND root.kind = $kind", kind=TYPE_LABEL_KINDS[label], **self._scope_params)
         return {p["signature"]: self._type(p, children) for p in roots}
 
     def _type_by_signature(self, label: str, signature: str) -> Any:
-        roots, children = self._fetch(f"(root:{label} {{signature: $sig}}) WHERE {_scoped('root')}", sig=signature, **self._scope_params)
+        roots, children = self._fetch(
+            f"(root:{label} {{signature: $sig}}) WHERE {_scoped('root')} AND root.kind = $kind", sig=signature, kind=TYPE_LABEL_KINDS[label], **self._scope_params
+        )
         return self._type(roots[0], children) if roots else None
 
     # =====================================================================================
@@ -367,10 +401,14 @@ class TSNeo4jBackend(TSAnalysisBackend):
         return self._module_key(rows[0]["id"]) if rows else None
 
     def get_external_symbols(self) -> Dict[str, TSExternalSymbol]:
-        # An external is homed on the application as <app-id>/@external/<module>/<name> -- always
-        # under the typescript namespace, whichever module called it -- so that prefix is the scope.
-        rows = self._run("MATCH (e:TSExternal) WHERE e.id STARTS WITH $prefix RETURN properties(e) AS p", prefix=f"{self._app_id}/@external/")
-        return {f"{r['p'].get('module', '')}.{r['p'].get('name', '')}": R.external(r["p"]) for r in rows}
+        """The application's external *symbols* -- ``<app-id>/@external/<module>/<name>``, what
+        ``analysis.json``'s ``external_symbols`` holds -- keyed ``"<module>.<name>"``. An external is
+        homed on the application under the typescript namespace whichever module called it, so that
+        prefix is the scope. The graph also holds one nameless ``:TSExternal`` per *package*
+        (``@external/<module>``, the target of ``TS_PROVIDES`` / ``TS_UNRESOLVED_IMPORT``); those are
+        not symbols and are not returned here."""
+        rows = self._run("MATCH (e:TSExternal) WHERE e.id STARTS WITH $prefix AND e.name IS NOT NULL RETURN properties(e) AS p", prefix=f"{self._app_id}/@external/")
+        return {f"{r['p']['module']}.{r['p']['name']}": R.external(r["p"]) for r in rows}
 
     def get_synthesized_callables(self) -> Dict[str, TSSynthesizedCallable]:
         """The application's anonymous callables (``:TSAnonymousCallable`` tree nodes), keyed by
@@ -397,8 +435,16 @@ class TSNeo4jBackend(TSAnalysisBackend):
         if kind == "module":
             return self._module_key(node_id), "module"
         if kind == "external":
+            if not name:
+                raise CodeanalyzerExecutionException(
+                    f"a TS_CALLS endpoint is the package-level external {module!r}, which has no member name to key it by: codeanalyzer-typescript emitted an endpoint this backend cannot address"
+                )
             return f"{module}.{name}", "external"
-        return signature or node_id, kind if kind in TYPE_KINDS else "callable"
+        if not signature:
+            raise CodeanalyzerExecutionException(
+                f"a TS_CALLS endpoint of kind {kind!r} named {name!r} carries no signature to key it by: codeanalyzer-typescript emitted an endpoint this backend cannot address"
+            )
+        return signature, kind if kind in TYPE_KINDS else "callable"
 
     def get_call_graph(self) -> nx.DiGraph:
         """Cached. Nodes carry ``id`` and ``kind`` (module callers and class callees kept, TS-11);
@@ -422,9 +468,10 @@ class TSNeo4jBackend(TSAnalysisBackend):
         if member is None:
             return class_or_sig
         rows = self._run(
-            f"MATCH (o:TSClass|TSInterface {{signature: $sig}}) WHERE {_scoped('o')} MATCH (o)-[:TS_HAS_METHOD]->(m:TSCallable {{name: $name}}) RETURN m.signature AS sig LIMIT 1",
+            f"MATCH (o:TSClass|TSInterface {{signature: $sig}}) WHERE {_scoped('o')} AND o.kind IN $kinds MATCH (o)-[:TS_HAS_METHOD]->(m:TSCallable {{name: $name}}) RETURN m.signature AS sig LIMIT 1",
             sig=class_or_sig,
             name=member,
+            kinds=_OWNER_KINDS,
             **self._scope_params,
         )
         return rows[0]["sig"] if rows else f"{class_or_sig}.{member}"
@@ -451,7 +498,9 @@ class TSNeo4jBackend(TSAnalysisBackend):
 
     def get_class_hierarchy(self) -> nx.DiGraph:
         graph = nx.DiGraph()
-        rows = self._run(f"MATCH (n:TSClass|TSInterface) WHERE {_scoped('n')} RETURN n.signature AS sig, n.base_classes AS bases", **self._scope_params)
+        rows = self._run(
+            f"MATCH (n:TSClass|TSInterface) WHERE {_scoped('n')} AND n.kind IN $kinds RETURN n.signature AS sig, n.base_classes AS bases", kinds=_OWNER_KINDS, **self._scope_params
+        )
         for r in rows:
             graph.add_node(r["sig"])
         for r in rows:
@@ -547,11 +596,13 @@ class TSNeo4jBackend(TSAnalysisBackend):
     # methods / functions / fields
     # =====================================================================================
     def get_all_methods_in_application(self) -> Dict[str, Dict[str, TSCallable]]:
-        roots, children = self._fetch(f"(root:TSClass|TSInterface) WHERE {_scoped('root')}", **self._scope_params)
+        roots, children = self._fetch(f"(root:TSClass|TSInterface) WHERE {_scoped('root')} AND root.kind IN $kinds", kinds=_OWNER_KINDS, **self._scope_params)
         return {p["signature"]: {m.name: m for m in self._methods(p["id"], children).values()} for p in roots}
 
     def get_all_methods_in_class(self, qualified_class_name: str) -> Dict[str, TSCallable]:
-        roots, children = self._fetch(f"(root:TSClass|TSInterface {{signature: $sig}}) WHERE {_scoped('root')}", sig=qualified_class_name, **self._scope_params)
+        roots, children = self._fetch(
+            f"(root:TSClass|TSInterface {{signature: $sig}}) WHERE {_scoped('root')} AND root.kind IN $kinds", sig=qualified_class_name, kinds=_OWNER_KINDS, **self._scope_params
+        )
         return {m.name: m for p in roots[:1] for m in self._methods(p["id"], children).values()}
 
     def get_method(self, qualified_class_name: str, qualified_method_name: str) -> TSCallable | None:
@@ -559,9 +610,10 @@ class TSNeo4jBackend(TSAnalysisBackend):
         by exact signature (``qualified_method_name`` is the signature, the scope ignored), else by
         short name under ``<scope>.`` -- the in-memory backend's resolution order."""
         roots, children = self._fetch(
-            f"(o:TSClass|TSInterface {{signature: $sig}}) WHERE {_scoped('o')} MATCH (o)-[:TS_HAS_METHOD]->(root:TSCallable {{name: $name}})",
+            f"(o:TSClass|TSInterface {{signature: $sig}}) WHERE {_scoped('o')} AND o.kind IN $kinds MATCH (o)-[:TS_HAS_METHOD]->(root:TSCallable {{name: $name}})",
             sig=qualified_class_name,
             name=qualified_method_name,
+            kinds=_OWNER_KINDS,
             **self._scope_params,
         )
         if not roots:
@@ -578,10 +630,12 @@ class TSNeo4jBackend(TSAnalysisBackend):
         return self._callable(roots[0], children) if roots else None
 
     def get_method_parameters(self, qualified_class_name: str, qualified_method_name: str) -> List[str]:
-        """Always ``[]`` for a found method: the 1.2.0 projection carries no parameters on
-        ``:TSCallable`` (nor as nodes). ``[]`` for a missing one, as in-memory."""
-        method = self.get_method(qualified_class_name, qualified_method_name)
-        return [p.name for p in method.parameters] if method else []
+        """``[]`` for a missing method, as in-memory. For a **found** one this graph cannot answer:
+        the 1.2.0 projection carries no parameters on ``:TSCallable`` (nor as nodes), and an empty
+        list would read as "takes no parameters", so it raises naming the gap."""
+        if self.get_method(qualified_class_name, qualified_method_name) is None:
+            return []
+        raise CodeanalyzerExecutionException(f"The codeanalyzer-typescript Neo4j projection carries no parameters for {qualified_method_name!r}; they exist only in analysis.json.")
 
     def get_all_constructors(self, qualified_class_name: str) -> Dict[str, TSCallable]:
         return {name: m for name, m in self.get_all_methods_in_class(qualified_class_name).items() if m.kind == "constructor"}
@@ -602,13 +656,18 @@ class TSNeo4jBackend(TSAnalysisBackend):
     # imports / exports / variables
     # =====================================================================================
     def get_imports(self) -> Dict[str, List[TSImport]]:
-        """Empty per module: the 1.2.0 projection carries no import bindings (no relationship type,
-        no property) -- they exist only in ``analysis.json``."""
-        return {key: [] for key in self._modules}
+        """The 1.2.0 projection carries no import bindings (no relationship type, no property), so
+        this graph cannot say what a module imports; raises naming the gap rather than returning
+        empty lists that would read as "imports nothing"."""
+        raise CodeanalyzerExecutionException(
+            f"The codeanalyzer-typescript Neo4j projection carries no import bindings for application {self.application_name!r}; they exist only in analysis.json."
+        )
 
     def get_all_exports(self) -> Dict[str, List[TSExport]]:
-        """Empty per module, for the same reason as :meth:`get_imports`."""
-        return {key: [] for key in self._modules}
+        """As :meth:`get_imports`: the projection carries no export bindings."""
+        raise CodeanalyzerExecutionException(
+            f"The codeanalyzer-typescript Neo4j projection carries no export bindings for application {self.application_name!r}; they exist only in analysis.json."
+        )
 
     def get_all_variables(self) -> Dict[str, List[TSVariableDeclaration]]:
         out: Dict[str, List[TSVariableDeclaration]] = {key: [] for key in self._modules}

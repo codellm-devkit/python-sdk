@@ -46,6 +46,7 @@ import pytest
 from cldk import CLDK
 from cldk.analysis.commons.backend_config import Neo4jConnectionConfig
 from cldk.analysis.typescript.backend import CALL_GRAPH_NODE_KINDS
+from cldk.models.typescript import TSCallable, TSClass, TSEnum, TSInterface, TSTypeAlias
 from cldk.utils.exceptions import GraphSchemaMismatch
 from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 
@@ -200,15 +201,45 @@ def test_symbol_table_rebuilds_every_declared_node(analysis, count):
     assert orphaned <= 3, "more merged-label collisions than the graph had when this was written"
 
 
-def test_type_accessors_match_the_graphs_label_counts(analysis, count):
-    for accessor, label in (
-        (analysis.get_classes, "TSClass"),
-        (analysis.get_interfaces, "TSInterface"),
-        (analysis.get_enums, "TSEnum"),
-        (analysis.get_type_aliases, "TSTypeAlias"),
+def test_type_accessors_match_the_graphs_label_and_kind_counts(analysis, count):
+    """Count **and** element type: a node carrying a type label but another declaration's ``kind``
+    (a declaration-merged node) belongs to neither accessor, and nothing comes out as the wrong
+    class."""
+    for accessor, label, kind, model in (
+        (analysis.get_classes, "TSClass", "class", TSClass),
+        (analysis.get_interfaces, "TSInterface", "interface", TSInterface),
+        (analysis.get_enums, "TSEnum", "enum", TSEnum),
+        (analysis.get_type_aliases, "TSTypeAlias", "type_alias", TSTypeAlias),
     ):
         got = accessor()
-        assert set(got) == {r for r in got} and len(got) == count(f"MATCH (x:{label}) WHERE {SCOPED} RETURN count(DISTINCT x.signature) AS n"), label
+        assert len(got) == count(f"MATCH (x:{label}) WHERE {SCOPED} AND x.kind = $kind RETURN count(DISTINCT x.signature) AS n", kind=kind), label
+        assert all(type(v) is model and v.kind == kind and v.signature == k for k, v in got.items()), label
+
+
+@pytest.fixture(scope="module")
+def merged(cypher) -> List[Dict[str, Any]]:
+    """The declaration-merged nodes: one id carrying two declaration labels."""
+    return cypher(
+        f"MATCH (m:CanNode) WHERE {SCOPED.replace('x.', 'm.')} AND size([l IN labels(m) WHERE l IN ['TSCallable','TSClass','TSInterface','TSEnum','TSTypeAlias','TSNamespace','TSField']]) > 1 "
+        "OPTIONAL MATCH (p:TSModule)-[:TS_DECLARES]->(m) RETURN m.signature AS sig, m.name AS name, m.kind AS kind, labels(m) AS labels, p.name AS module ORDER BY sig",
+        **SCOPE,
+    )
+
+
+def test_declaration_merged_nodes_are_one_facet_each_and_never_a_namespace(analysis, merged):
+    assert merged, "the graph no longer has merged-label nodes; retire this test"
+    functions, interfaces, aliases = analysis.get_functions(), analysis.get_interfaces(), analysis.get_type_aliases()
+    for node in merged:
+        sig, kind, labels = node["sig"], node["kind"], set(node["labels"])
+        assert sig not in interfaces and sig not in aliases, f"{sig} served as a type it is not"
+        if kind in ("arrow", "function", "method"):
+            assert type(functions[sig]) is TSCallable and functions[sig].kind == kind, f"{sig} is a callable to get_functions"
+            if "TSInterface" in labels:
+                assert analysis.get_interface_properties(sig) == [], "no interface facet is served for it"
+        else:
+            assert sig not in functions
+            facet = analysis.get_typescript_module(node["module"]).types[node["name"]]
+            assert type(facet) in (TSClass, TSInterface, TSEnum, TSTypeAlias) and "TS" + type(facet).__name__[2:] in labels, f"{sig} rebuilt as the facet TS_DECLARES + labels name"
 
 
 def test_class_method_and_code_round_trip(analysis, sample):
@@ -220,6 +251,9 @@ def test_class_method_and_code_round_trip(analysis, sample):
     assert method is not None and method.id == sample["method_id"]
     assert method.code == sample["code"], "the graph's own code text reaches the model's code property"
     assert method.parameters == [], "documented lossiness: :TSCallable projects no parameters"
+    with pytest.raises(CodeanalyzerExecutionException, match="no parameters for"):
+        analysis.get_method_parameters(sample["class_sig"], sample["method_name"])
+    assert analysis.get_method_parameters(sample["class_sig"], "no_such_method_here") == []
     assert analysis.get_method_bodies([sample["method_sig"]]) == {sample["method_sig"]: sample["code"]}
 
 
@@ -234,8 +268,15 @@ def test_typescript_file_is_the_module_key_derived_from_the_id(analysis, sample,
 def test_functions_and_methods_in_application_match_the_graph(analysis, count):
     assert len(analysis.get_functions()) == count(f"MATCH (:TSModule|TSNamespace)-[:TS_DECLARES]->(x:TSCallable) WHERE {SCOPED} RETURN count(DISTINCT x.signature) AS n")
     grouped = analysis.get_methods()
-    assert len(grouped) == count(f"MATCH (x:TSClass|TSInterface) WHERE {SCOPED} RETURN count(DISTINCT x.signature) AS n")
+    assert len(grouped) == count(f"MATCH (x:TSClass|TSInterface) WHERE {SCOPED} AND x.kind IN ['class', 'interface'] RETURN count(DISTINCT x.signature) AS n")
     assert sum(len(v) for v in grouped.values()) <= count(f"MATCH (x:TSClass|TSInterface)-[:TS_HAS_METHOD]->(m) WHERE {SCOPED} RETURN count(m) AS n")
+
+
+def test_imports_and_exports_name_the_projection_gap(analysis):
+    with pytest.raises(CodeanalyzerExecutionException, match="no import bindings"):
+        analysis.get_imports()
+    with pytest.raises(CodeanalyzerExecutionException, match="no export bindings"):
+        analysis.get_exports()
 
 
 def test_variables_and_hierarchy(analysis, count):
@@ -243,7 +284,7 @@ def test_variables_and_hierarchy(analysis, count):
     assert set(variables) == set(analysis.get_symbol_table())
     assert sum(len(v) for v in variables.values()) == count("MATCH (:Application {id: $id})-[:TS_HAS_MODULE]->(:TSModule)-[:TS_HAS_FIELD]->(x) RETURN count(x) AS n", id=APP_ID)
     hierarchy = analysis.get_class_hierarchy()
-    assert hierarchy.number_of_nodes() >= count(f"MATCH (x:TSClass|TSInterface) WHERE {SCOPED} RETURN count(DISTINCT x.signature) AS n")
+    assert hierarchy.number_of_nodes() >= count(f"MATCH (x:TSClass|TSInterface) WHERE {SCOPED} AND x.kind IN ['class', 'interface'] RETURN count(DISTINCT x.signature) AS n")
 
 
 # =====================================================================================
@@ -326,7 +367,10 @@ def test_decorated_callables_are_empty_because_the_graph_has_no_decorator_edges(
 
 def test_external_symbols_are_keyed_module_dot_name(analysis, count):
     externals = analysis.get_external_symbols()
-    assert len(externals) == count("MATCH (x:TSExternal) WHERE x.id STARTS WITH $prefix RETURN count(x) AS n", prefix=f"{APP_ID}/@external/")
+    assert len(externals) == count("MATCH (x:TSExternal) WHERE x.id STARTS WITH $prefix AND x.name IS NOT NULL RETURN count(x) AS n", prefix=f"{APP_ID}/@external/")
+    assert (
+        count("MATCH (x:TSExternal) WHERE x.id STARTS WITH $prefix AND x.name IS NULL RETURN count(x) AS n", prefix=f"{APP_ID}/@external/") > 0
+    ), "the package-level externals this excludes exist on the graph"
     key, node = next(iter(externals.items()))
     assert key == f"{node.module}.{node.name}" and node.id.startswith(f"{APP_ID}/@external/")
 

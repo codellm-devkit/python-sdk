@@ -65,13 +65,19 @@ def test_probe_refuses_a_graph_below_the_analyzer_floor(fake_driver):
         TSNeo4jBackend._from_driver(fake_driver, application_name="app")
 
 
-@pytest.mark.parametrize("raw", [None, "garbage", ""], ids=["no-application", "unparsable", "empty"])
-def test_probe_refuses_when_the_version_cannot_be_read(fake_driver, raw):
+@pytest.mark.parametrize(
+    "raw, found",
+    [(None, "has no :Application node"), ("garbage", "reports analyzer_version 'garbage'"), ("", "has an :Application node that carries no analyzer_version")],
+    ids=["no-application", "unparsable", "empty"],
+)
+def test_probe_refuses_when_the_version_cannot_be_read(fake_driver, raw, found):
     """No ``:Application`` with that id, or a version that is not one, is *unknown* -- refused,
-    because serving it would be the silent-empty defect with no signal."""
+    because serving it would be the silent-empty defect with no signal -- and the message says
+    which of the three it found."""
     fake_driver.analyzer_version = raw
-    with pytest.raises(GraphSchemaMismatch, match="1.2.0 or newer"):
+    with pytest.raises(GraphSchemaMismatch, match="1.2.0 or newer") as e:
         TSNeo4jBackend._from_driver(fake_driver, application_name="app")
+    assert found in str(e.value)
 
 
 @pytest.mark.parametrize("raw", ["1.2.0", "1.2.1", "1.3.0", "2.0.0"])
@@ -87,7 +93,7 @@ def test_probe_anchors_on_the_application_id_not_a_name(fake_driver):
     """The 1.2.0 anchor is ``:Application {id: can://typescript/<app>}``; there is no ``name``."""
     TSNeo4jBackend._from_driver(fake_driver, application_name="my-app")
     probe = next(s for s in fake_driver.statements if "analyzer_version" in s)
-    assert "(a:Application {id: $app_id})" in probe
+    assert "(a:Application {id: $app_id})" in probe and "count(a) AS n" in probe
     assert "{name:" not in probe
 
 

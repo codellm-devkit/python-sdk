@@ -67,8 +67,11 @@ from cldk.models.typescript import (
 
 Props = Mapping[str, Any]
 
-#: The ``kind`` values a ``TS_DECLARES`` child can carry that make it a type rather than a callable.
+#: The ``kind`` values a ``TS_DECLARES`` child can carry that make it a type rather than a callable,
+#: the seven callable kinds, and the type label each type kind is projected under.
 TYPE_KINDS = frozenset({"class", "interface", "enum", "type_alias", "namespace"})
+CALLABLE_KINDS = frozenset({"function", "method", "constructor", "getter", "setter", "arrow", "function_expression"})
+TYPE_LABEL_KINDS = {"TSClass": "class", "TSInterface": "interface", "TSEnum": "enum", "TSTypeAlias": "type_alias", "TSNamespace": "namespace"}
 
 
 def _span(props: Props) -> TSSpan:
@@ -113,7 +116,7 @@ def decorator(node: Props, edge: Props | None = None) -> TSDecorator:
 def field(props: Props, decorators: List[TSDecorator] | None = None) -> TSField:
     return TSField(
         id=props["id"],
-        name=props.get("name", ""),
+        name=props["name"],
         type=props.get("type"),
         decorators=decorators or [],
         span=(
@@ -130,7 +133,7 @@ def callsite(props: Props, callee: str | None) -> TSCallsite:
 
 
 def external(props: Props) -> TSExternalNode:
-    return TSExternalNode(id=props["id"], kind=props.get("kind", "external"), module=props.get("module", ""), name=props.get("name", ""))
+    return TSExternalNode(id=props["id"], kind=props["kind"], module=props["module"], name=props["name"])
 
 
 def synthesized(props: Props) -> TSSynthesizedNode:
@@ -177,9 +180,9 @@ def callable_(props: Props, *, decorators: List[TSDecorator] | None = None, call
         TSCallable(
             id=props["id"],
             span=_span(props),
-            kind=props.get("kind", "function"),
-            name=props.get("name", ""),
-            signature=props.get("signature", ""),
+            kind=props["kind"],
+            name=props["name"],
+            signature=props["signature"],
             decorators=decorators or [],
             return_type=props.get("return_type"),
             cyclomatic_complexity=props.get("cyclomatic_complexity", 0),
@@ -195,7 +198,7 @@ def callable_(props: Props, *, decorators: List[TSDecorator] | None = None, call
 
 
 def _type_kwargs(props: Props) -> Dict[str, Any]:
-    return {"id": props["id"], "span": _span(props), "name": props.get("name", ""), "signature": props.get("signature", ""), **_flags(props, "is_exported", "is_ambient")}
+    return {"id": props["id"], "span": _span(props), "name": props["name"], "signature": props["signature"], **_flags(props, "is_exported", "is_ambient")}
 
 
 def class_(props: Props, *, callables: Dict[str, TSCallable] | None = None, fields: Dict[str, TSField] | None = None, decorators: List[TSDecorator] | None = None) -> TSClass:

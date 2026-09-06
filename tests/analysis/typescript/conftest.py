@@ -116,8 +116,9 @@ class FakeSession:
         self._driver.statements.append(query)
         if "db.relationshipTypes" in query:
             return [_FakeRecord({"relationshipType": rt}) for rt in self._driver.rel_types]
-        if "RETURN a.analyzer_version AS v" in query:
-            return [] if self._driver.analyzer_version is None else [_FakeRecord({"v": self._driver.analyzer_version})]
+        if "RETURN count(a) AS n, a.analyzer_version AS v" in query:
+            v = self._driver.analyzer_version
+            return [_FakeRecord({"n": 0, "v": None} if v is None else {"n": 1, "v": v})]
         if self._driver.responder is not None:
             return [_FakeRecord(d) for d in self._driver.responder(query, params)]
         return []

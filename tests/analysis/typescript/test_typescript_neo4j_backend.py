@@ -86,8 +86,10 @@ pytestmark = pytest.mark.skipif(
 
 
 def _teardown_application() -> None:
-    """Delete only what ``_populate_neo4j`` wrote: every node under the application's two id
-    prefixes and the ``:Application`` anchor itself. Nothing outside those prefixes is touched."""
+    """Delete the application's own subgraph: every node under its two id prefixes and the
+    ``:Application`` anchor. The unprefixed nodes the emitter also MERGEs (``Artifact``, ``Package``,
+    ``ConfigKey``, ``TSDecorator``) are shared with any other application on the server and are
+    left in place."""
     from neo4j import GraphDatabase
 
     driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))

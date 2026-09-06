@@ -305,20 +305,20 @@ def stub_neo4j_backend():
     baz_props = _callable_props(_baz())
     qux_props = _callable_props(_qux())
 
-    has_method_query = (
-        f"MATCH (o:TSClass|TSInterface {{signature: $sig}}) WHERE {_scoped('o')} MATCH (o)-[:TS_HAS_METHOD]->(root:TSCallable {{name: $name}}) RETURN properties(root) AS p"
+    has_method_query = f"MATCH (o:TSClass|TSInterface {{signature: $sig}}) WHERE {_scoped('o')} AND o.kind IN $kinds MATCH (o)-[:TS_HAS_METHOD]->(root:TSCallable {{name: $name}}) RETURN properties(root) AS p, labels(root) AS labels"
+    exact_sig_query = (
+        f"MATCH (p:TSModule|TSNamespace)-[:TS_DECLARES]->(root:TSCallable {{signature: $sig}}) WHERE {_scoped('root')} RETURN properties(root) AS p, labels(root) AS labels"
     )
-    exact_sig_query = f"MATCH (p:TSModule|TSNamespace)-[:TS_DECLARES]->(root:TSCallable {{signature: $sig}}) WHERE {_scoped('root')} RETURN properties(root) AS p"
-    short_name_query = f"MATCH (p:TSModule|TSNamespace)-[:TS_DECLARES]->(root:TSCallable {{name: $name}}) WHERE {_scoped('root')} AND root.signature STARTS WITH $sig_prefix RETURN properties(root) AS p"
+    short_name_query = f"MATCH (p:TSModule|TSNamespace)-[:TS_DECLARES]->(root:TSCallable {{name: $name}}) WHERE {_scoped('root')} AND root.signature STARTS WITH $sig_prefix RETURN properties(root) AS p, labels(root) AS labels"
 
     rows_by_call = {
         # class method lookup: hits
-        (has_method_query, (("sig", "src/mod.Foo"), ("name", "bar")) + SCOPE): [{"p": bar_props}],
+        (has_method_query, (("sig", "src/mod.Foo"), ("name", "bar"), ("kinds", ("class", "interface"))) + SCOPE): [{"p": bar_props, "labels": ["CanNode", "TSCallable"]}],
         # exact-signature TS_DECLARES fallback
-        (exact_sig_query, (("sig", "src/mod.baz"),) + SCOPE): [{"p": baz_props}],
+        (exact_sig_query, (("sig", "src/mod.baz"),) + SCOPE): [{"p": baz_props, "labels": ["CanNode", "TSCallable"]}],
         # short-name TS_DECLARES fallback, scoped under the given scope
-        (short_name_query, (("name", "baz"), ("sig_prefix", "src/mod.")) + SCOPE): [{"p": baz_props}],
-        (short_name_query, (("name", "qux"), ("sig_prefix", "src/mod.")) + SCOPE): [{"p": qux_props}],
+        (short_name_query, (("name", "baz"), ("sig_prefix", "src/mod.")) + SCOPE): [{"p": baz_props, "labels": ["CanNode", "TSCallable"]}],
+        (short_name_query, (("name", "qux"), ("sig_prefix", "src/mod.")) + SCOPE): [{"p": qux_props, "labels": ["CanNode", "TSCallable"]}],
     }
     return _neo4j_backend_with_stubbed_run(rows_by_call)
 
@@ -348,10 +348,12 @@ def test_neo4j_get_method_resolves_namespace_nested_function_by_short_name(stub_
 
 
 def test_neo4j_get_method_parameters_module_level_function(stub_neo4j_backend):
-    # The 1.2.0 projection carries no parameters on :TSCallable, so a *found* function answers [];
-    # the local backend answers ["x"] for the same fixture (documented lossiness, not a miss).
+    # The 1.2.0 projection carries no parameters on :TSCallable, so a *found* function cannot be
+    # answered -- it raises naming the gap rather than returning an empty list that would read as
+    # "takes no parameters" (the local backend answers ["x"] for the same fixture).
     assert stub_neo4j_backend.get_method("src/mod", "baz") is not None
-    assert stub_neo4j_backend.get_method_parameters("src/mod", "baz") == []
+    with pytest.raises(CodeanalyzerExecutionException, match="no parameters for 'baz'"):
+        stub_neo4j_backend.get_method_parameters("src/mod", "baz")
 
 
 def test_neo4j_get_method_genuine_miss_returns_none(stub_neo4j_backend):
@@ -369,7 +371,8 @@ def test_backend_parity_module_level_function(ts_analysis, stub_neo4j_backend):
     assert local.name == remote.name
     # Parameters are the one documented divergence: analysis.json carries them, the graph does not.
     assert ts_analysis.get_method_parameters("src/mod", "baz") == ["x"]
-    assert stub_neo4j_backend.get_method_parameters("src/mod", "baz") == []
+    with pytest.raises(CodeanalyzerExecutionException):
+        stub_neo4j_backend.get_method_parameters("src/mod", "baz")
 
 
 def test_backend_parity_namespace_nested_function(ts_analysis, stub_neo4j_backend):
