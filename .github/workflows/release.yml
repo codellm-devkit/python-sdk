@@ -65,16 +65,19 @@ jobs:
           git push --delete origin ${GITHUB_REF#refs/tags/}
           exit 1
 
-      - name: Inject the latest Code Analyzer JAR
+      - name: Inject the pinned Code Analyzer JAR
         run: |
-          # The release has multiple .jar assets (the versioned codeanalyzer-<v>.jar and an
-          # unversioned codeanalyzer.jar) — select only the versioned one so $CODE_ANALYZER_URL
-          # is a single URL.
-          CODE_ANALYZER_URL=$(curl -s https://api.github.com/repos/codellm-devkit/codeanalyzer-java/releases/latest | jq -r '.assets[] | select(.name | test("^codeanalyzer-[0-9].*\\.jar$")) | .browser_download_url')
+          # The pin in pyproject.toml is authoritative: fetch exactly that release's
+          # versioned jar (codeanalyzer-<pin>.jar). A pin without a matching asset fails
+          # the step, and the gate below deletes the tag - never fall back to latest.
+          PIN=$(grep -E '^codeanalyzer-java\s*=' pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          test -n "$PIN"
+          CODE_ANALYZER_URL=$(curl -sf "https://api.github.com/repos/codellm-devkit/codeanalyzer-java/releases/tags/v${PIN}" | jq -er --arg n "codeanalyzer-${PIN}.jar" '.assets[] | select(.name == $n) | .browser_download_url')
           echo "Downloading: $CODE_ANALYZER_URL"
           wget -q "$CODE_ANALYZER_URL"
           mkdir -p ${{ github.workspace }}/cldk/analysis/java/codeanalyzer/jar/
-          mv codeanalyzer-*.jar ${{ github.workspace }}/cldk/analysis/java/codeanalyzer/jar/
+          rm -f ${{ github.workspace }}/cldk/analysis/java/codeanalyzer/jar/codeanalyzer-*.jar
+          mv "codeanalyzer-${PIN}.jar" ${{ github.workspace }}/cldk/analysis/java/codeanalyzer/jar/
 
       - name: Build Package
         run: uv build
@@ -89,6 +92,7 @@ jobs:
         # SIGPIPE-killing tar and — under `pipefail` — reporting a false "missing JAR".
         run: |
           set -euo pipefail
+          PIN=$(grep -E '^codeanalyzer-java\s*=' pyproject.toml | sed -E 's/.*"([^"]+)".*/\1/')
           jar_re='codeanalyzer/jar/codeanalyzer-[0-9][^/]*\.jar$'
           fail=0
           for f in dist/*.whl dist/*.tar.gz; do
@@ -96,11 +100,13 @@ jobs:
               *.whl)    listing=$(unzip -l "$f") ;;
               *.tar.gz) listing=$(tar tzf "$f") ;;
             esac
-            if grep -qE "$jar_re" <<<"$listing"; then
-              echo "  ✓ $f"
+            # Exactly one jar, and it is the pinned one (issue #336: a stray second jar
+            # from a mismatched download must fail the release, not ride along).
+            jars=$(grep -oE "$jar_re" <<<"$listing" || true)
+            if [ "$(wc -l <<<"$jars" | tr -d ' ')" = "1" ] && [ -n "$jars" ] && grep -qF "codeanalyzer-${PIN}.jar" <<<"$jars"; then
+              echo "  ✓ $f ($jars)"
             else
-              echo "::error::$f is missing the codeanalyzer JAR"
-              grep -i '\.jar' <<<"$listing" || echo "  (no .jar entries at all)"
+              echo "::error::$f must bundle exactly codeanalyzer-${PIN}.jar; found: ${jars:-none}"
               fail=1
             fi
           done
