@@ -33,7 +33,7 @@ calling :meth:`CLDK.analysis` to obtain a language-specific analysis facade.
 
 Note:
     This module requires language-specific backends to be available:
-    - Java: ``codeanalyzer-*.jar`` (auto-downloaded or specified via path)
+    - Java: ``codeanalyzer-java`` (the ``cldk[java]`` extra; carries the jar and its JVM)
     - Python: ``codeanalyzer-python`` (auto-installed in virtualenv)
 """
 

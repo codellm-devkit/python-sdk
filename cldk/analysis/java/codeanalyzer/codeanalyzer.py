@@ -16,8 +16,9 @@
 
 """Java Codeanalyzer backend.
 
-Subprocess wrapper around the bundled ``codeanalyzer-java`` jar (pinned in ``pyproject.toml``
-under ``[tool.backend-versions]``), run on a JDK with ``jmods`` that :func:`ensure_jdk` provisions.
+Subprocess wrapper around the analyzer the ``codeanalyzer-java`` wheel carries (the ``java``
+extra; pinned in ``pyproject.toml``, mirrored in ``[tool.backend-versions]``), run on the JVM that
+same wheel bundles -- the SDK downloads no JDK and touches no JDK environment variable.
 Reads the schema-v2 ``analysis.json`` envelope (:class:`JAnalysis`), keeps its ``application`` as
 the queried :class:`JApplication`, and owns all query/indexing logic; the :class:`JavaAnalysis`
 facade is a thin delegating shell over it.
@@ -27,7 +28,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import subprocess
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -35,11 +35,9 @@ from typing import Dict, Iterable, List, Tuple, Union
 
 import networkx as nx
 
-from cldk.analysis.commons.backend_config import cache_subdir
 from cldk.analysis.commons.levels import analyzer_level
 from cldk.analysis.commons.treesitter import TreesitterJava
 from cldk.analysis.java.backend import CRUD_UNAVAILABLE, CRUDRow, JavaAnalysisBackend, duplicate_type_name, unhomed_endpoint
-from cldk.analysis.java.codeanalyzer._jdk import ensure_jdk
 from cldk.models.java import JGraphEdges
 from cldk.models.java.models import JAnalysis, JApplication, JCallable, JCallableParameter, JCallSite, JComment, JCompilationUnit, JField, JMethodDetail, JType
 from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
@@ -85,43 +83,30 @@ class JCodeanalyzer(JavaAnalysisBackend):
         self._index()
 
     # -----[ driving the analyzer ]-----
-    def _locate_jar(self) -> Path:
-        """The codeanalyzer jar: ``$CLDK_CODEANALYZER_JAVA_JAR`` when set (a test/dev seam — the
-        e2e runs a release jar that is not committed), else the one bundled under
-        ``codeanalyzer/jar/`` at build time."""
-        override = os.environ.get("CLDK_CODEANALYZER_JAVA_JAR")
-        if override:
-            jar = Path(override)
-            if not jar.is_file():
-                raise CodeanalyzerExecutionException(f"CLDK_CODEANALYZER_JAVA_JAR={override!r} is not a file")
-            return jar
-        jar_dir = Path(__file__).resolve().parent / "jar"
-        jar = next(iter(sorted(jar_dir.glob("codeanalyzer*.jar"))), None)
-        if jar is None:
-            raise CodeanalyzerExecutionException(f"codeanalyzer jar not found in {jar_dir}")
-        return jar
-
     def _get_codeanalyzer_exec(self) -> List[str]:
-        """``[<jdk>/bin/java, -jar, <codeanalyzer.jar>]`` on a JDK with ``jmods``.
+        """``codeanalyzer_java.command()`` — ``[<jdk4py java>, -jar, <the wheel's jar>]``.
 
-        Resolves (and on first use downloads + caches) a Temurin JDK under the backend's java cache
-        dir (``analysis_json_path``, else ``<project>/.codeanalyzer/java``). ``JAVA_HOME`` is
-        exported so the analyzer's WALA scope can read ``$JAVA_HOME/jmods``.
+        The ``codeanalyzer-java`` wheel is the single source of both the jar and the JVM it runs
+        on; 3.0.x reads its primordial scope from ``jrt:/`` inside that JVM, so the SDK has nothing
+        to provision and no environment to point the analyzer at -- whatever JDK the machine has (or
+        has not) is left alone. Imported here rather than at module import so ``import cldk`` (and
+        ``cldk.analysis.java``) work without the ``java`` extra.
         """
-        java_cache = Path(self.analysis_json_path) if self.analysis_json_path else cache_subdir(None, self.project_dir, "java")
-        if java_cache is None:
-            raise CodeanalyzerExecutionException("Cannot resolve a JDK cache directory: no cache directory and no project directory.")
-        java_home = ensure_jdk(java_cache)
-        # ScopeUtils reads the JAVA_HOME env var (not java.home); child procs inherit os.environ.
-        os.environ["JAVA_HOME"] = str(java_home)
-        java_bin = java_home / "bin" / ("java.exe" if os.name == "nt" else "java")
-        return [str(java_bin), "-jar", str(self._locate_jar())]
+        try:
+            import codeanalyzer_java
+        except ImportError as exc:
+            raise CodeanalyzerExecutionException(
+                'the Java analyzer is not installed: the codeanalyzer-java distribution (module "codeanalyzer_java") carries the analyzer jar and the JVM it runs on. Install it with: pip install "cldk[java]"'
+            ) from exc
+        return codeanalyzer_java.command()
 
     def _argv(self, analysis_level: int, output_dir: Path | None) -> List[str]:
-        """The 3.0.1 command line: ``-i <project> -a <1..4> [-o <dir> -c <dir>/cache] --app-name
+        """The 3.0.x command line: ``-i <project> -a <1..4> [-o <dir> -c <dir>/cache] --app-name
         <project.name> [-t <file>]...``. The application name is what the analyzer stamps into every
         ``can://java/<app>/...`` id; without ``-o`` the analyzer prints the JSON to stdout."""
-        args = self._get_codeanalyzer_exec()  # first: it is what refuses a run with no cache dir and no project dir
+        if self.project_dir is None:
+            raise CodeanalyzerExecutionException("Cannot run codeanalyzer-java: no project directory.")
+        args = self._get_codeanalyzer_exec()
         project = Path(self.project_dir)
         args += ["-i", str(project), "-a", str(analysis_level)]
         if output_dir is not None:

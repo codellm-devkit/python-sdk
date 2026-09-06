@@ -317,6 +317,13 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+all = [
+    { name = "codeanalyzer-java" },
+    { name = "neo4j" },
+]
+java = [
+    { name = "codeanalyzer-java" },
+]
 neo4j = [
     { name = "neo4j" },
 ]
@@ -328,6 +335,7 @@ dev = [
 ]
 test = [
     { name = "black" },
+    { name = "cldk", extra = ["java"] },
     { name = "coverage" },
     { name = "flake8" },
     { name = "jupyter" },
@@ -340,6 +348,9 @@ test = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cldk", extras = ["java"], marker = "extra == 'all'" },
+    { name = "cldk", extras = ["neo4j"], marker = "extra == 'all'" },
+    { name = "codeanalyzer-java", marker = "extra == 'java'", specifier = "==3.0.2" },
     { name = "codeanalyzer-python", specifier = "==1.4.1" },
     { name = "codeanalyzer-typescript", specifier = "==1.2.0" },
     { name = "neo4j", marker = "extra == 'neo4j'", specifier = ">=5.14,<7" },
@@ -353,7 +364,7 @@ requires-dist = [
     { name = "tree-sitter-python", specifier = "==0.23.6" },
     { name = "wget", specifier = "==3.2" },
 ]
-provides-extras = ["neo4j"]
+provides-extras = ["neo4j", "java", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -362,6 +373,7 @@ dev = [
 ]
 test = [
     { name = "black", specifier = ">=25.1.0,<26" },
+    { name = "cldk", extras = ["java"] },
     { name = "coverage", specifier = ">=7.6.10,<8" },
     { name = "flake8", specifier = ">=7.1.1,<8" },
     { name = "jupyter", specifier = ">=1.1.1,<2" },
@@ -382,6 +394,17 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/60/6c/8ca2efa64cf75a977a0d7fac081354553ebe483345c734fb6b6515d96bbc/click-8.2.1.tar.gz", hash = "sha256:27c491cc05d968d271d5a1db13e3b5a184636d9d930f148c50b038f0d0646202", size = 286342, upload-time = "2025-05-20T23:19:49.832Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/85/32/10bb5764d90a8eee674e9dc6f4db6a0ab47c8c4d0d83c27f7c39ac415a4d/click-8.2.1-py3-none-any.whl", hash = "sha256:61a3265b914e850b85317d0b3109c7f8cd35a670f963866005d6ef1d5175a12b", size = 102215, upload-time = "2025-05-20T23:19:47.796Z" },
+]
+
+[[package]]
+name = "codeanalyzer-java"
+version = "3.0.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "jdk4py" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/87/53/0b87d90199855a0ce913cfca66ff3ded023f6e8ddc01f1d07db3fb1214d7/codeanalyzer_java-3.0.2-py3-none-any.whl", hash = "sha256:c9cf7e1fd3eb7c276ddddd832fddd75a48a3e1230abac6d869b986c472e1a7d7", size = 32799384, upload-time = "2026-09-06T17:55:37.313Z" },
 ]
 
 [[package]]
@@ -746,6 +769,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/b8/21/1e2a441f74a653a144224d7d21afe8f4169e6c7c20bb13aec3a2dc3815e0/isort-6.0.1.tar.gz", hash = "sha256:1cb5df28dfbc742e490c5e41bad6da41b805b0a8be7bc93cd0fb2a8a890ac450", size = 821955, upload-time = "2025-02-26T21:13:16.955Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c1/11/114d0a5f4dabbdcedc1125dee0888514c3c3b16d3e9facad87ed96fad97c/isort-6.0.1-py3-none-any.whl", hash = "sha256:2dc5d7f65c9678d94c88dfc29161a320eec67328bc97aad576874cb4be1e9615", size = 94186, upload-time = "2025-02-26T21:13:14.911Z" },
+]
+
+[[package]]
+name = "jdk4py"
+version = "21.0.8.2"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9b/91/faab5f5b2bdcaf74c20304c5c3a6a9e304a6c609a1d755e927c07a87f883/jdk4py-21.0.8.2-py3-none-macosx_10_9_x86_64.whl", hash = "sha256:7b2b397f2999e5a71728691477857a5a41215b3c95f6e8b15a4d53bc76203dff", size = 30900008, upload-time = "2026-04-10T20:50:45.913Z" },
+    { url = "https://files.pythonhosted.org/packages/e6/19/449f69b8706c2cb5fa46fdc3e75650983e44e4e025d6ade78580b2c8572d/jdk4py-21.0.8.2-py3-none-macosx_11_0_arm64.whl", hash = "sha256:0667b81b3ddc60157f773e0d05d00f4d46530f82bdc59e295b322b8d33f69417", size = 29692099, upload-time = "2026-04-10T20:50:37.405Z" },
+    { url = "https://files.pythonhosted.org/packages/9d/0c/24a7d8e4c96c3843b8163ba7a9be939b48fc181fb3263bd4fd9289ed8f41/jdk4py-21.0.8.2-py3-none-manylinux_2_17_aarch64.whl", hash = "sha256:2519dce230b3ed13a93a3efed15c6b8b163aeacd77859ddf59eef3faa69c635d", size = 33195566, upload-time = "2026-04-10T20:50:34.609Z" },
+    { url = "https://files.pythonhosted.org/packages/a2/61/f3b5936908ff6de66c61aef69bf1074cb468fb883f5a0bb9e15e67a6b484/jdk4py-21.0.8.2-py3-none-manylinux_2_17_x86_64.whl", hash = "sha256:85addfcb57c7051dad6145b9f816fc519337e9a0c705ef01edc9dc7818ee0356", size = 33794570, upload-time = "2026-04-10T20:50:40.113Z" },
+    { url = "https://files.pythonhosted.org/packages/11/e3/87b83011678930770bf59b3f3fa5bd6c85f5e48941f1ef9e31cbfb62bee3/jdk4py-21.0.8.2-py3-none-win_amd64.whl", hash = "sha256:1c8e37d26315dfbb603503153d3dcdd90021fda71d64ab0b6309f06f83c0d503", size = 30329010, upload-time = "2026-04-10T20:50:42.783Z" },
 ]
 
 [[package]]

@@ -13,6 +13,49 @@ leg-1.5/1.6 query surface for TypeScript (addressing, scoping keywords, per-call
 paths, entrypoints) is 2.5b, on codeanalyzer-typescript 1.3.0 when it is cut.
 
 ### Changed
+- **The Java analyzer comes from the `codeanalyzer-java` PyPI wheel, behind a new `java` extra**
+  (`pip install "cldk[java]"`). `pyproject.toml` gains `[project.optional-dependencies] java =
+  ["codeanalyzer-java==3.0.2"]` and `[tool.backend-versions] codeanalyzer-java = "3.0.2"`, which is
+  now the single source of the analyzer version. `JCodeanalyzer._get_codeanalyzer_exec` returns
+  `codeanalyzer_java.command()` — the wheel's jar run on the JVM the wheel bundles (`jdk4py`,
+  Temurin 21). The import is lazy, so `import cldk` and `import cldk.analysis.java` work without the
+  extra; running the backend without it raises `CodeanalyzerExecutionException` naming the
+  `codeanalyzer-java` distribution and the `pip install "cldk[java]"` line.
+  **Why an extra:** the wheel carries a ~35 MB JVM that an install analyzing only Python or
+  TypeScript never runs, and `jdk4py`'s PyPI classifier reads bare `GPLv2` (see below), which trips
+  policy gates for consumers who never touch Java. This is the **first step of a thin-base,
+  additive-extras split**, not the whole of it:
+
+  | Install | What you get |
+  |---|---|
+  | `pip install cldk` | the facades, the models, and the Python and TypeScript analyzers |
+  | `pip install "cldk[neo4j]"` | the above plus the Neo4j driver for the read-only graph backends (no analyzer) |
+  | `pip install "cldk[java]"` | the above plus the Java analyzer jar and its bundled JVM |
+  | `pip install "cldk[all]"` | everything |
+
+  `codeanalyzer-python` and `codeanalyzer-typescript` are still installed **unconditionally**; #340
+  moves them into extras of their own and grows `all` accordingly.
+  **Licensing, stated plainly:** `jdk4py` ships OpenJDK under GPLv2 **with the Classpath Exception**
+  (the ordinary OpenJDK terms; the exception is what permits Apache-2.0 code to run on it), but its
+  PyPI classifier says plain GPLv2 and its metadata carries no license file, so license scanners
+  keyed to classifiers will now see a GPLv2 row where the previous runtime JDK download was
+  invisible to dependency tooling.
+- **The Java release plumbing is gone with the jar.** `.github/workflows/release.yml` no longer
+  downloads the pinned jar from the `codeanalyzer-java` GitHub release and no longer verifies that a
+  jar is bundled in the wheel and sdist — the mechanism issues #284, #336 and #337 patched. The
+  analyzer arrives as a normal locked dependency; nothing is fetched at build time.
+
+### Removed
+- **`cldk/analysis/java/codeanalyzer/jar/` and the checked-in `codeanalyzer-2.4.1.jar`**, the
+  `[tool.hatch.build] artifacts` force-include that shipped it, and the root `.gitignore`'s `*.jar`
+  rule. The `cldk` wheel and sdist no longer contain a `.jar` (~35 MB smaller).
+- **`cldk/analysis/java/codeanalyzer/_jdk.py`** (`ensure_jdk`, `JdkLoader`, the pinned Temurin
+  `jdk-21.0.5+11`). codeanalyzer-java 3.0.x reads its primordial scope from `jrt:/` in the running
+  JVM, so no `jmods/` is needed: **the SDK downloads no JDK (~200 MB per project cache), and reads
+  or writes no `JAVA_HOME`** — a `JAVA_HOME` already in the environment is left exactly as it is.
+  `pip install "cldk[java]"` now works on a machine with no Java at all. The `<cache>/java/jdk/`
+  cache directory is simply unused; delete it by hand if you want the space back. The
+  `CLDK_CODEANALYZER_JAVA_JAR` test/dev seam is removed with it — the wheel is the source of the jar.
 - **Pinned `codeanalyzer-typescript` 0.4.3 → 1.2.0** (`pyproject.toml` `dependencies` and
   `[tool.backend-versions]`). The analyzer emits canonical schema v2, and `cldk.models.typescript`
   is rewritten as an `extra="forbid"` mirror of it: `analysis.json` is the `TSAnalysis` envelope

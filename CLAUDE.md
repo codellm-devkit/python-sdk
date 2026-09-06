@@ -10,7 +10,7 @@ an optional read-only Neo4j backend — selected by the *type* of the `backend=`
 
 | Language | Entry point | Local backend | Neo4j backend | Models |
 |----------|-------------|---------------|---------------|--------|
-| Java | `CLDK.java(...)` | `JCodeanalyzer` (codeanalyzer-java 3.0.1 JAR, subprocess, `-a 1..4`) | `JNeo4jBackend` (3.0.1 graph, probed at attach) | `cldk/models/java/` (schema v2 mirror) |
+| Java | `CLDK.java(...)` (needs the `cldk[java]` extra) | `JCodeanalyzer` (the `codeanalyzer-java` 3.0.2 wheel's jar on its bundled JVM, subprocess, `-a 1..4` — no jar in this repo, no JDK download) | `JNeo4jBackend` (3.0.1 graph, probed at attach) | `cldk/models/java/` (schema v2 mirror) |
 | Python | `CLDK.python(...)` | `PyCodeanalyzer` (in-process `codeanalyzer-python`) | `PyNeo4jBackend` | re-exported from `codeanalyzer-python` |
 | TypeScript (+ JavaScript modules) | `CLDK.typescript(...)` | `TSCodeanalyzer` (`codeanalyzer-typescript` 1.2.0 binary from the wheel, subprocess; `-a 1..4`) | `TSNeo4jBackend` (graphs emitted by ≥ 1.2.0; older refused at attach) | `cldk/models/typescript/` (schema v2 mirror) |
 

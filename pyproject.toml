@@ -40,10 +40,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The Neo4j-backed TypeScript analysis backend (cldk.analysis.typescript.neo4j).
-neo4j = [
-    "neo4j>=5.14,<7",
-]
+# The Neo4j-backed analysis backends (read-only; no analyzer is invoked).
+neo4j = ["neo4j>=5.14,<7"]
+# The local Java backend: the analyzer wheel carries the jar and a bundled JVM (jdk4py).
+java = ["codeanalyzer-java==3.0.2"]
+# Everything. `codeanalyzer-python` and `codeanalyzer-typescript` are still hard
+# dependencies; #340 moves them here, and this list grows when it does.
+all = ["cldk[java]", "cldk[neo4j]"]
 
 [project.urls]
 Homepage = "https://codellm-devkit.info"
@@ -55,6 +58,7 @@ dev = [
     "ipython>=8.32.0,<9",
 ]
 test = [
+    "cldk[java]",   # the Java suite drives the real analyzer; the extra carries it
     "toml>=0.10.2,<0.11",
     "pytest==8.3.5",
     "pytest-pspec>=0.0.4,<0.0.5",
@@ -70,13 +74,6 @@ test = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-# The codeanalyzer-java JAR is force-included here: it lives under a `*.jar` .gitignore
-# (re-included for git via a nested `!codeanalyzer-*.jar`), but hatchling honors the root
-# ignore and not the nested negation, so without this it is silently dropped from every
-# wheel/sdist built inside a git repo (i.e. in CI). See issue #284.
-[tool.hatch.build]
-artifacts = ["cldk/analysis/java/codeanalyzer/jar/*.jar"]
-
 [tool.hatch.build.targets.wheel]
 packages = ["cldk"]
 
@@ -89,7 +86,7 @@ include = [
 ]
 
 [tool.backend-versions]
-codeanalyzer-java = "3.0.1"
+codeanalyzer-java = "3.0.2"
 codeanalyzer-python = "1.4.1"
 codeanalyzer-typescript = "1.2.0"
 
