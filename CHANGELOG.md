@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Pinned `codeanalyzer-typescript` 0.4.3 → 1.2.0** (`pyproject.toml` `dependencies` and
+  `[tool.backend-versions]`). The analyzer now emits canonical schema v2, and `cldk.models.typescript`
+  is rewritten as an `extra="forbid"` mirror of it: `analysis.json` is the `TSAnalysis` envelope
+  (`analyzer.version`, `max_level`, `application`); every node carries a `can://` `id`, a `kind` and a
+  `span`; a module's `classes`/`interfaces`/`enums`/`type_aliases`/`namespaces` are read-only views over
+  one `types` map; `start_line`/`end_line`/`code` are properties over `span` and the module `source`.
+  **BREAKING by value:** `TSCallEdge` is `TSCallGraphEdge{src, dst, prov, weight}` (was
+  `source/target/provenance/tags`), with `can://` ids as endpoints; `TSExternalSymbol` /
+  `TSSynthesizedCallable` are the id-keyed `TSExternalNode` / `TSSynthesizedNode`; `TSCallable` has no
+  `path`, `call_sites`, `accessed_symbols`, `local_variables` or `code_start_line`. The 1.x class names
+  stay importable as aliases. A 0.4.x `analysis.json` no longer validates — re-run the analyzer.
+- **`TSAnalysisBackend` inherits the generic `AnalysisBackend`** (`P = "TS"`, `N = "TS"`), so the
+  in-process backend now also answers `get_artifacts` / `get_dependencies` / `get_config_keys` /
+  `get_config_uses` / `get_unresolved_config_reads` with the shared `PyArtifact` / `PyDependency` /
+  `PyConfigKey` / `PyConfigUseEdge` / `PyConfigRead` models (a TypeScript dependency's `ecosystem` is
+  `"npm"`; a non-string config value is rendered as its JSON text).
+- **`get_call_graph()` on TypeScript** keys nodes as every other accessor does (module file key,
+  signature, `"<module>.<name>"` for an external) with `id` and `kind` (`module | class | callable |
+  external`) node attributes, and edges carry `type="CALL_DEP"`, `weight` and `provenance` (a tuple) as
+  Python's do; the 1.x `tags` dict is gone with the wire. Module callers and class callees are kept,
+  not dropped as on Python — filter on `kind == "callable"` for that shape. `get_external_symbols()`
+  is keyed `"<module>.<name>"` to match. `get_call_sites` / `get_calling_lines` / `get_call_targets` /
+  `get_callsites_for` read a callable's `body` nodes of `kind == "call"`; `get_method_bodies` omits a
+  callable with no source text (an implicit constructor's `code` is now `""`, not `None`).
+- The backend drives the 1.2.0 CLI: `-i <project> --app-name <project.name> -a <1..4> -o <cache>
+  --cache-dir <cache> --skip-tests [--eager] [-t <file>]...`. Every `AnalysisLevel` is sent as its
+  integer (the old cap at level 2 is gone). **`TSCodeAnalyzerConfig.tsc_only` is a deprecated no-op**
+  (the flag was removed upstream in 1.0.0); `True` emits a `DeprecationWarning`.
+
+### Removed
+- `TypeScriptAnalysis.get_entry_point_methods` and `get_service_entry_point_methods`, which only ever
+  raised `NotImplementedError`. Working entrypoint accessors arrive with the query surface (2.5b).
+
 ## [v2.0.0-rc.2] - 2026-09-06
 Python legs 1, 1.5 and 1.6 of the CLDK 2.0 agent-facing query facade (see
 `docs/design/specs/2026-09-03-agent-facing-query-facade.md`,

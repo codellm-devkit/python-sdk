@@ -35,6 +35,7 @@ from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.backend_config import CodeAnalyzerConfig
 from cldk.analysis.typescript.neo4j import TSNeo4jBackend
 from cldk.models.typescript import (
+    TSAnalysis,
     TSApplication,
     TSCallable,
     TSCallableParameter,
@@ -42,6 +43,7 @@ from cldk.models.typescript import (
     TSClass,
     TSModule,
     TSNamespace,
+    TSSpan,
 )
 
 # -----[ shared fixture data ]-----
@@ -53,15 +55,19 @@ from cldk.models.typescript import (
 #
 # call_graph: baz -> Foo.bar, NS.qux -> baz   (so both functions participate in a call edge)
 
+MOD = "can://typescript/t/src/mod.ts"
+SPAN = TSSpan(start=(1, 1), end=(1, 1), bytes=(0, 0))
+
 
 def _bar() -> TSCallable:
-    return TSCallable(name="bar", path="src/mod.ts", signature="src/mod.Foo.bar", kind="method")
+    return TSCallable(id=f"{MOD}/Foo/bar", span=SPAN, name="bar", signature="src/mod.Foo.bar", kind="method")
 
 
 def _baz() -> TSCallable:
     return TSCallable(
+        id=f"{MOD}/baz",
+        span=SPAN,
         name="baz",
-        path="src/mod.ts",
         signature="src/mod.baz",
         kind="function",
         parameters=[TSCallableParameter(name="x")],
@@ -69,26 +75,37 @@ def _baz() -> TSCallable:
 
 
 def _qux() -> TSCallable:
-    return TSCallable(name="qux", path="src/mod.ts", signature="src/mod.NS.qux", kind="function")
+    return TSCallable(id=f"{MOD}/NS/qux", span=SPAN, name="qux", signature="src/mod.NS.qux", kind="function")
 
 
 def _build_application() -> TSApplication:
-    foo = TSClass(name="Foo", signature="src/mod.Foo", methods={"bar": _bar()})
-    ns = TSNamespace(name="NS", signature="src/mod.NS", functions={"src/mod.NS.qux": _qux()})
+    foo = TSClass(id=f"{MOD}/Foo", span=SPAN, name="Foo", signature="src/mod.Foo", callables={"bar": _bar()})
+    ns = TSNamespace(id=f"{MOD}/NS", span=SPAN, name="NS", signature="src/mod.NS", functions={"qux": _qux()})
     module = TSModule(
-        file_path="src/mod.ts",
-        module_name="mod",
-        classes={"src/mod.Foo": foo},
-        functions={"src/mod.baz": _baz()},
-        namespaces={"src/mod.NS": ns},
+        id=MOD,
+        span=SPAN,
+        source="",
+        types={"Foo": foo, "NS": ns},
+        functions={"baz": _baz()},
     )
     return TSApplication(
+        id="can://typescript/t",
         symbol_table={"src/mod.ts": module},
         call_graph=[
-            TSCallEdge(source="src/mod.baz", target="src/mod.Foo.bar"),
-            TSCallEdge(source="src/mod.NS.qux", target="src/mod.baz"),
+            TSCallEdge(src=f"{MOD}/baz", dst=f"{MOD}/Foo/bar", prov=["tsc"]),
+            TSCallEdge(src=f"{MOD}/NS/qux", dst=f"{MOD}/baz", prov=["tsc"]),
         ],
     )
+
+
+def _build_analysis_json() -> str:
+    return TSAnalysis(
+        schema_version="2.0.0",
+        language="typescript",
+        max_level=2,
+        analyzer={"name": "codeanalyzer-typescript", "version": "1.2.0"},
+        application=_build_application(),
+    ).model_dump_json()
 
 
 # -----[ local (in-memory) backend ]-----
@@ -108,7 +125,7 @@ def _fake_run_writing_output(payload: str):
 @pytest.fixture
 def ts_analysis(typescript_application, tmp_path, monkeypatch):
     """A local-backend facade over the minimal module-function fixture above."""
-    payload = _build_application().model_dump_json()
+    payload = _build_analysis_json()
     monkeypatch.setenv("CODEANALYZER_TS_BIN", "codeanalyzer-typescript")
     with patch(
         "cldk.analysis.typescript.codeanalyzer.codeanalyzer.subprocess.run",
@@ -202,7 +219,7 @@ def _callable_props(c: TSCallable) -> dict:
 
     return {
         "name": c.name,
-        "path": c.path,
+        "path": "src/mod.ts",
         "signature": c.signature,
         "parameters_json": _json.dumps([p.model_dump() for p in c.parameters]),
         "return_type": c.return_type,
@@ -220,9 +237,7 @@ def stub_neo4j_backend():
 
     has_method_query = "MATCH (o:Symbol {signature: $sig})-[:HAS_METHOD]->(m:Callable {name: $name}) RETURN properties(m) AS p LIMIT 1"
     exact_sig_query = (
-        "MATCH (parent)-[:DECLARES]->(c:Callable {signature: $sig}) "
-        "WHERE (parent:Module OR parent:Namespace) AND c._module IN $mods "
-        "RETURN properties(c) AS p LIMIT 1"
+        "MATCH (parent)-[:DECLARES]->(c:Callable {signature: $sig}) " "WHERE (parent:Module OR parent:Namespace) AND c._module IN $mods " "RETURN properties(c) AS p LIMIT 1"
     )
     short_name_query = (
         "MATCH (parent)-[:DECLARES]->(c:Callable {name: $name}) "
