@@ -384,3 +384,122 @@ class Slice(BaseModel):
         if len(self.roots) != 1:
             raise ValueError(f"this slice has {len(self.roots)} roots, not one; read .roots")
         return self.roots[0]
+
+
+#: How much a data-dependence provenance is worth as evidence, **least certain first**.
+#:
+#: The order is decided by what the three *mean*, not by how they sort as strings:
+#:
+#: * ``points-to`` is alias analysis — "these two expressions may name the same object". The most
+#:   approximate of the three, and the only one that can relate values with no syntactic link.
+#: * ``reaching-defs`` is a may-analysis over the CFG — "this definition may reach this use". It
+#:   over-approximates along paths that never execute together.
+#: * ``ssa`` is exact def-use in SSA form — the use *is* that definition, by construction.
+#:
+#: So certainty runs ``ssa`` > ``reaching-defs`` > ``points-to``, and the *weakest* hop of a path
+#: — the one that caps how strongly a caller may state the flow — is the **most approximate** one.
+#: Written down here, and pinned by a test, because the ordering reads backwards if you take
+#: "weakest" to mean "smallest" and sort the words instead of ranking the analyses.
+#:
+#: Measured on odoo-slim-19: ``prov`` is a singleton list on **every** one of the 5,134,655
+#: ``PY_DDG`` edges (``reaching-defs`` 3,036,102, ``points-to`` 1,548,237, ``ssa`` 550,316), so
+#: each hop has exactly one provenance and "the weakest hop" is well defined rather than a
+#: question about how to combine a set.
+PROV_CERTAINTY = ("points-to", "reaching-defs", "ssa")
+
+
+def prov_rank(prov: list[str]) -> int:
+    """How certain a hop's provenance is: lower is weaker. See :data:`PROV_CERTAINTY`.
+
+    A hop with **no** provenance ranks above every labelled one. ``prov`` is carried by ``PY_DDG``
+    and by nothing else (verified on the live graph: ``PY_CDG``, ``PY_PARAM_IN``, ``PY_PARAM_OUT``
+    and ``PY_SUMMARY`` carry no properties at all), and those four are structural facts —
+    control dependence, argument binding, return binding — not may-analyses. An unlabelled hop
+    therefore claims no approximation, and ranking it as the most certain is what stops it from
+    being reported as the reason a flow is uncertain.
+
+    An unrecognised provenance ranks weakest of all: a new label from a future analyzer is
+    something this SDK has not been taught to trust, and treating it as strong would be the
+    optimistic half of the guess.
+
+    A hop carrying **several** provenances takes the weakest of them. That is the conservative
+    reading — several labels could as easily mean "any one of these justifies the edge", in which
+    case the strongest should win — and it is unobservable on real data today, because ``prov`` is
+    a singleton on every edge of the live graph. Conservative is the direction to be wrong in:
+    under-claiming certainty costs a caller a follow-up question, over-claiming it costs them a
+    wrong conclusion.
+    """
+    if not prov:
+        return len(PROV_CERTAINTY)
+    return min((PROV_CERTAINTY.index(p) if p in PROV_CERTAINTY else -1) for p in prov)
+
+
+class PathHop(BaseModel):
+    """One edge of a flow, in the caller's vocabulary: where it went, and what justified it.
+
+    Attributes:
+        frm: The position the hop leaves.
+        to: The position it arrives at.
+        via: What kind of edge justified it — ``data``, ``control``, ``argument``, ``return``,
+            ``summary`` (the five SDG relationships) or ``call`` (:meth:`call_paths_between`).
+            Never the graph's own ``PY_DDG``/``PY_PARAM_IN`` spelling (E6).
+        var: The variable the dependence is on, for a ``data`` hop; ``None`` for the rest, which
+            carry no variable on the edge.
+        prov: How the hop was established. Empty for everything but a ``data`` hop — see
+            :func:`prov_rank`.
+    """
+
+    frm: SliceNode
+    to: SliceNode
+    via: str
+    var: str | None = None
+    prov: list[str] = []
+
+
+class FlowPath(BaseModel):
+    """**A path is a sequence** (E2), where a :class:`Slice` is a set.
+
+    The order of :attr:`hops` is the order the value travels, and consecutive hops join up:
+    ``hops[i].to.ref == hops[i + 1].frm.ref``. That is the whole difference from a slice, and it
+    is why the two are separate accessors returning separate types rather than one derived from
+    the other — a cone of 10,000 nodes contains millions of distinct paths, so a caller who wants
+    to *argue* a flow needs the sequence and a caller who wants to *bound* one needs the set.
+
+    Attributes:
+        hops: The edges, in order. Never empty: a path with no hops is not a path, and the
+            "does it flow at all" question is :meth:`flows_to_call` / :meth:`reaches`.
+    """
+
+    hops: list[PathHop]
+
+    @property
+    def weakest(self) -> PathHop:
+        """The hop that caps how strongly this flow can be stated — the *most approximate* one.
+
+        Derived rather than stored, the same construction as :attr:`Slice.truncated`, so it cannot
+        disagree with :attr:`hops` and ``weakest in hops`` holds by definition. Ranked by
+        :func:`prov_rank` (``ssa`` > ``reaching-defs`` > ``points-to``, unlabelled strongest);
+        ``min`` is stable, so a tie is broken by position and the earliest weakest hop wins —
+        which keeps the answer reproducible instead of depending on iteration order.
+        """
+        return min(self.hops, key=lambda h: prov_rank(h.prov))
+
+
+class FlowPaths(list):
+    """The paths a query returned, and whether there were more of them.
+
+    A ``list`` subclass rather than a model: everything a caller does with paths — index them,
+    iterate them, ``if paths:`` — is what a list does, and the only thing missing was E5's "a
+    bound is never silent". So :attr:`truncated` rides alongside instead of a wrapper type that
+    would make every caller write ``.paths`` first.
+
+    :attr:`truncated` is a flag and not a ``total`` (which is how :class:`Slice` reports the same
+    thing) because counting *every* shortest path costs a second full traversal to produce a
+    number a caller cannot act on differently: at ``max_paths`` witnesses, "there are more" is the
+    entire actionable content. The extent question — how far a value reaches — is
+    ``slice_forward``, which does report its ``total``.
+    """
+
+    def __init__(self, paths, truncated: bool = False) -> None:
+        super().__init__(paths)
+        self.truncated = truncated

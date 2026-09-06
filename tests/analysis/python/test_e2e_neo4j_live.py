@@ -1068,3 +1068,223 @@ def test_get_classes_returns_every_top_level_class(analysis, cypher):
     assert len(classes) == expected
     assert all(name == cls.signature for name, cls in classes.items())
     assert elapsed < _SLOW_CEILING_SECONDS, f"get_classes took {elapsed:.0f}s (11.1s when recorded, from ~410s before the N+1 collapse)"
+
+
+# =====================================================================================
+# Leg 1.5, tasks 4-7: addressing, per-callable graphs, traversals, paths and hydration.
+#
+# ``test_dataflow.py`` pins these against one hand-picked callable with measured constants; this
+# section is the other half of the evidence and asks a different question: do they hold for
+# whatever the graph happens to contain? Every fixture below is derived at run time, in the file's
+# own discipline -- no signature, value name, line number or count is written by hand -- so a
+# rebuilt graph exercises different code and the assertions still mean something.
+#
+# The lesson being paid for is leg 1's: six accessors shipped broken on every real graph because
+# hand-written fixtures encoded the SDK's own assumptions. This leg has already paid it twice more
+# -- a fixture with a fabricated body-key grammar, and a bounded ``backward_cone`` that walked the
+# wrong direction because nothing exercised it.
+# =====================================================================================
+_CROSSING_FLOW = """
+MATCH (a:PyBodyNode {kind:'formal_in', _module:$mod})-[:PY_DDG]->(:PyBodyNode)-[:PY_DDG]->(:PyBodyNode {kind:'actual_in'})-[:PY_PARAM_IN]->(v:PyBodyNode {kind:'formal_in'})
+WHERE a.var IS NOT NULL AND NOT a.var STARTS WITH '<' AND v.var IS NOT NULL AND NOT v.var STARTS WITH '<'
+WITH a, v ORDER BY a.id, v.id LIMIT 1
+MATCH (c1:PyCallable)-[:PY_HAS_BODY_NODE]->(a) MATCH (c2:PyCallable)-[:PY_HAS_BODY_NODE]->(v)
+RETURN c1.signature AS src_callable, a.var AS src_value, a.id AS src_ref,
+       c2.signature AS dst_callable, v.var AS dst_value, v.id AS dst_ref
+"""
+
+
+@pytest.fixture(scope="module")
+def crossing_flow(analysis, cypher, module_keys) -> Dict[str, Any]:
+    """A real value-to-value flow that crosses a call boundary, found by asking the graph.
+
+    Scoped to one module at a time and taken from the first module (in ``file_key`` order) that has
+    one: the unscoped form is the same query without ``_module``, and it takes 66 seconds because
+    ordering the whole crossing set is the cost. Module-scoped it is 0.08 s, and the first hit on
+    this graph is the fifth module.
+
+    Both ends are then run back through ``resolve_value``, and a module whose names do not resolve
+    uniquely is skipped rather than worked around: the fixture has to be addressable *the way a
+    caller would address it*, or the accessors under test are not being exercised through their
+    real front door.
+    """
+    for path in sorted(module_keys)[:40]:
+        rows = cypher(_CROSSING_FLOW, mod=path)
+        if not rows:
+            continue
+        found = dict(rows[0])
+        try:
+            if (
+                analysis.backend.resolve_value(found["src_value"], within=found["src_callable"]).ref == found["src_ref"]
+                and analysis.backend.resolve_value(found["dst_value"], within=found["dst_callable"]).ref == found["dst_ref"]
+            ):
+                return found
+        except Exception:  # noqa: BLE001 - an ambiguous name here means "try the next module"
+            continue
+    pytest.skip("no module in the first 40 carries a uniquely addressable value flow across a call")
+
+
+# -----[ Task 4: addressing ]-----
+def test_resolved_addresses_name_real_nodes_in_the_graph(analysis, cypher, crossing_flow):
+    """#320's invariant, on both kinds of address: the opaque ``ref`` a caller is handed back joins
+    to a node that exists. A ref that named nothing would fail later, somewhere else, as a
+    ``KeyError`` from ``describe`` or ``get_source``."""
+    callable_node = analysis.backend.resolve_callable(crossing_flow["src_callable"])
+    value_node = analysis.backend.resolve_value(crossing_flow["src_value"], within=crossing_flow["src_callable"])
+    assert cypher("MATCH (c:PyCallable {id:$id}) RETURN count(c) AS c", id=callable_node.ref)[0]["c"] == 1
+    assert cypher("MATCH (b:PyBodyNode {id:$id}) RETURN count(b) AS c", id=value_node.ref)[0]["c"] == 1
+    assert callable_node.kind == "callable" and value_node.kind in {"parameter", "global", "capture"}
+
+
+def test_no_analyzer_vocabulary_reaches_the_caller(analysis, crossing_flow):
+    """E6/E7 on the addressing layer: nothing a caller reads is a ``can://`` id or an ordinal."""
+    node = analysis.backend.resolve_value(crossing_flow["src_value"], within=crossing_flow["src_callable"])
+    for field in (node.file, node.callable, node.kind, node.name or ""):
+        assert "can://" not in field and "formal_in:" not in field
+    assert node.name == crossing_flow["src_value"]
+
+
+def test_locate_node_id_names_a_real_node(analysis, sample, cypher):
+    """The same invariant from the other addressing entry point (#320)."""
+    found = analysis.locate(sample["module_path"], sample["inner_line"])
+    assert found.node_id
+    assert cypher("MATCH (b:PyBodyNode {id:$id}) RETURN count(b) AS c", id=found.node_id)[0]["c"] == 1
+
+
+# -----[ Task 5: the per-callable graphs ]-----
+def test_the_per_callable_graphs_are_bounded_to_their_callable(analysis, cypher, crossing_flow):
+    """The scoping is structural, not a cap: every endpoint of every edge is a body node the named
+    callable owns, checked against the graph's own ``PY_HAS_BODY_NODE`` rather than by parsing ids.
+    """
+    sig = crossing_flow["src_callable"]
+    owned = {r["id"] for r in cypher("MATCH (:PyCallable {signature:$s})-[:PY_HAS_BODY_NODE]->(b) RETURN b.id AS id", s=sig)}
+    assert owned
+    for page in (analysis.get_cfg(sig), analysis.get_cdg(sig), analysis.get_ddg(sig)):
+        assert {e.src for e in page.edges} | {e.dst for e in page.edges} <= owned
+        assert page.total >= len(page.edges)
+    assert {p for e in analysis.get_ddg(sig).edges for p in e.prov} <= {"ssa", "reaching-defs", "points-to"}
+
+
+def test_a_page_total_is_the_graphs_own_count(analysis, cypher, crossing_flow):
+    """``total`` is E5's "a bound is never silent", and it has to be the size of the *whole* answer
+    -- so it is compared to a count the database computes independently of the pager."""
+    sig = crossing_flow["src_callable"]
+    for accessor, rel in ((analysis.get_ddg, "PY_DDG"), (analysis.get_cdg, "PY_CDG"), (analysis.get_cfg, "PY_CFG_NEXT")):
+        expected = cypher(
+            f"MATCH (c:PyCallable {{signature:$s}})-[:PY_HAS_BODY_NODE]->(x)-[r:{rel}]->(y)<-[:PY_HAS_BODY_NODE]-(c) RETURN count(r) AS c",
+            s=sig,
+        )[0]["c"]
+        assert accessor(sig).total == expected
+
+
+# -----[ Task 6: slices and the call graph ]-----
+def test_a_forward_slice_reaches_the_callee_and_stays_addressable(analysis, cypher, crossing_flow):
+    """A slice contains its seed, reaches the value the graph says it reaches, and every node it
+    hands back is addressed in the caller's vocabulary and joins to a real graph node."""
+    sl = analysis.slice_forward(crossing_flow["src_value"], within=crossing_flow["src_callable"], depth=None)
+    refs = [n.ref for n in sl.nodes]
+    assert crossing_flow["src_ref"] in refs and crossing_flow["dst_ref"] in refs
+    assert refs == sorted(set(refs)), "a slice is a set, in the one order both backends can compute"
+    assert all("can://" not in n.callable and "can://" not in (n.name or "") for n in sl.nodes)
+    assert all(n.source is None for n in sl.nodes), "a slice answers where, not what"
+    present = cypher("MATCH (b:PyBodyNode) WHERE b.id IN $ids RETURN count(b) AS c", ids=refs)[0]["c"]
+    assert present == len(refs), "every node in a slice is a node in the graph"
+
+
+def test_a_capped_slice_reports_the_size_it_could_not_return(analysis, crossing_flow):
+    sl = analysis.slice_forward(crossing_flow["src_value"], within=crossing_flow["src_callable"], depth=None)
+    capped = analysis.slice_forward(crossing_flow["src_value"], within=crossing_flow["src_callable"], depth=None, max_nodes=1)
+    assert capped.total == sl.total
+    assert capped.truncated is (sl.total > 1)
+    assert [n.ref for n in capped.nodes] == [n.ref for n in sl.nodes][:1]
+
+
+def test_reaches_backward_cone_and_the_neighbour_accessors_agree_with_the_call_graph(analysis, cypher, crossing_flow):
+    """Four accessors over one relationship, checked against ``PY_CALLS`` itself rather than
+    against each other."""
+    sig = crossing_flow["src_callable"]
+    callees = [c for c in analysis.callees_of(sig) if c.kind == "callable"]
+    declared = cypher(
+        "MATCH (:PyCallable {signature:$s})-[:PY_CALLS]->(t:PyCallable) RETURN collect(DISTINCT t.signature) AS sigs", s=sig
+    )[0]["sigs"]
+    assert {c.callable for c in callees} == set(declared)
+    for callee in callees:
+        assert analysis.reaches(sig, callee.callable, depth=1)
+        assert sig in {c.callable for c in analysis.callers_of(callee.callable)}
+        assert sig in {n.callable for n in analysis.backward_cone([callee.callable], depth=1).nodes}
+
+
+# -----[ Task 7: paths, mixed queries, hydration ]-----
+def test_paths_between_explains_the_flow_the_slice_only_asserts(analysis, crossing_flow):
+    """Every path is a joined sequence, every hop names the edge that justified it, and every node
+    a path visits is in the forward slice of the same seed -- the set and the sequences describing
+    one traversal, not two."""
+    reached = {n.ref for n in analysis.slice_forward(crossing_flow["src_value"], within=crossing_flow["src_callable"], depth=None).nodes}
+    paths = analysis.paths_between(
+        crossing_flow["src_value"], crossing_flow["dst_value"],
+        within=crossing_flow["src_callable"], dst_within=crossing_flow["dst_callable"],
+    )
+    assert paths, "the graph says this flow exists, so the paths accessor must find it"
+    for p in paths:
+        assert p.hops and all(h.via in {"data", "control", "argument", "return", "summary"} for h in p.hops)
+        assert all(a.to.ref == b.frm.ref for a, b in zip(p.hops, p.hops[1:]))
+        assert p.hops[0].frm.ref == crossing_flow["src_ref"] and p.hops[-1].to.ref == crossing_flow["dst_ref"]
+        assert {h.frm.ref for h in p.hops} | {h.to.ref for h in p.hops} <= reached
+        assert not [h for h in p.hops if h.to.file.startswith("/")], "a path is repo-relative, never the analysing machine's paths"
+        assert p.weakest in p.hops
+        assert all(set(h.prov) <= {"ssa", "reaching-defs", "points-to"} for h in p.hops)
+    assert len({tuple((h.via, h.var, h.to.ref) for h in p.hops) for p in paths}) == len(paths), "no path is returned twice"
+
+
+def test_call_paths_between_agrees_with_reaches(analysis, crossing_flow):
+    """``reaches`` says whether; ``call_paths_between`` says how, and the two cannot disagree."""
+    sig = crossing_flow["src_callable"]
+    callees = [c.callable for c in analysis.callees_of(sig) if c.kind == "callable"]
+    if not callees:
+        pytest.skip("the derived source callable calls nothing declared")
+    target = sorted(callees)[0]
+    paths = analysis.call_paths_between(sig, target)
+    assert paths and analysis.reaches(sig, target)
+    assert all({h.via for h in p.hops} == {"call"} for p in paths)
+    assert all(p.hops[-1].to.callable == target for p in paths)
+
+
+def test_flows_to_argument_implies_flows_to_call(analysis, crossing_flow):
+    """The implication holds by construction -- the argument's vertex is one of the callee's own
+    entry vertices, which is the set ``flows_to_call`` tests -- so it is checked here on real data
+    rather than assumed from the code."""
+    reaches_arg = analysis.flows_to_argument(
+        crossing_flow["src_value"], crossing_flow["dst_callable"], arg=crossing_flow["dst_value"],
+        within=crossing_flow["src_callable"], depth=None,
+    )
+    assert reaches_arg is True, "the graph shows the flow, so the narrow question must answer yes"
+    assert analysis.flows_to_call(
+        crossing_flow["src_value"], crossing_flow["dst_callable"], within=crossing_flow["src_callable"], depth=None
+    ) is True
+
+
+def test_describe_hydrates_callables_and_is_honest_about_the_rest(analysis, crossing_flow):
+    """What this graph can and cannot fill in. A callable has a real ``code`` property; a value
+    vertex has no span in the analyzer's model and a statement has no text in the graph, so both
+    come back ``None`` -- and ``None`` means only that, because a ref naming nothing raises."""
+    cone = analysis.backward_cone([crossing_flow["dst_callable"]], depth=1)
+    hydrated = analysis.describe(cone.nodes)
+    assert [n.ref for n in hydrated] == [n.ref for n in cone.nodes]
+    assert any(n.source for n in hydrated), "a callable's source is in the graph"
+
+    values = analysis.slice_forward(crossing_flow["src_value"], within=crossing_flow["src_callable"], depth=None).nodes
+    assert all(n.source is None for n in analysis.describe(values)), "no text below callable granularity"
+    with pytest.raises(KeyError):
+        analysis.describe([cone.nodes[0].model_copy(update={"ref": "can://python/absent/nothing.py/nothing"})])
+
+
+def test_describe_is_one_round_trip_whatever_it_is_handed(analysis, crossing_flow, count_round_trips):
+    """The promise that makes ``describe`` usable on a slice at all. A mixed batch, because that is
+    the normal case: a path's endpoints are callables and its interior body nodes."""
+    nodes = analysis.slice_forward(crossing_flow["src_value"], within=crossing_flow["src_callable"], depth=None).nodes
+    nodes = list(nodes) + list(analysis.backward_cone([crossing_flow["dst_callable"]], depth=1).nodes)
+    assert len(nodes) > 2
+    n = count_round_trips(analysis)
+    hydrated = analysis.describe(nodes)
+    assert n["c"] == 1, f"describe took {n['c']} round trips for {len(nodes)} nodes"
+    assert len(hydrated) == len(nodes)

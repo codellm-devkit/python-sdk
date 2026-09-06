@@ -86,26 +86,31 @@ from codeanalyzer.schema import model_dump_json
 from codeanalyzer.schema.ids import application_id
 
 from cldk.analysis.commons.resolve import CallableCandidate, body_node_kind, resolve_callable_signature, resolve_value_name, resolve_within, value_candidate
-from cldk.analysis.commons.results import CallableRef, Diagnostic, EdgePage, EntrypointCoverage, LocateResult, ModuleRef, Slice, SliceNode, TypeRef
+from cldk.analysis.commons.results import CallableRef, Diagnostic, EdgePage, EntrypointCoverage, FlowPath, FlowPaths, LocateResult, ModuleRef, PathHop, Slice, SliceNode, TypeRef
 from cldk.analysis.python.backend import (
     CDG_ORDER,
     CFG_ORDER,
     DDG_ORDER,
     DEFAULT_DEPTH,
     DEFAULT_MAX_NODES,
+    DEFAULT_MAX_PATHS,
     DEFAULT_PAGE_SIZE,
     SDG_REL_PATTERN,
+    VIA,
     EdgeOrder,
     PythonAnalysisBackend,
     body_key_column,
     call_graph_scope,
     check_depth,
     check_max_nodes,
+    check_max_paths,
     check_page_size,
     check_selector,
+    check_distinct_endpoints,
     cone_sinks,
     cursor_params,
     encode_cursor,
+    flow_path,
     keyset_where,
     resolve_module_key,
     scope_paths,
@@ -1390,6 +1395,138 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         """What this calls, externals included (see :meth:`PythonAnalysisBackend.callees_of`)."""
         sig = self.resolve_callable(name, in_class=in_class, in_module=in_module).callable
         return [_call_neighbour(r) for r in self._run(self._CALLEES, sig=sig, mods=self._modules)]
+
+    # -----[ paths, mixed queries, hydration ]-----
+    #: The caller's word for a hop, computed in Cypher so the ORDER BY below sorts by the same
+    #: vocabulary :func:`~cldk.analysis.python.backend.hop_sort_key` sorts by. Ordering by the raw
+    #: ``type(r)`` instead would be just as deterministic and a *different* order (``PY_CDG`` before
+    #: ``PY_DDG`` before ``PY_PARAM_IN``, against ``argument`` before ``control`` before ``data``),
+    #: so the two backends would truncate ``max_paths`` to different witnesses.
+    _VIA_CASE = "CASE type(relationships(p)[i]) " + " ".join(f"WHEN '{rel}' THEN '{word}'" for rel, word in VIA.items()) + " ELSE type(relationships(p)[i]) END"
+
+    #: One string per path, ordered exactly as Python would order the tuple
+    #: :func:`~cldk.analysis.python.backend.hop_sort_key` builds. ``\u0001`` is the separator
+    #: rather than ``|`` for that reason and only that reason: string comparison agrees with
+    #: field-by-field comparison **only** when the separator sorts below every character a field
+    #: can hold, and ``|`` (0x7C) sorts *above* every lowercase letter, which would order a
+    #: variable ``x`` after ``xy``. ``elementId`` is the last field of each hop and breaks the
+    #: tie between parallel relationships a caller cannot tell apart; it is stable for repeated
+    #: calls against one database and means nothing outside it.
+    _PATH_ORDER = (
+        "reduce(k = '', i IN range(0, length(p) - 1) | k + " + _VIA_CASE + " + '\\u0001' + coalesce(relationships(p)[i].var, '') "
+        "+ '\\u0001' + nodes(p)[i + 1].id + '\\u0001' + elementId(relationships(p)[i]) + '\\u0001')"
+    )
+
+    #: ``allShortestPaths`` and not a plain variable-length match. A variable-length pattern
+    #: enumerates *trails*, which is the shape that never terminated in Task 6 (``EXISTS { (a)-[:
+    #: PY_CALLS*1..]->(a) }``, killed at 600s); ``allShortestPaths`` is a bidirectional BFS, and
+    #: it answers the pathological cases in milliseconds -- measured on odoo-slim-19: 0.08s for an
+    #: *unreachable* pair seeded at ``Website.configurator_apply``'s ``kwargs`` (the 440,270-node
+    #: forward cone), 0.06s for a reachable one with 405 distinct shortest paths.
+    #:
+    #: ``$cap`` is ``max_paths + 1`` so one extra row is what reports the truncation, rather than a
+    #: second ``count(p)`` traversal for a number the caller cannot act on (see
+    #: :class:`~cldk.analysis.commons.results.FlowPaths`).
+    _PATHS = (
+        "MATCH (a:PyBodyNode {{id:$src}}) MATCH (b:PyBodyNode {{id:$dst}}) "
+        "MATCH p = allShortestPaths((a)-[:{rels}*1..{depth}]->(b)) "
+        "WITH p, " + _PATH_ORDER + " AS key ORDER BY length(p), key LIMIT $cap "
+        "RETURN [n IN nodes(p) | {{ref: n.id, kind: n.kind, var: n.var, line: n.start_line, "
+        "callable: head([(c:PyCallable)-[:PY_HAS_BODY_NODE]->(n) | c.signature]), "
+        "file: head([(c:PyCallable)-[:PY_HAS_BODY_NODE]->(n) | c._module]), "
+        "c_line: head([(c:PyCallable)-[:PY_HAS_BODY_NODE]->(n) | c.start_line])}}] AS ns, "
+        "[r IN relationships(p) | {{via: type(r), var: r.var, prov: r.prov}}] AS rs"
+    )
+
+    #: The same query over the call graph. The nodes project to :func:`_call_neighbour`'s row
+    #: shape, so an ``:PyExternal`` on a path would still come back readable -- it cannot be an
+    #: intermediate (a ghost has no outgoing ``PY_CALLS``) and cannot be an endpoint (both are
+    #: resolved through ``resolve_callable``, which only sees declared callables), but reusing the
+    #: builder costs nothing and leaves no ``can://`` id to leak if that ever changes.
+    _CALL_PATHS = (
+        "MATCH (a:PyCallable {{signature:$src}}) MATCH (b:PyCallable {{signature:$dst}}) "
+        "MATCH p = allShortestPaths((a)-[:PY_CALLS*1..{depth}]->(b)) "
+        "WITH p, " + _PATH_ORDER + " AS key ORDER BY length(p), key LIMIT $cap "
+        "RETURN [n IN nodes(p) | {{signature: n.signature, name: n.name, ref: n.id, file: n._module, "
+        "line: n.start_line, module: n.module}}] AS ns, "
+        "[r IN relationships(p) | {{via: type(r), var: null, prov: null}}] AS rs"
+    )
+
+    def _paths(self, query: str, node_of, *, src: str, dst: str, depth: int | None, max_paths: int) -> FlowPaths:
+        """Run one of the two path queries and build the result. The two differ in what a node is
+        and nothing else, so the ordering, the cap and the truncation flag live here once."""
+        check_depth(depth)
+        check_max_paths(max_paths)
+        check_distinct_endpoints(src, dst)
+        rows = self._run(query.format(rels=SDG_REL_PATTERN, depth="" if depth is None else depth), src=src, dst=dst, cap=max_paths + 1)
+        paths = [flow_path([node_of(n) for n in r["ns"]], [(e["via"], e["var"], e["prov"]) for e in r["rs"]]) for r in rows[:max_paths]]
+        return FlowPaths(paths, truncated=len(rows) > max_paths)
+
+    def paths_between(self, src: str, dst: str, *, within: str, dst_within: str | None = None, depth: int | None = DEFAULT_DEPTH, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+        """How a value reaches another value (see :meth:`PythonAnalysisBackend.paths_between`)."""
+        a = self.resolve_value(src, within=within)
+        b = self.resolve_value(dst, within=dst_within if dst_within is not None else within)
+        return self._paths(self._PATHS, _slice_node, src=a.ref, dst=b.ref, depth=depth, max_paths=max_paths)
+
+    def call_paths_between(self, src: str, dst: str, *, depth: int | None = DEFAULT_DEPTH, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+        """How one callable reaches another (see :meth:`PythonAnalysisBackend.call_paths_between`)."""
+        a = self.resolve_callable(src).callable
+        b = self.resolve_callable(dst).callable
+        return self._paths(self._CALL_PATHS, _call_neighbour, src=a, dst=b, depth=depth, max_paths=max_paths)
+
+    #: ``WITH DISTINCT m`` before the membership test, for :attr:`_REACHES`' measured reason: it is
+    #: what makes this a pruning BFS instead of a trail enumeration.
+    _VALUE_REACHES = "MATCH (a:PyBodyNode {{id:$src}})-[:{rels}*1..{depth}]->(m:PyBodyNode) WITH DISTINCT m WHERE m.id IN $dsts RETURN count(m) > 0 AS ok"
+
+    #: Every value that *enters* ``$sig`` -- its parameters, and the globals and captures it reads.
+    _CALLEE_VALUES = "MATCH (c:PyCallable {signature:$sig})-[:PY_HAS_BODY_NODE]->(b:PyBodyNode {kind:'formal_in'}) RETURN collect(b.id) AS ids"
+
+    def _value_reaches(self, src: str, dsts: List[str], depth: int | None) -> bool:
+        """Does the value at ``src`` reach any of ``dsts``? The one predicate both mixed queries
+        run, which is what makes ``flows_to_argument`` ⟹ ``flows_to_call`` a fact about their
+        *targets* rather than an agreement between two pieces of Cypher."""
+        check_depth(depth)
+        if not dsts:
+            return False
+        return bool(self._run(self._VALUE_REACHES.format(rels=SDG_REL_PATTERN, depth="" if depth is None else depth), src=src, dsts=dsts)[0]["ok"])
+
+    def flows_to_call(self, src: str, callee: str, *, within: str, depth: int | None = DEFAULT_DEPTH) -> bool:
+        """Does this value reach any argument of a call to ``callee``
+        (see :meth:`PythonAnalysisBackend.flows_to_call`)?"""
+        root = self.resolve_value(src, within=within)
+        sig = self.resolve_callable(callee).callable
+        return self._value_reaches(root.ref, self._run(self._CALLEE_VALUES, sig=sig)[0]["ids"], depth)
+
+    def flows_to_argument(self, src: str, callee: str, arg: str, *, within: str, depth: int | None = DEFAULT_DEPTH) -> bool:
+        """Does this value reach ``callee``'s ``arg``
+        (see :meth:`PythonAnalysisBackend.flows_to_argument`)?"""
+        root = self.resolve_value(src, within=within)
+        return self._value_reaches(root.ref, [self.resolve_value(arg, within=callee).ref], depth)
+
+    #: One statement, both node kinds -- ``describe`` promises one round trip whatever it is handed,
+    #: and a mixed list of callables and body nodes is the normal case (a path's endpoints are one,
+    #: its interior the other). The ``:PyBodyNode`` half returns ``null`` code deliberately: the
+    #: graph carries no text below callable granularity, so those rows say "found, and there is
+    #: nothing to read", which is what keeps that apart from "not found" (see
+    #: :meth:`PythonAnalysisBackend.describe`).
+    _SOURCES = (
+        "MATCH (c:PyCallable) WHERE c._module IN $mods AND (c.id IN $refs OR c.signature IN $refs) "
+        "RETURN c.id AS id, c.signature AS sig, c.code AS code "
+        "UNION MATCH (b:PyBodyNode) WHERE b.id IN $refs RETURN b.id AS id, null AS sig, null AS code"
+    )
+
+    def _sources_for(self, refs: Sequence[str]) -> Dict[str, "str | None"]:
+        """Source text for every ref this graph holds (see :meth:`PythonAnalysisBackend._sources_for`)."""
+        wanted = set(refs)
+        found: Dict[str, "str | None"] = {}
+        for row in self._run(self._SOURCES, mods=self._modules, refs=list(wanted)):
+            # A callable answers to both of its names, exactly as ``get_source`` accepts either --
+            # a ``SliceNode.ref`` is the ``can://`` id, but a caller holding a signature must not
+            # get "names nothing" for a callable that plainly exists.
+            for name in (row["id"], row["sig"]):
+                if name in wanted:
+                    found[name] = row["code"]
+        return found
 
     def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:
         rows = self._run(

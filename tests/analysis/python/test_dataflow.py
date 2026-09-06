@@ -50,10 +50,23 @@ from codeanalyzer.neo4j.project import _project_program_graphs
 from codeanalyzer.neo4j.rows import RowBuilder
 
 from cldk.analysis import AnalysisLevel
-from cldk.analysis.python.backend import DDG_ORDER, DEFAULT_DEPTH, DEFAULT_PAGE_SIZE, cdg_sort_key, cfg_sort_key, ddg_sort_key, decode_cursor, edge_page, encode_cursor
+from cldk.analysis.commons.resolve import value_candidate
+from cldk.analysis.commons.results import FlowPath, PathHop, SliceNode, prov_rank
+from cldk.analysis.python.backend import (
+    DDG_ORDER,
+    DEFAULT_DEPTH,
+    DEFAULT_PAGE_SIZE,
+    cdg_sort_key,
+    cfg_sort_key,
+    ddg_sort_key,
+    decode_cursor,
+    edge_page,
+    encode_cursor,
+    hop_sort_key,
+)
 from cldk.analysis.python.codeanalyzer.codeanalyzer import PyCodeanalyzer
 from cldk.models.python import DdgEdge
-from cldk.utils.exceptions import AmbiguousName, CodeanalyzerUsageException
+from cldk.utils.exceptions import AmbiguousName, CodeanalyzerUsageException, SelectorNotInGraph
 
 live_only = pytest.mark.skipif(
     not os.environ.get("CLDK_TEST_NEO4J_URI"),
@@ -641,8 +654,17 @@ def test_callees_of_and_callers_of_are_inverses(live_analysis, busy_callable):
 # ----------------------------------------------------------------------------------------------
 @pytest.fixture(scope="module")
 def two_callable_project(tmp_path_factory):
-    """A caller and a callee, so the interprocedural edges exist at all: ``charge`` passes
-    ``invoice_id`` to ``helper``, which is a ``PY_PARAM_IN`` in the graph's vocabulary."""
+    """A caller and a callee, so the interprocedural edges exist at all: ``charge`` derives a value
+    from ``invoice_id`` and passes it to ``helper``, which is a ``PY_PARAM_IN`` in the graph's
+    vocabulary.
+
+    The argument is ``total`` and not ``invoice_id`` itself for a measured reason. When a parameter
+    is forwarded *verbatim* the analyzer attributes the argument's reaching definition to the
+    callable's ``@entry`` vertex rather than to the ``formal_in`` one -- so ``formal_in:1`` has no
+    forward edge to the ``actual_in`` at all, and a forward interprocedural path from the parameter
+    does not exist to be found. (The backward direction still crosses, which is why Task 6's slice
+    tests never noticed.) One derived statement in between restores the shape the live graph has,
+    where ``invoice_id`` -> statement -> ``actual_in`` -> ``formal_in`` is three hops."""
     root = tmp_path_factory.mktemp("slice")
     (root / "src").mkdir()
     (root / "src" / "pay.py").write_text(
@@ -664,7 +686,8 @@ def two_callable_project(tmp_path_factory):
 
             class Portal:
                 def charge(self, invoice_id):
-                    amount = helper(invoice_id)
+                    total = invoice_id * 2
+                    amount = helper(total)
                     return amount
             """
         ).lstrip()
@@ -817,3 +840,383 @@ def test_a_bad_depth_is_refused(slice_l4):
 def test_max_nodes_below_one_is_refused(slice_l4):
     with pytest.raises(ValueError):
         slice_l4.slice_forward("a", within="alone", max_nodes=0)
+
+
+# ----------------------------------------------------------------------------------------------
+# Task 7: paths, mixed flow queries, hydration.
+#
+# The plan wrote four tests against a code shape the graph does not have, and both mistakes are
+# recorded here rather than papered over, because each names a real property of the answer:
+#
+#   * ``paths_between("invoice_id", "kwargs", within=<one callable>)`` cannot find anything and
+#     never could. The only dataflow edge into a ``formal_in`` is ``PY_PARAM_IN`` from a *caller's*
+#     argument (229,035 of them on this graph, and no other kind), so two values entering the same
+#     callable are joined only through a cycle of calls. The real question is the cross-callable
+#     one, which is why ``paths_between`` grew ``dst_within``; the plan's own ``if paths:`` guard
+#     was the tell.
+#   * ``_create_transaction`` has no parameter called ``invoice_id`` (it has eighteen entering
+#     values and that is not one), so the plan's ``flows_to_argument`` call raises rather than
+#     answering ``False`` -- correctly, because a mistyped argument name is a caller error and not
+#     a negative result.
+#
+# Both replacements are read off the live graph, never written by hand.
+# ----------------------------------------------------------------------------------------------
+
+#: A flow that exists, measured: ``invoice_id`` enters the HTTP route ``invoice_transaction``, is
+#: used by the statement at line 27, and is passed as ``invoice_ids`` to ``_process_transaction``.
+#: Six distinct shortest paths of three hops each -- they differ only in which parallel ``PY_DDG``
+#: edge carries the middle hop, which is exactly why the adjacency has to keep parallel edges.
+FLOW_SRC, FLOW_DST = "invoice_id", "invoice_ids"
+FLOW_FROM, FLOW_TO = "PaymentPortal.invoice_transaction", "PaymentPortal._process_transaction"
+FLOW_PATHS, FLOW_HOPS = 6, 3
+
+
+@live_only
+def test_paths_carry_ordered_hops_with_evidence(live_analysis):
+    paths = live_analysis.paths_between(FLOW_SRC, FLOW_DST, within=FLOW_FROM, dst_within=FLOW_TO, max_paths=3)
+    assert paths, "a flow that exists comes back as paths"
+    p = paths[0]
+    assert p.hops, "a path is a sequence of hops"
+    assert all(h.via for h in p.hops), "every hop says what justified it"
+    assert p.weakest in p.hops
+
+
+@live_only
+def test_a_known_flow_matches_hop_for_hop(live_analysis):
+    """The correctness anchor, and the reason ``assert paths`` above is not the test.
+
+    Every hop of the shortest path is pinned -- the edge kind in the caller's vocabulary, the
+    variable, the provenance, and what each endpoint *is*. A path that reached the right node by
+    the wrong route, or that reported ``PY_PARAM_IN`` as ``data``, fails here.
+    """
+    p = live_analysis.paths_between(FLOW_SRC, FLOW_DST, within=FLOW_FROM, dst_within=FLOW_TO)[0]
+    assert [(h.via, h.var, tuple(h.prov)) for h in p.hops] == [
+        ("data", "invoice_id", ("reaching-defs",)),
+        ("data", "invoice_id", ("reaching-defs",)),
+        ("argument", None, ()),
+    ]
+    assert [(h.to.kind, h.to.name) for h in p.hops] == [("statement", None), ("argument", "invoice_ids"), ("parameter", "invoice_ids")]
+    assert p.hops[0].frm.kind == "parameter" and p.hops[0].frm.name == "invoice_id"
+    assert p.hops[-1].to.callable.endswith("._process_transaction"), "the last hop crosses into the callee"
+
+
+@live_only
+def test_a_path_is_a_joined_sequence(live_analysis):
+    """E2, structurally: consecutive hops share an endpoint, so the hops are a *walk* and not a
+    bag of edges that happen to mention the same nodes."""
+    for p in live_analysis.paths_between(FLOW_SRC, FLOW_DST, within=FLOW_FROM, dst_within=FLOW_TO):
+        assert len(p.hops) == FLOW_HOPS
+        assert all(a.to.ref == b.frm.ref for a, b in zip(p.hops, p.hops[1:]))
+
+
+@live_only
+def test_max_paths_is_a_reproducible_prefix_and_says_when_it_cut(live_analysis):
+    """E5 on a path list. The order is ``hop_sort_key``'s -- shortest first, then hop by hop on
+    ``(via, var, to.ref)`` -- so a cap takes a *prefix* of a stated order rather than whichever
+    paths the database returned first, and ``truncated`` says a cap fired."""
+    whole = live_analysis.paths_between(FLOW_SRC, FLOW_DST, within=FLOW_FROM, dst_within=FLOW_TO, max_paths=100)
+    assert len(whole) == FLOW_PATHS and not whole.truncated
+    capped = live_analysis.paths_between(FLOW_SRC, FLOW_DST, within=FLOW_FROM, dst_within=FLOW_TO, max_paths=2)
+    assert capped.truncated is True
+    keys = [hop_sort_key(p.hops) for p in whole]
+    assert [hop_sort_key(p.hops) for p in capped] == keys[:2]
+    assert keys == sorted(keys), "the order is hop_sort_key's, not an arrival order"
+
+
+@live_only
+def test_a_self_question_is_refused_on_the_graph_too(live_analysis):
+    """The same refusal, and the reason it is the SDK's and not the driver's: unguarded, Neo4j
+    answers this with a raw ``DatabaseError`` ("the shortest path algorithm does not work when the
+    start and end nodes are the same")."""
+    with pytest.raises(ValueError) as e:
+        live_analysis.paths_between(FLOW_SRC, FLOW_SRC, within=FLOW_FROM)
+    assert "reaches" in str(e.value)
+    with pytest.raises(ValueError):
+        live_analysis.call_paths_between(FLOW_FROM, FLOW_FROM)
+
+
+@live_only
+def test_depth_bounds_a_path_query_and_the_bound_is_nameable(live_analysis):
+    """A bounded search that found nothing must be distinguishable from no flow, which is why
+    ``depth`` is an argument and not a constant inside the query."""
+    assert not live_analysis.paths_between(FLOW_SRC, FLOW_DST, within=FLOW_FROM, dst_within=FLOW_TO, depth=2)
+    assert live_analysis.paths_between(FLOW_SRC, FLOW_DST, within=FLOW_FROM, dst_within=FLOW_TO, depth=FLOW_HOPS)
+
+
+@live_only
+def test_call_paths_carry_the_call_graph_route(live_analysis):
+    """The same shape over ``PY_CALLS``: hops are ``call``, carry no variable and no provenance,
+    and the route agrees with ``reaches``."""
+    paths = live_analysis.call_paths_between(FLOW_FROM, "AccountMove.write")
+    assert paths
+    for p in paths:
+        assert {h.via for h in p.hops} == {"call"}
+        assert all(h.var is None and h.prov == [] for h in p.hops)
+        assert all("can://" not in h.to.callable for h in p.hops)
+        for hop in p.hops:  # every edge on the route is one the call graph publishes
+            assert live_analysis.reaches(hop.frm.callable, hop.to.callable, depth=1)
+    assert live_analysis.reaches(FLOW_FROM, "AccountMove.write")
+
+
+@live_only
+def test_flows_to_call_and_argument_are_different_questions(live_analysis):
+    """Reaching a callee and reaching a named argument are not the same.
+
+    Measured: ``invoice_id`` reaches six of ``_process_transaction``'s seven entering values and
+    not ``kwargs``. An implementation that collapsed the two questions would report ``kwargs`` as
+    reached, which is the over-report the plan asked to be prevented by construction.
+    """
+    assert live_analysis.flows_to_call(FLOW_SRC, FLOW_TO, within=FLOW_FROM) is True
+    assert live_analysis.flows_to_argument(FLOW_SRC, FLOW_TO, arg=FLOW_DST, within=FLOW_FROM) is True
+    assert live_analysis.flows_to_argument(FLOW_SRC, FLOW_TO, arg="kwargs", within=FLOW_FROM) is False
+
+
+@live_only
+def test_reaching_an_argument_implies_reaching_the_call(live_analysis):
+    """The implication, checked over **every** value ``_process_transaction`` takes rather than the
+    one that happens to be interesting -- and checked to be structural, not coincidental: the
+    argument's resolved node is one of the callable's own entry vertices, which is exactly the set
+    ``flows_to_call`` tests reachability of."""
+    entering = _formal_ins(live_analysis, FLOW_TO)
+    assert len(entering) == 7
+    reaches_call = live_analysis.flows_to_call(FLOW_SRC, FLOW_TO, within=FLOW_FROM)
+    for row in entering:
+        arg = live_analysis.backend.resolve_value(value_candidate(row["var"]).name, within=FLOW_TO)
+        assert arg.ref in {r["id"] for r in entering}, "an argument resolves to one of the callee's own entry vertices"
+        if live_analysis.flows_to_argument(FLOW_SRC, FLOW_TO, arg=value_candidate(row["var"]).name, within=FLOW_FROM):
+            assert reaches_call, "reaching an argument implies reaching the call"
+
+
+def _formal_ins(analysis, callable_name):
+    """The callee's entry vertices, read off the graph rather than assumed."""
+    sig = analysis.backend.resolve_callable(callable_name).callable
+    return analysis.backend._run(
+        "MATCH (c:PyCallable {signature:$sig})-[:PY_HAS_BODY_NODE]->(b:PyBodyNode {kind:'formal_in'}) RETURN b.var AS var, b.id AS id ORDER BY b.id",
+        sig=sig,
+    )
+
+
+@live_only
+def test_an_argument_that_names_nothing_raises_rather_than_answering_false(live_analysis):
+    """``_create_transaction`` has no ``invoice_id`` (the plan assumed it did). A mistyped argument
+    is a caller error; answering ``False`` would let it look like a proved absence of flow."""
+    with pytest.raises(SelectorNotInGraph):
+        live_analysis.flows_to_argument(FLOW_SRC, "_create_transaction", arg="invoice_id", within=FLOW_FROM)
+
+
+@live_only
+def test_describe_populates_source_only_when_asked(live_analysis):
+    """A slice does not carry code, and ``describe`` fills in what the backend has text for.
+
+    The plan hydrated a *slice* and expected text; over Neo4j there is none to have, because every
+    node of that slice is a value vertex or a statement and the graph carries no text below
+    callable granularity. So the "fills it in" half is asserted on callable-granularity nodes --
+    a ``backward_cone`` -- and the value half is asserted to stay ``None`` on purpose.
+    """
+    sl = live_analysis.slice_backward(FLOW_SRC, within=FLOW_FROM)
+    assert all(n.source is None for n in sl.nodes), "a slice does not carry code"
+    assert all(n.source is None for n in live_analysis.describe(sl.nodes)), "a value vertex has no source to fill"
+
+    cone = live_analysis.backward_cone([FLOW_TO])
+    assert all(n.source is None for n in cone.nodes)
+    hydrated = live_analysis.describe(cone.nodes)
+    assert any(n.source for n in hydrated), "describe fills it in"
+    assert [n.ref for n in hydrated] == [n.ref for n in cone.nodes], "same nodes, same order, same type"
+
+
+@live_only
+def test_describe_is_one_round_trip(live_analysis, count_round_trips):
+    sl = live_analysis.slice_forward(FLOW_SRC, within=FLOW_FROM, depth=None)
+    assert len(sl.nodes) > 1
+    n = count_round_trips(live_analysis)
+    live_analysis.describe(sl.nodes)
+    assert n["c"] == 1, f"describe took {n['c']} round trips for {len(sl.nodes)} nodes"
+
+
+@live_only
+def test_describe_accepts_a_locate_result(live_analysis):
+    """"Anything carrying a ref" is not a slogan: ``locate()`` returns a different type with a
+    different field name, and converting between shapes to hydrate one is the friction that gets
+    worked around with string surgery."""
+    found = live_analysis.locate("addons/account_payment/controllers/payment.py", 27)
+    assert found.node_id
+    described = live_analysis.describe([found])
+    assert [n.ref for n in described] == [found.node_id]
+    assert described[0].callable == found.callable.signature
+
+
+@live_only
+def test_describe_raises_on_a_ref_that_names_nothing(live_analysis):
+    """The other half of "source=None means exactly one thing". A ref comes from this SDK, so one
+    that resolves to nothing was minted against a different application -- a defect to stop on, not
+    a ``None`` to be discovered three layers later."""
+    good = live_analysis.backward_cone([FLOW_TO]).nodes[0]
+    with pytest.raises(KeyError):
+        live_analysis.describe([good, good.model_copy(update={"ref": "can://python/nope/nothing.py/nope"})])
+
+
+@live_only
+def test_an_empty_describe_costs_nothing(live_analysis, count_round_trips):
+    n = count_round_trips(live_analysis)
+    assert live_analysis.describe([]) == []
+    assert n["c"] == 0
+
+
+@live_only
+def test_prov_is_a_singleton_on_every_ddg_edge(live_analysis):
+    """The measurement ``weakest`` rests on, re-checked against the graph rather than trusted.
+
+    If a future analyzer generation started emitting several provenances on one edge, "the weakest
+    hop" would become a question about how to *combine* a set, and :func:`prov_rank`'s conservative
+    choice would start being observable.
+    """
+    rows = live_analysis.backend._run("MATCH ()-[r:PY_DDG]->() RETURN size(r.prov) AS n, count(*) AS c ORDER BY n")
+    assert [(r["n"], r["c"]) for r in rows] == [(1, 5_134_655)]
+
+
+def test_weakest_is_the_most_approximate_hop_not_the_alphabetically_first():
+    """The ordering, pinned so it cannot be re-introduced backwards.
+
+    ``ssa`` is exact def-use, ``reaching-defs`` over-approximates along the CFG, ``points-to`` is
+    alias analysis and the most approximate of the three. So the *weakest* hop -- the one that caps
+    how strongly a caller can state a flow -- is the ``points-to`` one, even though ``points-to``
+    sorts last alphabetically and ``ssa`` would sort last of the three as a string.
+    """
+    assert prov_rank(["points-to"]) < prov_rank(["reaching-defs"]) < prov_rank(["ssa"]) < prov_rank([])
+
+    def hop(prov):
+        n = SliceNode(file="f.py", line=1, callable="m.f", kind="statement", name=None, ref=f"r{prov}")
+        return PathHop(frm=n, to=n, via="data", var="x", prov=[prov] if prov else [])
+
+    strong, mid, weak, structural = hop("ssa"), hop("reaching-defs"), hop("points-to"), hop(None)
+    assert FlowPath(hops=[strong, weak, mid]).weakest is weak
+    assert FlowPath(hops=[structural, strong]).weakest is strong, "an unlabelled hop claims no approximation"
+    assert FlowPath(hops=[structural, structural]).weakest is structural, "all-structural: the first, deterministically"
+    assert FlowPath(hops=[mid, strong, mid]).weakest is FlowPath(hops=[mid, strong, mid]).hops[0], "ties break on position"
+
+
+# ----------------------------------------------------------------------------------------------
+# The local backend answers the same five, over a real level-4 analyzer run.
+# ----------------------------------------------------------------------------------------------
+def test_local_paths_carry_the_interprocedural_hop(slice_l4):
+    """``charge`` derives a value from ``invoice_id`` and passes it to ``helper``'s ``x``.
+
+    Three hops, ending on the ``argument`` one -- the local backend's ``PyApplication.param_in`` is
+    the graph's ``PY_PARAM_IN``, and both must report it in the caller's word. The same shape the
+    live graph gives for ``invoice_id`` -> ``_process_transaction``, which is the point: the two
+    backends are not agreeing on a predicate while walking different edges."""
+    paths = slice_l4.paths_between("invoice_id", "x", within="Portal.charge", dst_within="helper")
+    assert paths and not paths.truncated
+    p = paths[0]
+    assert [h.via for h in p.hops] == ["data", "data", "argument"]
+    assert p.hops[0].frm.name == "invoice_id" and p.hops[-1].to.name == "x"
+    assert p.hops[-1].to.callable == "src.pay.helper"
+    assert all(a.to.ref == b.frm.ref for a, b in zip(p.hops, p.hops[1:]))
+
+
+def test_local_paths_agree_with_the_edges_the_accessors_publish(slice_l4):
+    """Correctness from the outside: every hop is an edge some accessor already hands the caller,
+    so a path cannot claim a dependence the published edges deny.
+
+    The intraprocedural hops must be in ``charge``'s own ``get_ddg``/``get_cdg``; the interprocedural
+    one must be in ``PyApplication.param_in``, which is what the graph projects as ``PY_PARAM_IN``.
+    """
+    published = {(e.src, e.dst) for e in slice_l4.get_ddg("Portal.charge", page_size=100_000).edges}
+    published |= {(e.src, e.dst) for e in slice_l4.get_cdg("Portal.charge", page_size=100_000).edges}
+    crossing = {(e.src, e.dst) for e in slice_l4.application.param_in or []}
+    paths = slice_l4.paths_between("invoice_id", "x", within="Portal.charge", dst_within="helper", depth=None)
+    assert paths
+    for p in paths:
+        for h in p.hops:
+            assert (h.frm.ref, h.to.ref) in (crossing if h.via == "argument" else published)
+
+    assert slice_l4.paths_between("a", "b", within="alone") == [], "two parameters of one callable are not joined"
+    assert [hop_sort_key(p.hops) for p in paths] == sorted(hop_sort_key(p.hops) for p in paths), "the same order as the graph's"
+
+
+def test_local_call_paths_are_the_call_graph(slice_l4):
+    paths = slice_l4.call_paths_between("Portal.charge", "helper")
+    assert [[h.to.callable for h in p.hops] for p in paths] == [["src.pay.helper"]]
+    assert [h.via for h in paths[0].hops] == ["call"]
+    assert slice_l4.call_paths_between("helper", "Portal.charge") == [], "and it is directed"
+
+
+@pytest.mark.parametrize("call", [
+    lambda b: b.paths_between("a", "a", within="alone"),
+    lambda b: b.call_paths_between("helper", "helper"),
+])
+def test_a_path_from_a_node_to_itself_is_refused_not_answered_empty(slice_l4, call):
+    """Neo4j's shortest-path search refuses a self-question outright, so answering ``[]`` locally
+    would be a backend disagreement *and* an ambiguous empty -- a node genuinely on a cycle would
+    be reported the same as one that is not. ``reaches(x, x)`` is the accessor for that."""
+    with pytest.raises(ValueError) as e:
+        call(slice_l4)
+    assert "reaches" in str(e.value)
+
+
+def test_local_mixed_queries_separate_the_two_questions(slice_l4):
+    assert slice_l4.flows_to_call("invoice_id", "helper", within="Portal.charge") is True
+    assert slice_l4.flows_to_argument("invoice_id", "helper", arg="x", within="Portal.charge") is True
+    assert slice_l4.flows_to_call("a", "helper", within="alone") is False, "alone calls nothing"
+
+
+def test_local_describe_fills_in_what_the_graph_cannot(slice_l4):
+    """The honest parity difference. A statement has a span in the model, so this backend can slice
+    its text out of the module; the graph carries no per-statement text and returns ``None``. A
+    value vertex has no span at all and is ``None`` on both."""
+    sl = slice_l4.slice_forward("a", within="alone", depth=None)
+    hydrated = slice_l4.describe(sl.nodes)
+    assert [n.ref for n in hydrated] == [n.ref for n in sl.nodes]
+    by_kind = {n.kind: n.source for n in hydrated}
+    assert by_kind.get("statement"), "a statement has a span, and the local backend reads it"
+    assert by_kind.get("parameter") is None, "a value vertex is not a region of the file"
+    assert slice_l4.describe(slice_l4.callers_of("helper"))[0].source.startswith("def charge")
+
+
+def test_local_describe_raises_on_a_ref_that_names_nothing(slice_l4):
+    node = slice_l4.callers_of("helper")[0]
+    with pytest.raises(KeyError):
+        slice_l4.describe([node.model_copy(update={"ref": "can://python/nope/x.py/nope"})])
+
+
+def test_describe_refuses_something_with_no_address(slice_l4):
+    with pytest.raises(TypeError):
+        slice_l4.describe(["src.pay.helper"])
+
+
+def test_local_paths_need_dataflow_and_reuse_the_one_level_guard(local_l2):
+    for call in (
+        lambda b: b.paths_between("invoice_id", "x", within="Portal.charge", dst_within="helper"),
+        lambda b: b.flows_to_call("invoice_id", "helper", within="Portal.charge"),
+        lambda b: b.flows_to_argument("invoice_id", "helper", arg="x", within="Portal.charge"),
+    ):
+        with pytest.raises(CodeanalyzerUsageException) as e:
+            call(local_l2)
+        assert "program_dependency_graph" in str(e.value)
+
+
+def test_local_call_paths_do_not_need_dataflow(local_l2):
+    """``call_paths_between`` is a call-graph question and the call graph exists from level 2 --
+    the same split ``reaches``/``callers_of`` already make."""
+    with pytest.raises(ValueError) as e:  # resolved and walked, then refused for being a self-question
+        local_l2.call_paths_between("Portal.charge", "Portal.charge")
+    assert "reaches" in str(e.value) and "program_dependency_graph" not in str(e.value)
+
+
+@pytest.mark.parametrize("call", [
+    lambda b: b.paths_between("a", "b", within="alone", max_paths=0),
+    lambda b: b.call_paths_between("Portal.charge", "helper", max_paths=0),
+])
+def test_max_paths_below_one_is_refused(slice_l4, call):
+    with pytest.raises(ValueError):
+        call(slice_l4)
+
+
+@pytest.mark.parametrize("call", [
+    lambda b: b.paths_between("a", "b", within="alone", depth=0),
+    lambda b: b.call_paths_between("Portal.charge", "helper", depth=-1),
+    lambda b: b.flows_to_call("a", "helper", within="alone", depth="2"),
+])
+def test_a_bad_depth_is_refused_by_the_path_accessors(slice_l4, call):
+    with pytest.raises(ValueError):
+        call(slice_l4)

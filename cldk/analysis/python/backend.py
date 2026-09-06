@@ -40,7 +40,7 @@ from typing import Callable, Dict, Iterable, List, NamedTuple, Sequence, Tuple
 import networkx as nx
 
 from cldk.analysis.commons.backend import AnalysisBackend
-from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, LocateResult, Slice, SliceNode
+from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, FlowPath, FlowPaths, LocateResult, PathHop, Slice, SliceNode
 from cldk.utils.exceptions import SelectorNotInGraph
 from cldk.models.python import (
     CdgEdge,
@@ -481,6 +481,119 @@ SDG_RELS = ("PY_DDG", "PY_CDG", "PY_PARAM_IN", "PY_PARAM_OUT", "PY_SUMMARY")
 
 #: The Cypher spelling of :data:`SDG_RELS` for a relationship-type disjunction.
 SDG_REL_PATTERN = "|".join(SDG_RELS)
+
+#: The caller's word for each relationship a path hop can be justified by (E6). The graph's own
+#: ``PY_DDG``/``PY_PARAM_IN`` spelling never leaves the backend; both backends translate through
+#: this one table so a hop cannot be labelled ``data`` over Neo4j and ``ddg`` locally.
+#:
+#: ``argument`` and ``return`` are the two interprocedural edges, and they are deliberately not
+#: both called "parameter": ``PY_PARAM_IN`` binds a caller's argument to a callee's formal, and
+#: ``PY_PARAM_OUT`` binds a callee's result back into the caller. A reader following a path needs
+#: to know which way it just crossed a call boundary.
+VIA = {
+    "PY_DDG": "data",
+    "PY_CDG": "control",
+    "PY_PARAM_IN": "argument",
+    "PY_PARAM_OUT": "return",
+    "PY_SUMMARY": "summary",
+    "PY_CALLS": "call",
+}
+
+#: Paths per query when the caller does not say. A path list is a set of *witnesses* for a flow,
+#: not the flow's extent, and ten worked examples is already more than a reader will follow; the
+#: extent question is ``slice_forward``, which reports a ``total``.
+DEFAULT_MAX_PATHS = 10
+
+
+def check_max_paths(max_paths: int) -> int:
+    """``max_paths`` must admit at least one path. Zero is refused for :func:`check_max_nodes`'s
+    reason: an empty list whose ``truncated`` says "there were more" answers nothing, and it is
+    indistinguishable at a glance from "there is no flow"."""
+    if max_paths < 1:
+        raise ValueError(f"max_paths must be at least 1, got {max_paths}")
+    return max_paths
+
+
+def check_distinct_endpoints(src: str, dst: str) -> None:
+    """A path query must have two different endpoints.
+
+    Neo4j's shortest-path search *refuses* a self-question outright ("the shortest path algorithm
+    does not work when the start and end nodes are the same"), which would otherwise surface as a
+    raw driver error from one backend and an empty list from the other. Both raise here instead,
+    and neither answers ``[]``: for a node that genuinely sits on a cycle, ``[]`` would be
+    indistinguishable from a proved absence of one, which is the ambiguous empty in another
+    costume. ``reaches(x, x)`` is the accessor that answers the existence question, and it does
+    terminate (measured: 0.03s, where the obvious ``EXISTS`` spelling never finished).
+    """
+    if src == dst:
+        raise ValueError(f"paths from {src!r} to itself are not answered; ask reaches({src!r}, {src!r}) whether a cycle exists")
+
+
+def hop_sort_key(hops: Sequence[PathHop]) -> Tuple:
+    """The order two paths are compared in, in the caller's *own* vocabulary.
+
+    E2 makes a path a sequence, which only means something if the *list* of paths is stable too:
+    ``max_paths`` truncates, and a truncation of a non-deterministic order is not reproducible.
+    So paths are ordered shortest first, then hop by hop on ``(via, var, to.ref)`` — every term of
+    which the caller can see in the result it gets back.
+
+    Two hops that are indistinguishable in that vocabulary (parallel edges of the same kind, on
+    the same variable, between the same two nodes) are left to a backend-local tie-break: the
+    Neo4j backend appends the relationship's ``elementId``, the local backend keeps the order the
+    analyzer emitted them in. Either is stable for repeated calls against one graph; neither is
+    meaningful to a caller, which is why it is last and why nothing above depends on it.
+    """
+    return (len(hops), tuple((h.via, h.var or "", h.to.ref) for h in hops))
+
+
+def flow_path(nodes: Sequence[SliceNode], edges: Sequence[Tuple[str, "str | None", "Sequence[str] | None"]]) -> FlowPath:
+    """Join a walk's ``n`` nodes and its ``n - 1`` edges into a :class:`FlowPath`.
+
+    Both backends build paths through here, which is what makes the joining invariant
+    (``hops[i].to is hops[i + 1].frm``) a property of the construction rather than something each
+    backend has to be trusted to preserve. ``edges`` are the graph's own relationship types; they
+    are translated to the caller's word through :data:`VIA` exactly once, here.
+
+    Raises:
+        KeyError: A relationship type with no word in :data:`VIA` — a new edge kind from a future
+            analyzer generation, which must be named before it can be reported rather than passed
+            through in the graph's spelling.
+    """
+    return FlowPath(hops=[PathHop(frm=nodes[i], to=nodes[i + 1], via=VIA[rel], var=var, prov=list(prov or [])) for i, (rel, var, prov) in enumerate(edges)])
+
+
+def as_slice_node(node: object) -> SliceNode:
+    """The :class:`~cldk.analysis.commons.results.SliceNode` for anything carrying an address.
+
+    :meth:`PythonAnalysisBackend.describe` takes "anything with a ``ref``" — slice nodes, the
+    endpoints of a :class:`~cldk.analysis.commons.results.PathHop`, a
+    :class:`~cldk.analysis.commons.results.LocateResult` — because the addressing layer hands a
+    caller three shapes and asking them to convert between shapes to hydrate one is the kind of
+    friction that gets worked around with string surgery.
+
+    A ``SliceNode`` passes through untouched. A ``LocateResult`` is re-expressed as one, keeping
+    the vocabulary it already speaks: ``module.path`` is the file, ``callable.signature`` the
+    enclosing callable, ``node.kind`` the position's kind.
+
+    Raises:
+        TypeError: ``node`` carries neither a ``ref`` nor a ``node_id``, so there is nothing to
+            look up. Guessing an address from a file and a line is what ``locate`` is for.
+    """
+    if isinstance(node, SliceNode):
+        return node
+    ref = getattr(node, "node_id", None)
+    if ref is None:
+        raise TypeError(f"describe() needs something carrying a ref (a SliceNode, a path hop endpoint, a locate() result); got {type(node).__name__}")
+    module, callable_ref, body = node.module, node.callable, getattr(node, "node", None)
+    return SliceNode(
+        file=module.path,
+        line=node.span.start[0],
+        callable=callable_ref.signature if callable_ref else "",
+        kind=body.kind if body else "callable",
+        name=callable_ref.name if callable_ref else None,
+        source=node.source or None,
+        ref=ref,
+    )
 
 #: Nodes per slice when the caller does not say. The same 10,000 as :data:`DEFAULT_PAGE_SIZE`, and
 #: for a different reason: there, it is where 99.8% of callables fit in one page; here, nothing
@@ -1307,4 +1420,203 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         Raises:
             AmbiguousName: ``name`` matched more than one callable.
             SelectorNotInGraph: Nothing matched.
+        """
+
+    # -----[ paths, mixed queries, hydration ]-----
+    @abstractmethod
+    def paths_between(self, src: str, dst: str, *, within: str, dst_within: str | None = None, depth: int | None = DEFAULT_DEPTH, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+        """How a value reaches another value — the *sequences*, where a slice is the set (E2).
+
+        Each :class:`~cldk.analysis.commons.results.FlowPath` is an ordered list of
+        :class:`~cldk.analysis.commons.results.PathHop` values, and each hop says what justified it:
+        the kind of edge (``data``/``control``/``argument``/``return``/``summary``), the variable
+        the dependence is on, and the provenance the analyzer established it with. That is what
+        lets a caller *argue* a flow instead of asserting one, and it is why
+        :attr:`~cldk.analysis.commons.results.FlowPath.weakest` exists — the most approximate hop
+        is what caps the claim.
+
+        **Only shortest paths.** A bounded search that enumerated every walk would not terminate
+        on this graph (leg 1.5 measured ``EXISTS { (a)-[:PY_CALLS*1..]->(a) }`` still running at
+        600s, for the same reason), and the tenth-longest way a value can reach another is not
+        evidence anyone wants. What comes back is the shortest hop-count, and every path of it up
+        to ``max_paths``, ordered by :func:`hop_sort_key`.
+
+        **``within`` is required, and it is the *source's* callable.** A value is addressed by a
+        name plus the callable it enters, so two values need two callables; ``dst_within``
+        supplies the second and defaults to ``within``. That default is the *rarer* case, not the
+        common one: the only dataflow edge into a ``formal_in`` is ``PY_PARAM_IN`` from a caller's
+        argument (verified on the live graph: 229,035 such edges and no other kind), so two values
+        of the *same* callable are joined only through a cycle of calls. The interesting question
+        — "how does this parameter reach that parameter of the thing it calls" — is the
+        cross-callable one.
+
+        Args:
+            src: The value the flow starts at, named as a caller would (``"invoice_id"``).
+            dst: The value it must reach.
+            within: The callable ``src`` enters. Required — :meth:`resolve_value` cannot address a
+                value without one, so a ``None`` default would be a signature that raises on it.
+            dst_within: The callable ``dst`` enters; defaults to ``within``.
+            depth: Most hops a path may take. Defaults to :data:`DEFAULT_DEPTH`; ``None`` for no
+                bound. A flow longer than this comes back as ``[]``, which is why the bound is a
+                named argument rather than a constant buried in the query.
+            max_paths: Most paths to return. The result's ``truncated`` says whether more existed.
+
+        Returns:
+            The paths, ordered; empty when no flow of at most ``depth`` hops exists.
+
+        Raises:
+            AmbiguousName: ``src``, ``dst`` or either callable name matched more than one thing.
+            SelectorNotInGraph: One of them matched nothing.
+            ValueError: ``depth`` is not a positive ``int``, ``max_paths`` is below 1, or ``src``
+                and ``dst`` resolve to the same position (see :func:`check_distinct_endpoints`).
+        """
+
+    @abstractmethod
+    def call_paths_between(self, src: str, dst: str, *, depth: int | None = DEFAULT_DEPTH, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+        """How one callable reaches another — the same sequences, over the call graph.
+
+        The evidence-carrying form of :meth:`reaches`: that answers *whether*, this answers *how*.
+        Every hop is ``via="call"`` with no ``var`` and no ``prov``, because a ``PY_CALLS`` edge
+        carries neither — a call is a syntactic fact, and saying so explicitly is better than
+        inventing a provenance for it.
+
+        Takes no ``within``: a callable is addressed by name alone (:meth:`resolve_callable`), and
+        a keyword that could only ever be ignored is worse than one that is absent.
+
+        Args:
+            src: The calling callable, named as a caller would.
+            dst: The callable it must reach.
+            depth: Most call hops. Defaults to :data:`DEFAULT_DEPTH`; ``None`` for no bound.
+            max_paths: Most paths to return; ``truncated`` says whether more existed.
+
+        Raises:
+            AmbiguousName: Either name matched more than one callable.
+            SelectorNotInGraph: Either matched nothing.
+            ValueError: ``depth`` is not a positive ``int``, ``max_paths`` is below 1, or ``src``
+                and ``dst`` name the same callable (see :func:`check_distinct_endpoints`).
+        """
+
+    @abstractmethod
+    def flows_to_call(self, src: str, callee: str, *, within: str, depth: int | None = DEFAULT_DEPTH) -> bool:
+        """Does this value reach **any** argument of a call to ``callee``?
+
+        The target is the set of ``callee``'s value-entry vertices — its parameters, and the
+        globals and captures it reads. Those are enterable *only* through ``PY_PARAM_IN`` from a
+        caller's argument (verified: the only dataflow edge into a ``formal_in``), so reaching one
+        means the value was passed into a real call, not merely that it sits in the same program.
+
+        A value that only *control*-dominates a call site without feeding any of its arguments is
+        deliberately **not** counted: "flows to" is a dataflow claim, and widening it to "was
+        executed before" would make the answer true almost everywhere.
+
+        Args:
+            src: The value, named as a caller would.
+            callee: The called callable, named as a caller would.
+            within: The callable ``src`` enters. Required, for :meth:`paths_between`'s reason.
+            depth: Most hops. Defaults to :data:`DEFAULT_DEPTH`; ``None`` for no bound. ``False``
+                at the default is "not within five hops", which is why the bound is nameable.
+
+        Raises:
+            AmbiguousName: ``src`` or ``callee`` matched more than one thing.
+            SelectorNotInGraph: Either matched nothing.
+            ValueError: ``depth`` is not a positive ``int``.
+        """
+
+    @abstractmethod
+    def flows_to_argument(self, src: str, callee: str, arg: str, *, within: str, depth: int | None = DEFAULT_DEPTH) -> bool:
+        """Does this value reach the argument ``arg`` of a call to ``callee``?
+
+        A **different question** from :meth:`flows_to_call`, and kept a separate implementation on
+        purpose: a tainted value routinely reaches a function without reaching the parameter that
+        matters. Measured on odoo-slim-19, ``invoice_id`` of ``PaymentPortal.invoice_transaction``
+        reaches six of ``_process_transaction``'s seven entering values and not the seventh
+        (``kwargs``) — collapsing the two questions would report that seventh as reached.
+
+        ``arg`` is resolved to the parameter **by name**, through the same
+        :meth:`resolve_value` the other accessors use, with ``within=callee`` (E7: no ordinals —
+        nothing here asks the caller to know that ``self`` occupies slot 0).
+
+        **The implication ``flows_to_argument`` ⟹ ``flows_to_call`` holds by construction**, not by
+        agreement between two queries: ``resolve_value(arg, within=callee)`` can only ever return
+        one of ``callee``'s ``formal_in`` vertices, and that set is exactly what
+        :meth:`flows_to_call` tests reachability of. The two accessors then run the *same*
+        reachability predicate over a subset and its superset.
+
+        Args:
+            src: The value the flow starts at.
+            callee: The called callable.
+            arg: The callee's parameter (or global, or capture) by name.
+            within: The callable ``src`` enters. Required.
+            depth: Most hops. Defaults to :data:`DEFAULT_DEPTH`; ``None`` for no bound.
+
+        Raises:
+            AmbiguousName: A name matched more than one thing.
+            SelectorNotInGraph: A name matched nothing — including ``arg`` naming no value of
+                ``callee``, which is a caller error and not a ``False``.
+            ValueError: ``depth`` is not a positive ``int``.
+        """
+
+    def describe(self, nodes: Sequence[object]) -> List[SliceNode]:
+        """Fill in :attr:`~cldk.analysis.commons.results.SliceNode.source` for these positions.
+
+        A second call because a slice answers *where* and source answers *what*, and source is the
+        one field with no size ceiling: a 195,784-node slice that carried text would be tens of
+        megabytes nobody asked for (E4). So the traversals return ``source=None`` and a caller
+        hydrates the handful of nodes it decided to read.
+
+        Returns the **same** :class:`~cldk.analysis.commons.results.SliceNode` type, so nothing
+        downstream has to branch on whether a node has been through here, and accepts anything
+        carrying an address — slice nodes, path-hop endpoints, ``locate()`` results (see
+        :func:`as_slice_node`).
+
+        **One round trip regardless of node count.** Implemented here rather than in each backend
+        precisely so that cannot drift: this method resolves the whole batch through a single
+        :meth:`_sources_for` call, and a backend that fanned out would have to do so inside it.
+
+        **What ``source=None`` means afterwards.** Exactly one thing: *this position exists and
+        the backend has no text for it*. It never means "the lookup failed", because a ref naming
+        nothing raises instead — which is what keeps the two apart. Which positions have no text
+        differs by backend, and honestly so:
+
+        * A ``kind="callable"`` node hydrates on both. ``:PyCallable.code`` is a real property
+          over Neo4j, and the local backend slices the module text by span.
+        * A **value** vertex (a ``parameter``/``global``/``capture``, and the ``argument`` and
+          ``return`` vertices around a call) has no span *in the analyzer's own model* — it is a
+          dataflow position, not a region of the file — so it hydrates on neither.
+        * A statement or call site hydrates **only locally**. The graph carries no per-statement
+          text (``:PyBodyNode`` has a line span and no ``code``; ``:PyModule`` has no source to
+          slice one out of), which is the same wall :meth:`get_source` hits, and substituting the
+          enclosing callable's text would be a wrong answer rather than a missing one.
+
+        Args:
+            nodes: The positions to hydrate. An empty sequence costs no round trip and returns
+                ``[]``.
+
+        Returns:
+            The same positions, in the same order, with ``source`` filled where the backend has
+            text for them.
+
+        Raises:
+            KeyError: A ``ref`` names nothing this backend can find. A ref comes from this SDK, so
+                one that resolves to nothing means it was minted against a different application
+                or a stale graph — a defect worth stopping on, not a ``None`` to be discovered
+                three layers later.
+            TypeError: An element carries no ``ref`` (see :func:`as_slice_node`).
+        """
+        out = [as_slice_node(n) for n in nodes]
+        if not out:
+            return []
+        sources = self._sources_for([n.ref for n in out])
+        missing = [n.ref for n in out if n.ref not in sources]
+        if missing:
+            raise KeyError(f"{len(missing)} of {len(out)} refs name nothing in this application: {missing[:5]}")
+        return [n.model_copy(update={"source": sources[n.ref]}) for n in out]
+
+    @abstractmethod
+    def _sources_for(self, refs: Sequence[str]) -> Dict[str, "str | None"]:
+        """``{ref: source or None}`` for every ref this backend can **find**, in one round trip.
+
+        The seam :meth:`describe` is built on, and the reason its two kinds of "no source" stay
+        distinguishable: a ref that exists but has no recoverable text maps to ``None``; a ref
+        that names nothing is *absent from the mapping*, and ``describe`` raises on it.
         """

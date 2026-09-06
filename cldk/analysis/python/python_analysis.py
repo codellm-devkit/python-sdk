@@ -53,9 +53,9 @@ import networkx as nx
 from tree_sitter import Tree
 
 from cldk.analysis.commons.backend_config import Neo4jConnectionConfig, PyBackend, PyCodeAnalyzerConfig, cache_subdir
-from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, LocateResult, Slice, SliceNode
+from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, FlowPaths, LocateResult, Slice, SliceNode
 from cldk.analysis.commons.treesitter import TreesitterPython
-from cldk.analysis.python.backend import DEFAULT_DEPTH, DEFAULT_MAX_NODES, DEFAULT_PAGE_SIZE, PythonAnalysisBackend
+from cldk.analysis.python.backend import DEFAULT_DEPTH, DEFAULT_MAX_NODES, DEFAULT_MAX_PATHS, DEFAULT_PAGE_SIZE, PythonAnalysisBackend
 from cldk.analysis.python.codeanalyzer import PyCodeanalyzer
 from cldk.analysis.python.neo4j import PyNeo4jBackend
 from cldk.models.python import (
@@ -1228,6 +1228,159 @@ class PythonAnalysis:
             SelectorNotInGraph: Nothing matched.
         """
         return self.backend.callees_of(name, in_class=in_class, in_module=in_module)
+
+    # -----[ paths, mixed queries, hydration ]-----
+    def paths_between(self, src: str, dst: str, *, within: str, dst_within: str | None = None, depth: int | None = DEFAULT_DEPTH, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+        """Return how a value reaches another value — the ordered hops, with the evidence for each.
+
+        Where :meth:`slice_forward` answers *what a value reaches* as a set,
+        this answers *how it gets there* as sequences, so a caller can argue a flow rather than
+        assert one::
+
+            for path in py.paths_between(
+                "invoice_id", "invoice_ids",
+                within="PaymentPortal.invoice_transaction",
+                dst_within="PaymentPortal._process_transaction",
+            ):
+                for hop in path.hops:
+                    print(hop.via, hop.var, "->", hop.to.callable, hop.to.kind, hop.to.name)
+                print("weakest evidence:", path.weakest.via, path.weakest.prov)
+
+        Only **shortest** paths come back, and at most ``max_paths`` of them; the result's
+        ``truncated`` says whether there were more. ``weakest`` on each path names the hop that
+        caps the claim — the most approximate one (``ssa`` > ``reaching-defs`` > ``points-to``).
+
+        ``within`` names the callable ``src`` enters and is required, because a value cannot be
+        addressed without one. ``dst_within`` names ``dst``'s and defaults to ``within``; the
+        cross-callable spelling is the common one, since a value only ever enters a callable from
+        one of its callers.
+
+        Args:
+            src: The value the flow starts at, named as you would say it (``"invoice_id"``).
+            dst: The value it must reach.
+            within: The callable ``src`` enters.
+            dst_within: The callable ``dst`` enters. Defaults to ``within``.
+            depth: Most hops a path may take. Defaults to five; ``None`` for no bound. A flow
+                longer than this comes back empty.
+            max_paths: Most paths to return.
+
+        Raises:
+            AmbiguousName: A name matched more than one thing.
+            SelectorNotInGraph: A name matched nothing.
+            ValueError: ``depth`` is not a positive ``int``, ``max_paths`` is below 1, or ``src``
+                and ``dst`` are the same position — a path from a node to itself is refused rather
+                than answered ``[]``; ``reaches`` is what asks whether a cycle exists.
+
+        See Also:
+            :meth:`slice_forward`: The same reachability as a set, with a ``total``.
+            :meth:`call_paths_between`: The same shape over the call graph.
+        """
+        return self.backend.paths_between(src, dst, within=within, dst_within=dst_within, depth=depth, max_paths=max_paths)
+
+    def call_paths_between(self, src: str, dst: str, *, depth: int | None = DEFAULT_DEPTH, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+        """Return how one callable reaches another, as ordered call hops.
+
+        The evidence-carrying form of :meth:`reaches`: that says *whether*, this says *how*::
+
+            for path in py.call_paths_between("PaymentPortal.invoice_transaction", "AccountMove.write"):
+                print(" -> ".join(h.to.callable for h in path.hops))
+
+        Every hop is ``via="call"`` with no ``var`` and no ``prov``, because a call edge carries
+        neither. Takes no ``within``: a callable is addressed by name alone.
+
+        Args:
+            src: The calling callable.
+            dst: The callable it must reach.
+            depth: Most call hops. Defaults to five; ``None`` for no bound.
+            max_paths: Most paths to return; ``truncated`` says whether there were more.
+
+        Raises:
+            AmbiguousName: Either name matched more than one callable.
+            SelectorNotInGraph: Either matched nothing.
+            ValueError: ``depth`` is not a positive ``int``, ``max_paths`` is below 1, or ``src``
+                and ``dst`` are the same callable.
+        """
+        return self.backend.call_paths_between(src, dst, depth=depth, max_paths=max_paths)
+
+    def flows_to_call(self, src: str, callee: str, *, within: str, depth: int | None = DEFAULT_DEPTH) -> bool:
+        """Does ``src`` reach **any** argument of a call to ``callee``?
+
+        A dataflow claim, not a "runs before" one: the target is the set of values that *enter*
+        ``callee``, so ``True`` means the value was passed into a real call.
+
+        Args:
+            src: The value, named as you would say it.
+            callee: The called callable.
+            within: The callable ``src`` enters.
+            depth: Most hops. Defaults to five; ``None`` for no bound — so ``False`` at the default
+                means "not within five hops", which is why the bound is nameable.
+
+        Raises:
+            AmbiguousName: A name matched more than one thing.
+            SelectorNotInGraph: A name matched nothing.
+
+        See Also:
+            :meth:`flows_to_argument`: The narrower question, and a different answer.
+        """
+        return self.backend.flows_to_call(src, callee, within=within, depth=depth)
+
+    def flows_to_argument(self, src: str, callee: str, arg: str, *, within: str, depth: int | None = DEFAULT_DEPTH) -> bool:
+        """Does ``src`` reach the argument ``arg`` of a call to ``callee``?
+
+        **Not** the same question as :meth:`flows_to_call`, which is why it is a separate call: on
+        odoo-slim-19, ``invoice_id`` of ``PaymentPortal.invoice_transaction`` reaches six of
+        ``_process_transaction``'s seven entering values and not the seventh, so answering the
+        narrow question with the broad one would over-report. Reaching an argument does imply
+        reaching the call, and that direction holds by construction.
+
+        ``arg`` is matched to the parameter **by name** — never by position.
+
+        Args:
+            src: The value the flow starts at.
+            callee: The called callable.
+            arg: The callee's parameter (or global, or capture) by name.
+            within: The callable ``src`` enters.
+            depth: Most hops. Defaults to five; ``None`` for no bound.
+
+        Raises:
+            AmbiguousName: A name matched more than one thing.
+            SelectorNotInGraph: A name matched nothing — including ``arg`` naming no value of
+                ``callee``, which is a mistake worth stopping on rather than a ``False``.
+        """
+        return self.backend.flows_to_argument(src, callee, arg, within=within, depth=depth)
+
+    def describe(self, nodes: Sequence[object]) -> List[SliceNode]:
+        """Fill in ``source`` for these positions, in one round trip.
+
+        A slice, a cone and a path all answer *where*; this answers *what*, and it is a second call
+        because source is the one field with no size ceiling — a 195,784-node slice carrying text
+        would be tens of megabytes nobody asked for::
+
+            sl = py.slice_backward("found_email", within="odoo.tools.mail.email_domain_extract")
+            for node in py.describe(sl.nodes[:5]):
+                print(node.file, node.line, node.source)
+
+        Takes anything carrying an address — slice nodes, the ``frm``/``to`` of a path hop, a
+        ``locate()`` result — and gives back the same
+        :class:`~cldk.analysis.commons.results.SliceNode` shape with ``source`` filled, so nothing
+        downstream has to branch on whether a node has been hydrated.
+
+        Afterwards, ``source=None`` means exactly one thing: **this position exists and there is no
+        text for it.** A ref that names nothing raises instead. Which positions have no text
+        depends on the backend, honestly: a callable hydrates on both; a value vertex (a parameter,
+        global or capture) hydrates on neither, because it is a dataflow position and not a region
+        of the file; a statement or call site hydrates only on the local backend, because the graph
+        carries no text below callable granularity.
+
+        Args:
+            nodes: The positions to hydrate. An empty sequence costs no round trip.
+
+        Raises:
+            KeyError: A ref names nothing in this application — a stale ref, or one minted against
+                a different graph.
+            TypeError: An element carries no ref at all.
+        """
+        return self.backend.describe(nodes)
 
     # -----[ repository artifacts ]-----
     def get_artifacts(self) -> Dict[str, PyArtifact]:

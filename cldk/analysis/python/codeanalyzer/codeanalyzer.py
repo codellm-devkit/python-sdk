@@ -61,7 +61,7 @@ from codeanalyzer.schema import Analysis, model_dump_json
 
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.resolve import CallableCandidate, body_node_kind, resolve_callable_signature, resolve_value_name, resolve_within, value_candidate
-from cldk.analysis.commons.results import CallableRef, Diagnostic, EdgePage, EntrypointCoverage, LocateResult, ModuleRef, Slice, SliceNode, TypeRef
+from cldk.analysis.commons.results import CallableRef, Diagnostic, EdgePage, EntrypointCoverage, FlowPaths, LocateResult, ModuleRef, Slice, SliceNode, TypeRef
 from cldk.utils.exceptions import CodeanalyzerUsageException
 from cldk.analysis.python.backend import (
     CDG_ORDER,
@@ -69,15 +69,20 @@ from cldk.analysis.python.backend import (
     DDG_ORDER,
     DEFAULT_DEPTH,
     DEFAULT_MAX_NODES,
+    DEFAULT_MAX_PATHS,
     DEFAULT_PAGE_SIZE,
+    VIA,
     PythonAnalysisBackend,
     body_key_column,
     bounded_subgraph,
     call_graph_scope,
     check_depth,
     check_max_nodes,
+    check_distinct_endpoints,
+    check_max_paths,
     cone_sinks,
     edge_page,
+    flow_path,
     resolve_module_key,
     scope_paths,
     slice_resolved,
@@ -1234,56 +1239,79 @@ class PyCodeanalyzer(PythonAnalysisBackend):
     # whatever project it was pointed at. For the projects a local analysis is run on, that is the
     # cheaper trade; for an application the size of the live graph it would not be, and the answer
     # there is to attach the Neo4j backend, which is what it is for.
-    def _sdg(self) -> Tuple[Dict[str, Dict[str, set]], Dict[str, Tuple[PyCallable, str, str]]]:
+    def _sdg(self) -> Tuple[Dict[str, Dict[str, Dict[str, list]]], Dict[str, Tuple[PyCallable, str, str]]]:
         """``(adjacency, node index)`` over the whole application's SDG, built once and cached.
 
-        ``adjacency`` is ``{"forward": {id: {id}}, "backward": {id: {id}}}`` -- both directions,
-        because a backward slice is not derivable from a forward index without inverting it, and
-        inverting it per call is the same work done repeatedly.
+        ``adjacency`` is ``{"forward": {src: {dst: [label]}}, "backward": {dst: {src: [label]}}}``
+        -- both directions, because a backward slice is not derivable from a forward index without
+        inverting it, and inverting it per call is the same work done repeatedly.
+
+        A ``label`` is ``(relationship type, var, prov)``: what :meth:`paths_between` has to report
+        for a hop, and what the graph carries on the corresponding relationship. It is a **list**
+        per ``(src, dst)`` pair because parallel edges are ordinary here -- one statement feeding
+        one argument on several different variables is six distinct paths on the live graph -- and
+        collapsing them would silently merge six pieces of evidence into one.
 
         ``node index`` maps a global body-node id to ``(owning callable, local body key, module
-        path)``, which is everything :meth:`_slice_node` needs to describe a reached node without
-        a second walk.
+        path)``, which is everything :func:`_local_slice_node` needs to describe a reached node
+        without a second walk.
         """
         if self._sdg_cache is None:
-            forward: Dict[str, set] = {}
-            backward: Dict[str, set] = {}
+            forward: Dict[str, Dict[str, list]] = {}
+            backward: Dict[str, Dict[str, list]] = {}
             nodes: Dict[str, Tuple[PyCallable, str, str]] = {}
 
-            def link(src: str, dst: str) -> None:
-                forward.setdefault(src, set()).add(dst)
-                backward.setdefault(dst, set()).add(src)
+            def link(src: str, dst: str, label: tuple) -> None:
+                forward.setdefault(src, {}).setdefault(dst, []).append(label)
+                backward.setdefault(dst, {}).setdefault(src, []).append(label)
 
             for c, _, _, path, _ in self._iter_callables():
                 for key in (c.body or {}):
                     nodes[body_node_id(c.id, key)] = (c, key, path)
-                for e in [*(c.ddg or []), *(c.cdg or []), *(c.summary or [])]:
-                    link(body_node_id(c.id, e.src), body_node_id(c.id, e.dst))
+                # The relationship name each list is projected as, so a hop reports the same
+                # ``via`` here as it does over the graph -- ``cldk.analysis.python.backend.VIA``
+                # is the single translation table and neither backend has its own.
+                for rel, edges in (("PY_DDG", c.ddg), ("PY_CDG", c.cdg), ("PY_SUMMARY", c.summary)):
+                    for e in edges or []:
+                        link(
+                            body_node_id(c.id, e.src),
+                            body_node_id(c.id, e.dst),
+                            (rel, getattr(e, "var", None), tuple(getattr(e, "prov", None) or ())),
+                        )
             # Endpoints here are already global (``emit_l4`` resolved them through the endpoint
             # functions' identity maps), so they are used as-is -- joining them again would mint
             # ids that name nothing.
-            for e in [*(self.application.param_in or []), *(self.application.param_out or [])]:
-                link(e.src, e.dst)
+            for rel, edges in (("PY_PARAM_IN", self.application.param_in), ("PY_PARAM_OUT", self.application.param_out)):
+                for e in edges or []:
+                    link(e.src, e.dst, (rel, None, ()))
             self._sdg_cache = ({"forward": forward, "backward": backward}, nodes)
         return self._sdg_cache
 
-    def _slice_from(self, root: SliceNode, direction: str, depth: int | None, max_nodes: int) -> Slice:
-        """Breadth-first closure from ``root`` over the cached adjacency, capped like the graph's.
+    def _reach(self, ref: str, direction: str, depth: int | None) -> set:
+        """The set of node ids reachable from ``ref`` in at most ``depth`` hops.
 
         Level-by-level rather than a plain stack, because ``depth`` is a hop budget and a
-        depth-first walk cannot count hops without revisiting. The whole closure is computed and
-        *then* cut: ``total`` has to be the size of the whole slice for the cap to be reportable
-        (E5), and there is nothing cheaper to compute it from -- the same reason the Cypher counts
-        before it pages.
+        depth-first walk cannot count hops without revisiting. Shared by the slices and by the two
+        mixed flow queries so "reachable" means one thing on this backend.
         """
-        adjacency, nodes = self._sdg()
-        edges = adjacency[direction]
-        seen, frontier, hops = {root.ref}, [root.ref], 0
+        edges = self._sdg()[0][direction]
+        seen, frontier, hops = {ref}, [ref], 0
         while frontier and (depth is None or hops < depth):
             nxt = [d for src in frontier for d in edges.get(src, ()) if d not in seen]
             seen.update(nxt)
             frontier = nxt
             hops += 1
+        return seen
+
+    def _slice_from(self, root: SliceNode, direction: str, depth: int | None, max_nodes: int) -> Slice:
+        """:meth:`_reach`'s closure from ``root``, described and capped like the graph's.
+
+        The whole closure is computed and *then* cut: ``total`` has to be the size of the whole
+        slice for the cap to be reportable (E5), and there is nothing cheaper to compute it from --
+        the same reason the Cypher counts before it pages.
+        """
+        nodes = self._sdg()[1]
+        seen = self._reach(root.ref, direction, depth)
         found = [_local_slice_node(nodes[ref], ref) for ref in sorted(seen) if ref in nodes]
         return Slice(nodes=found[:max_nodes], roots=[root], resolved=slice_resolved([root]), total=len(found))
 
@@ -1378,6 +1406,167 @@ class PyCodeanalyzer(PythonAnalysisBackend):
                 sym = externals.get(other)
                 out.append(SliceNode(file="", line=0, callable=_external_name(sym, other), kind="external", name=getattr(sym, "name", other), source=None, ref=other))
         return out
+
+    # -----[ paths, mixed queries, hydration ]-----
+    @staticmethod
+    def _shortest_walks(edges: Dict[str, Dict[str, list]], src: str, dst: str, depth: int | None, limit: int) -> List[list]:
+        """Up to ``limit`` shortest ``src``->``dst`` walks over ``edges``, in the documented order.
+
+        The local twin of the graph's ``allShortestPaths``, and only shortest walks for its reason:
+        enumerating every walk does not terminate on a real dependence graph.
+
+        Two passes. The first is the same breadth-first level walk :meth:`_reach` does, keeping the
+        hop count each node was *first* reached at; the second is a depth-first replay that only
+        ever steps to a node whose recorded distance is exactly one more than the walk so far, so
+        it visits shortest walks and nothing else.
+
+        The replay's branch order is ``(via, var, to)`` -- exactly the per-hop key
+        :func:`~cldk.analysis.python.backend.hop_sort_key` documents -- and every walk found has
+        the same length, so a pre-order depth-first traversal emits them already sorted. That is
+        what makes ``limit`` a *prefix* of a total order rather than whichever ``limit`` walks the
+        recursion happened to find first.
+        """
+        dist, frontier, hops = {src: 0}, [src], 0
+        while frontier and dst not in dist and (depth is None or hops < depth):
+            hops += 1
+            nxt = []
+            for s in frontier:
+                for d in edges.get(s, ()):
+                    if d not in dist:
+                        dist[d] = hops
+                        nxt.append(d)
+            frontier = nxt
+        if dst not in dist or dist[dst] == 0:
+            return []
+        target, out = dist[dst], []
+
+        def walk(node: str, walked: list) -> None:
+            if len(walked) == target:
+                if node == dst:
+                    out.append(list(walked))
+                return
+            options = sorted(
+                (VIA[rel], var or "", d, (rel, var, prov))
+                for d, labels in edges.get(node, {}).items()
+                if dist.get(d) == len(walked) + 1
+                for rel, var, prov in labels
+            )
+            for _, _, d, label in options:
+                walked.append((d, label))
+                walk(d, walked)
+                walked.pop()
+                if len(out) >= limit:
+                    return
+
+        walk(src, [])
+        return out
+
+    def _value_paths(self, a: SliceNode, b: SliceNode, depth: int | None, max_paths: int) -> FlowPaths:
+        """Build the :class:`FlowPaths` for value ``a`` -> value ``b``."""
+        adjacency, nodes = self._sdg()
+        walks = self._shortest_walks(adjacency["forward"], a.ref, b.ref, depth, max_paths + 1)
+        described = {ref: _local_slice_node(nodes[ref], ref) for walk in walks for ref, _ in walk if ref in nodes}
+        described[a.ref] = a
+        paths = [flow_path([described[a.ref]] + [described[ref] for ref, _ in walk], [label for _, label in walk]) for walk in walks[:max_paths]]
+        return FlowPaths(paths, truncated=len(walks) > max_paths)
+
+    def paths_between(self, src: str, dst: str, *, within: str, dst_within: str | None = None, depth: int | None = DEFAULT_DEPTH, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+        """How a value reaches another value (see :meth:`PythonAnalysisBackend.paths_between`)."""
+        check_depth(depth)
+        check_max_paths(max_paths)
+        self._require_dataflow()
+        a = self.resolve_value(src, within=within)
+        b = self.resolve_value(dst, within=dst_within if dst_within is not None else within)
+        check_distinct_endpoints(a.ref, b.ref)
+        return self._value_paths(a, b, depth, max_paths)
+
+    def call_paths_between(self, src: str, dst: str, *, depth: int | None = DEFAULT_DEPTH, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+        """How one callable reaches another (see :meth:`PythonAnalysisBackend.call_paths_between`).
+
+        Over :meth:`get_call_graph`, the same edge set :meth:`reaches` and :meth:`callees_of` read,
+        so the paths cannot disagree with the boolean that summarises them or with the neighbours a
+        caller can enumerate for itself. ``get_call_graph`` is a plain ``DiGraph``, so there is one
+        edge between any two callables and one shortest path per node sequence.
+        """
+        check_depth(depth)
+        check_max_paths(max_paths)
+        a = self.resolve_callable(src).callable
+        b = self.resolve_callable(dst).callable
+        check_distinct_endpoints(a, b)
+        graph = self.get_call_graph()
+        if a not in graph or b not in graph:
+            return FlowPaths([])
+        # The call graph re-projected as this module's ``{src: {dst: [label]}}`` adjacency, so one
+        # walker serves both kinds of path. O(E) per call, like every other call-graph accessor
+        # here (``reaches``, ``backward_cone``): the local backend rebuilds the graph each time and
+        # is the backend for projects where that is the cheaper trade.
+        edges: Dict[str, Dict[str, list]] = {n: {m: [("PY_CALLS", None, ())] for m in graph.successors(n)} for n in graph}
+        walks = self._shortest_walks(edges, a, b, depth, max_paths + 1)
+        externals = self.get_external_symbols()
+        described = {sig: self._call_graph_node(sig, externals) for walk in walks for sig, _ in walk}
+        described[a] = self._call_graph_node(a, externals)
+        paths = [flow_path([described[a]] + [described[sig] for sig, _ in walk], [label for _, label in walk]) for walk in walks[:max_paths]]
+        return FlowPaths(paths, truncated=len(walks) > max_paths)
+
+    def _call_graph_node(self, signature: str, externals: Dict[str, PyExternalSymbol]) -> SliceNode:
+        """A call-graph vertex as a :class:`SliceNode` -- declared callable or external ghost.
+
+        The same decision :meth:`_call_neighbours` makes, factored out so a path's nodes and a
+        neighbour list describe the same vertex identically.
+        """
+        node = self._callable_node(signature)
+        if node is not None:
+            return node
+        sym = externals.get(signature)
+        return SliceNode(file="", line=0, callable=_external_name(sym, signature), kind="external", name=getattr(sym, "name", signature), source=None, ref=signature)
+
+    def _callee_values(self, signature: str) -> List[str]:
+        """The ids of every value that *enters* ``signature`` -- its parameters, and the globals and
+        captures it reads. The local twin of the graph's ``formal_in`` body nodes."""
+        c = next((c for c, _, _, _, _ in self._iter_callables() if c.signature == signature), None)
+        return [body_node_id(c.id, key) for key, node in (c.body or {}).items() if node.kind == "formal_in"] if c else []
+
+    def flows_to_call(self, src: str, callee: str, *, within: str, depth: int | None = DEFAULT_DEPTH) -> bool:
+        """Does this value reach any argument of a call to ``callee``
+        (see :meth:`PythonAnalysisBackend.flows_to_call`)?"""
+        check_depth(depth)
+        self._require_dataflow()
+        root = self.resolve_value(src, within=within)
+        targets = self._callee_values(self.resolve_callable(callee).callable)
+        return bool(targets) and not self._reach(root.ref, "forward", depth).isdisjoint(set(targets) - {root.ref})
+
+    def flows_to_argument(self, src: str, callee: str, arg: str, *, within: str, depth: int | None = DEFAULT_DEPTH) -> bool:
+        """Does this value reach ``callee``'s ``arg``
+        (see :meth:`PythonAnalysisBackend.flows_to_argument`)?"""
+        check_depth(depth)
+        self._require_dataflow()
+        root = self.resolve_value(src, within=within)
+        target = self.resolve_value(arg, within=callee).ref
+        return target != root.ref and target in self._reach(root.ref, "forward", depth)
+
+    def _sources_for(self, refs: Sequence[str]) -> Dict[str, "str | None"]:
+        """Source text for every ref this application holds (see
+        :meth:`PythonAnalysisBackend._sources_for`).
+
+        One walk of :meth:`_iter_callables` for the whole batch, not one per ref: ``get_source``
+        scans the callable list per call, which is fine for one node and quadratic for a slice.
+
+        A body node's text is sliced out of the owning module by its span, so this backend fills in
+        statements and call sites the graph cannot. A vertex with **no** span -- the synthetic
+        ``@entry``/``@exit`` and every ``formal_in`` -- maps to ``None``: it is a dataflow position,
+        not a region of the file, and there is nothing to read on either backend.
+        """
+        wanted = set(refs)
+        found: Dict[str, "str | None"] = {}
+        for c, _, _, _, source in self._iter_callables():
+            for name in (c.signature, c.id):
+                if name in wanted:
+                    found[name] = _code_of(c, source)
+            for key, node in (c.body or {}).items():
+                ref = body_node_id(c.id, key)
+                if ref in wanted:
+                    found[ref] = _slice(node.span, source)
+        return found
 
     def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:
         """Return overviews of callables decorated with any of ``markers``."""
