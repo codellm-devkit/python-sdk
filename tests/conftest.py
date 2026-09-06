@@ -48,7 +48,7 @@ def analysis_json_fixture():
     # Load the configuration
     config = toml.load(pyproject_path)
 
-    return Path(config["tool"]["cldk"]["testing"]["sample-application-analysis-json"]) / "slim"
+    return Path(config["tool"]["cldk"]["testing"]["sample-application-analysis-json"]) / "v2" / "a1"
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -60,6 +60,13 @@ def analysis_json(analysis_json_fixture) -> str:
         json_file = json.dumps(json.load(json_data))
 
     return json_file
+
+
+@pytest.fixture(scope="session")
+def analysis_json_a4(analysis_json_fixture) -> str:
+    """The codeanalyzer-java 3.0.1 ``-a 4`` fixture (``v2/a4``) as a JSON string."""
+    with open(analysis_json_fixture.parent / "a4" / "analysis.json", "r", encoding="utf-8") as json_data:
+        return json.dumps(json.load(json_data))
 
 
 @pytest.fixture(scope="session", autouse=True)
