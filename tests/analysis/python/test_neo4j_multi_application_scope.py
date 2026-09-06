@@ -46,6 +46,7 @@ predicate being dropped from them.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List
 
 import pytest
@@ -249,3 +250,40 @@ def test_every_child_statement_carries_the_application_scope():
 
     assert issued, "the walk issued no statements, so this asserts nothing"
     assert [q for q in issued if "IN $mods" not in q] == []
+
+
+# ----------------------------------------------------------------------------------------------
+# The class-level statements behind the leg-1.5 accessors -- the audit above sees only the child
+# buckets, which is why six statements that matched by bare ``{signature: …}`` went unnoticed.
+# ----------------------------------------------------------------------------------------------
+_MATCHES_BY_SIGNATURE = re.compile(r"signature\s*[:=]\s*\$|\.signature IN \$")
+_MATCHES_BY_ID = re.compile(r"\bid\s*:\s*\$|\.id IN \$")
+
+
+def _class_level_statements() -> Dict[str, str]:
+    return {name: value for name, value in vars(PyNeo4jBackend).items() if isinstance(value, str) and value.lstrip().startswith("MATCH")}
+
+
+def test_the_audit_sees_the_dataflow_statements_too():
+    names = set(_class_level_statements())
+    for expected in ("_REACHES", "_CONE", "_PATHS", "_CALL_PATHS", "_VALUE_REACHES", "_CALLEE_VALUES", "_SOURCES", "_SLICE", "_CALLERS", "_CALLEES", "_OWN_EDGES"):
+        assert expected in names, f"{expected} is not a class-level statement any more; move it back or extend the audit"
+
+
+@pytest.mark.parametrize("name", sorted(_class_level_statements()))
+def test_every_statement_is_application_scoped_or_keyed_by_an_application_stamped_id(name):
+    """Two ways a statement stays inside one application, and every statement must use one.
+
+    A **signature** is not application-stamped: two applications in one database can declare the
+    same one, so any statement that matches a node by signature must also carry ``IN $mods``.
+    A body-node or ghost **id** embeds the application (``can://python/<app>/…``) and the emitter
+    only ever links nodes from its own run, so a statement keyed *only* by id is scoped by
+    construction and may omit the predicate -- ``_SLICE``, ``_PATHS`` and ``_VALUE_REACHES`` do,
+    for the measured cost of testing 195,784 reached nodes against a list. A statement keyed by
+    neither would be unscoped and fails here.
+    """
+    statement = _class_level_statements()[name]
+    by_signature, by_id = bool(_MATCHES_BY_SIGNATURE.search(statement)), bool(_MATCHES_BY_ID.search(statement))
+    assert by_signature or by_id, f"{name} matches its nodes by neither signature nor id"
+    if by_signature:
+        assert "IN $mods" in statement, f"{name} matches by signature without the application scope"

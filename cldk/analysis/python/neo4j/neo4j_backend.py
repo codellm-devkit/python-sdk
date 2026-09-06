@@ -698,6 +698,24 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             mods=self._modules,
         )
 
+    def _require_quantified_paths(self, accessor: str) -> None:
+        """Refuse, naming the accessor, on a server too old for a quantified path pattern.
+
+        The pattern is what lets a call-graph walk be labelled and application-scoped at *every*
+        hop rather than only at its endpoints (see :meth:`_bounded_call_rows` and ``_REACHES``),
+        and it arrives in Neo4j 5.9. The version is recorded at attach by :meth:`_probe_schema` and
+        enforced here, per accessor, so a caller who never asks a call-graph walk of an older
+        server keeps working: ``get_call_graph(roots=)``, ``reaches`` and ``backward_cone`` need
+        5.9+; everything else on this backend runs on any 5.x.
+        """
+        if self._server_version is not None and self._server_version < self._QUANTIFIED_PATH_MIN_SERVER:
+            got = ".".join(str(n) for n in self._server_version)
+            raise CodeanalyzerExecutionException(
+                f"{accessor} compiles to a quantified path pattern, which needs Neo4j server 5.9 or newer; the attached "
+                f"server reports {got}. Only the hop-scoped call-graph walks (get_call_graph(roots=...), reaches, "
+                f"backward_cone) need the newer pattern; every other accessor on this backend runs on any 5.x."
+            )
+
     def _bounded_call_rows(self, roots: List[str], depth: int | None) -> List[Dict[str, Any]]:
         """``PY_CALLS`` rows for the sub-graph reachable from ``roots``, within ``depth`` hops.
 
@@ -761,18 +779,10 @@ class PyNeo4jBackend(PythonAnalysisBackend):
 
         Raises:
             CodeanalyzerExecutionException: the attached server is older than Neo4j 5.9, which is
-                where the quantified path pattern below arrives. Recorded at attach by
-                :meth:`_probe_schema` and enforced here rather than there, so a caller who never
-                asks for a bounded call graph keeps working against an older server — every other
-                accessor on this backend runs on any 5.x.
+                where the quantified path pattern below arrives (see
+                :meth:`_require_quantified_paths`).
         """
-        if self._server_version is not None and self._server_version < self._QUANTIFIED_PATH_MIN_SERVER:
-            got = ".".join(str(n) for n in self._server_version)
-            raise CodeanalyzerExecutionException(
-                f"get_call_graph(roots=...) compiles to a quantified path pattern, which needs Neo4j server "
-                f"5.9 or newer; the attached server reports {got}. Every other accessor on this backend runs "
-                f"on any 5.x — only the bounded call graph needs the newer pattern."
-            )
+        self._require_quantified_paths("get_call_graph(roots=...)")
         hops = "" if depth is None else str(int(depth))
         return self._run(
             "MATCH (root:PyCallable|PyExternal) WHERE coalesce(root.signature, root.id) IN $roots "
@@ -1345,25 +1355,41 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         """What this value affects (see :meth:`PythonAnalysisBackend.slice_forward`)."""
         return self._slice(src, within, depth, max_nodes, backward=False)
 
-    #: ``WITH DISTINCT m`` before the target test is what keeps this a pruning BFS rather than a
-    #: trail enumeration: measured, every case below answers in 0.03s, including the self-question
-    #: ``reaches(x, x)`` that ``shortestPath`` refuses outright ("does not work when the start and
-    #: end nodes are the same") and that an ``EXISTS`` subquery never finished.
-    _REACHES = "MATCH (a:PyCallable {{signature:$a}})-[:PY_CALLS*1..{depth}]->(m:PyCallable) WITH DISTINCT m WHERE m.signature = $b RETURN count(m) > 0 AS ok"
+    #: THE CALL-GRAPH WALKS ARE CONSTRAINED AT EVERY HOP, as ``_bounded_call_rows`` already is,
+    #: and for the same measured reason. A plain variable-length ``-[:PY_CALLS*1..]->(m:PyCallable)``
+    #: labels only its *endpoint*, so an intermediate may be a ``:PyExternal`` ghost -- and ghosts
+    #: do have outgoing ``PY_CALLS`` edges (5,307 on odoo-slim-19; 198 of them land on a declared
+    #: callable). Two in-application chains ``callable -> ghost -> callable`` exist there, and with
+    #: the unconstrained pattern ``reaches`` answered ``True`` for both while no all-callable route
+    #: exists, and ``call_paths_between`` returned a path with an ``external`` intermediate. That
+    #: contradicts ``get_call_graph``, which both backends build from declared-callable-origin edges
+    #: only (a ghost has no body, so it cannot be the start of anything). The quantified path
+    #: pattern below labels every node on the walk and scopes every hop's source to this
+    #: application -- exactly ``_call_rows``'s edge set -- at 0.25s against 0.03s for the unsafe
+    #: form, and it still plans as a pruning expansion (``WITH DISTINCT m`` keeps it one); needs
+    #: Neo4j 5.9+ like ``roots=`` does. The self-question ``reaches(x, x)`` still terminates.
+    _REACHES = (
+        "MATCH (a:PyCallable {{signature:$a}}) WHERE a._module IN $mods "
+        "MATCH (a) ((x:PyCallable)-[:PY_CALLS]->(y:PyCallable) WHERE x._module IN $mods){{1,{depth}}} (m:PyCallable) "
+        "WITH DISTINCT m WHERE m.signature = $b RETURN count(m) > 0 AS ok"
+    )
 
     def reaches(self, src: str, dst: str, *, depth: int | None = None) -> bool:
         """Is there a call path (see :meth:`PythonAnalysisBackend.reaches`)?"""
         check_depth(depth)
+        self._require_quantified_paths("reaches")
         a = self.resolve_callable(src).callable
         b = self.resolve_callable(dst).callable
-        return bool(self._run(self._REACHES.format(depth="" if depth is None else depth), a=a, b=b)[0]["ok"])
+        return bool(self._run(self._REACHES.format(depth="" if depth is None else depth), a=a, b=b, mods=self._modules)[0]["ok"])
 
-    #: ``*0..`` again, so a sink with no callers is its own cone rather than an empty answer that
-    #: a caller could not tell from "this name is wrong" (D7). Properties are projected into maps
-    #: *before* the cap so only ``$cap`` of them cross the wire.
+    #: ``{0,}`` again, so a sink with no callers is its own cone rather than an empty answer that
+    #: a caller could not tell from "this name is wrong" (D7). Every hop is labelled and scoped
+    #: (see ``_REACHES``): measured 9,282 callables behind ``AccountMove.write`` either way, at
+    #: 0.27s against 0.08s. Properties are projected into maps *before* the cap so only ``$cap`` of
+    #: them cross the wire.
     _CONE = (
-        "MATCH (s:PyCallable) WHERE s.signature IN $sigs "
-        "MATCH (s)<-[:PY_CALLS*0..{depth}]-(m:PyCallable) "
+        "MATCH (s:PyCallable) WHERE s.signature IN $sigs AND s._module IN $mods "
+        "MATCH (s) (()<-[:PY_CALLS]-(x:PyCallable) WHERE x._module IN $mods){{0,{depth}}} (m:PyCallable) "
         "WITH DISTINCT m ORDER BY m.id "
         "WITH collect({{callable: m.signature, name: m.name, ref: m.id, file: m._module, line: m.start_line}}) AS found "
         "RETURN size(found) AS total, found[0..$cap] AS page"
@@ -1373,8 +1399,9 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         """Everything that can reach these sinks (see :meth:`PythonAnalysisBackend.backward_cone`)."""
         check_depth(depth)
         check_max_nodes(max_nodes)
+        self._require_quantified_paths("backward_cone")
         roots = cone_sinks(self.resolve_callable, sinks)
-        row = self._run(self._CONE.format(depth="" if depth is None else depth), sigs=[r.callable for r in roots], cap=max_nodes)[0]
+        row = self._run(self._CONE.format(depth="" if depth is None else depth), sigs=[r.callable for r in roots], cap=max_nodes, mods=self._modules)[0]
         nodes = [SliceNode(file=n["file"], line=n["line"], callable=n["callable"], kind="callable", name=n["name"], source=None, ref=n["ref"]) for n in row["page"]]
         return Slice(nodes=nodes, roots=roots, resolved=slice_resolved(roots), total=row["total"])
 
@@ -1438,81 +1465,101 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         "[r IN relationships(p) | {{via: type(r), var: r.var, prov: r.prov}}] AS rs"
     )
 
-    #: The same query over the call graph. The nodes project to :func:`_call_neighbour`'s row
-    #: shape, so an ``:PyExternal`` on a path would still come back readable -- it cannot be an
-    #: intermediate (a ghost has no outgoing ``PY_CALLS``) and cannot be an endpoint (both are
-    #: resolved through ``resolve_callable``, which only sees declared callables), but reusing the
-    #: builder costs nothing and leaves no ``can://`` id to leak if that ever changes.
+    #: The same query over the call graph. ``all(n IN nodes(p) WHERE n:PyCallable)`` keeps a
+    #: ``:PyExternal`` ghost off the *interior* of a path: a ghost does have outgoing ``PY_CALLS``
+    #: edges (5,307 on odoo-slim-19, see ``_REACHES``), and without the predicate this returned a
+    #: path through one for the two in-application ``callable -> ghost -> callable`` chains, where
+    #: ``get_call_graph`` -- built from declared-origin edges only -- has no such route. Neo4j
+    #: inlines an ``all()`` node predicate into the shortest-path search itself, so the route it
+    #: finds is the shortest *all-callable* one, at no measured cost (0.054s against 0.046s). The
+    #: endpoints cannot be ghosts anyway (``resolve_callable`` sees declared callables only), and
+    #: the nodes still project to :func:`_call_neighbour`'s row shape so nothing could leak a
+    #: ``can://`` id even if that changed.
     _CALL_PATHS = (
-        "MATCH (a:PyCallable {{signature:$src}}) MATCH (b:PyCallable {{signature:$dst}}) "
-        "MATCH p = allShortestPaths((a)-[:PY_CALLS*1..{depth}]->(b)) "
+        "MATCH (a:PyCallable {{signature:$src}}) WHERE a._module IN $mods "
+        "MATCH (b:PyCallable {{signature:$dst}}) WHERE b._module IN $mods "
+        "MATCH p = allShortestPaths((a)-[:PY_CALLS*1..{depth}]->(b)) WHERE all(n IN nodes(p) WHERE n:PyCallable) "
         "WITH p, " + _PATH_ORDER + " AS key ORDER BY length(p), key LIMIT $cap "
         "RETURN [n IN nodes(p) | {{signature: n.signature, name: n.name, ref: n.id, file: n._module, "
         "line: n.start_line, module: n.module}}] AS ns, "
         "[r IN relationships(p) | {{via: type(r), var: null, prov: null}}] AS rs"
     )
 
-    def _paths(self, query: str, node_of, *, src: str, dst: str, depth: int | None, max_paths: int) -> FlowPaths:
+    def _paths(self, query: str, node_of, a: SliceNode, b: SliceNode, *, src: str, dst: str, depth: int | None, max_paths: int) -> FlowPaths:
         """Run one of the two path queries and build the result. The two differ in what a node is
-        and nothing else, so the ordering, the cap and the truncation flag live here once."""
+        and nothing else, so the ordering, the cap and the completeness flag live here once.
+        ``a``/``b`` are the resolved endpoints (for the self-question's message); ``src``/``dst``
+        are the keys the query matches them by."""
+        check_distinct_endpoints(a, b)
+        rows = self._run(query.format(rels=SDG_REL_PATTERN, depth="" if depth is None else depth), src=src, dst=dst, cap=max_paths + 1, mods=self._modules)
+        paths = [flow_path([node_of(n) for n in r["ns"]], [(e["via"], e["var"], e["prov"]) for e in r["rs"]]) for r in rows[:max_paths]]
+        return FlowPaths(paths=paths, complete=len(rows) <= max_paths)
+
+    # Argument validation precedes name resolution on every accessor below, as it does on the
+    # local backend: a malformed ``depth``/``max_paths`` is a ``ValueError`` before any round trip,
+    # whichever backend answers.
+    def paths_between(self, src: str, dst: str, *, src_within: str, dst_within: str, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+        """How a value reaches another value (see :meth:`PythonAnalysisBackend.paths_between`)."""
         check_depth(depth)
         check_max_paths(max_paths)
-        check_distinct_endpoints(src, dst)
-        rows = self._run(query.format(rels=SDG_REL_PATTERN, depth="" if depth is None else depth), src=src, dst=dst, cap=max_paths + 1)
-        paths = [flow_path([node_of(n) for n in r["ns"]], [(e["via"], e["var"], e["prov"]) for e in r["rs"]]) for r in rows[:max_paths]]
-        return FlowPaths(paths, truncated=len(rows) > max_paths)
+        a = self.resolve_value(src, within=src_within)
+        b = self.resolve_value(dst, within=dst_within)
+        return self._paths(self._PATHS, _slice_node, a, b, src=a.ref, dst=b.ref, depth=depth, max_paths=max_paths)
 
-    def paths_between(self, src: str, dst: str, *, within: str, dst_within: str | None = None, depth: int | None = DEFAULT_DEPTH, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
-        """How a value reaches another value (see :meth:`PythonAnalysisBackend.paths_between`)."""
-        a = self.resolve_value(src, within=within)
-        b = self.resolve_value(dst, within=dst_within if dst_within is not None else within)
-        return self._paths(self._PATHS, _slice_node, src=a.ref, dst=b.ref, depth=depth, max_paths=max_paths)
-
-    def call_paths_between(self, src: str, dst: str, *, depth: int | None = DEFAULT_DEPTH, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+    def call_paths_between(self, src: str, dst: str, *, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
         """How one callable reaches another (see :meth:`PythonAnalysisBackend.call_paths_between`)."""
-        a = self.resolve_callable(src).callable
-        b = self.resolve_callable(dst).callable
-        return self._paths(self._CALL_PATHS, _call_neighbour, src=a, dst=b, depth=depth, max_paths=max_paths)
+        check_depth(depth)
+        check_max_paths(max_paths)
+        a = self.resolve_callable(src)
+        b = self.resolve_callable(dst)
+        return self._paths(self._CALL_PATHS, _call_neighbour, a, b, src=a.callable, dst=b.callable, depth=depth, max_paths=max_paths)
 
     #: ``WITH DISTINCT m`` before the membership test, for :attr:`_REACHES`' measured reason: it is
-    #: what makes this a pruning BFS instead of a trail enumeration.
+    #: what makes this a pruning BFS instead of a trail enumeration. Not scoped by ``_module``, for
+    #: :meth:`_slice`'s reason: body-node ids embed the application, so both the seed and every
+    #: ``$dsts`` id are this application's by construction.
     _VALUE_REACHES = "MATCH (a:PyBodyNode {{id:$src}})-[:{rels}*1..{depth}]->(m:PyBodyNode) WITH DISTINCT m WHERE m.id IN $dsts RETURN count(m) > 0 AS ok"
 
     #: Every value that *enters* ``$sig`` -- its parameters, and the globals and captures it reads.
-    _CALLEE_VALUES = "MATCH (c:PyCallable {signature:$sig})-[:PY_HAS_BODY_NODE]->(b:PyBodyNode {kind:'formal_in'}) RETURN collect(b.id) AS ids"
+    #: Scoped, because a signature is not application-stamped the way an id is.
+    _CALLEE_VALUES = "MATCH (c:PyCallable {signature:$sig})-[:PY_HAS_BODY_NODE]->(b:PyBodyNode {kind:'formal_in'}) WHERE c._module IN $mods RETURN collect(b.id) AS ids"
 
     def _value_reaches(self, src: str, dsts: List[str], depth: int | None) -> bool:
         """Does the value at ``src`` reach any of ``dsts``? The one predicate both mixed queries
         run, which is what makes ``flows_to_argument`` ⟹ ``flows_to_call`` a fact about their
         *targets* rather than an agreement between two pieces of Cypher."""
-        check_depth(depth)
         if not dsts:
             return False
         return bool(self._run(self._VALUE_REACHES.format(rels=SDG_REL_PATTERN, depth="" if depth is None else depth), src=src, dsts=dsts)[0]["ok"])
 
-    def flows_to_call(self, src: str, callee: str, *, within: str, depth: int | None = DEFAULT_DEPTH) -> bool:
+    def flows_to_call(self, src: str, callee: str, *, within: str, depth: int | None = None) -> bool:
         """Does this value reach any argument of a call to ``callee``
         (see :meth:`PythonAnalysisBackend.flows_to_call`)?"""
+        check_depth(depth)
         root = self.resolve_value(src, within=within)
         sig = self.resolve_callable(callee).callable
-        return self._value_reaches(root.ref, self._run(self._CALLEE_VALUES, sig=sig)[0]["ids"], depth)
+        return self._value_reaches(root.ref, self._run(self._CALLEE_VALUES, sig=sig, mods=self._modules)[0]["ids"], depth)
 
-    def flows_to_argument(self, src: str, callee: str, arg: str, *, within: str, depth: int | None = DEFAULT_DEPTH) -> bool:
+    def flows_to_argument(self, src: str, callee: str, arg: str, *, within: str, depth: int | None = None) -> bool:
         """Does this value reach ``callee``'s ``arg``
         (see :meth:`PythonAnalysisBackend.flows_to_argument`)?"""
+        check_depth(depth)
         root = self.resolve_value(src, within=within)
         return self._value_reaches(root.ref, [self.resolve_value(arg, within=callee).ref], depth)
 
-    #: One statement, both node kinds -- ``describe`` promises one round trip whatever it is handed,
-    #: and a mixed list of callables and body nodes is the normal case (a path's endpoints are one,
-    #: its interior the other). The ``:PyBodyNode`` half returns ``null`` code deliberately: the
-    #: graph carries no text below callable granularity, so those rows say "found, and there is
-    #: nothing to read", which is what keeps that apart from "not found" (see
-    #: :meth:`PythonAnalysisBackend.describe`).
+    #: One statement, every node kind -- ``describe`` promises one round trip whatever it is
+    #: handed, and a mixed list of callables and body nodes is the normal case (a path's endpoints
+    #: are one, its interior the other). The ``:PyBodyNode`` and ``:PyExternal`` arms return
+    #: ``null`` code deliberately: the graph carries no text below callable granularity, and a
+    #: ghost was never analysed, so those rows say "found, and there is nothing to read", which is
+    #: what keeps that apart from "not found" (see :meth:`PythonAnalysisBackend.describe`). Only
+    #: the callable arm is ``_module``-scoped: a body-node id and a ghost id both embed the
+    #: application, while a signature does not.
     _SOURCES = (
         "MATCH (c:PyCallable) WHERE c._module IN $mods AND (c.id IN $refs OR c.signature IN $refs) "
         "RETURN c.id AS id, c.signature AS sig, c.code AS code "
-        "UNION MATCH (b:PyBodyNode) WHERE b.id IN $refs RETURN b.id AS id, null AS sig, null AS code"
+        "UNION MATCH (b:PyBodyNode) WHERE b.id IN $refs RETURN b.id AS id, null AS sig, null AS code "
+        "UNION MATCH (e:PyExternal) WHERE e.id IN $refs RETURN e.id AS id, null AS sig, null AS code"
     )
 
     def _sources_for(self, refs: Sequence[str]) -> Dict[str, "str | None"]:

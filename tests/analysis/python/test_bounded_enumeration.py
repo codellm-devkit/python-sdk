@@ -47,6 +47,7 @@ Runs only against a live, pre-loaded graph — the same one, and the same enviro
 from __future__ import annotations
 
 import os
+import time
 from typing import Iterator, List
 
 import pytest
@@ -64,6 +65,12 @@ pytestmark = pytest.mark.skipif(
 # N+1 it replaces. This is a *shape* assertion — if it ever needs raising by more than a couple,
 # something has started scaling with the application again.
 _ROUND_TRIP_CEILING = 20
+
+#: Spec §8's wall-clock target for ``get_symbol_table`` / ``get_classes`` on the odoo graph, and
+#: the ceiling asserted: headroom over the measured ~10s so a slow machine does not flake at the
+#: boundary, low enough to catch a regression back towards the minutes this leg removed.
+_WALL_CLOCK_TARGET = 10
+_WALL_CLOCK_CEILING = 15
 
 
 def _walk_callables(callables: dict[str, PyCallable]) -> Iterator[PyCallable]:
@@ -99,10 +106,13 @@ def _assert_children_survived(classes: List[PyClass], callables: List[PyCallable
 
 def test_symbol_table_is_not_n_plus_one(live_analysis, count_round_trips):
     n = count_round_trips(live_analysis)
+    started = time.monotonic()
     table = live_analysis.get_symbol_table()
+    elapsed = time.monotonic() - started
 
     assert len(table) > 1000, "expected a real application"
     assert n["c"] < _ROUND_TRIP_CEILING, f"symbol table cost {n['c']} round trips; was 73,669 before the collapse"
+    assert elapsed < _WALL_CLOCK_CEILING, f"get_symbol_table took {elapsed:.1f}s; the leg's target is {_WALL_CLOCK_TARGET}s (was 382s), ceiling {_WALL_CLOCK_CEILING}s"
 
     classes = [c for m in table.values() for c in _walk_classes(m.types)]
     callables = [f for m in table.values() for f in _walk_callables(m.functions)]
@@ -114,10 +124,13 @@ def test_symbol_table_is_not_n_plus_one(live_analysis, count_round_trips):
 
 def test_classes_is_not_n_plus_one(live_analysis, count_round_trips):
     n = count_round_trips(live_analysis)
+    started = time.monotonic()
     classes = live_analysis.get_classes()
+    elapsed = time.monotonic() - started
 
     assert len(classes) > 1000
     assert n["c"] < _ROUND_TRIP_CEILING, f"get_classes cost {n['c']} round trips; was 62,435 before the collapse"
+    assert elapsed < _WALL_CLOCK_CEILING, f"get_classes took {elapsed:.1f}s; the leg's target is {_WALL_CLOCK_TARGET}s (was 348s), ceiling {_WALL_CLOCK_CEILING}s"
 
     all_classes = [c for top in classes.values() for c in _walk_classes({top.signature: top})]
     _assert_children_survived(all_classes, [m for c in all_classes for m in _walk_callables(c.callables)])

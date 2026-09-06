@@ -523,7 +523,7 @@ def check_max_paths(max_paths: int) -> int:
     return max_paths
 
 
-def check_distinct_endpoints(src: str, dst: str) -> None:
+def check_distinct_endpoints(src: SliceNode, dst: SliceNode) -> None:
     """A path query must have two different endpoints.
 
     Neo4j's shortest-path search *refuses* a self-question outright ("the shortest path algorithm
@@ -533,9 +533,20 @@ def check_distinct_endpoints(src: str, dst: str) -> None:
     indistinguishable from a proved absence of one, which is the ambiguous empty in another
     costume. ``reaches(x, x)`` is the accessor that answers the existence question, and it does
     terminate (measured: 0.03s, where the obvious ``EXISTS`` spelling never finished).
+
+    Takes the *resolved* endpoints rather than their refs so the message speaks the caller's
+    vocabulary (E6/E7): a value is named ``'kwargs' within '….configurator_apply'``, a callable
+    by its signature, and the advice is a call that actually runs -- ``reaches`` takes callable
+    names, so for a value the cycle question is asked of its enclosing callable.
     """
-    if src == dst:
-        raise ValueError(f"paths from {src!r} to itself are not answered; ask reaches({src!r}, {src!r}) whether a cycle exists")
+    if src.ref != dst.ref:
+        return
+    if src.kind == "callable":
+        raise ValueError(f"paths from {src.callable!r} to itself are not answered; ask reaches({src.callable!r}, {src.callable!r}) whether a cycle exists")
+    raise ValueError(
+        f"paths from {src.name!r} to itself (within {src.callable!r}) are not answered; a value reaches itself only through "
+        f"recursion, so ask reaches({src.callable!r}, {src.callable!r}) whether the callable is on a call cycle"
+    )
 
 
 def hop_sort_key(hops: Sequence[PathHop]) -> Tuple:
@@ -639,6 +650,18 @@ DEFAULT_MAX_NODES = 10_000
 #:
 #: 3 is informative but thin; 6 is where a forward slice first exceeds the cap and the default
 #: would start truncating again. 5 is the last depth that never does, in either direction.
+#:
+#: **Which accessors take it, and which deliberately do not.** The three *slices*
+#: (``slice_backward``, ``slice_forward``, ``backward_cone``) default to it: a bounded slice is a
+#: *complete* answer to a narrower question, and ``total`` says so. The two *predicates*
+#: (``reaches``, ``flows_to_call``, ``flows_to_argument``) and the two *path* queries
+#: (``paths_between``, ``call_paths_between``) default to ``None`` -- unbounded -- because a hop
+#: budget on a boolean or a path list is not a smaller answer but a **wrong** one: "no flow" and
+#: "no flow within five hops" collapse into the same ``False`` / ``[]`` with nothing in the result
+#: to tell them apart. Measured on odoo-slim-19: ``flows_to_call("kwargs", "Website.create",
+#: within="Website.configurator_apply")`` is ``False`` at five hops and ``True`` unbounded, and
+#: the matching ``paths_between`` is ``[]`` at five hops and ten paths at eight. ``depth=`` stays
+#: on all five as an explicit narrowing a caller can name; it is only the *default* that differs.
 DEFAULT_DEPTH = 5
 
 
@@ -1336,11 +1359,12 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         Returns ``bool`` and nothing else: it is deliberately not a degenerate ``Slice``, because
         "is there a path" and "what is on it" are different questions with different costs.
 
-        **``depth`` still defaults to ``None`` here, unlike the three traversals.** A default that
-        bounds a *slice* trades size for a complete answer to a narrower question; a default that
-        bounds a *boolean* would turn "there is no path" and "there is no path within 5 hops" into
-        the same ``False``, which is a wrong answer rather than a small one. It is not a cost
-        question either: measured over 200 random pairs on odoo-slim-19 the unbounded call
+        **``depth`` defaults to ``None`` here, unlike the three slices** -- see
+        :data:`DEFAULT_DEPTH` for the rule shared by all five predicate and path accessors. A
+        default that bounds a *slice* trades size for a complete answer to a narrower question; a
+        default that bounds a *boolean* would turn "there is no path" and "there is no path within
+        5 hops" into the same ``False``, which is a wrong answer rather than a small one. It is not
+        a cost question either: measured over 200 random pairs on odoo-slim-19 the unbounded call
         averages 20ms and its worst case is 112ms.
 
         Args:
@@ -1433,7 +1457,7 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
 
     # -----[ paths, mixed queries, hydration ]-----
     @abstractmethod
-    def paths_between(self, src: str, dst: str, *, within: str, dst_within: str | None = None, depth: int | None = DEFAULT_DEPTH, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+    def paths_between(self, src: str, dst: str, *, src_within: str, dst_within: str, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
         """How a value reaches another value — the *sequences*, where a slice is the set (E2).
 
         Each :class:`~cldk.analysis.commons.results.FlowPath` is an ordered list of
@@ -1450,28 +1474,37 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         evidence anyone wants. What comes back is the shortest hop-count, and every path of it up
         to ``max_paths``, ordered by :func:`hop_sort_key`.
 
-        **``within`` is required, and it is the *source's* callable.** A value is addressed by a
-        name plus the callable it enters, so two values need two callables; ``dst_within``
-        supplies the second and defaults to ``within``. That default is the *rarer* case, not the
-        common one: the only dataflow edge into a ``formal_in`` is ``PY_PARAM_IN`` from a caller's
-        argument (verified on the live graph: 229,035 such edges and no other kind), so two values
-        of the *same* callable are joined only through a cycle of calls. The interesting question
-        — "how does this parameter reach that parameter of the thing it calls" — is the
-        cross-callable one.
+        **Both callables are required, and neither defaults to the other.** A value is addressed
+        by a name plus the callable it enters, so two values need two callables. A ``dst_within``
+        that defaulted to ``src_within`` would make the *default* call the degenerate case: the
+        only dataflow edge into a ``formal_in`` is ``PY_PARAM_IN`` from a caller's argument
+        (verified on the live graph: 229,035 such edges and no other kind), so two values of the
+        *same* callable are joined only through a cycle of calls -- recursion. The question this
+        accessor exists for — "how does this parameter reach that parameter of the thing it
+        calls" — is the cross-callable one, and a caller asking the same-callable one writes it
+        out (``src_within=dst_within=...``) and gets a recursion answer knowingly.
+
+        **``depth`` defaults to ``None``**, unbounded, for the reason :data:`DEFAULT_DEPTH`
+        states for every predicate and path accessor: a bound here turns a real flow into ``[]``
+        with nothing in the result to say a bound fired. Measured: the ``kwargs`` →
+        ``vals_list`` flow from ``Website.configurator_apply`` into ``Website.create`` is ``[]`` at
+        five hops and ten paths at eight.
 
         Args:
             src: The value the flow starts at, named as a caller would (``"invoice_id"``).
             dst: The value it must reach.
-            within: The callable ``src`` enters. Required — :meth:`resolve_value` cannot address a
-                value without one, so a ``None`` default would be a signature that raises on it.
-            dst_within: The callable ``dst`` enters; defaults to ``within``.
-            depth: Most hops a path may take. Defaults to :data:`DEFAULT_DEPTH`; ``None`` for no
-                bound. A flow longer than this comes back as ``[]``, which is why the bound is a
-                named argument rather than a constant buried in the query.
-            max_paths: Most paths to return. The result's ``truncated`` says whether more existed.
+            src_within: The callable ``src`` enters. Required — :meth:`resolve_value` cannot
+                address a value without one, so a ``None`` default would be a signature that
+                raises on it.
+            dst_within: The callable ``dst`` enters. Required, and not defaulted (see above).
+            depth: Most hops a path may take; ``None`` (the default) for no bound. A flow longer
+                than an explicit ``depth`` comes back as ``[]``, which is why the bound is a named
+                argument the caller chose rather than a constant buried in the query.
+            max_paths: Most paths to return. The result's ``complete`` says whether more existed.
 
         Returns:
-            The paths, ordered; empty when no flow of at most ``depth`` hops exists.
+            A :class:`~cldk.analysis.commons.results.FlowPaths` -- the paths, ordered, plus
+            ``complete``; empty when no flow (of at most ``depth`` hops, when given) exists.
 
         Raises:
             AmbiguousName: ``src``, ``dst`` or either callable name matched more than one thing.
@@ -1481,7 +1514,7 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         """
 
     @abstractmethod
-    def call_paths_between(self, src: str, dst: str, *, depth: int | None = DEFAULT_DEPTH, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+    def call_paths_between(self, src: str, dst: str, *, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
         """How one callable reaches another — the same sequences, over the call graph.
 
         The evidence-carrying form of :meth:`reaches`: that answers *whether*, this answers *how*.
@@ -1490,13 +1523,15 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         inventing a provenance for it.
 
         Takes no ``within``: a callable is addressed by name alone (:meth:`resolve_callable`), and
-        a keyword that could only ever be ignored is worse than one that is absent.
+        a keyword that could only ever be ignored is worse than one that is absent. ``depth``
+        defaults to ``None`` as :meth:`reaches`'s does, for the reason :data:`DEFAULT_DEPTH`
+        states: a bounded path list that comes back ``[]`` cannot say whether the bound fired.
 
         Args:
             src: The calling callable, named as a caller would.
             dst: The callable it must reach.
-            depth: Most call hops. Defaults to :data:`DEFAULT_DEPTH`; ``None`` for no bound.
-            max_paths: Most paths to return; ``truncated`` says whether more existed.
+            depth: Most call hops; ``None`` (the default) for no bound.
+            max_paths: Most paths to return; the result's ``complete`` says whether more existed.
 
         Raises:
             AmbiguousName: Either name matched more than one callable.
@@ -1506,7 +1541,7 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         """
 
     @abstractmethod
-    def flows_to_call(self, src: str, callee: str, *, within: str, depth: int | None = DEFAULT_DEPTH) -> bool:
+    def flows_to_call(self, src: str, callee: str, *, within: str, depth: int | None = None) -> bool:
         """Does this value reach **any** argument of a call to ``callee``?
 
         The target is the set of ``callee``'s value-entry vertices — its parameters, and the
@@ -1518,12 +1553,20 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         deliberately **not** counted: "flows to" is a dataflow claim, and widening it to "was
         executed before" would make the answer true almost everywhere.
 
+        **One ``within``, scoping ``src`` only -- a stated decision.** ``paths_between`` takes two
+        callables because it takes two *values*; here the second endpoint is ``callee``, a
+        callable addressed by name alone (:meth:`resolve_callable`), so a second scope would have
+        nothing to scope. ``depth`` defaults to ``None`` for :data:`DEFAULT_DEPTH`'s reason: at
+        five hops this call answered ``False`` for a flow that exists (``kwargs`` of
+        ``Website.configurator_apply`` into ``Website.create``, measured), and a bare ``False`` on
+        a boolean carries no signal that a bound fired.
+
         Args:
             src: The value, named as a caller would.
             callee: The called callable, named as a caller would.
             within: The callable ``src`` enters. Required, for :meth:`paths_between`'s reason.
-            depth: Most hops. Defaults to :data:`DEFAULT_DEPTH`; ``None`` for no bound. ``False``
-                at the default is "not within five hops", which is why the bound is nameable.
+            depth: Most hops; ``None`` (the default) for no bound. With an explicit bound,
+                ``False`` means "not within ``depth`` hops", which is why the bound is nameable.
 
         Raises:
             AmbiguousName: ``src`` or ``callee`` matched more than one thing.
@@ -1532,7 +1575,7 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         """
 
     @abstractmethod
-    def flows_to_argument(self, src: str, callee: str, arg: str, *, within: str, depth: int | None = DEFAULT_DEPTH) -> bool:
+    def flows_to_argument(self, src: str, callee: str, arg: str, *, within: str, depth: int | None = None) -> bool:
         """Does this value reach the argument ``arg`` of a call to ``callee``?
 
         A **different question** from :meth:`flows_to_call`, and kept a separate implementation on
@@ -1555,8 +1598,10 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
             src: The value the flow starts at.
             callee: The called callable.
             arg: The callee's parameter (or global, or capture) by name.
-            within: The callable ``src`` enters. Required.
-            depth: Most hops. Defaults to :data:`DEFAULT_DEPTH`; ``None`` for no bound.
+            within: The callable ``src`` enters. Required; it scopes ``src`` only, as on
+                :meth:`flows_to_call` -- ``arg`` is scoped by ``callee`` itself.
+            depth: Most hops; ``None`` (the default) for no bound, for :data:`DEFAULT_DEPTH`'s
+                reason -- the same one :meth:`flows_to_call` and :meth:`reaches` give.
 
         Raises:
             AmbiguousName: A name matched more than one thing.
@@ -1596,6 +1641,11 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
           text (``:PyBodyNode`` has a line span and no ``code``; ``:PyModule`` has no source to
           slice one out of), which is the same wall :meth:`get_source` hits, and substituting the
           enclosing callable's text would be a wrong answer rather than a missing one.
+        * An ``external`` (what ``callees_of`` and the call-graph paths return for a call out of
+          the project) hydrates on neither, by definition: it was never analysed, so there is no
+          text anywhere. It is still *found* -- both backends know the ghost -- so
+          ``describe(callees_of(x))`` composes and comes back with ``source=None`` on those,
+          rather than raising as if the ref were stale.
 
         Args:
             nodes: The positions to hydrate. An empty sequence costs no round trip and returns
@@ -1609,16 +1659,18 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
             KeyError: A ``ref`` names nothing this backend can find. A ref comes from this SDK, so
                 one that resolves to nothing means it was minted against a different application
                 or a stale graph — a defect worth stopping on, not a ``None`` to be discovered
-                three layers later.
+                three layers later. The message names the positions in the caller's vocabulary
+                (callable and ``file:line``), never by ``ref`` (E6).
             TypeError: An element carries no ``ref`` (see :func:`as_slice_node`).
         """
         out = [as_slice_node(n) for n in nodes]
         if not out:
             return []
         sources = self._sources_for([n.ref for n in out])
-        missing = [n.ref for n in out if n.ref not in sources]
+        missing = [n for n in out if n.ref not in sources]
         if missing:
-            raise KeyError(f"{len(missing)} of {len(out)} refs name nothing in this application: {missing[:5]}")
+            named = [f"{n.callable} ({n.file}:{n.line})" if n.file else n.callable for n in missing[:5]]
+            raise KeyError(f"{len(missing)} of {len(out)} positions name nothing in this application: {', '.join(named)}")
         return [n.model_copy(update={"source": sources[n.ref]}) for n in out]
 
     @abstractmethod

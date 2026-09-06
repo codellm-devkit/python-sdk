@@ -40,6 +40,7 @@ Three groups, separated by what evidence each is worth:
 
 from __future__ import annotations
 
+import inspect
 import os
 import re
 import textwrap
@@ -51,10 +52,15 @@ from codeanalyzer.neo4j.rows import RowBuilder
 
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.resolve import value_candidate
-from cldk.analysis.commons.results import FlowPath, PathHop, SliceNode, prov_rank
+from cldk.analysis.commons.resolve import body_node_kind
+from cldk.analysis.commons.results import EdgePage, FlowPath, FlowPaths, PathHop, Slice, SliceNode, prov_rank
+from cldk.analysis.python.python_analysis import PythonAnalysis
+from cldk.analysis.python.neo4j import PyNeo4jBackend
 from cldk.analysis.python.backend import (
     DDG_ORDER,
     DEFAULT_DEPTH,
+    DEFAULT_MAX_PATHS,
+    PythonAnalysisBackend,
     DEFAULT_PAGE_SIZE,
     cdg_sort_key,
     cfg_sort_key,
@@ -65,7 +71,7 @@ from cldk.analysis.python.backend import (
     hop_sort_key,
 )
 from cldk.analysis.python.codeanalyzer.codeanalyzer import PyCodeanalyzer
-from cldk.models.python import DdgEdge
+from cldk.models.python import DdgEdge, PyCallEdge
 from cldk.utils.exceptions import AmbiguousName, CodeanalyzerUsageException, SelectorNotInGraph
 
 live_only = pytest.mark.skipif(
@@ -242,7 +248,7 @@ def test_a_callable_with_no_dependence_is_an_honest_empty(local_l4, local_l2):
     with pytest.raises(CodeanalyzerUsageException):
         local_l2.get_ddg("Portal.charge")
     empty = edge_page(DdgEdge, "src.pay.Portal.nothing", [], DDG_ORDER, DEFAULT_PAGE_SIZE, None)
-    assert empty.edges == [] and empty.total == 0 and empty.next_cursor is None and not empty.has_more
+    assert empty.edges == [] and empty.total == 0 and empty.next_cursor is None and empty.complete
 
 
 # ----------------------------------------------------------------------------------------------
@@ -279,7 +285,7 @@ def test_a_page_of_the_worst_callable_is_bounded_and_says_what_remains(live_anal
     page = live_analysis.get_ddg(HEAVY_CALLABLE, page_size=1_000)
     assert len(page.edges) == 1_000
     assert page.total == HEAVY_DDG_EDGES
-    assert page.has_more and page.next_cursor
+    assert not page.complete and page.next_cursor
 
 
 @live_only
@@ -374,13 +380,13 @@ def test_the_local_sort_key_is_total_on_a_real_analyzer_run(local_l4):
 
 
 def test_a_whole_answer_says_so_and_a_partial_one_does_not(local_l4):
-    """``has_more`` distinguishes "this is everything" from "there is more" from one page (E5), and an
+    """``complete`` distinguishes "this is everything" from "there is more" from one page (E5), and an
     empty page from a level-4 analysis still means "no dependence" (D7)."""
     whole = local_l4.get_ddg("Portal.charge", page_size=10_000)
-    assert whole.next_cursor is None and not whole.has_more
+    assert whole.next_cursor is None and whole.complete
     assert whole.total == len(whole.edges)
     first = local_l4.get_ddg("Portal.charge", page_size=1)
-    assert first.has_more and first.total == whole.total and len(first.edges) == 1
+    assert not first.complete and first.total == whole.total and len(first.edges) == 1
 
 
 def test_a_cursor_from_somewhere_else_is_refused_rather_than_answered(local_l4):
@@ -422,7 +428,7 @@ def test_a_cursor_from_somewhere_else_is_refused_rather_than_answered(local_l4):
 #
 # So the cap stays, and ``total`` is what makes it honest: the whole slice's size is reported on
 # a capped result, so "here are 10,000 of 195,784" is one call and the caller learns the question
-# was too broad rather than walking twenty pages to find out. ``truncated`` is derived from those
+# was too broad rather than walking twenty pages to find out. ``complete`` is derived from those
 # two rather than stored, so they cannot disagree.
 # ==============================================================================================
 HEAVY_STATEMENT_SLICE = 195_785  # backward slice of any statement in configurator_apply
@@ -435,7 +441,7 @@ def test_backward_slice_of_a_parameter(live_analysis, busy_callable):
     assert sl.nodes, "a used parameter has a backward slice"
     assert sl.root.name == "invoice_id"
     assert sl.resolved, "the result says what the name matched"
-    assert not sl.truncated
+    assert sl.complete
     assert all("can://" not in n.callable for n in sl.nodes)
 
 
@@ -450,7 +456,7 @@ def test_a_parameter_of_an_uncalled_callable_has_only_itself_behind_it(live_anal
     """
     sl = live_analysis.slice_backward("invoice_id", within=busy_callable)
     assert [n.ref for n in sl.nodes] == [sl.root.ref]
-    assert sl.total == 1 and not sl.truncated
+    assert sl.total == 1 and sl.complete
 
 
 @live_only
@@ -460,7 +466,7 @@ def test_forward_slice_goes_where_the_value_goes(live_analysis, busy_callable):
     ``depth=None`` because the claim is about the *whole* forward cone — Task 6 got that by
     default and this now has to ask for it."""
     sl = live_analysis.slice_forward("invoice_id", within=busy_callable, depth=None)
-    assert sl.total == 50 and len(sl.nodes) == 50 and not sl.truncated
+    assert sl.total == 50 and len(sl.nodes) == 50 and sl.complete
     assert all("can://" not in n.callable and "can://" not in (n.name or "") for n in sl.nodes)
     assert sl.root in sl.nodes, "a slice contains its seed"
 
@@ -473,7 +479,7 @@ def test_slice_respects_max_nodes_and_says_what_it_dropped(live_analysis, busy_c
     result says how much it left behind — is the same either way."""
     sl = live_analysis.slice_forward("invoice_id", within=busy_callable, depth=None, max_nodes=2)
     assert len(sl.nodes) <= 2
-    assert sl.truncated is True, "a cap that fires must be visible"
+    assert sl.complete is False, "a cap that fires must be visible"
     assert sl.total == 50, "and the result says how big the whole answer was"
 
 
@@ -494,7 +500,7 @@ def test_depth_bounds_a_slice_without_capping_it(live_analysis, busy_callable):
     reach for this."""
     near = live_analysis.slice_forward("invoice_id", within=busy_callable, depth=2)
     whole = live_analysis.slice_forward("invoice_id", within=busy_callable, depth=None)
-    assert near.total == 22 and not near.truncated
+    assert near.total == 22 and near.complete
     assert {n.ref for n in near.nodes} < {n.ref for n in whole.nodes}
 
 
@@ -508,9 +514,9 @@ def test_the_pathological_slice_is_bounded_and_reports_its_true_size(live_analys
     same value is one node, because nothing calls it: the two directions of the same seed differ
     by five orders of magnitude, which is the distribution the cap exists for."""
     fwd = live_analysis.slice_forward("kwargs", within=HEAVY_CALLABLE, depth=None, max_nodes=10)
-    assert len(fwd.nodes) == 10 and fwd.total == HEAVY_FORWARD_SLICE and fwd.truncated
+    assert len(fwd.nodes) == 10 and fwd.total == HEAVY_FORWARD_SLICE and not fwd.complete
     back = live_analysis.slice_backward("kwargs", within=HEAVY_CALLABLE, depth=None)
-    assert back.total == 1 and not back.truncated
+    assert back.total == 1 and back.complete
 
 
 #: A *global* the callable reads, in a callable nothing about this test needs to be heavy: its
@@ -526,16 +532,16 @@ DEPTH_SEED_UNBOUNDED = 195_790
 def test_the_default_depth_answers_completely_where_unbounded_truncates(live_analysis):
     """The reason the default is finite (Task 6.1). Unbounded, this seed's backward slice is a
     fifth of the application and the caller gets 10,000 arbitrary nodes of it — 5% of a closure,
-    flagged ``truncated`` and useless. At the default depth the same call answers the narrower
-    question *completely*: a small slice, ``total`` equal to what came back, ``truncated`` False.
+    flagged incomplete and useless. At the default depth the same call answers the narrower
+    question *completely*: a small slice, ``total`` equal to what came back, ``complete`` True.
     Both halves are asserted here, because the change is worth nothing if the second one moves."""
     near = live_analysis.slice_backward(DEPTH_SEED_VALUE, within=DEPTH_SEED_CALLABLE)
     assert near.total == DEPTH_SEED_AT_DEFAULT
-    assert len(near.nodes) == near.total and not near.truncated
+    assert len(near.nodes) == near.total and near.complete
 
     whole = live_analysis.slice_backward(DEPTH_SEED_VALUE, within=DEPTH_SEED_CALLABLE, depth=None)
     assert whole.total == DEPTH_SEED_UNBOUNDED, "depth=None still means the whole closure"
-    assert len(whole.nodes) == 10_000 and whole.truncated
+    assert len(whole.nodes) == 10_000 and not whole.complete
     assert {n.ref for n in near.nodes} <= {n.ref for n in whole.nodes} or near.total < whole.total
 
 
@@ -724,7 +730,7 @@ def test_a_forward_slice_is_exactly_the_reachable_set_of_the_published_edges(sli
 
     sl = slice_l4.slice_forward("a", within="alone", depth=None)
     assert {n.ref for n in sl.nodes} == expected
-    assert sl.total == len(expected) and not sl.truncated
+    assert sl.total == len(expected) and sl.complete
 
 
 def test_a_backward_slice_of_an_uncalled_parameter_is_the_seed_alone(slice_l4):
@@ -762,7 +768,7 @@ def test_no_analyzer_marker_reaches_the_caller(slice_l4):
 def test_local_slices_are_capped_and_say_so(slice_l4):
     whole = slice_l4.slice_forward("a", within="alone")
     capped = slice_l4.slice_forward("a", within="alone", max_nodes=2)
-    assert len(capped.nodes) == 2 and capped.truncated
+    assert len(capped.nodes) == 2 and not capped.complete
     assert capped.total == whole.total
     assert [n.ref for n in capped.nodes] == [n.ref for n in whole.nodes][:2]
 
@@ -873,7 +879,7 @@ FLOW_PATHS, FLOW_HOPS = 6, 3
 
 @live_only
 def test_paths_carry_ordered_hops_with_evidence(live_analysis):
-    paths = live_analysis.paths_between(FLOW_SRC, FLOW_DST, within=FLOW_FROM, dst_within=FLOW_TO, max_paths=3)
+    paths = live_analysis.paths_between(FLOW_SRC, FLOW_DST, src_within=FLOW_FROM, dst_within=FLOW_TO, max_paths=3)
     assert paths, "a flow that exists comes back as paths"
     p = paths[0]
     assert p.hops, "a path is a sequence of hops"
@@ -889,7 +895,7 @@ def test_a_known_flow_matches_hop_for_hop(live_analysis):
     variable, the provenance, and what each endpoint *is*. A path that reached the right node by
     the wrong route, or that reported ``PY_PARAM_IN`` as ``data``, fails here.
     """
-    p = live_analysis.paths_between(FLOW_SRC, FLOW_DST, within=FLOW_FROM, dst_within=FLOW_TO)[0]
+    p = live_analysis.paths_between(FLOW_SRC, FLOW_DST, src_within=FLOW_FROM, dst_within=FLOW_TO)[0]
     assert [(h.via, h.var, tuple(h.prov)) for h in p.hops] == [
         ("data", "invoice_id", ("reaching-defs",)),
         ("data", "invoice_id", ("reaching-defs",)),
@@ -904,7 +910,7 @@ def test_a_known_flow_matches_hop_for_hop(live_analysis):
 def test_a_path_is_a_joined_sequence(live_analysis):
     """E2, structurally: consecutive hops share an endpoint, so the hops are a *walk* and not a
     bag of edges that happen to mention the same nodes."""
-    for p in live_analysis.paths_between(FLOW_SRC, FLOW_DST, within=FLOW_FROM, dst_within=FLOW_TO):
+    for p in live_analysis.paths_between(FLOW_SRC, FLOW_DST, src_within=FLOW_FROM, dst_within=FLOW_TO):
         assert len(p.hops) == FLOW_HOPS
         assert all(a.to.ref == b.frm.ref for a, b in zip(p.hops, p.hops[1:]))
 
@@ -913,11 +919,11 @@ def test_a_path_is_a_joined_sequence(live_analysis):
 def test_max_paths_is_a_reproducible_prefix_and_says_when_it_cut(live_analysis):
     """E5 on a path list. The order is ``hop_sort_key``'s -- shortest first, then hop by hop on
     ``(via, var, to.ref)`` -- so a cap takes a *prefix* of a stated order rather than whichever
-    paths the database returned first, and ``truncated`` says a cap fired."""
-    whole = live_analysis.paths_between(FLOW_SRC, FLOW_DST, within=FLOW_FROM, dst_within=FLOW_TO, max_paths=100)
-    assert len(whole) == FLOW_PATHS and not whole.truncated
-    capped = live_analysis.paths_between(FLOW_SRC, FLOW_DST, within=FLOW_FROM, dst_within=FLOW_TO, max_paths=2)
-    assert capped.truncated is True
+    paths the database returned first, and ``complete`` says whether a cap fired."""
+    whole = live_analysis.paths_between(FLOW_SRC, FLOW_DST, src_within=FLOW_FROM, dst_within=FLOW_TO, max_paths=100)
+    assert len(whole) == FLOW_PATHS and whole.complete
+    capped = live_analysis.paths_between(FLOW_SRC, FLOW_DST, src_within=FLOW_FROM, dst_within=FLOW_TO, max_paths=2)
+    assert capped.complete is False
     keys = [hop_sort_key(p.hops) for p in whole]
     assert [hop_sort_key(p.hops) for p in capped] == keys[:2]
     assert keys == sorted(keys), "the order is hop_sort_key's, not an arrival order"
@@ -929,7 +935,7 @@ def test_a_self_question_is_refused_on_the_graph_too(live_analysis):
     answers this with a raw ``DatabaseError`` ("the shortest path algorithm does not work when the
     start and end nodes are the same")."""
     with pytest.raises(ValueError) as e:
-        live_analysis.paths_between(FLOW_SRC, FLOW_SRC, within=FLOW_FROM)
+        live_analysis.paths_between(FLOW_SRC, FLOW_SRC, src_within=FLOW_FROM, dst_within=FLOW_FROM)
     assert "reaches" in str(e.value)
     with pytest.raises(ValueError):
         live_analysis.call_paths_between(FLOW_FROM, FLOW_FROM)
@@ -939,8 +945,8 @@ def test_a_self_question_is_refused_on_the_graph_too(live_analysis):
 def test_depth_bounds_a_path_query_and_the_bound_is_nameable(live_analysis):
     """A bounded search that found nothing must be distinguishable from no flow, which is why
     ``depth`` is an argument and not a constant inside the query."""
-    assert not live_analysis.paths_between(FLOW_SRC, FLOW_DST, within=FLOW_FROM, dst_within=FLOW_TO, depth=2)
-    assert live_analysis.paths_between(FLOW_SRC, FLOW_DST, within=FLOW_FROM, dst_within=FLOW_TO, depth=FLOW_HOPS)
+    assert not live_analysis.paths_between(FLOW_SRC, FLOW_DST, src_within=FLOW_FROM, dst_within=FLOW_TO, depth=2)
+    assert live_analysis.paths_between(FLOW_SRC, FLOW_DST, src_within=FLOW_FROM, dst_within=FLOW_TO, depth=FLOW_HOPS)
 
 
 @live_only
@@ -1105,8 +1111,8 @@ def test_local_paths_carry_the_interprocedural_hop(slice_l4):
     the graph's ``PY_PARAM_IN``, and both must report it in the caller's word. The same shape the
     live graph gives for ``invoice_id`` -> ``_process_transaction``, which is the point: the two
     backends are not agreeing on a predicate while walking different edges."""
-    paths = slice_l4.paths_between("invoice_id", "x", within="Portal.charge", dst_within="helper")
-    assert paths and not paths.truncated
+    paths = slice_l4.paths_between("invoice_id", "x", src_within="Portal.charge", dst_within="helper")
+    assert paths and paths.complete
     p = paths[0]
     assert [h.via for h in p.hops] == ["data", "data", "argument"]
     assert p.hops[0].frm.name == "invoice_id" and p.hops[-1].to.name == "x"
@@ -1124,13 +1130,13 @@ def test_local_paths_agree_with_the_edges_the_accessors_publish(slice_l4):
     published = {(e.src, e.dst) for e in slice_l4.get_ddg("Portal.charge", page_size=100_000).edges}
     published |= {(e.src, e.dst) for e in slice_l4.get_cdg("Portal.charge", page_size=100_000).edges}
     crossing = {(e.src, e.dst) for e in slice_l4.application.param_in or []}
-    paths = slice_l4.paths_between("invoice_id", "x", within="Portal.charge", dst_within="helper", depth=None)
+    paths = slice_l4.paths_between("invoice_id", "x", src_within="Portal.charge", dst_within="helper", depth=None)
     assert paths
     for p in paths:
         for h in p.hops:
             assert (h.frm.ref, h.to.ref) in (crossing if h.via == "argument" else published)
 
-    assert slice_l4.paths_between("a", "b", within="alone") == [], "two parameters of one callable are not joined"
+    assert len(slice_l4.paths_between("a", "b", src_within="alone", dst_within="alone")) == 0, "two parameters of one callable are not joined"
     assert [hop_sort_key(p.hops) for p in paths] == sorted(hop_sort_key(p.hops) for p in paths), "the same order as the graph's"
 
 
@@ -1138,11 +1144,11 @@ def test_local_call_paths_are_the_call_graph(slice_l4):
     paths = slice_l4.call_paths_between("Portal.charge", "helper")
     assert [[h.to.callable for h in p.hops] for p in paths] == [["src.pay.helper"]]
     assert [h.via for h in paths[0].hops] == ["call"]
-    assert slice_l4.call_paths_between("helper", "Portal.charge") == [], "and it is directed"
+    assert len(slice_l4.call_paths_between("helper", "Portal.charge")) == 0, "and it is directed"
 
 
 @pytest.mark.parametrize("call", [
-    lambda b: b.paths_between("a", "a", within="alone"),
+    lambda b: b.paths_between("a", "a", src_within="alone", dst_within="alone"),
     lambda b: b.call_paths_between("helper", "helper"),
 ])
 def test_a_path_from_a_node_to_itself_is_refused_not_answered_empty(slice_l4, call):
@@ -1186,7 +1192,7 @@ def test_describe_refuses_something_with_no_address(slice_l4):
 
 def test_local_paths_need_dataflow_and_reuse_the_one_level_guard(local_l2):
     for call in (
-        lambda b: b.paths_between("invoice_id", "x", within="Portal.charge", dst_within="helper"),
+        lambda b: b.paths_between("invoice_id", "x", src_within="Portal.charge", dst_within="helper"),
         lambda b: b.flows_to_call("invoice_id", "helper", within="Portal.charge"),
         lambda b: b.flows_to_argument("invoice_id", "helper", arg="x", within="Portal.charge"),
     ):
@@ -1204,7 +1210,7 @@ def test_local_call_paths_do_not_need_dataflow(local_l2):
 
 
 @pytest.mark.parametrize("call", [
-    lambda b: b.paths_between("a", "b", within="alone", max_paths=0),
+    lambda b: b.paths_between("a", "b", src_within="alone", dst_within="alone", max_paths=0),
     lambda b: b.call_paths_between("Portal.charge", "helper", max_paths=0),
 ])
 def test_max_paths_below_one_is_refused(slice_l4, call):
@@ -1213,10 +1219,268 @@ def test_max_paths_below_one_is_refused(slice_l4, call):
 
 
 @pytest.mark.parametrize("call", [
-    lambda b: b.paths_between("a", "b", within="alone", depth=0),
+    lambda b: b.paths_between("a", "b", src_within="alone", dst_within="alone", depth=0),
     lambda b: b.call_paths_between("Portal.charge", "helper", depth=-1),
     lambda b: b.flows_to_call("a", "helper", within="alone", depth="2"),
 ])
 def test_a_bad_depth_is_refused_by_the_path_accessors(slice_l4, call):
     with pytest.raises(ValueError):
         call(slice_l4)
+
+
+# ----------------------------------------------------------------------------------------------
+# Fix round: which accessors bound themselves by default, and why that is one rule, not five.
+# ----------------------------------------------------------------------------------------------
+BOUNDED_BY_DEFAULT = ("slice_backward", "slice_forward", "backward_cone")
+UNBOUNDED_BY_DEFAULT = ("reaches", "paths_between", "call_paths_between", "flows_to_call", "flows_to_argument")
+
+
+@pytest.mark.parametrize("cls", [PythonAnalysisBackend, PythonAnalysis, PyNeo4jBackend, PyCodeanalyzer])
+def test_predicates_and_paths_are_unbounded_by_default_and_slices_are_not(cls):
+    """A slice bounded at five hops is a complete answer to a narrower question; a predicate or
+    a path list bounded at five hops is a wrong answer with no signal. Pinned on the ABC, the
+    facade and both backends, so a default cannot drift on one of the four surfaces."""
+    for name in UNBOUNDED_BY_DEFAULT:
+        assert inspect.signature(getattr(cls, name)).parameters["depth"].default is None, f"{cls.__name__}.{name}"
+    for name in BOUNDED_BY_DEFAULT:
+        assert inspect.signature(getattr(cls, name)).parameters["depth"].default == DEFAULT_DEPTH, f"{cls.__name__}.{name}"
+
+
+def test_the_rule_is_stated_once_and_cited_by_all_five():
+    """The reasoning ``reaches`` gave for its unbounded default now lives on ``DEFAULT_DEPTH`` and
+    names every accessor it applies to; each of the five points back at it rather than restating
+    (or forgetting) it."""
+    import cldk.analysis.python.backend as backend_module
+
+    source = inspect.getsource(backend_module)
+    rule = source[: source.index("\nDEFAULT_DEPTH = 5")]
+    rule = rule[rule.rindex("#: Hops from the seed when the caller does not say") :]
+    for name in UNBOUNDED_BY_DEFAULT + BOUNDED_BY_DEFAULT:
+        assert name in rule, f"the DEFAULT_DEPTH rule does not name {name}"
+    assert "wrong" in rule and "complete" in rule
+    for name in UNBOUNDED_BY_DEFAULT:
+        assert "DEFAULT_DEPTH" in getattr(PythonAnalysisBackend, name).__doc__, f"{name} does not cite the rule"
+
+
+#: The flow that decided it: measured ``False`` at five hops and ``True`` unbounded.
+HEAVY_FLOW_SRC, HEAVY_FLOW_CALLEE, HEAVY_FLOW_WITHIN, HEAVY_FLOW_ARG = "kwargs", "Website.create", "Website.configurator_apply", "vals_list"
+
+
+@live_only
+def test_the_default_flow_answer_is_the_unbounded_one(live_analysis):
+    """Before this round the default answered ``False`` for a flow that exists. The default must
+    now equal ``depth=None``, and the slices' bound must be demonstrably the wrong answer here."""
+    kw = dict(within=HEAVY_FLOW_WITHIN)
+    assert live_analysis.flows_to_call(HEAVY_FLOW_SRC, HEAVY_FLOW_CALLEE, **kw) is True
+    assert live_analysis.flows_to_call(HEAVY_FLOW_SRC, HEAVY_FLOW_CALLEE, depth=None, **kw) is True
+    assert live_analysis.flows_to_call(HEAVY_FLOW_SRC, HEAVY_FLOW_CALLEE, depth=DEFAULT_DEPTH, **kw) is False, "the slices' bound is a wrong answer on a boolean"
+    assert live_analysis.flows_to_argument(HEAVY_FLOW_SRC, HEAVY_FLOW_CALLEE, arg=HEAVY_FLOW_ARG, **kw) is True
+    assert live_analysis.flows_to_argument(HEAVY_FLOW_SRC, HEAVY_FLOW_CALLEE, arg=HEAVY_FLOW_ARG, **kw) == live_analysis.flows_to_argument(
+        HEAVY_FLOW_SRC, HEAVY_FLOW_CALLEE, arg=HEAVY_FLOW_ARG, depth=None, **kw
+    )
+
+
+@live_only
+def test_the_default_path_answer_is_the_unbounded_one(live_analysis):
+    """The same flow as paths: ``[]`` at five hops with ``complete=True`` looked like a proved
+    absence. The default is now the unbounded shortest paths, ten of them, flagged incomplete."""
+    kw = dict(src_within=HEAVY_FLOW_WITHIN, dst_within=HEAVY_FLOW_CALLEE)
+    default = live_analysis.paths_between(HEAVY_FLOW_SRC, HEAVY_FLOW_ARG, **kw)
+    assert len(default) == DEFAULT_MAX_PATHS and not default.complete
+    unbounded = live_analysis.paths_between(HEAVY_FLOW_SRC, HEAVY_FLOW_ARG, depth=None, **kw)
+    assert [hop_sort_key(p.hops) for p in default] == [hop_sort_key(p.hops) for p in unbounded]
+    bounded = live_analysis.paths_between(HEAVY_FLOW_SRC, HEAVY_FLOW_ARG, depth=DEFAULT_DEPTH, **kw)
+    assert len(bounded) == 0 and bounded.complete, "the slices' bound would have reported no flow"
+    assert inspect.signature(live_analysis.call_paths_between).parameters["depth"].default is None
+
+
+# ----------------------------------------------------------------------------------------------
+# Fix round: the caller's vocabulary in every message, and composition across accessors.
+# ----------------------------------------------------------------------------------------------
+def _follow_reaches_advice(analysis, message: str) -> bool:
+    """The advice in a self-question refusal must be a call that runs: extract it and run it."""
+    found = re.search(r"reaches\('([^']+)', '([^']+)'\)", message)
+    assert found, f"no runnable reaches(...) advice in: {message}"
+    return analysis.reaches(found.group(1), found.group(2))
+
+
+@live_only
+def test_a_self_question_is_refused_in_the_callers_vocabulary_on_the_graph(live_analysis):
+    with pytest.raises(ValueError) as value_case:
+        live_analysis.paths_between(FLOW_SRC, FLOW_SRC, src_within=FLOW_FROM, dst_within=FLOW_FROM)
+    msg = str(value_case.value)
+    assert "can://" not in msg and "formal_in" not in msg, msg
+    assert repr(FLOW_SRC) in msg and "recursion" in msg
+    assert isinstance(_follow_reaches_advice(live_analysis, msg), bool)
+    with pytest.raises(ValueError) as callable_case:
+        live_analysis.call_paths_between(FLOW_FROM, FLOW_FROM)
+    msg = str(callable_case.value)
+    assert "can://" not in msg and isinstance(_follow_reaches_advice(live_analysis, msg), bool)
+
+
+def test_a_self_question_is_refused_in_the_callers_vocabulary_locally(slice_l4):
+    with pytest.raises(ValueError) as value_case:
+        slice_l4.paths_between("a", "a", src_within="alone", dst_within="alone")
+    msg = str(value_case.value)
+    assert "can://" not in msg and "formal_in" not in msg and "'a'" in msg and "src.pay.alone" in msg
+    assert _follow_reaches_advice(slice_l4, msg) is False, "alone does not recurse"
+    with pytest.raises(ValueError) as callable_case:
+        slice_l4.call_paths_between("helper", "helper")
+    assert _follow_reaches_advice(slice_l4, str(callable_case.value)) is False
+
+
+@live_only
+def test_describe_composes_with_callees_of(live_analysis, busy_callable):
+    """``callees_of`` deliberately returns externals; ``describe`` takes anything with a ref. The
+    composition used to raise ``KeyError`` on the five externals. An external has no source by
+    definition, so it comes back found-with-``None`` -- not as a failed lookup."""
+    callees = live_analysis.callees_of(busy_callable)
+    assert any(c.kind == "external" for c in callees), "the fixture callable calls out of the project"
+    described = live_analysis.describe(callees)
+    assert [n.ref for n in described] == [n.ref for n in callees]
+    assert all(n.source is None for n in described if n.kind == "external")
+    assert any(n.source for n in described if n.kind == "callable"), "declared callees still hydrate"
+
+
+def test_local_describe_composes_with_callees_of(local_l4):
+    callees = local_l4.callees_of("Portal.charge")
+    assert callees and all(c.kind == "external" for c in callees), "charge calls only range()"
+    described = local_l4.describe(callees)
+    assert [n.ref for n in described] == [n.ref for n in callees]
+    assert all(n.source is None for n in described)
+
+
+@live_only
+def test_a_stale_ref_is_reported_by_position_not_by_ref(live_analysis):
+    good = live_analysis.backward_cone([FLOW_TO]).nodes[0]
+    with pytest.raises(KeyError) as e:
+        live_analysis.describe([good, good.model_copy(update={"ref": "can://python/nope/nothing.py/nope"})])
+    assert "can://" not in str(e.value) and good.callable in str(e.value) and f"{good.file}:{good.line}" in str(e.value)
+
+
+def test_a_local_stale_ref_is_reported_by_position_not_by_ref(slice_l4):
+    node = slice_l4.callers_of("helper")[0]
+    with pytest.raises(KeyError) as e:
+        slice_l4.describe([node.model_copy(update={"ref": "can://python/nope/x.py/nope"})])
+    assert "can://" not in str(e.value) and "src.pay.Portal.charge" in str(e.value)
+
+
+# ----------------------------------------------------------------------------------------------
+# Fix round: parity of the call-graph walks -- no route through a ghost, on either backend.
+# ----------------------------------------------------------------------------------------------
+#: A real ``callable -> ghost -> callable`` chain on odoo-slim-19 (there are two). With an
+#: intermediate-unconstrained walk, ``reaches`` answered ``True`` here although no all-callable
+#: route exists, and ``call_paths_between`` returned a path with an ``external`` interior node.
+GHOST_CHAIN_SRC = "odoo.addons.base.models.ir_actions_report.IrActionsReport._run_wkhtmltoimage"
+GHOST_CHAIN_DST = "odoo.tools.parse_version.chk"
+
+
+@live_only
+def test_the_call_graph_walks_never_route_through_a_ghost(live_analysis):
+    backend = live_analysis.backend
+    via_ghost = backend._run(
+        "MATCH (a:PyCallable {signature:$a})-[:PY_CALLS]->(g:PyExternal)-[:PY_CALLS]->(t:PyCallable {signature:$t}) RETURN count(g) AS c",
+        a=GHOST_CHAIN_SRC, t=GHOST_CHAIN_DST,
+    )[0]["c"]
+    if not via_ghost:
+        pytest.skip("this graph no longer carries the callable -> ghost -> callable chain the test is about")
+    assert live_analysis.reaches(GHOST_CHAIN_SRC, GHOST_CHAIN_DST) is False, "a ghost has no body, so it is not a hop control can take"
+    paths = live_analysis.call_paths_between(GHOST_CHAIN_SRC, GHOST_CHAIN_DST)
+    assert len(paths) == 0 and paths.complete
+    cone = live_analysis.backward_cone([GHOST_CHAIN_DST], depth=None)
+    assert GHOST_CHAIN_SRC not in {n.callable for n in cone.nodes}
+    assert all(n.kind == "callable" for n in cone.nodes)
+    assert GHOST_CHAIN_SRC not in {c.callable for c in live_analysis.callers_of(GHOST_CHAIN_DST)}, "callers_of already agreed; the walks now do too"
+
+
+@live_only
+def test_every_interior_node_of_a_call_path_is_a_callable(live_analysis):
+    for p in live_analysis.call_paths_between(FLOW_FROM, "AccountMove.write"):
+        assert all(h.frm.kind == "callable" and h.to.kind == "callable" for h in p.hops)
+
+
+def test_the_local_call_graph_keeps_only_declared_origin_edges_to_callables_or_externals():
+    """The shape the graph backend's ``_call_rows`` produces, pinned on the local builder with an
+    edge of each kind it must drop: one originating at a ghost, one landing on a class node."""
+    declared = {"can://p/m.py/f()": "m.f", "can://p/m.py/g()": "m.g"}
+    class_ids = {"can://p/m.py/K"}
+    edges = [
+        PyCallEdge(src="can://p/m.py/f()", dst="can://p/m.py/g()", weight=1, prov=[]),
+        PyCallEdge(src="can://p/m.py/f()", dst="can://p/@external/builtins/print", weight=1, prov=[]),
+        PyCallEdge(src="can://p/@external/lib/callback", dst="can://p/m.py/g()", weight=1, prov=[]),
+        PyCallEdge(src="can://p/m.py/g()", dst="can://p/m.py/K", weight=1, prov=[]),
+    ]
+    graph = PyCodeanalyzer._build_call_graph(edges, declared, class_ids)
+    assert set(graph.edges) == {("m.f", "m.g"), ("m.f", "can://p/@external/builtins/print")}
+    assert "can://p/m.py/K" not in graph and "can://p/@external/lib/callback" not in graph
+
+
+def test_a_real_local_call_graph_has_the_graph_backends_shape(local_l4):
+    declared = {c.signature for c, _, _, _, _ in local_l4._iter_callables()}
+    externals = set(local_l4.get_external_symbols())
+    graph = local_l4.get_call_graph()
+    assert graph.number_of_edges() > 0
+    for src, dst in graph.edges:
+        assert src in declared, f"{src} originates outside the application"
+        assert dst in declared or dst in externals, f"{dst} is neither a callable nor a known external"
+
+
+def test_a_local_cone_is_ordered_by_ref_like_the_graphs(slice_l4):
+    """``Slice.nodes`` documents ref order; the local cone sorted by signature, which is a
+    different key. Both backends now take the cap's prefix from the same order."""
+    cone = slice_l4.backward_cone(["helper"], depth=None)
+    refs = [n.ref for n in cone.nodes]
+    assert len(refs) == 2 and refs == sorted(refs)
+    assert [n.ref for n in slice_l4.backward_cone(["helper"], depth=None, max_nodes=1).nodes] == refs[:1]
+
+
+# ----------------------------------------------------------------------------------------------
+# Fix round: one vocabulary for files and kinds, and one validation order.
+# ----------------------------------------------------------------------------------------------
+def test_local_locate_speaks_the_repo_relative_path(slice_l4):
+    """``LocateResult.module.path`` was the absolute analysis-machine path locally and the
+    repo-relative key over Neo4j; the join test that would have caught it was Neo4j-only."""
+    key = "src/pay.py"
+    assert key in slice_l4.application.symbol_table
+    inside = slice_l4.locate(key, 5)
+    assert inside.callable and inside.callable.name == "helper"
+    assert inside.module.path == key and not os.path.isabs(inside.module.path)
+    assert slice_l4.describe([inside])[0].file == key, "as_slice_node carries the same vocabulary"
+    assert slice_l4.resolve_callable("helper").file == key, "SliceNode.file shares it"
+    scope = slice_l4.locate(key, 1)
+    assert scope.module.path == key and scope.diagnostics[0].code == "module_scope"
+    assert key in scope.diagnostics[0].message and str(slice_l4.project_dir) not in scope.diagnostics[0].message
+
+
+@live_only
+def test_slice_node_kinds_are_the_graphs_vocabulary_translated(live_analysis):
+    """``SliceNode.KINDS`` is pinned against the graph's own ``:PyBodyNode.kind`` values, each
+    translated the way both backends translate it, plus the two call-graph kinds."""
+    graph_kinds = {r["k"] for r in live_analysis.backend._run("MATCH (b:PyBodyNode) WHERE b._module IN $mods RETURN DISTINCT b.kind AS k", mods=live_analysis.backend._modules)}
+    assert graph_kinds, "no body nodes?"
+    translated = set()
+    for kind in graph_kinds:
+        for var in (["x", "<global>:m::g", "<capture>:c"] if kind == "formal_in" else ["x", None, "<return>"]):
+            translated.add(body_node_kind(kind, var)[0])
+    assert translated | {"callable", "external"} == SliceNode.KINDS
+    for kind in SliceNode.KINDS:
+        assert f"``{kind}``" in SliceNode.__doc__, f"the docstring does not list {kind}"
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda b: b.get_cfg("no_such_callable", page_size=0),
+        lambda b: b.get_ddg("no_such_callable", page_size=0),
+        lambda b: b.paths_between("a", "b", src_within="no_such", dst_within="no_such", depth=0),
+        lambda b: b.call_paths_between("no_such", "no_such_either", max_paths=0),
+        lambda b: b.flows_to_call("a", "no_such", within="no_such", depth=0),
+        lambda b: b.flows_to_argument("a", "no_such", arg="x", within="no_such", depth=0),
+    ],
+)
+def test_argument_validation_precedes_name_resolution_on_both_backends(py_either, call):
+    """``page_size=0`` plus a bad name raised ``ValueError`` over Neo4j and ``SelectorNotInGraph``
+    locally. Now the cheap argument check comes first on both, before any round trip."""
+    with pytest.raises(ValueError) as e:
+        call(py_either)
+    assert not isinstance(e.value, SelectorNotInGraph), str(e.value)

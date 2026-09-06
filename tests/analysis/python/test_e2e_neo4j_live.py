@@ -1195,7 +1195,7 @@ def test_a_capped_slice_reports_the_size_it_could_not_return(analysis, crossing_
     sl = analysis.slice_forward(crossing_flow["src_value"], within=crossing_flow["src_callable"], depth=None)
     capped = analysis.slice_forward(crossing_flow["src_value"], within=crossing_flow["src_callable"], depth=None, max_nodes=1)
     assert capped.total == sl.total
-    assert capped.truncated is (sl.total > 1)
+    assert capped.complete is (sl.total <= 1)
     assert [n.ref for n in capped.nodes] == [n.ref for n in sl.nodes][:1]
 
 
@@ -1222,7 +1222,7 @@ def test_paths_between_explains_the_flow_the_slice_only_asserts(analysis, crossi
     reached = {n.ref for n in analysis.slice_forward(crossing_flow["src_value"], within=crossing_flow["src_callable"], depth=None).nodes}
     paths = analysis.paths_between(
         crossing_flow["src_value"], crossing_flow["dst_value"],
-        within=crossing_flow["src_callable"], dst_within=crossing_flow["dst_callable"],
+        src_within=crossing_flow["src_callable"], dst_within=crossing_flow["dst_callable"],
     )
     assert paths, "the graph says this flow exists, so the paths accessor must find it"
     for p in paths:

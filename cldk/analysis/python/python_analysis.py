@@ -1201,7 +1201,7 @@ class PythonAnalysis:
 
             cone = py.backward_cone(["AccountMove.write"])
             cone.total                              # within five call hops, the default
-            py.backward_cone([...], depth=None)     # the whole cone: 9,286 for every .write
+            py.backward_cone([...], depth=None)     # the whole cone: 9,282 for every .write
 
         Args:
             sinks: The callables to walk back from. A bare string is refused — pass ``["name"]``
@@ -1267,7 +1267,7 @@ class PythonAnalysis:
         return self.backend.callees_of(name, in_class=in_class, in_module=in_module)
 
     # -----[ paths, mixed queries, hydration ]-----
-    def paths_between(self, src: str, dst: str, *, within: str, dst_within: str | None = None, depth: int | None = DEFAULT_DEPTH, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+    def paths_between(self, src: str, dst: str, *, src_within: str, dst_within: str, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
         """Return how a value reaches another value — the ordered hops, with the evidence for each.
 
         Where :meth:`slice_forward` answers *what a value reaches* as a set,
@@ -1276,7 +1276,7 @@ class PythonAnalysis:
 
             for path in py.paths_between(
                 "invoice_id", "invoice_ids",
-                within="PaymentPortal.invoice_transaction",
+                src_within="PaymentPortal.invoice_transaction",
                 dst_within="PaymentPortal._process_transaction",
             ):
                 for hop in path.hops:
@@ -1284,21 +1284,24 @@ class PythonAnalysis:
                 print("weakest evidence:", path.weakest.via, path.weakest.prov)
 
         Only **shortest** paths come back, and at most ``max_paths`` of them; the result's
-        ``truncated`` says whether there were more. ``weakest`` on each path names the hop that
-        caps the claim — the most approximate one (``ssa`` > ``reaching-defs`` > ``points-to``).
+        ``complete`` says whether that was all of them. ``weakest`` on each path names the hop
+        that caps the claim — the most approximate one (``ssa`` > ``reaching-defs`` >
+        ``points-to``).
 
-        ``within`` names the callable ``src`` enters and is required, because a value cannot be
-        addressed without one. ``dst_within`` names ``dst``'s and defaults to ``within``; the
-        cross-callable spelling is the common one, since a value only ever enters a callable from
-        one of its callers.
+        Both callables are required. A value cannot be addressed without the callable it enters,
+        and ``dst_within`` does not default to ``src_within`` because two values of one callable
+        are joined only through recursion — a default would make the default call the degenerate
+        case. ``depth`` is unbounded by default, as on every predicate and path accessor: a bound
+        turns a real flow into an empty result with nothing to say the bound fired (see
+        :data:`~cldk.analysis.python.backend.DEFAULT_DEPTH`).
 
         Args:
             src: The value the flow starts at, named as you would say it (``"invoice_id"``).
             dst: The value it must reach.
-            within: The callable ``src`` enters.
-            dst_within: The callable ``dst`` enters. Defaults to ``within``.
-            depth: Most hops a path may take. Defaults to five; ``None`` for no bound. A flow
-                longer than this comes back empty.
+            src_within: The callable ``src`` enters.
+            dst_within: The callable ``dst`` enters.
+            depth: Most hops a path may take; ``None`` (the default) for no bound. A flow longer
+                than an explicit ``depth`` comes back empty.
             max_paths: Most paths to return.
 
         Raises:
@@ -1312,9 +1315,9 @@ class PythonAnalysis:
             :meth:`slice_forward`: The same reachability as a set, with a ``total``.
             :meth:`call_paths_between`: The same shape over the call graph.
         """
-        return self.backend.paths_between(src, dst, within=within, dst_within=dst_within, depth=depth, max_paths=max_paths)
+        return self.backend.paths_between(src, dst, src_within=src_within, dst_within=dst_within, depth=depth, max_paths=max_paths)
 
-    def call_paths_between(self, src: str, dst: str, *, depth: int | None = DEFAULT_DEPTH, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+    def call_paths_between(self, src: str, dst: str, *, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
         """Return how one callable reaches another, as ordered call hops.
 
         The evidence-carrying form of :meth:`reaches`: that says *whether*, this says *how*::
@@ -1328,8 +1331,8 @@ class PythonAnalysis:
         Args:
             src: The calling callable.
             dst: The callable it must reach.
-            depth: Most call hops. Defaults to five; ``None`` for no bound.
-            max_paths: Most paths to return; ``truncated`` says whether there were more.
+            depth: Most call hops; ``None`` (the default) for no bound, as on :meth:`reaches`.
+            max_paths: Most paths to return; the result's ``complete`` says whether that was all.
 
         Raises:
             AmbiguousName: Either name matched more than one callable.
@@ -1339,18 +1342,21 @@ class PythonAnalysis:
         """
         return self.backend.call_paths_between(src, dst, depth=depth, max_paths=max_paths)
 
-    def flows_to_call(self, src: str, callee: str, *, within: str, depth: int | None = DEFAULT_DEPTH) -> bool:
+    def flows_to_call(self, src: str, callee: str, *, within: str, depth: int | None = None) -> bool:
         """Does ``src`` reach **any** argument of a call to ``callee``?
 
         A dataflow claim, not a "runs before" one: the target is the set of values that *enter*
-        ``callee``, so ``True`` means the value was passed into a real call.
+        ``callee``, so ``True`` means the value was passed into a real call. ``within`` scopes
+        ``src`` only — ``callee`` is a callable, addressed by name alone, so there is nothing else
+        to scope. Unbounded by default, like every predicate here: at five hops this returned
+        ``False`` for a flow that exists, and a bare ``False`` cannot say a bound fired.
 
         Args:
             src: The value, named as you would say it.
             callee: The called callable.
             within: The callable ``src`` enters.
-            depth: Most hops. Defaults to five; ``None`` for no bound — so ``False`` at the default
-                means "not within five hops", which is why the bound is nameable.
+            depth: Most hops; ``None`` (the default) for no bound. With an explicit bound,
+                ``False`` means "not within ``depth`` hops", which is why the bound is nameable.
 
         Raises:
             AmbiguousName: A name matched more than one thing.
@@ -1361,7 +1367,7 @@ class PythonAnalysis:
         """
         return self.backend.flows_to_call(src, callee, within=within, depth=depth)
 
-    def flows_to_argument(self, src: str, callee: str, arg: str, *, within: str, depth: int | None = DEFAULT_DEPTH) -> bool:
+    def flows_to_argument(self, src: str, callee: str, arg: str, *, within: str, depth: int | None = None) -> bool:
         """Does ``src`` reach the argument ``arg`` of a call to ``callee``?
 
         **Not** the same question as :meth:`flows_to_call`, which is why it is a separate call: on
@@ -1376,8 +1382,8 @@ class PythonAnalysis:
             src: The value the flow starts at.
             callee: The called callable.
             arg: The callee's parameter (or global, or capture) by name.
-            within: The callable ``src`` enters.
-            depth: Most hops. Defaults to five; ``None`` for no bound.
+            within: The callable ``src`` enters; ``arg`` is scoped by ``callee`` itself.
+            depth: Most hops; ``None`` (the default) for no bound, as on :meth:`flows_to_call`.
 
         Raises:
             AmbiguousName: A name matched more than one thing.

@@ -42,11 +42,15 @@ so the caller is bounded without anything being discarded.
 :class:`Slice` is the same discipline applied to a *traversal*, and lands on the other answer —
 capped rather than paged — because the measured shape of the thing is different. See its
 docstring for the numbers that decided it.
+
+:class:`BoundedResult` is the one protocol the three bounded shapes (:class:`EdgePage`,
+:class:`Slice`, :class:`FlowPaths`) share, so a caller composing them at runtime reads
+completeness the same way from each.
 """
 
-from typing import Generic, Literal, TypeVar
+from typing import ClassVar, Generic, Iterator, Literal, TypeVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 
 from cldk.models.python import BodyNode, Span
 
@@ -189,13 +193,20 @@ class SliceNode(BaseModel):
             dataflow vertex, not a span in the file — this is the enclosing callable's first line,
             which is where a reader would go looking for it.
         callable: The enclosing callable's dotted signature. Never a ``can://`` id.
-        kind: What kind of position this is: ``parameter``, ``global``, ``capture``, ``argument``,
-            ``statement``, ``call``, ``return`` or ``callable`` (the callable itself, what
-            :meth:`~cldk.analysis.python.backend.PythonAnalysisBackend.resolve_callable` returns).
-            ``global`` and ``capture`` are the two values that *enter* a callable without being
-            parameters — a module global the callable reads and a name closed over from an
-            enclosing scope. On a real application 84% of the values entering a callable are
-            globals, so collapsing them into ``parameter`` mislabelled most of the domain.
+        kind: What kind of position this is — one of :attr:`KINDS`. The three that *enter* a
+            callable are ``parameter``, ``global`` (a module global the callable reads — 84% of
+            entering values on a real application, so collapsing them into ``parameter``
+            mislabelled most of the domain) and ``capture`` (a name closed over from an enclosing
+            scope). Around a call site: ``argument`` (the value bound to a callee's parameter,
+            named for that parameter) and ``return`` (a value coming back out of a call, or the
+            callable's own result — unnamed). The body kinds pass through in the analyzer's
+            already-English spelling: ``statement``, ``call``, ``branch``, ``loop``, ``raise``,
+            ``handler``, and the synthetic ``entry`` / ``exit`` bookends. Finally ``callable``
+            (the callable itself, what
+            :meth:`~cldk.analysis.python.backend.PythonAnalysisBackend.resolve_callable` returns)
+            and ``external`` (a call target that was never analysed, from ``callees_of`` and the
+            call-graph paths). Fifteen in all, pinned by a live test against the graph's own
+            ``:PyBodyNode.kind`` vocabulary.
         name: The value's name where it has one (a parameter, a global, an argument), ``None``
             where it does not (a statement). Always the readable identifier as written in the
             source — never the analyzer's internal spelling of it.
@@ -212,6 +223,16 @@ class SliceNode(BaseModel):
             ``parameter`` / ``global`` / ``capture`` are dataflow vertices with no source span, so
             neither backend has text to return for one.
     """
+
+    #: Every value :attr:`kind` can take, in the caller's vocabulary.
+    KINDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "parameter", "global", "capture",  # entering a callable (formal_in)
+            "argument", "return",  # around a call (actual_in; actual_out / formal_out)
+            "statement", "call", "branch", "loop", "raise", "handler", "entry", "exit",  # body
+            "callable", "external",  # the call graph's own vertices
+        }
+    )
 
     file: str
     line: int
@@ -261,7 +282,41 @@ class EntrypointCoverage(BaseModel):
 E = TypeVar("E", bound=BaseModel)
 
 
-class EdgePage(BaseModel, Generic[E]):
+class BoundedResult(BaseModel):
+    """The one completeness protocol every bounded result speaks (E5: a bound is never silent).
+
+    Three accessor families return a bounded answer in three shapes — a page of edges, a capped
+    set of positions, a capped list of paths — and each shape keeps the extra fields its bound
+    needs (``next_cursor`` / ``total`` / ``roots`` / …). What they must not do is spell "was that
+    everything?" three ways. So each exposes **``complete: bool``**, and it is a *serialised*
+    field: ``model_dump()`` carries it, so a result written to JSON and read back by another
+    process still says whether it was whole. On :class:`EdgePage` and :class:`Slice` it is a
+    pydantic computed field derived from the data (``next_cursor is None``; ``total ==
+    len(nodes)``) so it cannot disagree with them; on :class:`FlowPaths` it is stored, because a
+    path list's truncation is known only to the query that produced it.
+
+    **A result whose payload is a list behaves as that list.** ``for x in page`` yields the edges,
+    ``len(slice)`` counts the nodes, ``paths[0]`` is the first path and ``if paths:`` is honest —
+    ``False`` when empty. Without this, pydantic's default ``__iter__`` yields ``(field, value)``
+    tuples and ``bool()`` is always ``True``, which was verified to be exactly what a caller
+    writing ``for edge in page:`` got. The payload field is named by :meth:`_items`, once per
+    shape, so the three cannot drift.
+    """
+
+    def _items(self) -> list:  # pragma: no cover - every concrete shape overrides this
+        raise NotImplementedError
+
+    def __iter__(self) -> Iterator:  # type: ignore[override]
+        return iter(self._items())
+
+    def __len__(self) -> int:
+        return len(self._items())
+
+    def __getitem__(self, index):
+        return self._items()[index]
+
+
+class EdgePage(BoundedResult, Generic[E]):
     """One page of an edge set, plus everything needed to tell what is missing from it.
 
     Per-callable scoping bounds *which* edges an accessor may return; it does not bound *how
@@ -273,9 +328,10 @@ class EdgePage(BaseModel, Generic[E]):
 
     E5 requires that a bound is never silent. It is satisfied here without a second call:
     ``total`` is the size of the whole answer, ``next_cursor`` is ``None`` exactly when this page
-    is the end of it, and the two together let a caller distinguish "this is everything" from
-    "there is more" — and, for the D7 case, an empty *page* whose ``total`` is 0 from a page that
-    merely ran out of room.
+    is the end of it, and :attr:`complete` (the shared :class:`BoundedResult` protocol) says so
+    directly — so a caller distinguishes "this is everything" from "there is more" from one page,
+    and, for the D7 case, an empty *page* whose ``total`` is 0 from a page that merely ran out of
+    room.
 
     **Why a page model and not a generator of pages.** A cursor is a value: it survives being
     serialized into a result, stored, and passed back later by a different process, which is how
@@ -299,14 +355,18 @@ class EdgePage(BaseModel, Generic[E]):
     total: int
     next_cursor: str | None = None
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
-    def has_more(self) -> bool:
-        """Whether edges remain after this page. Derived from ``next_cursor`` rather than stored,
-        so the two cannot disagree."""
-        return self.next_cursor is not None
+    def complete(self) -> bool:
+        """Whether this page ends the set. Derived from ``next_cursor`` rather than stored, so the
+        two cannot disagree; serialised, so ``model_dump()`` carries it."""
+        return self.next_cursor is None
+
+    def _items(self) -> list:
+        return self.edges
 
 
-class Slice(BaseModel):
+class Slice(BoundedResult):
     """A set of positions reached by one traversal, with the size of the whole answer alongside.
 
     **A slice is a set** (E2): no duplicates, and the order carries no meaning beyond making the
@@ -341,8 +401,8 @@ class Slice(BaseModel):
     but it is still an unprincipled 5% of a closure, and a caller who never passes ``depth=`` was
     getting it every time. Bounded, the same call answers completely: over 120 connected seeds
     measured in both directions, no slice at five hops reaches the cap. A slice you are reading is
-    therefore normally one where :attr:`truncated` is ``False`` and :attr:`total` is the size of
-    :attr:`nodes` — the truncated kind is now what you get when you ask for ``depth=None``.
+    therefore normally one where :attr:`complete` is ``True`` and :attr:`total` is the size of
+    :attr:`nodes` — the incomplete kind is now what you get when you ask for ``depth=None``.
 
     Attributes:
         nodes: The positions in the slice, ordered by :attr:`SliceNode.ref` and including the
@@ -367,11 +427,16 @@ class Slice(BaseModel):
     total: int
     diagnostics: list[Diagnostic] = []
 
+    @computed_field  # type: ignore[prop-decorator]
     @property
-    def truncated(self) -> bool:
-        """Whether a cap fired. Derived from :attr:`total` and :attr:`nodes` rather than stored, so
-        the two cannot disagree — the same construction as :attr:`EdgePage.has_more`."""
-        return self.total > len(self.nodes)
+    def complete(self) -> bool:
+        """Whether :attr:`nodes` is the whole slice — ``False`` exactly when a cap fired. Derived
+        from :attr:`total` and :attr:`nodes` rather than stored, so the two cannot disagree — the
+        same construction as :attr:`EdgePage.complete` — and serialised with the model."""
+        return self.total == len(self.nodes)
+
+    def _items(self) -> list:
+        return self.nodes
 
     @property
     def root(self) -> SliceNode:
@@ -476,30 +541,41 @@ class FlowPath(BaseModel):
     def weakest(self) -> PathHop:
         """The hop that caps how strongly this flow can be stated — the *most approximate* one.
 
-        Derived rather than stored, the same construction as :attr:`Slice.truncated`, so it cannot
-        disagree with :attr:`hops` and ``weakest in hops`` holds by definition. Ranked by
-        :func:`prov_rank` (``ssa`` > ``reaching-defs`` > ``points-to``, unlabelled strongest);
-        ``min`` is stable, so a tie is broken by position and the earliest weakest hop wins —
-        which keeps the answer reproducible instead of depending on iteration order.
+        A plain property, **not** serialised: ``model_dump()`` carries :attr:`hops` and each hop's
+        ``prov``, which is everything needed to recover it (``min(hops, key=lambda h:
+        prov_rank(h.prov))``), so writing it out too would store one fact twice. Derived rather
+        than stored so it cannot disagree with :attr:`hops`, and ``weakest in hops`` holds by
+        definition. Ranked by :func:`prov_rank` (``ssa`` > ``reaching-defs`` > ``points-to``,
+        unlabelled strongest); ``min`` is stable, so a tie is broken by position and the earliest
+        weakest hop wins — which keeps the answer reproducible instead of depending on iteration
+        order.
         """
         return min(self.hops, key=lambda h: prov_rank(h.prov))
 
 
-class FlowPaths(list):
-    """The paths a query returned, and whether there were more of them.
+class FlowPaths(BoundedResult):
+    """The paths a query returned, and whether that was all of them.
 
-    A ``list`` subclass rather than a model: everything a caller does with paths — index them,
-    iterate them, ``if paths:`` — is what a list does, and the only thing missing was E5's "a
-    bound is never silent". So :attr:`truncated` rides alongside instead of a wrapper type that
-    would make every caller write ``.paths`` first.
+    A model, not a ``list`` subclass — the earlier ``list`` form carried ``truncated`` as a plain
+    attribute, so ``json.dumps`` dropped it and ``model_dump`` did not exist (verified). It keeps
+    list behaviour through :class:`BoundedResult` because everything a caller does with paths —
+    index, iterate, ``if paths:`` — is what a list does, and making them write ``.paths`` first
+    would be friction with no information in it.
 
-    :attr:`truncated` is a flag and not a ``total`` (which is how :class:`Slice` reports the same
-    thing) because counting *every* shortest path costs a second full traversal to produce a
-    number a caller cannot act on differently: at ``max_paths`` witnesses, "there are more" is the
-    entire actionable content. The extent question — how far a value reaches — is
-    ``slice_forward``, which does report its ``total``.
+    :attr:`complete` is stored here rather than derived, because it is a flag and not a ``total``:
+    counting *every* shortest path costs a second full traversal to produce a number a caller
+    cannot act on differently — at ``max_paths`` witnesses, "there were more" is the entire
+    actionable content. The extent question — how far a value reaches — is ``slice_forward``,
+    which does report its ``total``.
+
+    Attributes:
+        paths: The paths, in :func:`~cldk.analysis.python.backend.hop_sort_key` order.
+        complete: ``False`` when ``max_paths`` cut the list; ``True`` when these are all the
+            shortest paths there are (including when there are none).
     """
 
-    def __init__(self, paths, truncated: bool = False) -> None:
-        super().__init__(paths)
-        self.truncated = truncated
+    paths: list[FlowPath]
+    complete: bool
+
+    def _items(self) -> list:
+        return self.paths
