@@ -8,6 +8,10 @@ changelog:
       - dependabot
       - github-actions
   categories:
+    # Order matters: a PR lands in the FIRST category whose label it carries, so a
+    # breaking fix must be seen as breaking before it is seen as a fix.
+    - title: 🚨 Breaking Changes
+      labels: [breaking]
     - title: 🚀 Features
       labels: [enhancement, kind/feature]
     - title: 🐛 Fixes
@@ -20,7 +24,5 @@ changelog:
       labels: [documentation, doc]
     - title: 🚦 Tests
       labels: [test]
-    - title: 🚨 Breaking Changes
-      labels: [breaking]
     - title: 🛠 Other Changes
       labels: ["*"]
