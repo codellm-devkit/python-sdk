@@ -132,9 +132,9 @@ class GraphSchemaMismatch(RuntimeError):
                 "Re-ingest the project with codeanalyzer-python>=1.4.0."
             )
         elif not found:
-            generation = "The graph has no relationship types at all — an empty or asset-only database, not a codeanalyzer-python application graph."
+            generation = "The graph has no relationship types at all — an empty or asset-only database, not a codeanalyzer application graph."
         else:
-            generation = "This does not match any known codeanalyzer-python generation this backend supports."
+            generation = "This does not match any codeanalyzer generation this backend supports."
         return f"Graph schema mismatch: expected relationship types {sorted(expected)}, missing {sorted(missing)}. Found on the graph: {sorted(found)}. {generation}"
 
 

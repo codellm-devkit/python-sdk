@@ -41,6 +41,69 @@ and the message names what it found and the floor. What attaching to each genera
 
 ---
 
+## TypeScript
+
+Status: leg 2.5a (`codeanalyzer-typescript` 1.2.0 pinned; graphs emitted by 1.2.0 or newer
+served). What attaches today is the **1.x accessor surface** — symbol table, classes / interfaces /
+enums / type aliases / namespaces, methods, fields, call graph, call sites, decorators, externals,
+synthesized callables, the four bulk accessors and the repository-artifact layer — on both backends,
+every accessor exercised against the live superset-frontend graph (2,184 `.ts/.tsx` files plus its
+JavaScript). **The query surface documented in the rest of this reference** (`locate`, the scoping
+keywords, `get_cfg`/`get_cdg`/`get_ddg`, slices, reachability, paths, `describe`, entrypoints,
+`SelectorNotInGraph` / `AmbiguousName`) **is not on `TypeScriptAnalysis` yet — it arrives in leg
+2.5b**, on codeanalyzer-typescript 1.3.0. Design record:
+`docs/design/specs/2026-09-06-leg-2.5-typescript.md`.
+
+```python
+ts = CLDK.typescript(project_path=None, backend=Neo4jConnectionConfig(
+    uri="bolt://localhost:7690", username="neo4j", password="…",
+    application_name="my-app"))          # the --app-name the graph was emitted with
+
+ts = CLDK.typescript(project_path="/path/to/project", backend=TSCodeAnalyzerConfig())
+```
+
+**Graph version floor: codeanalyzer-typescript 1.2.0.** The probe requires `TS_HAS_MODULE` /
+`TS_HAS_METHOD` / `TS_HAS_BODY_NODE` / `TS_CALLS`, then reads `analyzer_version` off
+`:Application {id: can://typescript/<app>}`.
+
+| graph | attach |
+| --- | --- |
+| emitted by 0.4.x (`:Symbol` / `CALLS` / `HAS_CALLSITE`), a Python graph, an empty database | refused (`GraphSchemaMismatch`), naming the relationship types found and missing |
+| `analyzer_version` below 1.2.0, unparsable, or no `:Application` with that id (an absent application) | refused, naming what was found and the floor |
+| 1.2.0 and newer | served, silent — a graph emitted by an unreleased `main` build also stamps `1.2.0` and cannot be told apart (filed upstream) |
+
+**JavaScript is in scope.** The analyzer ids `.js/.jsx/.mjs/.cjs` modules `can://javascript/<app>/…`
+beside `can://typescript/<app>/…`; every accessor reads both, and every Neo4j statement is scoped
+by the two prefixes. Path values are repo-relative module keys with their real extension
+(`src/pages/Home.tsx`).
+
+**The call graph keeps TypeScript's endpoints.** A module (top-level code) can be a caller and a
+class (`new X()`) a callee; nodes carry `kind` ∈ `module | class | interface | enum | type_alias |
+namespace | callable | external`. Filter on `kind == "callable"` for Python's shape.
+
+**What the 1.2.0 Neo4j projection does not carry.** The in-memory backend reads `analysis.json`
+and has everything below; the graph does not. Where an empty value would read as a fact, the Neo4j
+backend **raises** (`CodeanalyzerExecutionException`, naming the gap); otherwise the model's
+documented empty comes back.
+
+| accessor / field | on `TSNeo4jBackend` |
+| --- | --- |
+| `get_imports()`, `get_exports()` | **raises** — no import/export vocabulary in the graph |
+| `get_unresolved_config_reads()` | **raises** — `config_reads` not projected; `[]` would read as "every read resolved" |
+| `get_method_parameters(cls, m)` | **raises** for a found method (no parameters on `:TSCallable`); `[]` for a missing one |
+| `TSCallable.parameters`, `comments`, `type_parameters`, `overload_signatures`, `body`, `cfg`/`cdg`/`ddg`/`summary` | empty |
+| `TSEnumMember.value`; `TSModule.source` / `imports` / `exports` / `comments`; decorator positions; a call site's `method_name`, receiver and argument facets | empty / `None` |
+| `code` on any node | the text the graph projected for that node, on a line-only span (columns `0`) |
+| `get_call_targets(sig)` | an unresolved call site contributes `""` (in-memory: the call's `method_name`) |
+| `get_synthesized_callables()` | keyed by the anonymous node's own id (the analyzer's older compatibility key is JSON-only) |
+
+One more is the emitter's: a value and a type of the same name (`const X = …` + `interface X`)
+share one id, so the graph holds one node with both labels. The backend rebuilds it as the facet
+its containment edge and labels name and raises when they name none or several — three such nodes
+on superset-frontend.
+
+---
+
 ## The four moves
 
 Most questions decompose into these. Start here, then use the tables below.
