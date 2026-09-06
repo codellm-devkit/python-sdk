@@ -50,7 +50,7 @@ from codeanalyzer.neo4j.project import _project_program_graphs
 from codeanalyzer.neo4j.rows import RowBuilder
 
 from cldk.analysis import AnalysisLevel
-from cldk.analysis.python.backend import DDG_ORDER, DEFAULT_PAGE_SIZE, cdg_sort_key, cfg_sort_key, ddg_sort_key, decode_cursor, edge_page, encode_cursor
+from cldk.analysis.python.backend import DDG_ORDER, DEFAULT_DEPTH, DEFAULT_PAGE_SIZE, cdg_sort_key, cfg_sort_key, ddg_sort_key, decode_cursor, edge_page, encode_cursor
 from cldk.analysis.python.codeanalyzer.codeanalyzer import PyCodeanalyzer
 from cldk.models.python import DdgEdge
 from cldk.utils.exceptions import AmbiguousName, CodeanalyzerUsageException
@@ -442,8 +442,11 @@ def test_a_parameter_of_an_uncalled_callable_has_only_itself_behind_it(live_anal
 
 @live_only
 def test_forward_slice_goes_where_the_value_goes(live_analysis, busy_callable):
-    """Measured: 50 nodes, and every one of them addressed in the caller's vocabulary."""
-    sl = live_analysis.slice_forward("invoice_id", within=busy_callable)
+    """Measured: 50 nodes, and every one of them addressed in the caller's vocabulary.
+
+    ``depth=None`` because the claim is about the *whole* forward cone — Task 6 got that by
+    default and this now has to ask for it."""
+    sl = live_analysis.slice_forward("invoice_id", within=busy_callable, depth=None)
     assert sl.total == 50 and len(sl.nodes) == 50 and not sl.truncated
     assert all("can://" not in n.callable and "can://" not in (n.name or "") for n in sl.nodes)
     assert sl.root in sl.nodes, "a slice contains its seed"
@@ -455,7 +458,7 @@ def test_slice_respects_max_nodes_and_says_what_it_dropped(live_analysis, busy_c
     (the test above measures it), so a cap could never fire on it. The direction with something
     to cap is the forward one, and the claim under test — a cap that fires is visible, and the
     result says how much it left behind — is the same either way."""
-    sl = live_analysis.slice_forward("invoice_id", within=busy_callable, max_nodes=2)
+    sl = live_analysis.slice_forward("invoice_id", within=busy_callable, depth=None, max_nodes=2)
     assert len(sl.nodes) <= 2
     assert sl.truncated is True, "a cap that fires must be visible"
     assert sl.total == 50, "and the result says how big the whole answer was"
@@ -466,8 +469,8 @@ def test_a_capped_slice_is_a_prefix_of_the_uncapped_one(live_analysis, busy_call
     """Which nodes a cap keeps is stated, not incidental: the slice is ordered by node id — the
     one total order both backends can compute — and the cap takes a prefix of it. Without that,
     two calls with the same arguments could return different subsets of the same slice."""
-    whole = live_analysis.slice_forward("invoice_id", within=busy_callable)
-    capped = live_analysis.slice_forward("invoice_id", within=busy_callable, max_nodes=5)
+    whole = live_analysis.slice_forward("invoice_id", within=busy_callable, depth=None)
+    capped = live_analysis.slice_forward("invoice_id", within=busy_callable, depth=None, max_nodes=5)
     assert [n.ref for n in capped.nodes] == [n.ref for n in whole.nodes][:5]
 
 
@@ -477,7 +480,7 @@ def test_depth_bounds_a_slice_without_capping_it(live_analysis, busy_callable):
     only ever gives a partial answer to the broad one. A caller who hits the cap is meant to
     reach for this."""
     near = live_analysis.slice_forward("invoice_id", within=busy_callable, depth=2)
-    whole = live_analysis.slice_forward("invoice_id", within=busy_callable)
+    whole = live_analysis.slice_forward("invoice_id", within=busy_callable, depth=None)
     assert near.total == 22 and not near.truncated
     assert {n.ref for n in near.nodes} < {n.ref for n in whole.nodes}
 
@@ -491,10 +494,46 @@ def test_the_pathological_slice_is_bounded_and_reports_its_true_size(live_analys
     and the result says how many there were, in one call and in about a second. Backward from the
     same value is one node, because nothing calls it: the two directions of the same seed differ
     by five orders of magnitude, which is the distribution the cap exists for."""
-    fwd = live_analysis.slice_forward("kwargs", within=HEAVY_CALLABLE, max_nodes=10)
+    fwd = live_analysis.slice_forward("kwargs", within=HEAVY_CALLABLE, depth=None, max_nodes=10)
     assert len(fwd.nodes) == 10 and fwd.total == HEAVY_FORWARD_SLICE and fwd.truncated
-    back = live_analysis.slice_backward("kwargs", within=HEAVY_CALLABLE)
+    back = live_analysis.slice_backward("kwargs", within=HEAVY_CALLABLE, depth=None)
     assert back.total == 1 and not back.truncated
+
+
+#: A *global* the callable reads, in a callable nothing about this test needs to be heavy: its
+#: backward slice is 195,790 nodes unbounded and 76 at the default depth. The callable name is
+#: unique in the application, so the seed is addressable the way a caller would say it.
+DEPTH_SEED_CALLABLE = "odoo.tools.mail.email_domain_extract"
+DEPTH_SEED_VALUE = "found_email"
+DEPTH_SEED_AT_DEFAULT = 76
+DEPTH_SEED_UNBOUNDED = 195_790
+
+
+@live_only
+def test_the_default_depth_answers_completely_where_unbounded_truncates(live_analysis):
+    """The reason the default is finite (Task 6.1). Unbounded, this seed's backward slice is a
+    fifth of the application and the caller gets 10,000 arbitrary nodes of it — 5% of a closure,
+    flagged ``truncated`` and useless. At the default depth the same call answers the narrower
+    question *completely*: a small slice, ``total`` equal to what came back, ``truncated`` False.
+    Both halves are asserted here, because the change is worth nothing if the second one moves."""
+    near = live_analysis.slice_backward(DEPTH_SEED_VALUE, within=DEPTH_SEED_CALLABLE)
+    assert near.total == DEPTH_SEED_AT_DEFAULT
+    assert len(near.nodes) == near.total and not near.truncated
+
+    whole = live_analysis.slice_backward(DEPTH_SEED_VALUE, within=DEPTH_SEED_CALLABLE, depth=None)
+    assert whole.total == DEPTH_SEED_UNBOUNDED, "depth=None still means the whole closure"
+    assert len(whole.nodes) == 10_000 and whole.truncated
+    assert {n.ref for n in near.nodes} <= {n.ref for n in whole.nodes} or near.total < whole.total
+
+
+@live_only
+def test_the_default_depth_is_five_hops_and_says_so(live_analysis):
+    """``DEFAULT_DEPTH`` is not a private constant: a caller who wants the same bound explicitly,
+    or who wants to step out one hop from it, has to be able to name it."""
+    assert DEFAULT_DEPTH == 5
+    explicit = live_analysis.slice_backward(DEPTH_SEED_VALUE, within=DEPTH_SEED_CALLABLE, depth=DEFAULT_DEPTH)
+    implicit = live_analysis.slice_backward(DEPTH_SEED_VALUE, within=DEPTH_SEED_CALLABLE)
+    assert [n.ref for n in explicit.nodes] == [n.ref for n in implicit.nodes]
 
 
 @live_only
@@ -502,7 +541,7 @@ def test_a_slice_stays_inside_the_application(live_analysis, busy_callable):
     """The traversal is not scoped by ``_module`` the way the per-callable accessors are, because
     a body-node id is stamped with its application and the emitter only ever links nodes from one
     run — so an edge cannot leave the application. Checked rather than asserted."""
-    sl = live_analysis.slice_forward("invoice_id", within=busy_callable)
+    sl = live_analysis.slice_forward("invoice_id", within=busy_callable, depth=None)
     known = set(live_analysis.backend._modules)
     assert {n.file for n in sl.nodes} <= known
 
@@ -660,7 +699,7 @@ def test_a_forward_slice_is_exactly_the_reachable_set_of_the_published_edges(sli
         expected.update(nxt)
         frontier = nxt
 
-    sl = slice_l4.slice_forward("a", within="alone")
+    sl = slice_l4.slice_forward("a", within="alone", depth=None)
     assert {n.ref for n in sl.nodes} == expected
     assert sl.total == len(expected) and not sl.truncated
 
@@ -748,6 +787,15 @@ def test_a_slice_is_a_set_not_a_sequence(slice_l4):
     refs = [n.ref for n in sl.nodes]
     assert len(set(refs)) == len(refs)
     assert refs == sorted(refs)
+
+
+def test_a_bounded_cone_walks_backwards_like_the_unbounded_one(slice_l4):
+    """The direction of a *bounded* cone, which nothing pinned while the default was unbounded.
+    ``charge`` calls ``helper``, so it is one hop **back** from it; a bounded walk that followed
+    successors instead would return the sink alone and look like a small honest answer."""
+    assert {n.callable for n in slice_l4.backward_cone(["helper"], depth=1).nodes} == {"src.pay.helper", "src.pay.Portal.charge"}
+    assert {n.callable for n in slice_l4.backward_cone(["helper"]).nodes} == {"src.pay.helper", "src.pay.Portal.charge"}
+    assert slice_l4.backward_cone(["Portal.charge"], depth=1).total == 1, "nothing calls charge"
 
 
 def test_a_multi_sink_cone_has_no_single_root(slice_l4):

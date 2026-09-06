@@ -55,7 +55,7 @@ from tree_sitter import Tree
 from cldk.analysis.commons.backend_config import Neo4jConnectionConfig, PyBackend, PyCodeAnalyzerConfig, cache_subdir
 from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, LocateResult, Slice, SliceNode
 from cldk.analysis.commons.treesitter import TreesitterPython
-from cldk.analysis.python.backend import DEFAULT_MAX_NODES, DEFAULT_PAGE_SIZE, PythonAnalysisBackend
+from cldk.analysis.python.backend import DEFAULT_DEPTH, DEFAULT_MAX_NODES, DEFAULT_PAGE_SIZE, PythonAnalysisBackend
 from cldk.analysis.python.codeanalyzer import PyCodeanalyzer
 from cldk.analysis.python.neo4j import PyNeo4jBackend
 from cldk.models.python import (
@@ -1051,7 +1051,7 @@ class PythonAnalysis:
         return self.backend.get_ddg(callable, in_class=in_class, page_size=page_size, cursor=cursor)
 
     # -----[ slicing and reachability ]-----
-    def slice_backward(self, src: str, *, within: str, depth: int | None = None, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+    def slice_backward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
         """Return everything the value ``src`` depends on — its backward slice.
 
         Address the value the way you would say it out loud: a parameter, a module global the
@@ -1068,21 +1068,28 @@ class PythonAnalysis:
         not a path — ``paths_between`` is the accessor that answers "how", because one cone of
         10,000 nodes holds millions of distinct paths.
 
-        Two shapes of answer are common and the numbers say which you have. Measured on a real
-        application, a value in a callable nothing calls has a backward slice of exactly **one**
-        node — itself, honestly, because nothing feeds it — while a value in a called one reaches
-        a median of **195,786**, a fifth of the program. Read ``total`` before you read ``nodes``.
+        **The traversal is bounded by default**, to five hops
+        (:data:`~cldk.analysis.python.backend.DEFAULT_DEPTH`). Unbounded, this question has only
+        two answers on a real application and nothing in between: a value in a callable nothing
+        calls slices back to exactly **one** node — itself, honestly, because nothing feeds it —
+        while a value in a called one reaches a median of **195,786**, a fifth of the program.
+        Capping the second kind at ``max_nodes`` would hand you 10,000 arbitrary nodes of a
+        195,819-node closure; bounding the hops instead answers a narrower question *completely*,
+        and measured over that distribution no slice at five hops is capped at all.
 
-        When the answer is too big, narrow the question rather than paging it: ``depth=`` bounds
-        the traversal and gives a *complete* slice of a smaller question, while ``max_nodes``
-        only ever gives part of the large one.
+        So ``truncated`` should normally be ``False`` and ``total`` should normally be the whole
+        of what you got. When you want the fifth of the program, ask for it: ``depth=None``.
+        Between the two, any ``depth=`` bounds the traversal and gives a complete slice of a
+        smaller question, while ``max_nodes`` only ever gives part of the large one.
 
         Args:
             src: The value's name. A global may be qualified by its module
                 (``"payment.AccessError"``) when the bare name is ambiguous inside the callable.
             within: The callable to look inside — a suffix of its dotted signature is enough.
                 Required: a value name has no meaning outside a callable.
-            depth: Most hops from the seed; ``None`` for the whole cone.
+            depth: Most hops from the seed. Defaults to
+                :data:`~cldk.analysis.python.backend.DEFAULT_DEPTH` (5); ``None`` for the whole
+                cone.
             max_nodes: Most nodes in the result. Defaults to
                 :data:`~cldk.analysis.python.backend.DEFAULT_MAX_NODES`.
 
@@ -1105,7 +1112,7 @@ class PythonAnalysis:
         """
         return self.backend.slice_backward(src, within=within, depth=depth, max_nodes=max_nodes)
 
-    def slice_forward(self, src: str, *, within: str, depth: int | None = None, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+    def slice_forward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
         """Return everything the value ``src`` can affect — its forward slice.
 
         The taint direction, and usually the informative one for a value entering a callable:
@@ -1116,9 +1123,9 @@ class PythonAnalysis:
             sl = py.slice_forward("invoice_id", within="PaymentPortal.invoice_transaction")
             [n for n in sl.nodes if n.kind == "argument"]   # where it is passed on
 
-        Arguments, bounds and failures are :meth:`slice_backward`'s. Forward cones are the larger
-        of the two — measured p95 440,270 nodes of 885,218 on a real application — so ``total`` and
-        ``depth=`` matter more here.
+        Arguments, bounds and failures are :meth:`slice_backward`'s, including the five-hop
+        default. Forward cones are the larger of the two — measured *unbounded*, p95 440,270 nodes
+        of 885,218 on a real application — so ``depth=None`` is the more expensive request here.
         """
         return self.backend.slice_forward(src, within=within, depth=depth, max_nodes=max_nodes)
 
@@ -1132,7 +1139,10 @@ class PythonAnalysis:
         Args:
             src: The calling callable's name — a dotted suffix is enough when it is unique.
             dst: The called callable's name.
-            depth: Most call hops; ``None`` for any distance.
+            depth: Most call hops; ``None`` (the default) for any distance. Unlike the slices,
+                this one is unbounded by default: a hop budget on a boolean would report "no path"
+                for a path that is merely long, and the unbounded call is cheap anyway (measured
+                20ms mean, 112ms worst over 200 random pairs).
 
         Returns:
             ``True`` when a call path exists. Self-reachability is ``True`` only through a real
@@ -1145,7 +1155,7 @@ class PythonAnalysis:
         """
         return self.backend.reaches(src, dst, depth=depth)
 
-    def backward_cone(self, sinks: Sequence[str], *, depth: int | None = None, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+    def backward_cone(self, sinks: Sequence[str], *, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
         """Return every callable that can reach any of ``sinks`` — "what could get here".
 
         A call-graph cone, so its nodes are callables rather than positions inside them. The sinks
@@ -1153,13 +1163,18 @@ class PythonAnalysis:
         than as an empty answer that could not be told from a name that matched nothing::
 
             cone = py.backward_cone(["AccountMove.write"])
-            cone.total          # 9,282 for five .write methods on a real application
+            cone.total                              # within five call hops, the default
+            py.backward_cone([...], depth=None)     # the whole cone: 9,286 for every .write
 
         Args:
             sinks: The callables to walk back from. A bare string is refused — pass ``["name"]``
                 to walk back from just one — and an empty sequence is refused too, because
                 "everything" is the argument omitted and there is no everything here.
-            depth: Most call hops back; ``None`` for the whole cone.
+            depth: Most call hops back. Defaults to
+                :data:`~cldk.analysis.python.backend.DEFAULT_DEPTH` (5), for one rule across the
+                three traversals; ``None`` for the whole cone. A cone is smaller than a slice — the
+                largest measured is 9,346 callables, under ``max_nodes`` — so here the default buys
+                interpretability rather than protection from truncation.
             max_nodes: Most nodes in the result; a cap that fires is reported by ``truncated``
                 and quantified by ``total``.
 

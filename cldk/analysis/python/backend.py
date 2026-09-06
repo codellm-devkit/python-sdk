@@ -489,6 +489,36 @@ SDG_REL_PATTERN = "|".join(SDG_RELS)
 #: readable, and every slice above it is one a caller should be re-asking with ``depth=``.
 DEFAULT_MAX_NODES = 10_000
 
+#: Hops from the seed when the caller does not say. **Finite, and that is the whole point.**
+#:
+#: The measured distribution has no middle (see :class:`~cldk.analysis.commons.results.Slice`), so
+#: an unbounded default hands a connected seed 10,000 arbitrary nodes of a 195,819-node closure --
+#: an unprincipled 5%, honestly flagged ``truncated`` and useless either way. A finite default
+#: answers a *narrower* question *completely* instead, and ``depth=None`` is how a caller asks for
+#: the whole cone.
+#:
+#: 5 is the largest bound at which no measured slice needs ``max_nodes`` at all. Over 120 random
+#: ``formal_in`` seeds with callers on odoo-slim-19, node counts by depth:
+#:
+#: =========  =====  =======  =======  =======  ========
+#: direction  depth   median      p75      max  > 10,000
+#: =========  =====  =======  =======  =======  ========
+#: backward       3       14       70      846         0
+#: backward       5       33      188    1,539         0
+#: backward       6       56      324    2,818         0
+#: backward       8      464    2,044   16,028         1
+#: backward    None  195,786  195,787  198,306        79
+#: forward        3       12       34      440         0
+#: forward        5       24       63    1,053         0
+#: forward        6       35      166   14,260         1
+#: forward        8       48      402   37,326         2
+#: forward     None       71  440,269  440,645        52
+#: =========  =====  =======  =======  =======  ========
+#:
+#: 3 is informative but thin; 6 is where a forward slice first exceeds the cap and the default
+#: would start truncating again. 5 is the last depth that never does, in either direction.
+DEFAULT_DEPTH = 5
+
 
 def check_max_nodes(max_nodes: int) -> int:
     """``max_nodes`` must admit at least one node — the seed, if nothing else.
@@ -1113,7 +1143,7 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
     # THE LEVEL GUARD IS THE ONE ``get_ddg`` ALREADY USES. Slicing needs the same analyzer pass,
     # so it goes through the same check rather than a second one that could drift from it.
     @abstractmethod
-    def slice_backward(self, src: str, *, within: str, depth: int | None = None, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+    def slice_backward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
         """Everything the value ``src`` depends on: reverse reachability over the SDG.
 
         ``within`` is **required**, unlike the plan's sketch of this signature. A value name is
@@ -1122,19 +1152,25 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         keyword narrows by class and module already, because it is matched segment-wise against
         the whole dotted signature.
 
-        What comes back is usually one of two things, and the measurement says so plainly: over
-        200 random entering values on a real application the median backward slice is **1 node**
-        -- the seed itself, because nothing calls the callable -- while over the values that do
-        have callers the median is **195,786**, a fifth of the program. ``total`` is what tells
-        the two apart before a caller tries to read the result.
+        What comes back *unbounded* is usually one of two things, and the measurement says so
+        plainly: over 200 random entering values on a real application the median backward slice
+        is **1 node** -- the seed itself, because nothing calls the callable -- while over the
+        values that do have callers the median is **195,786**, a fifth of the program. There is
+        no middle, so ``max_nodes`` on the second kind returns an unprincipled 5% of a closure.
+
+        **Which is why ``depth`` defaults to** :data:`DEFAULT_DEPTH` **(5) rather than to
+        ``None``.** A bounded traversal answers a narrower question *completely*: measured over
+        the same distribution, no backward or forward slice at depth 5 reaches ``max_nodes`` at
+        all. ``depth=None`` still asks for the whole closure, and is how a caller who wants the
+        fifth of the program asks for it.
 
         Args:
             src: The value's name, resolved by :meth:`resolve_value` — a parameter, a captured
                 global (optionally qualified, ``"payment.AccessError"``) or a closure capture.
             within: The callable to look inside, resolved as in :meth:`resolve_callable`.
-            depth: Most hops from the seed, or ``None`` for the whole cone. This is the bound that
-                yields a *complete* answer to a narrower question, which is what a caller who hits
-                ``max_nodes`` should reach for.
+            depth: Most hops from the seed. Defaults to :data:`DEFAULT_DEPTH`; ``None`` for the
+                whole cone. This is the bound that yields a *complete* answer to a narrower
+                question, which is why it, and not ``max_nodes``, is what carries the default.
             max_nodes: Most nodes in the result. A cap that fires is reported by
                 :attr:`~cldk.analysis.commons.results.Slice.truncated` and quantified by
                 :attr:`~cldk.analysis.commons.results.Slice.total`; it is never silent.
@@ -1152,7 +1188,7 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         """
 
     @abstractmethod
-    def slice_forward(self, src: str, *, within: str, depth: int | None = None, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+    def slice_forward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
         """Everything the value ``src`` can affect: forward reachability over the same edges.
 
         The same accessor read the other way round, and the one that is usually the interesting
@@ -1160,9 +1196,10 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         callers, so ``slice_backward`` from one is often the seed alone, while
         ``slice_forward`` follows it through the body and out through every call it feeds.
 
-        Arguments, bounds and failures are :meth:`slice_backward`'s. Measured on the same 200
-        seeds: median 1, p95 440,270, max 440,662 of 885,218 body nodes — a forward cone is the
-        larger of the two, which is why the cap matters more here.
+        Arguments, bounds and failures are :meth:`slice_backward`'s, ``depth``'s default of
+        :data:`DEFAULT_DEPTH` included. Measured unbounded on the same 200 seeds: median 1,
+        p95 440,270, max 440,662 of 885,218 body nodes — a forward cone is the larger of the two,
+        which is why ``depth=None`` matters more here.
         """
 
     @abstractmethod
@@ -1177,6 +1214,13 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         Returns ``bool`` and nothing else: it is deliberately not a degenerate ``Slice``, because
         "is there a path" and "what is on it" are different questions with different costs.
 
+        **``depth`` still defaults to ``None`` here, unlike the three traversals.** A default that
+        bounds a *slice* trades size for a complete answer to a narrower question; a default that
+        bounds a *boolean* would turn "there is no path" and "there is no path within 5 hops" into
+        the same ``False``, which is a wrong answer rather than a small one. It is not a cost
+        question either: measured over 200 random pairs on odoo-slim-19 the unbounded call
+        averages 20ms and its worst case is 112ms.
+
         Args:
             src: The calling callable's name.
             dst: The called callable's name.
@@ -1189,7 +1233,7 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         """
 
     @abstractmethod
-    def backward_cone(self, sinks: Sequence[str], *, depth: int | None = None, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+    def backward_cone(self, sinks: Sequence[str], *, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
         """Every callable that can reach any of ``sinks`` — "what could get here".
 
         A **call-graph** cone, so its nodes are callables (``kind="callable"``), not body nodes;
@@ -1202,9 +1246,18 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         callables behind them. A result type that reports a cap on one accessor and cannot on its
         sibling would make the bound silent exactly where it fires.
 
+        ``depth`` defaults to :data:`DEFAULT_DEPTH`, as it does on the slices — for a weaker
+        reason, stated so a reader does not assume otherwise. A cone is a call-graph question and
+        measured on odoo-slim-19 it never reaches ``max_nodes``: over 150 random called callables
+        the unbounded cone's max is 9,346, against a 10,000 cap. What the default buys here is
+        interpretability and one rule across the three traversals, not protection from truncation
+        (median 12 at depth 5 against 14 unbounded; p75 2,929 against 9,282). ``depth=None`` is
+        the whole cone.
+
         Args:
             sinks: The callables to walk back from, each resolved by :meth:`resolve_callable`.
-            depth: Most call hops back, or ``None`` for the whole cone.
+            depth: Most call hops back. Defaults to :data:`DEFAULT_DEPTH`; ``None`` for the whole
+                cone.
             max_nodes: Most nodes in the result.
 
         Raises:

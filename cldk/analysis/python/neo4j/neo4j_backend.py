@@ -91,6 +91,7 @@ from cldk.analysis.python.backend import (
     CDG_ORDER,
     CFG_ORDER,
     DDG_ORDER,
+    DEFAULT_DEPTH,
     DEFAULT_MAX_NODES,
     DEFAULT_PAGE_SIZE,
     SDG_REL_PATTERN,
@@ -1331,11 +1332,11 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         rows = self._run(query, id=root.ref, cap=max_nodes)
         return Slice(nodes=[_slice_node(r) for r in rows], roots=[root], resolved=slice_resolved([root]), total=rows[0]["total"] if rows else 0)
 
-    def slice_backward(self, src: str, *, within: str, depth: int | None = None, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+    def slice_backward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
         """What affects this value (see :meth:`PythonAnalysisBackend.slice_backward`)."""
         return self._slice(src, within, depth, max_nodes, backward=True)
 
-    def slice_forward(self, src: str, *, within: str, depth: int | None = None, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+    def slice_forward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
         """What this value affects (see :meth:`PythonAnalysisBackend.slice_forward`)."""
         return self._slice(src, within, depth, max_nodes, backward=False)
 
@@ -1363,7 +1364,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         "RETURN size(found) AS total, found[0..$cap] AS page"
     )
 
-    def backward_cone(self, sinks: Sequence[str], *, depth: int | None = None, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+    def backward_cone(self, sinks: Sequence[str], *, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
         """Everything that can reach these sinks (see :meth:`PythonAnalysisBackend.backward_cone`)."""
         check_depth(depth)
         check_max_nodes(max_nodes)

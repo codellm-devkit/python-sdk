@@ -67,6 +67,7 @@ from cldk.analysis.python.backend import (
     CDG_ORDER,
     CFG_ORDER,
     DDG_ORDER,
+    DEFAULT_DEPTH,
     DEFAULT_MAX_NODES,
     DEFAULT_PAGE_SIZE,
     PythonAnalysisBackend,
@@ -1286,14 +1287,14 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         found = [_local_slice_node(nodes[ref], ref) for ref in sorted(seen) if ref in nodes]
         return Slice(nodes=found[:max_nodes], roots=[root], resolved=slice_resolved([root]), total=len(found))
 
-    def slice_backward(self, src: str, *, within: str, depth: int | None = None, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+    def slice_backward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
         """What affects this value (see :meth:`PythonAnalysisBackend.slice_backward`)."""
         check_depth(depth)
         check_max_nodes(max_nodes)
         self._require_dataflow()
         return self._slice_from(self.resolve_value(src, within=within), "backward", depth, max_nodes)
 
-    def slice_forward(self, src: str, *, within: str, depth: int | None = None, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+    def slice_forward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
         """What this value affects (see :meth:`PythonAnalysisBackend.slice_forward`)."""
         check_depth(depth)
         check_max_nodes(max_nodes)
@@ -1317,7 +1318,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         reachable = nx.descendants(graph, a) if depth is None else set(nx.ego_graph(graph, a, radius=depth).nodes) - {a}
         return b in reachable
 
-    def backward_cone(self, sinks: Sequence[str], *, depth: int | None = None, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+    def backward_cone(self, sinks: Sequence[str], *, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
         """Everything that can reach these sinks (see :meth:`PythonAnalysisBackend.backward_cone`)."""
         check_depth(depth)
         check_max_nodes(max_nodes)
@@ -1327,7 +1328,12 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         for root in roots:
             reached.add(root.callable)
             if root.callable in graph:
-                reached |= nx.ancestors(graph, root.callable) if depth is None else set(nx.ego_graph(graph, root.callable, radius=depth, undirected=False).nodes)
+                # ``ego_graph`` follows *successors*, so it has to be given the reversed view to
+                # answer a backward question -- on the graph itself, ``backward_cone(x, depth=1)``
+                # returned the forward cone of ``x``. Latent while the default was unbounded (the
+                # ``nx.ancestors`` branch is correct); load-bearing now that it is not.
+                back = graph.reverse(copy=False)
+                reached |= nx.ancestors(graph, root.callable) if depth is None else set(nx.ego_graph(back, root.callable, radius=depth, undirected=False).nodes)
         found = [self._callable_node(sig) for sig in sorted(reached)]
         return Slice(nodes=[n for n in found if n is not None][:max_nodes], roots=roots, resolved=slice_resolved(roots), total=len([n for n in found if n is not None]))
 

@@ -87,6 +87,24 @@ Python leg (leg 1) of the CLDK 2.0 agent-facing query facade (see
   `Slice.root` is the singular seed for the single-seed accessors and raises on a multi-sink cone
   rather than silently answering with the first.
 
+  **`depth` defaults to 5 on `slice_backward`, `slice_forward` and `backward_cone`** — a finite
+  bound, not `None`. Because the distribution has no middle, an unbounded default gave a connected
+  seed 10,000 arbitrary nodes of a 195,819-node closure: honestly flagged `truncated`, and still an
+  unprincipled 5% of a cone. A hop bound answers a narrower question *completely* instead, and the
+  number is measured, not chosen: over 120 random connected `formal_in` seeds, the backward slice
+  at depth 5 has median 33 / p75 188 / max 1,539 and the forward slice median 24 / p75 63 / max
+  1,053, with **not one seed in either direction reaching `max_nodes`**; at depth 6 a forward slice
+  first exceeds it (14,260), and at depth 8 three do. So a slice is now normally one where
+  `truncated` is `False` and `total` is the size of `nodes`. **`depth=None` still means the whole
+  closure** and is how a caller asks for the fifth of the program — every capability Task 6 shipped
+  remains reachable, one keyword away. `reaches` keeps its unbounded default deliberately: a hop
+  budget on a *boolean* turns "no path" and "no path within 5 hops" into the same `False`, which is
+  a wrong answer rather than a small one, and the unbounded call measures 20ms mean / 112ms worst
+  over 200 random pairs. The same change made a latent local-backend defect load-bearing and it is
+  fixed here: `backward_cone(sinks, depth=n)` walked *forward* over the call graph
+  (`nx.ego_graph` follows successors, and was not given the reversed view), so a bounded cone
+  returned the sink's descendants; only the unbounded `nx.ancestors` path was correct.
+
   **`callees_of` includes calls out of the project** — 38,585 of the application's 370,110 call
   edges, and usually the ones a caller tracing a sink is after. An external comes back
   `kind="external"` with a readable dotted name built from the node's own `module`/`name`

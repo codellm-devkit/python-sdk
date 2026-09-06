@@ -336,6 +336,14 @@ class Slice(BaseModel):
     to find out. The way to a *complete* answer is a narrower question — ``depth=`` bounds the
     traversal rather than the response, and what comes back is the whole slice of that question.
 
+    **And that is why the traversals bound themselves by default** (five hops,
+    :data:`~cldk.analysis.python.backend.DEFAULT_DEPTH`). "Here are 10,000 of 195,784" is honest
+    but it is still an unprincipled 5% of a closure, and a caller who never passes ``depth=`` was
+    getting it every time. Bounded, the same call answers completely: over 120 connected seeds
+    measured in both directions, no slice at five hops reaches the cap. A slice you are reading is
+    therefore normally one where :attr:`truncated` is ``False`` and :attr:`total` is the size of
+    :attr:`nodes` — the truncated kind is now what you get when you ask for ``depth=None``.
+
     Attributes:
         nodes: The positions in the slice, ordered by :attr:`SliceNode.ref` and including the
             seed(s). ``source`` is ``None`` on every one of them: a slice answers *where*, and

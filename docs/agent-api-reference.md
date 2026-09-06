@@ -300,14 +300,14 @@ Names in, names out. No `can://` URIs, no ordinals — you say `"invoice_id"`, n
 
 | API | Answers | Example |
 | --- | --- | --- |
-| `slice_backward(src, within=, depth=, max_nodes=)` | what affects this value | `py.slice_backward("invoice_id", within="PaymentPortal.invoice_transaction")` |
-| `slice_forward(src, within=, depth=, max_nodes=)` | what this value affects | `py.slice_forward("access_token", within="PaymentPortal.invoice_transaction")` |
+| `slice_backward(src, within=, depth=5, max_nodes=)` | what affects this value | `py.slice_backward("invoice_id", within="PaymentPortal.invoice_transaction")` |
+| `slice_forward(src, within=, depth=5, max_nodes=)` | what this value affects | `py.slice_forward("access_token", within="PaymentPortal.invoice_transaction")` |
 | `paths_between(src, dst, within=, max_paths=)` | how one reaches the other | `py.paths_between("invoice_id", "kwargs", within="…invoice_transaction")` |
 | `flows_to_call(src, callee, within=)` | reaches **any call to** X | `py.flows_to_call("invoice_id", "execute", within="…invoice_transaction")` |
 | `flows_to_argument(src, callee, arg, within=)` | reaches X's **named argument** | `py.flows_to_argument("invoice_id", "execute", arg="query", within="…")` |
-| `reaches(src, dst, depth=)` | is there a call path | `py.reaches("invoice_transaction", "execute")` |
+| `reaches(src, dst, depth=None)` | is there a call path | `py.reaches("invoice_transaction", "execute")` |
 | `call_paths_between(src, dst, max_paths=)` | show the call chains | |
-| `backward_cone(sinks, depth=, max_nodes=)` | everything reaching these | `py.backward_cone(["AccountMove.write"])` |
+| `backward_cone(sinks, depth=5, max_nodes=)` | everything reaching these | `py.backward_cone(["AccountMove.write"])` |
 | `callers_of(name, in_class=, in_module=)` | who calls this, by name | `py.callers_of("action_validate_step")` |
 | `callees_of(name, in_class=, in_module=)` | what this calls, by name | |
 | `get_cfg(callable, in_class=, page_size=, cursor=)` | control flow, one callable | `py.get_cfg("invoice_transaction", in_class="PaymentPortal")` |
@@ -365,23 +365,46 @@ answers no question anyone asked; and a slice *is* the traversal, so unlike an `
 closure. `Slice.total` is what keeps the bound from being silent:
 
 ```python
-sl = py.slice_forward("kwargs", within="Website.configurator_apply", max_nodes=10)
+sl = py.slice_forward("kwargs", within="Website.configurator_apply", depth=None, max_nodes=10)
 sl.total        # 440270 — the whole answer's size, in the same call
 sl.truncated    # True — derived from total, so the two cannot disagree
 len(sl.nodes)   # 10
 ```
 
-When the cap fires, ask a narrower question rather than a longer one: `depth=` bounds the
-traversal, so what comes back is the *complete* slice of a smaller question. Nodes come back
-ordered by `ref`, and the cap takes a prefix of that order, so the same call twice gives the same
-subset. The traversal runs in the database over data dependence, control dependence, argument
-passing, returns and call summaries at once — 195,784 nodes reached, counted and the first 10,000
-described, in about 1.5s.
+**Which is why `depth` defaults to 5, not to `None`.** That `depth=None` above is deliberate: with
+no bound, a connected seed hands you 10,000 arbitrary nodes of a 195,819-node closure — honestly
+flagged, and still an unprincipled 5% of a cone. A hop bound answers a *narrower* question
+*completely* instead, and the measurement picked the number. Node counts over 120 random connected
+`formal_in` seeds on a real application:
 
-`backward_cone` is the same shape over the call graph: its nodes are callables, its sinks are in
-the result, and a sink nothing calls comes back as its own one-node cone rather than as an empty
-answer you could not tell from a name that matched nothing. `sl.root` is the single seed for the
+| depth | backward median / p75 / max | forward median / p75 / max | seeds over `max_nodes` |
+| --- | --- | --- | --- |
+| 3 | 14 / 70 / 846 | 12 / 34 / 440 | 0 |
+| **5** | **33 / 188 / 1,539** | **24 / 63 / 1,053** | **0** |
+| 6 | 56 / 324 / 2,818 | 35 / 166 / 14,260 | 1 |
+| 8 | 464 / 2,044 / 16,028 | 48 / 402 / 37,326 | 3 |
+| `None` | 195,786 / 195,787 / 198,306 | 71 / 440,269 / 440,645 | 131 |
+
+5 is the last depth at which nothing measured needs `max_nodes` at all. So `truncated` is normally
+`False` and `total` is normally the size of what you got; when you want the whole closure, say
+`depth=None` and read `total` before `nodes`. Anything in between is a legitimate question too —
+`depth=` bounds the traversal, so what comes back is the *complete* slice of a smaller one.
+
+Nodes come back ordered by `ref`, and the cap takes a prefix of that order, so the same call twice
+gives the same subset. The traversal runs in the database over data dependence, control dependence,
+argument passing, returns and call summaries at once — unbounded, 195,784 nodes reached, counted
+and the first 10,000 described, in about 1.5s.
+
+`backward_cone` is the same shape over the call graph, and takes the same five-hop default for
+consistency rather than for necessity: cones are small — the largest measured is 9,346 callables,
+under `max_nodes` — so `depth=None` on one is a cheap request. Its nodes are callables, its sinks
+are in the result, and a sink nothing calls comes back as its own one-node cone rather than as an
+empty answer you could not tell from a name that matched nothing. `sl.root` is the single seed for the
 slices; a multi-sink cone has `sl.roots` and raises if you ask it for one.
+
+**`reaches` stays unbounded by default**, alone among these. A hop budget on a *boolean* would
+report `False` for a path that is merely long, which is a wrong answer rather than a small one —
+and it is not a cost question either: measured over 200 random pairs, 20ms mean, 112ms worst.
 
 **`callees_of` includes calls out of the project.** They are 10% of the call edges on a real
 application (38,585 of 370,110) and usually the ones you are looking for. An external comes back
