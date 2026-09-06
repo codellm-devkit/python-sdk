@@ -85,24 +85,30 @@ import networkx as nx
 from codeanalyzer.schema import model_dump_json
 from codeanalyzer.schema.ids import application_id
 
-from cldk.analysis.commons.resolve import CallableCandidate, resolve_callable_signature, resolve_value_name, resolve_within, value_candidate
-from cldk.analysis.commons.results import CallableRef, Diagnostic, EdgePage, EntrypointCoverage, LocateResult, ModuleRef, SliceNode, TypeRef
+from cldk.analysis.commons.resolve import CallableCandidate, body_node_kind, resolve_callable_signature, resolve_value_name, resolve_within, value_candidate
+from cldk.analysis.commons.results import CallableRef, Diagnostic, EdgePage, EntrypointCoverage, LocateResult, ModuleRef, Slice, SliceNode, TypeRef
 from cldk.analysis.python.backend import (
     CDG_ORDER,
     CFG_ORDER,
     DDG_ORDER,
+    DEFAULT_MAX_NODES,
     DEFAULT_PAGE_SIZE,
+    SDG_REL_PATTERN,
     EdgeOrder,
     PythonAnalysisBackend,
     body_key_column,
     call_graph_scope,
+    check_depth,
+    check_max_nodes,
     check_page_size,
     check_selector,
+    cone_sinks,
     cursor_params,
     encode_cursor,
     keyset_where,
     resolve_module_key,
     scope_paths,
+    slice_resolved,
 )
 from cldk.analysis.python.neo4j import reconstruct as R
 from cldk.models.python import (
@@ -174,6 +180,47 @@ _BULK_CHILD_QUERIES: Dict[str, str] = {
         "RETURN f.signature AS pk, properties(v) AS p ORDER BY v.start_line, v.name"
     ),
 }
+
+
+def _slice_node(row: Dict[str, Any]) -> SliceNode:
+    """One row of the slice query as a :class:`SliceNode`, in the caller's vocabulary.
+
+    ``kind``/``name`` go through :func:`~cldk.analysis.commons.resolve.body_node_kind`, the same
+    translation the local backend uses, so a vertex a caller addressed through ``resolve_value``
+    as a ``global`` comes back from a slice labelled a ``global`` too.
+
+    A parameter-passing vertex has no span of its own — it is a dataflow position, not a region of
+    the file — so ``start_line`` is absent on it and the *callable's* first line stands in, which
+    is where a reader would go looking for it (the rule
+    :attr:`~cldk.analysis.commons.results.SliceNode.line` already states).
+    """
+    kind, name, defined_in = body_node_kind(row["kind"], row["var"])
+    return SliceNode(
+        file=row["file"],
+        line=row["line"] if row["line"] is not None else row["c_line"],
+        callable=row["callable"],
+        kind=kind,
+        name=name,
+        defined_in=defined_in,
+        source=None,
+        ref=row["ref"],
+    )
+
+
+def _call_neighbour(row: Dict[str, Any]) -> SliceNode:
+    """One ``PY_CALLS`` neighbour as a :class:`SliceNode` — declared callable or external ghost.
+
+    Which it is, is read off the row rather than asked for in a second query: only a
+    ``:PyCallable`` carries ``signature``, so a row without one is an external. Its readable name
+    is built from its *own* ``module`` and ``name`` properties (E6 — the ``can://`` id stays in
+    ``ref``), and it gets no position, because an external was never analysed and there is nothing
+    to point at; ``kind="external"`` is what says so, rather than leaving ``""``/``0`` to be
+    discovered as sentinels.
+    """
+    if row["signature"] is not None:
+        return SliceNode(file=row["file"], line=row["line"], callable=row["signature"], kind="callable", name=row["name"], source=None, ref=row["ref"])
+    qualified = f"{row['module']}.{row['name']}" if row["module"] else row["name"]
+    return SliceNode(file="", line=0, callable=qualified, kind="external", name=row["name"], source=None, ref=row["ref"])
 
 
 class PyNeo4jBackend(PythonAnalysisBackend):
@@ -1226,6 +1273,122 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         sig, rows, total, more = self._own_edges(callable, in_class, "PY_DDG", ", r.var AS var, r.prov AS prov", DDG_ORDER, page_size, cursor)
         edges = [DdgEdge(src=r["src"], dst=r["dst"], var=r["var"], prov=list(r["prov"] or [])) for r in rows]
         return self._page(DdgEdge, sig, edges, DDG_ORDER, total, more)
+
+    # -----[ slicing and reachability ]-----
+    #: Reverse (backward) and forward reachability over the SDG, as ONE variable-length match each
+    #: (E3). ``*0..`` rather than ``*1..`` so the seed is part of its own slice without being
+    #: spliced in afterwards -- verified on the live graph that ``*0..`` includes the start node
+    #: where ``*1..`` does not (a value with no predecessors gives 1 and 0 respectively), which
+    #: matters because ``total`` and the ``max_nodes`` prefix both have to be over the same set.
+    #:
+    #: The plan asked for variable-length Cypher and it is the right shape here for a measured
+    #: reason, not a stylistic one: Neo4j plans ``(a)<-[:R*0..]-(b) RETURN DISTINCT b`` as
+    #: ``VarLengthExpand(Pruning,BFS,All)``, a real breadth-first search with pruning, so the
+    #: 195,784-node cone of one statement in ``Website.configurator_apply`` resolves in 0.74s.
+    #: Driving the same search from Python as one query per frontier level took 8s for the same
+    #: answer, and ``EXISTS { (a)-[:PY_CALLS*1..]->(a) }`` -- the other obvious spelling -- does
+    #: not terminate at all, because an ``EXISTS`` subquery enumerates trails instead of pruning.
+    #:
+    #: ``total`` and the page come back from one statement: the ids are collected in id order,
+    #: ``size()`` gives the whole slice's size, and only the first ``$cap`` are joined back to
+    #: their callables for hydration. Collecting 195,784 id strings is ~12MB in the transaction,
+    #: two orders of magnitude below the container's limit, while collecting the *nodes* would not
+    #: be -- which is why the collect is over ``m.id`` and the second match re-finds them.
+    _SLICE = (
+        "MATCH (r:PyBodyNode {{id:$id}}){left}[:{rels}*0..{depth}]{right}(m:PyBodyNode) "
+        "WITH DISTINCT m.id AS nid ORDER BY nid "
+        "WITH collect(nid) AS ids "
+        "WITH size(ids) AS total, ids[0..$cap] AS page "
+        "UNWIND page AS nid "
+        "MATCH (c:PyCallable)-[:PY_HAS_BODY_NODE]->(b:PyBodyNode {{id:nid}}) "
+        "RETURN total, b.id AS ref, b.kind AS kind, b.var AS var, b.start_line AS line, "
+        "c.signature AS callable, c._module AS file, c.start_line AS c_line"
+    )
+
+    def _slice(self, src: str, within: str, depth: int | None, max_nodes: int, *, backward: bool) -> Slice:
+        """One direction of :meth:`PythonAnalysisBackend.slice_backward` / ``slice_forward``.
+
+        The two differ only in which way the arrows point, so they share a query and a builder --
+        a second copy would be a second place for the node vocabulary to drift.
+
+        **Not scoped by ``_module``,** unlike the per-callable accessors. A body-node id is stamped
+        with its application (``can://python/<app>/…``) and the emitter only ever links nodes from
+        its own run, so the traversal cannot leave the application it started in; adding
+        ``m._module IN $mods`` would cost a list membership test on every one of 195,784 reached
+        nodes to re-establish something the ids already guarantee. The seed is app-scoped by
+        :meth:`resolve_value`, and a live test checks the reached set against this application's
+        module keys rather than taking the argument on trust.
+        """
+        check_depth(depth)
+        check_max_nodes(max_nodes)
+        root = self.resolve_value(src, within=within)
+        query = self._SLICE.format(
+            rels=SDG_REL_PATTERN,
+            depth="" if depth is None else depth,
+            left="<-" if backward else "-",
+            right="-" if backward else "->",
+        )
+        rows = self._run(query, id=root.ref, cap=max_nodes)
+        return Slice(nodes=[_slice_node(r) for r in rows], roots=[root], resolved=slice_resolved([root]), total=rows[0]["total"] if rows else 0)
+
+    def slice_backward(self, src: str, *, within: str, depth: int | None = None, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """What affects this value (see :meth:`PythonAnalysisBackend.slice_backward`)."""
+        return self._slice(src, within, depth, max_nodes, backward=True)
+
+    def slice_forward(self, src: str, *, within: str, depth: int | None = None, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """What this value affects (see :meth:`PythonAnalysisBackend.slice_forward`)."""
+        return self._slice(src, within, depth, max_nodes, backward=False)
+
+    #: ``WITH DISTINCT m`` before the target test is what keeps this a pruning BFS rather than a
+    #: trail enumeration: measured, every case below answers in 0.03s, including the self-question
+    #: ``reaches(x, x)`` that ``shortestPath`` refuses outright ("does not work when the start and
+    #: end nodes are the same") and that an ``EXISTS`` subquery never finished.
+    _REACHES = "MATCH (a:PyCallable {{signature:$a}})-[:PY_CALLS*1..{depth}]->(m:PyCallable) WITH DISTINCT m WHERE m.signature = $b RETURN count(m) > 0 AS ok"
+
+    def reaches(self, src: str, dst: str, *, depth: int | None = None) -> bool:
+        """Is there a call path (see :meth:`PythonAnalysisBackend.reaches`)?"""
+        check_depth(depth)
+        a = self.resolve_callable(src).callable
+        b = self.resolve_callable(dst).callable
+        return bool(self._run(self._REACHES.format(depth="" if depth is None else depth), a=a, b=b)[0]["ok"])
+
+    #: ``*0..`` again, so a sink with no callers is its own cone rather than an empty answer that
+    #: a caller could not tell from "this name is wrong" (D7). Properties are projected into maps
+    #: *before* the cap so only ``$cap`` of them cross the wire.
+    _CONE = (
+        "MATCH (s:PyCallable) WHERE s.signature IN $sigs "
+        "MATCH (s)<-[:PY_CALLS*0..{depth}]-(m:PyCallable) "
+        "WITH DISTINCT m ORDER BY m.id "
+        "WITH collect({{callable: m.signature, name: m.name, ref: m.id, file: m._module, line: m.start_line}}) AS found "
+        "RETURN size(found) AS total, found[0..$cap] AS page"
+    )
+
+    def backward_cone(self, sinks: Sequence[str], *, depth: int | None = None, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """Everything that can reach these sinks (see :meth:`PythonAnalysisBackend.backward_cone`)."""
+        check_depth(depth)
+        check_max_nodes(max_nodes)
+        roots = cone_sinks(self.resolve_callable, sinks)
+        row = self._run(self._CONE.format(depth="" if depth is None else depth), sigs=[r.callable for r in roots], cap=max_nodes)[0]
+        nodes = [SliceNode(file=n["file"], line=n["line"], callable=n["callable"], kind="callable", name=n["name"], source=None, ref=n["ref"]) for n in row["page"]]
+        return Slice(nodes=nodes, roots=roots, resolved=slice_resolved(roots), total=row["total"])
+
+    #: ``t`` may be a ``:PyExternal`` ghost, which carries ``module``/``name``/``id`` and no
+    #: ``signature``, ``_module`` or ``start_line`` -- so the projection names each property
+    #: explicitly and :func:`_call_neighbour` decides what a row means from whether ``signature``
+    #: came back. ``s._module IN $mods`` scopes the *caller* side; it is already false for an
+    #: external, which is how a call originating at a ghost stays out of ``callers_of``.
+    _CALLERS = "MATCH (s:PyCallable)-[:PY_CALLS]->(t:PyCallable {signature: $sig}) WHERE s._module IN $mods RETURN s.signature AS signature, s.name AS name, s.id AS ref, s._module AS file, s.start_line AS line, s.module AS module"
+    _CALLEES = "MATCH (s:PyCallable {signature: $sig})-[:PY_CALLS]->(t:PyCallable|PyExternal) WHERE s._module IN $mods RETURN t.signature AS signature, t.name AS name, t.id AS ref, t._module AS file, t.start_line AS line, t.module AS module"
+
+    def callers_of(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> List[SliceNode]:
+        """Who calls this (see :meth:`PythonAnalysisBackend.callers_of`)."""
+        sig = self.resolve_callable(name, in_class=in_class, in_module=in_module).callable
+        return [_call_neighbour(r) for r in self._run(self._CALLERS, sig=sig, mods=self._modules)]
+
+    def callees_of(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> List[SliceNode]:
+        """What this calls, externals included (see :meth:`PythonAnalysisBackend.callees_of`)."""
+        sig = self.resolve_callable(name, in_class=in_class, in_module=in_module).callable
+        return [_call_neighbour(r) for r in self._run(self._CALLEES, sig=sig, mods=self._modules)]
 
     def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:
         rows = self._run(

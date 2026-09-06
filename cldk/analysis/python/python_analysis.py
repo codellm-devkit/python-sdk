@@ -53,9 +53,9 @@ import networkx as nx
 from tree_sitter import Tree
 
 from cldk.analysis.commons.backend_config import Neo4jConnectionConfig, PyBackend, PyCodeAnalyzerConfig, cache_subdir
-from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, LocateResult
+from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, LocateResult, Slice, SliceNode
 from cldk.analysis.commons.treesitter import TreesitterPython
-from cldk.analysis.python.backend import DEFAULT_PAGE_SIZE, PythonAnalysisBackend
+from cldk.analysis.python.backend import DEFAULT_MAX_NODES, DEFAULT_PAGE_SIZE, PythonAnalysisBackend
 from cldk.analysis.python.codeanalyzer import PyCodeanalyzer
 from cldk.analysis.python.neo4j import PyNeo4jBackend
 from cldk.models.python import (
@@ -1049,6 +1049,170 @@ class PythonAnalysis:
                 empty page could not be told apart from the honest empty above.
         """
         return self.backend.get_ddg(callable, in_class=in_class, page_size=page_size, cursor=cursor)
+
+    # -----[ slicing and reachability ]-----
+    def slice_backward(self, src: str, *, within: str, depth: int | None = None, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """Return everything the value ``src`` depends on — its backward slice.
+
+        Address the value the way you would say it out loud: a parameter, a module global the
+        callable reads, or a name it closed over, scoped by the callable it lives in. No
+        ``can://`` id and no ordinal appears in either the argument or the result::
+
+            sl = py.slice_backward("invoice_id", within="PaymentPortal.invoice_transaction")
+            sl.total        # how big the whole answer is
+            sl.truncated    # whether you are looking at all of it
+            sl.resolved     # what the names matched, for audit
+
+        The traversal runs in the database, over data dependence, control dependence, argument
+        passing, returns and call summaries at once. What comes back is a **set** of positions,
+        not a path — ``paths_between`` is the accessor that answers "how", because one cone of
+        10,000 nodes holds millions of distinct paths.
+
+        Two shapes of answer are common and the numbers say which you have. Measured on a real
+        application, a value in a callable nothing calls has a backward slice of exactly **one**
+        node — itself, honestly, because nothing feeds it — while a value in a called one reaches
+        a median of **195,786**, a fifth of the program. Read ``total`` before you read ``nodes``.
+
+        When the answer is too big, narrow the question rather than paging it: ``depth=`` bounds
+        the traversal and gives a *complete* slice of a smaller question, while ``max_nodes``
+        only ever gives part of the large one.
+
+        Args:
+            src: The value's name. A global may be qualified by its module
+                (``"payment.AccessError"``) when the bare name is ambiguous inside the callable.
+            within: The callable to look inside — a suffix of its dotted signature is enough.
+                Required: a value name has no meaning outside a callable.
+            depth: Most hops from the seed; ``None`` for the whole cone.
+            max_nodes: Most nodes in the result. Defaults to
+                :data:`~cldk.analysis.python.backend.DEFAULT_MAX_NODES`.
+
+        Returns:
+            A :class:`~cldk.analysis.commons.results.Slice` containing the seed, ordered by an
+            opaque node id, with ``source`` left unhydrated — pass the nodes you care about to
+            ``describe()`` when you want to read them.
+
+        Raises:
+            AmbiguousName: ``within`` matched more than one callable, or ``src`` more than one
+                value inside it. The error carries every candidate; nothing is guessed.
+            SelectorNotInGraph: No such callable, or no such value in it.
+            ValueError: ``depth`` is not a positive ``int``, or ``max_nodes`` is below 1.
+            CodeanalyzerUsageException: This analysis was built below
+                ``analysis_level="program_dependency_graph"``, where there is no dataflow to slice.
+
+        See Also:
+            :meth:`slice_forward`: The same question the other way round.
+            :meth:`get_ddg`: One callable's data dependence, without traversal.
+        """
+        return self.backend.slice_backward(src, within=within, depth=depth, max_nodes=max_nodes)
+
+    def slice_forward(self, src: str, *, within: str, depth: int | None = None, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """Return everything the value ``src`` can affect — its forward slice.
+
+        The taint direction, and usually the informative one for a value entering a callable:
+        nothing flows *into* a parameter except from its callers, so :meth:`slice_backward` from
+        one is often the seed alone, while this follows it through the body and out through every
+        call it feeds::
+
+            sl = py.slice_forward("invoice_id", within="PaymentPortal.invoice_transaction")
+            [n for n in sl.nodes if n.kind == "argument"]   # where it is passed on
+
+        Arguments, bounds and failures are :meth:`slice_backward`'s. Forward cones are the larger
+        of the two — measured p95 440,270 nodes of 885,218 on a real application — so ``total`` and
+        ``depth=`` matter more here.
+        """
+        return self.backend.slice_forward(src, within=within, depth=depth, max_nodes=max_nodes)
+
+    def reaches(self, src: str, dst: str, *, depth: int | None = None) -> bool:
+        """Return whether there is a call path from ``src`` to ``dst``.
+
+        The cheap question to ask before the expensive one: a boolean, computed in the database as
+        a bounded search, so "is this sink reachable at all" costs no more than it has to. When
+        the answer is yes and you need the chain, that is ``call_paths_between``.
+
+        Args:
+            src: The calling callable's name — a dotted suffix is enough when it is unique.
+            dst: The called callable's name.
+            depth: Most call hops; ``None`` for any distance.
+
+        Returns:
+            ``True`` when a call path exists. Self-reachability is ``True`` only through a real
+            cycle: ``reaches(x, x)`` is not vacuously true.
+
+        Raises:
+            AmbiguousName: Either name matched more than one callable.
+            SelectorNotInGraph: Either name matched none.
+            ValueError: ``depth`` is not a positive ``int``.
+        """
+        return self.backend.reaches(src, dst, depth=depth)
+
+    def backward_cone(self, sinks: Sequence[str], *, depth: int | None = None, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """Return every callable that can reach any of ``sinks`` — "what could get here".
+
+        A call-graph cone, so its nodes are callables rather than positions inside them. The sinks
+        are in the result, and a sink nothing calls comes back as its own one-node cone rather
+        than as an empty answer that could not be told from a name that matched nothing::
+
+            cone = py.backward_cone(["AccountMove.write"])
+            cone.total          # 9,282 for five .write methods on a real application
+
+        Args:
+            sinks: The callables to walk back from. A bare string is refused — pass ``["name"]``
+                to walk back from just one — and an empty sequence is refused too, because
+                "everything" is the argument omitted and there is no everything here.
+            depth: Most call hops back; ``None`` for the whole cone.
+            max_nodes: Most nodes in the result; a cap that fires is reported by ``truncated``
+                and quantified by ``total``.
+
+        Raises:
+            AmbiguousName: A sink name matched more than one callable.
+            SelectorNotInGraph: A sink name matched none.
+            TypeError: ``sinks`` is a bare string.
+            ValueError: ``sinks`` is empty, ``depth`` is not a positive ``int``, or ``max_nodes``
+                is below 1.
+        """
+        return self.backend.backward_cone(sinks, depth=depth, max_nodes=max_nodes)
+
+    def callers_of(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> List[SliceNode]:
+        """Return the callables that call ``name``, addressed by name.
+
+        The name-based sibling of :meth:`get_all_callers`: that one takes a class signature plus a
+        method name and returns raw dicts, this one takes a name you already have and returns the
+        same :class:`~cldk.analysis.commons.results.SliceNode` shape everything else in this
+        surface speaks, so going from "who calls this" to a slice needs no translation.
+
+        An empty list is unambiguous — a name matching nothing raises, so ``[]`` means "nothing
+        calls it".
+
+        Args:
+            name: The callable's name, whole or a dotted suffix of its signature.
+            in_class: Disambiguate by owning class.
+            in_module: Disambiguate by module.
+
+        Raises:
+            AmbiguousName: ``name`` matched more than one callable.
+            SelectorNotInGraph: Nothing matched.
+        """
+        return self.backend.callers_of(name, in_class=in_class, in_module=in_module)
+
+    def callees_of(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> List[SliceNode]:
+        """Return what ``name`` calls, addressed by name — **including calls out of the project**.
+
+        An external callee comes back with ``kind="external"`` and a readable dotted name
+        (``"odoo.exceptions.ValidationError.__init__"``); it has no ``file`` and no ``line``,
+        because it was never analysed, and ``kind`` is what tells you that rather than leaving
+        ``""`` and ``0`` to be discovered. They are 10% of the call edges on a real application and
+        usually the ones a caller tracing a sink is looking for, which is why they are not dropped.
+
+        Args:
+            name: The callable's name, whole or a dotted suffix of its signature.
+            in_class: Disambiguate by owning class.
+            in_module: Disambiguate by module.
+
+        Raises:
+            AmbiguousName: ``name`` matched more than one callable.
+            SelectorNotInGraph: Nothing matched.
+        """
+        return self.backend.callees_of(name, in_class=in_class, in_module=in_module)
 
     # -----[ repository artifacts ]-----
     def get_artifacts(self) -> Dict[str, PyArtifact]:

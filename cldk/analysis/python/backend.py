@@ -40,7 +40,7 @@ from typing import Callable, Dict, Iterable, List, NamedTuple, Sequence, Tuple
 import networkx as nx
 
 from cldk.analysis.commons.backend import AnalysisBackend
-from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, LocateResult, SliceNode
+from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, LocateResult, Slice, SliceNode
 from cldk.utils.exceptions import SelectorNotInGraph
 from cldk.models.python import (
     CdgEdge,
@@ -208,8 +208,7 @@ def call_graph_scope(roots: Sequence[str] | None, depth: int | None) -> List[str
             comparison, and ``depth=2.5`` was accepted and truncated to 2 by the Cypher/ego-graph
             radius. ``bool`` is rejected for the same reason — ``depth=True`` is ``1`` by accident.
     """
-    if depth is not None and (not isinstance(depth, int) or isinstance(depth, bool) or depth < 1):
-        raise ValueError(f"depth must be an int >= 1, got {depth!r}")
+    check_depth(depth)
     reject_bare_string("roots", roots)
     if roots is None:
         if depth is not None:
@@ -217,6 +216,22 @@ def call_graph_scope(roots: Sequence[str] | None, depth: int | None) -> List[str
         return None
     check_selector("roots", list(roots), ())
     return list(roots)
+
+
+def check_depth(depth: int | None) -> int | None:
+    """``depth`` is a hop budget: ``None`` for unbounded, otherwise an ``int`` of at least 1.
+
+    Type-checked and not merely range-checked, because the two ways of getting it wrong are silent
+    otherwise: ``depth="2"`` raised ``TypeError`` from somewhere further in, and ``depth=2.5`` was
+    accepted and truncated to 2 by the Cypher/ego-graph radius. ``bool`` is rejected for the same
+    reason — ``depth=True`` is ``1`` by accident.
+
+    One function, so ``get_call_graph``, the slices and the reachability accessors cannot come to
+    disagree about what a hop budget is.
+    """
+    if depth is not None and (not isinstance(depth, int) or isinstance(depth, bool) or depth < 1):
+        raise ValueError(f"depth must be an int >= 1, got {depth!r}")
+    return depth
 
 
 def bounded_subgraph(graph: nx.DiGraph, roots: List[str], depth: int | None, declared: Iterable[str]) -> nx.DiGraph:
@@ -437,6 +452,83 @@ def edge_page(model, scope: str, edges: List, order: EdgeOrder, page_size: int, 
     window = rows[start : start + page_size]
     more = start + len(window) < len(rows)
     return EdgePage[model](edges=window, total=len(rows), next_cursor=encode_cursor(scope, key(window[-1])) if more and window else None)
+
+
+# ----------------------------------------------------------------------------------------------
+# Slicing and reachability (E2, E3, E5).
+#
+# THE FIVE RELATIONSHIP TYPES A SLICE FOLLOWS, verified against codeanalyzer's own
+# ``neo4j/schema.py`` REL_TYPES and against ``CALL db.relationshipTypes()`` on odoo-slim-19 rather
+# than copied from a plan -- the names in this leg's plan have been wrong before (PY_CFG_NEXT is
+# not PY_CFG). All five exist, with these edge counts on that application:
+#
+#   PY_DDG        5,134,655   data dependence, within a callable  (var, prov)
+#   PY_CDG          139,065   control dependence, within a callable
+#   PY_PARAM_IN     229,035   actual_in -> formal_in     : an argument entering a callee
+#   PY_PARAM_OUT    133,267   formal_out -> actual_out   : a value coming back to the caller
+#   PY_SUMMARY      453,398   actual_in -> actual_out    : a callee's pass-through, at the call site
+#
+# All five point WITH the flow -- verified on the live graph, where every PY_PARAM_IN runs
+# actual_in -> formal_in and every PY_PARAM_OUT runs formal_out -> actual_out, with no exceptions
+# in 362,302 edges. So a forward slice follows them and a backward slice follows them reversed;
+# there is no per-type direction table to keep straight, which is why they can share one match.
+#
+# PY_CFG_NEXT is deliberately NOT here. Control *flow* says what runs next; a slice is about what
+# a value or a decision depends on, and following successor edges would pull in every later
+# statement whether or not it depends on anything -- the "returns the whole callable" bug that a
+# non-emptiness assertion cannot catch.
+SDG_RELS = ("PY_DDG", "PY_CDG", "PY_PARAM_IN", "PY_PARAM_OUT", "PY_SUMMARY")
+
+#: The Cypher spelling of :data:`SDG_RELS` for a relationship-type disjunction.
+SDG_REL_PATTERN = "|".join(SDG_RELS)
+
+#: Nodes per slice when the caller does not say. The same 10,000 as :data:`DEFAULT_PAGE_SIZE`, and
+#: for a different reason: there, it is where 99.8% of callables fit in one page; here, nothing
+#: fits, because the measured distribution has no middle (see
+#: :class:`~cldk.analysis.commons.results.Slice`). 10,000 is the largest result that stays
+#: readable, and every slice above it is one a caller should be re-asking with ``depth=``.
+DEFAULT_MAX_NODES = 10_000
+
+
+def check_max_nodes(max_nodes: int) -> int:
+    """``max_nodes`` must admit at least one node — the seed, if nothing else.
+
+    Zero is refused rather than read as "no limit": a slice of nothing whose ``total`` says
+    195,784 is a result no caller can act on, and "unbounded" is what ``max_nodes=None`` would
+    have to mean if it ever meant anything.
+    """
+    if max_nodes < 1:
+        raise ValueError(f"max_nodes must be at least 1, got {max_nodes}")
+    return max_nodes
+
+
+def cone_sinks(resolve: Callable[[str], SliceNode], sinks: Sequence[str]) -> List[SliceNode]:
+    """Resolve ``backward_cone``'s sinks, refusing the two ways of naming nothing.
+
+    The same discipline :func:`check_selector` applies to ``roots=`` and ``paths=``: a bare string
+    is ten one-character sinks and is refused as a type error, and an empty sequence is refused
+    because "everything" is the argument omitted, not the argument emptied — and there is no
+    "everything" here to fall back to. Each surviving name goes through ``resolve``, so an
+    ambiguous sink raises listing candidates instead of one of them being picked.
+
+    Duplicates are collapsed by resolved signature, not by the string the caller wrote: naming the
+    same callable twice, once bare and once qualified, is one sink.
+    """
+    reject_bare_string("sinks", sinks)
+    if not sinks:
+        raise ValueError("sinks= names nothing to walk back from; pass at least one callable")
+    resolved = {node.callable: node for node in (resolve(s) for s in sinks)}
+    return list(resolved.values())
+
+
+def slice_resolved(roots: List[SliceNode]) -> str:
+    """The audit line on a :class:`~cldk.analysis.commons.results.Slice`: what the caller's names
+    matched, in the caller's vocabulary.
+
+    Both backends build it here rather than each formatting its own, so a caller comparing two
+    results is comparing answers and not two spellings of one.
+    """
+    return ", ".join(f"{r.callable} {r.kind} {r.name!r}" if r.kind != "callable" else r.callable for r in roots)
 
 
 class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, PyCallable, PyClassAttribute, str]):
@@ -994,4 +1086,172 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
             AmbiguousName: ``callable`` named more than one callable.
             SelectorNotInGraph: Nothing matched.
             ValueError: ``page_size`` below 1, or ``cursor`` not from a previous page.
+        """
+
+    # -----[ slicing and reachability ]-----
+    # THE TRAVERSAL RUNS IN THE DATABASE (E3). The Neo4j backend compiles each of these to one
+    # variable-length match over :data:`SDG_RELS`; nothing here streams 6,089,420 edges into
+    # Python to walk them. Measured on odoo-slim-19, the worst single slice -- 195,784 nodes
+    # reached from one statement of ``Website.configurator_apply`` -- comes back with its exact
+    # ``total`` and 10,000 hydrated nodes in 1.5s, because Neo4j plans
+    # ``(a)<-[:R*1..]-(b) RETURN DISTINCT b`` as ``VarLengthExpand(Pruning,BFS)`` rather than as
+    # trail enumeration. Checked on the live graph, not assumed.
+    #
+    # THE LOCAL BACKEND ANSWERS THE SAME QUESTIONS, and that was not the expectation going in: it
+    # holds ``cfg``/``cdg``/``ddg`` per callable and has no cross-callable index, so an
+    # interprocedural slice looked like something it would have to decline with a Diagnostic. It
+    # does not have to. A level-4 run carries the whole SDG in the model -- ``PyApplication``'s
+    # ``param_in``/``param_out`` (whose endpoints are already global body-node ids) and
+    # ``PyCallable.summary`` -- and those are the very lists ``codeanalyzer.neo4j.project``
+    # projects as PY_PARAM_IN / PY_PARAM_OUT / PY_SUMMARY. The index it lacks it can build, from
+    # the data the graph is emitted from, so the two backends answer from one set of edges.
+    #
+    # A SLICE IS A SET (E2). Ordered by node id, which is the only total order both backends can
+    # compute without agreeing on a traversal, and which is what makes ``max_nodes`` take a
+    # deterministic prefix rather than an arbitrary subset. Paths are Task 7 and a different type.
+    #
+    # THE LEVEL GUARD IS THE ONE ``get_ddg`` ALREADY USES. Slicing needs the same analyzer pass,
+    # so it goes through the same check rather than a second one that could drift from it.
+    @abstractmethod
+    def slice_backward(self, src: str, *, within: str, depth: int | None = None, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """Everything the value ``src`` depends on: reverse reachability over the SDG.
+
+        ``within`` is **required**, unlike the plan's sketch of this signature. A value name is
+        scoped by its callable (spec § 5.2) and :meth:`resolve_value` cannot resolve one without
+        it, so a default of ``None`` would be a signature that raises on its own default. The
+        keyword narrows by class and module already, because it is matched segment-wise against
+        the whole dotted signature.
+
+        What comes back is usually one of two things, and the measurement says so plainly: over
+        200 random entering values on a real application the median backward slice is **1 node**
+        -- the seed itself, because nothing calls the callable -- while over the values that do
+        have callers the median is **195,786**, a fifth of the program. ``total`` is what tells
+        the two apart before a caller tries to read the result.
+
+        Args:
+            src: The value's name, resolved by :meth:`resolve_value` — a parameter, a captured
+                global (optionally qualified, ``"payment.AccessError"``) or a closure capture.
+            within: The callable to look inside, resolved as in :meth:`resolve_callable`.
+            depth: Most hops from the seed, or ``None`` for the whole cone. This is the bound that
+                yields a *complete* answer to a narrower question, which is what a caller who hits
+                ``max_nodes`` should reach for.
+            max_nodes: Most nodes in the result. A cap that fires is reported by
+                :attr:`~cldk.analysis.commons.results.Slice.truncated` and quantified by
+                :attr:`~cldk.analysis.commons.results.Slice.total`; it is never silent.
+
+        Returns:
+            A :class:`~cldk.analysis.commons.results.Slice` containing the seed, ordered by node
+            id, with ``source`` unhydrated on every node.
+
+        Raises:
+            AmbiguousName: ``within`` named more than one callable, or ``src`` more than one value.
+            SelectorNotInGraph: No such callable, or no such value in it.
+            ValueError: ``depth`` that is not a positive ``int``, or ``max_nodes`` below 1.
+            CodeanalyzerUsageException: (local backend) built below
+                ``analysis_level="program_dependency_graph"``, where there is no dataflow to slice.
+        """
+
+    @abstractmethod
+    def slice_forward(self, src: str, *, within: str, depth: int | None = None, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """Everything the value ``src`` can affect: forward reachability over the same edges.
+
+        The same accessor read the other way round, and the one that is usually the interesting
+        one for a value entering a callable: nothing flows *into* a parameter except from its
+        callers, so ``slice_backward`` from one is often the seed alone, while
+        ``slice_forward`` follows it through the body and out through every call it feeds.
+
+        Arguments, bounds and failures are :meth:`slice_backward`'s. Measured on the same 200
+        seeds: median 1, p95 440,270, max 440,662 of 885,218 body nodes — a forward cone is the
+        larger of the two, which is why the cap matters more here.
+        """
+
+    @abstractmethod
+    def reaches(self, src: str, dst: str, *, depth: int | None = None) -> bool:
+        """Is there a call path from ``src`` to ``dst``?
+
+        A **call-graph** question (spec § 6), over ``PY_CALLS`` — "can control get from here to
+        there at all", the cheap check a caller makes before asking for the paths themselves.
+        Both names go through :meth:`resolve_callable`, so an ambiguous one raises listing
+        candidates rather than being guessed at.
+
+        Returns ``bool`` and nothing else: it is deliberately not a degenerate ``Slice``, because
+        "is there a path" and "what is on it" are different questions with different costs.
+
+        Args:
+            src: The calling callable's name.
+            dst: The called callable's name.
+            depth: Most call hops, or ``None`` for any distance.
+
+        Raises:
+            AmbiguousName: Either name matched more than one callable.
+            SelectorNotInGraph: Either name matched none.
+            ValueError: ``depth`` that is not a positive ``int``.
+        """
+
+    @abstractmethod
+    def backward_cone(self, sinks: Sequence[str], *, depth: int | None = None, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """Every callable that can reach any of ``sinks`` — "what could get here".
+
+        A **call-graph** cone, so its nodes are callables (``kind="callable"``), not body nodes;
+        it is the accessor a caller reaches for when the sink is a dangerous function and the
+        question is which entry points lead to it. The sinks themselves are in the result, and in
+        :attr:`~cldk.analysis.commons.results.Slice.roots`.
+
+        ``max_nodes`` is not in the plan's signature for this one and is here anyway: a cone is a
+        slice, and measured on odoo-slim-19 five ``.write`` methods between them have 9,282
+        callables behind them. A result type that reports a cap on one accessor and cannot on its
+        sibling would make the bound silent exactly where it fires.
+
+        Args:
+            sinks: The callables to walk back from, each resolved by :meth:`resolve_callable`.
+            depth: Most call hops back, or ``None`` for the whole cone.
+            max_nodes: Most nodes in the result.
+
+        Raises:
+            AmbiguousName: A sink name matched more than one callable.
+            SelectorNotInGraph: A sink name matched none.
+            TypeError: ``sinks`` is a bare string.
+            ValueError: ``sinks`` is empty, ``depth`` is not a positive ``int``, or ``max_nodes``
+                is below 1.
+        """
+
+    @abstractmethod
+    def callers_of(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> List[SliceNode]:
+        """Who calls this — one hop back over ``PY_CALLS``, addressed by name.
+
+        The name-based sibling of :meth:`get_all_callers`, which takes a class signature plus a
+        method name and returns raw dicts. That one is a frozen leg-1 signature and is not
+        touched; this one takes a name the caller already has and returns
+        :class:`~cldk.analysis.commons.results.SliceNode` objects, so moving from "who calls this" to a
+        slice needs no translation between two shapes.
+
+        Callers are declared callables of this application. Call edges *originating* at an
+        external ghost exist in the raw graph (5,307 on odoo-slim-19) and are out of scope here
+        for the same reason they are out of scope for ``get_call_graph``: an unanalysed symbol has
+        no body, so it cannot be the start of anything this surface can then be asked about.
+
+        An empty list is unambiguous: a name that matches nothing raises, so ``[]`` means "nothing
+        calls it".
+
+        Raises:
+            AmbiguousName: ``name`` matched more than one callable.
+            SelectorNotInGraph: Nothing matched.
+        """
+
+    @abstractmethod
+    def callees_of(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> List[SliceNode]:
+        """What this calls — one hop forward over ``PY_CALLS``, addressed by name.
+
+        **Externals are included**, with ``kind="external"``. They are 38,585 of this graph's
+        370,110 call edges and they are what a caller tracing a sink is usually looking for, so
+        dropping them would be the ambiguous empty in another costume. An external was never
+        analysed, so it has no position: ``file`` is ``""`` and ``line`` is ``0``, and ``kind``
+        is what says why rather than leaving two sentinels to be discovered. Its ``callable`` is
+        the readable dotted name built from the node's own ``module`` and ``name`` properties
+        (``"odoo.exceptions.ValidationError.__init__"``) — never its ``can://`` id, which stays
+        in ``ref`` where an opaque handle belongs (E6).
+
+        Raises:
+            AmbiguousName: ``name`` matched more than one callable.
+            SelectorNotInGraph: Nothing matched.
         """

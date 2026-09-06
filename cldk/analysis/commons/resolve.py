@@ -62,6 +62,12 @@ T = TypeVar("T")
 GLOBAL_PREFIX = "<global>:"
 CAPTURE_PREFIX = "<capture>:"
 
+#: The analyzer's marker for a callable's *result*, carried as the ``var`` of a ``formal_out`` or
+#: ``actual_out`` vertex (33,223 of them on a real application, against 546,374 ``<global>:`` and
+#: 1,577 ``<capture>:``). Internal vocabulary like the other two, and unlike them it does not
+#: translate into a name — a returned value has none; ``kind="return"`` is what identifies it.
+RETURN_MARKER = "<return>"
+
 
 class CallableCandidate(NamedTuple):
     """One callable a name could resolve to, reduced to the three fields the policy needs.
@@ -251,3 +257,35 @@ def resolve_value_name(name: str, values: Sequence[str], *, within: str) -> str:
         SelectorNotInGraph: No value of ``within`` carries that name.
     """
     return resolve_name(name, values, kind="value", narrow_with=f"the fuller name of one of the candidates, or a different within= (currently {within!r})")
+
+
+#: The body-node kinds whose ``var`` names a value being *passed*, and what a caller calls them.
+#: ``formal_in`` is absent because it is not a flat rename: a value entering a callable is a
+#: parameter, a captured global or a closure capture, and only :func:`value_candidate` can tell
+#: which. The other three are unambiguous — an ``actual_in`` is the argument at a call site, and
+#: both ``*_out`` vertices are the value coming back out of the call.
+_PASSING_KINDS = {"actual_in": "argument", "actual_out": "return", "formal_out": "return"}
+
+
+def body_node_kind(kind: str, var: Optional[str]) -> tuple[str, Optional[str], Optional[str]]:
+    """One body node's ``(kind, name, defined_in)`` in the caller's vocabulary.
+
+    The schema's kinds are the analyzer's: ``formal_in`` / ``actual_in`` / ``formal_out`` /
+    ``actual_out`` for parameter passing, and ``statement`` / ``call`` / ``return`` / ``branch`` /
+    ``loop`` / ``raise`` / ``handler`` / ``entry`` / ``exit`` for everything else. The second group
+    is already English and passes through unchanged; the first is internal spelling (E6) and is
+    translated — including the ``"<global>:payment::AccessError"`` markers, through the *same*
+    :func:`value_candidate` the resolver uses, so a vertex a caller addressed as a ``global`` does
+    not come back from a slice labelled something else.
+
+    A node with nothing to name — a statement, a branch, the synthetic ``entry``/``exit``
+    bookends — gets ``name=None`` rather than an invented one.
+    """
+    if kind == "formal_in" and var:
+        v = value_candidate(var)
+        return v.kind, v.leaf, v.defined_in
+    if kind in _PASSING_KINDS:
+        if not var or var == RETURN_MARKER:
+            return _PASSING_KINDS[kind], None, None
+        return _PASSING_KINDS[kind], value_candidate(var).leaf, None
+    return kind, None, None

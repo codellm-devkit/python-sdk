@@ -55,6 +55,44 @@ Python leg (leg 1) of the CLDK 2.0 agent-facing query facade (see
 | 2.0.0-rc.1 (this) | >= 1.4.0 | `PyBodyNode` / `PY_HAS_BODY_NODE` |
 
 ### Added
+- **Slices and reachability: `slice_backward(src, within=)` / `slice_forward(src, within=)` /
+  `backward_cone(sinks)` / `reaches(src, dst)` / `callers_of(name)` / `callees_of(name)`**, on both
+  backends. Names in, names out — a value is addressed as `"invoice_id"` scoped by its callable,
+  never as `"…@formal_in:1"`, and no `can://` URI appears in an argument or a result. The
+  traversal follows data dependence, control dependence, argument passing, returns and call
+  summaries at once (`PY_DDG` / `PY_CDG` / `PY_PARAM_IN` / `PY_PARAM_OUT` / `PY_SUMMARY` —
+  6,089,420 edges on the measured application) and **runs in the database**: on the Neo4j backend
+  each slice is one variable-length Cypher match, planned as a pruning breadth-first search, so
+  the largest cone measured — 195,784 nodes — is counted and its first 10,000 nodes described in
+  about 1.5 seconds without the SDK ever holding an edge. The local backend answers the same
+  questions interprocedurally at `analysis_level="system_dependency_graph"`, building its index
+  from `PyApplication.param_in`/`param_out` and `PyCallable.summary`, which are the same edges the
+  graph is projected from. Below `program_dependency_graph` the slices raise through the guard
+  `get_ddg` already uses; the call-graph accessors (`reaches`, `callers_of`, `callees_of`,
+  `backward_cone`) work from `call_graph` and are not guarded, because the call graph exists there.
+
+  **A slice is capped, not paged — and the cap reports what it dropped** (`Slice.total`,
+  `Slice.truncated`, `Slice.nodes`, `Slice.roots`, `Slice.resolved`). This is deliberately the
+  opposite ruling to `EdgePage` on the sibling accessors above, and the measurement is why. On the
+  same application a backward slice is either about **1** node or about **195,786** (the median
+  over seeds that have callers; p95 195,790, max 196,117 over 200 random seeds), and a forward
+  slice reaches **440,270** at the 95th percentile — of 885,218 body nodes in the whole program.
+  The distribution has no middle, so a page is not a useful unit; and a slice *is* the traversal,
+  so unlike a keyset cursor over an order the database already maintains, every page would re-run
+  the whole closure. `total` carries E5's "a bound is never silent" instead: the whole slice's size
+  arrives with the first and only call, and `truncated` is derived from it rather than stored, so
+  the two cannot disagree. When a cap fires the way forward is `depth=`, which bounds the
+  *traversal* and so returns a complete answer to a narrower question. Nodes come back ordered by
+  `ref` and the cap takes a prefix of that order, so the same call twice returns the same subset.
+  `Slice.root` is the singular seed for the single-seed accessors and raises on a multi-sink cone
+  rather than silently answering with the first.
+
+  **`callees_of` includes calls out of the project** — 38,585 of the application's 370,110 call
+  edges, and usually the ones a caller tracing a sink is after. An external comes back
+  `kind="external"` with a readable dotted name built from the node's own `module`/`name`
+  (`"odoo.exceptions.ValidationError.__init__"`, never its `can://` id) and with `file=""` /
+  `line=0`, because it was never analysed and there is no position to point at. `callers_of` is
+  declared callables only. Neither touches the frozen `get_all_callers` / `get_all_callees`.
 - **Per-callable control and data flow: `get_cfg(callable)` / `get_cdg(callable)` /
   `get_ddg(callable)`**, on both backends. `DdgEdge` carries the variable that flows (`var`) and
   the evidence for it (`prov` — `ssa`, `reaching-defs` or `points-to`), so syntactic and

@@ -289,23 +289,25 @@ This layer is identical across Python, Java and TypeScript — the queries port 
 
 ---
 
-## Dataflow — **leg 1.5, mostly not yet implemented**
+## Dataflow — **leg 1.5, partly implemented**
 
-The three per-callable graphs (`get_cfg` / `get_cdg` / `get_ddg`) have shipped; everything else in
-this section is the design.
+Shipped: the three per-callable graphs (`get_cfg` / `get_cdg` / `get_ddg`), the slices
+(`slice_backward` / `slice_forward` / `backward_cone`) and the call-graph questions (`reaches` /
+`callers_of` / `callees_of`). Still design: `paths_between`, `call_paths_between`,
+`flows_to_call`, `flows_to_argument`, `describe`.
 
 Names in, names out. No `can://` URIs, no ordinals — you say `"invoice_id"`, not `"…@formal_in:1"`.
 
 | API | Answers | Example |
 | --- | --- | --- |
 | `slice_backward(src, within=, depth=, max_nodes=)` | what affects this value | `py.slice_backward("invoice_id", within="PaymentPortal.invoice_transaction")` |
-| `slice_forward(src, within=)` | what this value affects | `py.slice_forward("access_token", within="PaymentPortal.invoice_transaction")` |
+| `slice_forward(src, within=, depth=, max_nodes=)` | what this value affects | `py.slice_forward("access_token", within="PaymentPortal.invoice_transaction")` |
 | `paths_between(src, dst, within=, max_paths=)` | how one reaches the other | `py.paths_between("invoice_id", "kwargs", within="…invoice_transaction")` |
 | `flows_to_call(src, callee, within=)` | reaches **any call to** X | `py.flows_to_call("invoice_id", "execute", within="…invoice_transaction")` |
 | `flows_to_argument(src, callee, arg, within=)` | reaches X's **named argument** | `py.flows_to_argument("invoice_id", "execute", arg="query", within="…")` |
-| `reaches(src, dst)` | is there a call path | `py.reaches("invoice_transaction", "execute")` |
+| `reaches(src, dst, depth=)` | is there a call path | `py.reaches("invoice_transaction", "execute")` |
 | `call_paths_between(src, dst, max_paths=)` | show the call chains | |
-| `backward_cone(sinks=[…])` | everything reaching these | `py.backward_cone(sinks=["execute"])` |
+| `backward_cone(sinks, depth=, max_nodes=)` | everything reaching these | `py.backward_cone(["AccountMove.write"])` |
 | `callers_of(name, in_class=, in_module=)` | who calls this, by name | `py.callers_of("action_validate_step")` |
 | `callees_of(name, in_class=, in_module=)` | what this calls, by name | |
 | `get_cfg(callable, in_class=, page_size=, cursor=)` | control flow, one callable | `py.get_cfg("invoice_transaction", in_class="PaymentPortal")` |
@@ -353,6 +355,40 @@ for DDG), identical on both backends, so page *n* is the same page whichever bac
 CFG and CDG page the same way even though they are small (402 and 314 edges at their largest) —
 three sibling accessors with two different shapes is a trap for anything composing them.
 
+**A slice is capped, not paged — and it says how much it left behind.** The sibling per-callable
+graphs paginate; slices do not, and the difference is measured rather than stylistic. On a real
+application a backward slice is either about **1** node or about **195,786** (the median over
+seeds that have callers), and a forward slice reaches **440,270** at the 95th percentile — of
+885,218 body nodes in the whole program. There is almost nothing in between, so "page 3 of 20"
+answers no question anyone asked; and a slice *is* the traversal, so unlike an `EdgePage` cursor
+(a keyset position in an order the database already keeps) every page would re-run the whole
+closure. `Slice.total` is what keeps the bound from being silent:
+
+```python
+sl = py.slice_forward("kwargs", within="Website.configurator_apply", max_nodes=10)
+sl.total        # 440270 — the whole answer's size, in the same call
+sl.truncated    # True — derived from total, so the two cannot disagree
+len(sl.nodes)   # 10
+```
+
+When the cap fires, ask a narrower question rather than a longer one: `depth=` bounds the
+traversal, so what comes back is the *complete* slice of a smaller question. Nodes come back
+ordered by `ref`, and the cap takes a prefix of that order, so the same call twice gives the same
+subset. The traversal runs in the database over data dependence, control dependence, argument
+passing, returns and call summaries at once — 195,784 nodes reached, counted and the first 10,000
+described, in about 1.5s.
+
+`backward_cone` is the same shape over the call graph: its nodes are callables, its sinks are in
+the result, and a sink nothing calls comes back as its own one-node cone rather than as an empty
+answer you could not tell from a name that matched nothing. `sl.root` is the single seed for the
+slices; a multi-sink cone has `sl.roots` and raises if you ask it for one.
+
+**`callees_of` includes calls out of the project.** They are 10% of the call edges on a real
+application (38,585 of 370,110) and usually the ones you are looking for. An external comes back
+`kind="external"` with a readable dotted name (`"odoo.exceptions.ValidationError.__init__"`) and
+no position — `file` is `""` and `line` is `0`, because it was never analysed. `callers_of` is
+declared callables only: an unanalysed symbol has no body to have called from.
+
 **Reading code from a slice is a second call:**
 
 ```python
@@ -365,8 +401,10 @@ for n in py.describe(sl.nodes):
     print(f"{n.file}:{n.line} {n.kind:<9} {n.name or ''}\n    {n.source}")
 ```
 
-`SliceNode.kind` is `parameter | global | capture | argument | statement | call | return` — your
-vocabulary, not the schema's `formal_in`/`actual_out`. A `global` is a module global the callable
+`SliceNode.kind` is `parameter | global | capture | argument | statement | call | return | branch |
+loop | raise | handler | entry | exit | callable | external` — your vocabulary, not the schema's
+`formal_in`/`actual_out`. An `argument` is named for the *callee's* parameter it binds, not for the
+expression written at the call site; a `return` has no name at all. A `global` is a module global the callable
 reads (84% of the values entering a callable on a real application are these); its `name` is the
 identifier as written (`AccessError`) and `defined_in` is the module it comes from, so you can also
 address it as `payment.AccessError` when one callable captures that name from several modules.

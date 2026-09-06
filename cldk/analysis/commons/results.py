@@ -38,6 +38,10 @@ signal rides this separate, Python-typed accessor instead.
 :class:`EdgePage` is E5's "a bound is never silent" as a return type: an accessor whose answer can
 be millions of edges returns a page that says how big the whole answer is and where to resume,
 so the caller is bounded without anything being discarded.
+
+:class:`Slice` is the same discipline applied to a *traversal*, and lands on the other answer —
+capped rather than paged — because the measured shape of the thing is different. See its
+docstring for the numbers that decided it.
 """
 
 from typing import Generic, Literal, TypeVar
@@ -300,3 +304,75 @@ class EdgePage(BaseModel, Generic[E]):
         """Whether edges remain after this page. Derived from ``next_cursor`` rather than stored,
         so the two cannot disagree."""
         return self.next_cursor is not None
+
+
+class Slice(BaseModel):
+    """A set of positions reached by one traversal, with the size of the whole answer alongside.
+
+    **A slice is a set** (E2): no duplicates, and the order carries no meaning beyond making the
+    cap deterministic — it is the node-id order, the one total order both backends can compute
+    without agreeing on a traversal. A *path* is the sequence, and it is a different accessor
+    returning a different type; neither is derived from the other, because a cone of 10,000 nodes
+    contains millions of distinct paths.
+
+    **Why this caps where** :class:`EdgePage` **pages.** The sibling per-callable accessors
+    paginate, on the ruling that a cap discards edges a caller may need. Slices measured on
+    odoo-slim-19 land the other way, for two reasons:
+
+    * **The distribution is bimodal, not long-tailed.** Over 200 random ``formal_in`` seeds,
+      ``slice_backward`` has median 1 and p95 195,790 (max 196,117); restricted to the 150 seeds
+      that actually have callers, the median is 195,786. ``slice_forward`` over the same seeds is
+      median 1, p95 440,270, max 440,662 — of 885,218 body nodes in the whole application. A slice
+      is either a handful of nodes or a fifth to a half of the program, with almost nothing in
+      between, and "page 3 of 20" of the second kind answers no question anyone asked.
+    * **A slice cursor could not be cheap.** An :class:`EdgePage` cursor is a keyset position in
+      an order the database already maintains, so each page costs one bounded query. A slice *is*
+      the traversal, so resuming it means re-running the whole closure — the cost is in computing
+      the set, not in shipping it.
+
+    So the cap stays, and :attr:`total` is what keeps it from being the silent bound E5 forbids:
+    a capped result reports the size of the whole slice, so "here are 10,000 of 195,784" arrives
+    in one call and the caller learns the question was too broad instead of walking twenty pages
+    to find out. The way to a *complete* answer is a narrower question — ``depth=`` bounds the
+    traversal rather than the response, and what comes back is the whole slice of that question.
+
+    Attributes:
+        nodes: The positions in the slice, ordered by :attr:`SliceNode.ref` and including the
+            seed(s). ``source`` is ``None`` on every one of them: a slice answers *where*, and
+            hydrating text a caller has not chosen to read is the cost E4 exists to avoid — pass
+            the ones that matter to ``describe()``.
+        roots: What the traversal started from — the resolved seed(s), also present in
+            :attr:`nodes`. A list because ``backward_cone`` takes several sinks; see :attr:`root`
+            for the singular case.
+        resolved: What the caller's name(s) matched, in the caller's vocabulary, so the inference
+            is auditable rather than trusted.
+        total: The size of the whole slice, not of :attr:`nodes` — the number the caller needs to
+            decide whether to ask a narrower question.
+        diagnostics: Empty on both Python backends today. Reserved for a backend that cannot
+            answer the question asked, which must say which rather than return a partial answer
+            that looks whole (the ``entrypoint_report_unavailable`` precedent).
+    """
+
+    nodes: list[SliceNode]
+    roots: list[SliceNode]
+    resolved: str
+    total: int
+    diagnostics: list[Diagnostic] = []
+
+    @property
+    def truncated(self) -> bool:
+        """Whether a cap fired. Derived from :attr:`total` and :attr:`nodes` rather than stored, so
+        the two cannot disagree — the same construction as :attr:`EdgePage.has_more`."""
+        return self.total > len(self.nodes)
+
+    @property
+    def root(self) -> SliceNode:
+        """The single seed, for the accessors that take one.
+
+        Raises:
+            ValueError: This slice has several seeds (a multi-sink ``backward_cone``). Answering
+                with the first would be a guess, and the caller wants :attr:`roots`.
+        """
+        if len(self.roots) != 1:
+            raise ValueError(f"this slice has {len(self.roots)} roots, not one; read .roots")
+        return self.roots[0]
