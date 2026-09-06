@@ -37,6 +37,10 @@ What the projection does **not** carry, and therefore comes back at the model's 
   unknown too (``:JModule`` carries no lines at all), so it rehydrates as the model's own ``-1``.
   A callable is pointed at the text the graph did project through :func:`thread_code`; every other
   node's ``code`` is ``""``.
+* **every column and every byte offset** -- the projection writes ``start_line`` and ``end_line``
+  and no position within a line, and no offset into a ``source`` it does not carry. Both are
+  reported as :data:`_UNKNOWN` (``-1``), the model's own "not known", on every node: a ``0`` would
+  read as column one and offset zero, which is a position, and a wrong one.
 * **``JCallable.body_span``** -- the graph projects one line range per callable, the *declaration*
   span. So ``JCallable.code`` here is the whole declaration (``public void f() {…}``), where the
   local backend's is the body block (``{…}``); ``code_start_line`` is the declaration's first line,
@@ -46,8 +50,10 @@ What the projection does **not** carry, and therefore comes back at the model's 
   javadoc, rebuilt here as a one-element ``comments`` list; a non-javadoc comment on a declaration,
   and every file-level comment, is not projected at all.
 * **``JCallable.body``** -- only the ``call`` nodes are rebuilt (what ``call_sites`` is a view
-  over); a call site's ``arguments`` (body-key references) and end column are not projected, and
-  its start column is recovered from the body key the node id ends with.
+  over), which is roughly **30%** of what the graph holds (4,006 of daytrader8's 13,436
+  ``:JBodyNode``); the ``entry``/``exit``/``statement``/``branch``/``loop``/``return`` nodes and the
+  parameter lattice are not. A call site's ``arguments`` (body-key references) and both columns are
+  not projected either.
 * ``cfg`` / ``cdg`` / ``ddg`` / ``summary`` (``None``: 3b reads them per callable on demand),
   ``type_parameters``, ``JCompilationUnit.comments``, ``JApplication.param_in`` / ``param_out`` /
   ``external_symbols``, and a decorator's / import's / enum constant's / record component's span.
@@ -78,11 +84,6 @@ from cldk.models.java.models import (
 )
 
 Props = Mapping[str, Any]
-
-#: ``JType.kind`` values, and the ``JCallable.kind`` values, the analyzer emits. A ``:JSymbol`` row
-#: whose labels and ``kind`` name neither facet is an emitter defect, not a third kind of symbol.
-TYPE_KINDS = frozenset({"class", "interface", "enum", "annotation", "record"})
-CALLABLE_KINDS = frozenset({"method", "constructor", "initializer"})
 
 
 class _ProjectedText:
@@ -129,11 +130,24 @@ def thread_code(unit: JCompilationUnit, code: Mapping[str, str]) -> None:
 # ----------------------------------------------------------------------------------------------
 # leaves
 # ----------------------------------------------------------------------------------------------
-def span(props: Props, *, length: int = 0) -> Optional[JSpan]:
+#: The model's own "not known". The graph stores ``start_line``/``end_line`` and nothing else, so
+#: every column, every byte offset, and the whole span of a node it carries no lines for, are *not
+#: projected* -- reported as this rather than as a ``0``, which would read as "column one, offset
+#: zero" and index into a ``source`` that is ``""``.
+_UNKNOWN = -1
+
+
+def span(props: Props) -> Optional[JSpan]:
     """The line-only span the projection carries, or ``None`` when it carries no lines (an implicit
-    callable). Columns are ``0`` and ``bytes`` sizes the node's own text: neither is projected."""
+    callable). Both columns and both byte offsets are :data:`_UNKNOWN`: the graph projects neither
+    (see the module docstring)."""
     start, end = props.get("start_line"), props.get("end_line")
-    return None if start is None or end is None else JSpan(start=(start, 0), end=(end, 0), bytes=(0, length))
+    return None if start is None or end is None else JSpan(start=(start, _UNKNOWN), end=(end, _UNKNOWN), bytes=(_UNKNOWN, _UNKNOWN))
+
+
+def _unknown_span() -> JSpan:
+    """The span for a node the model requires one on and the projection carries no lines for."""
+    return JSpan(start=(_UNKNOWN, _UNKNOWN), end=(_UNKNOWN, _UNKNOWN), bytes=(_UNKNOWN, _UNKNOWN))
 
 
 def docstring(props: Props) -> List[JComment]:
@@ -195,14 +209,17 @@ def body_node(props: Props, callee_signature: Optional[str]) -> JBodyNode:
 
     **Columns are the model's own ``-1``, not the body key's.** The key a body node's id ends with
     (``@65:28``) spells a *different* position from the node's span: measured over daytrader8's
-    4,006 call nodes, the key column equals ``span.start`` column on only 629 of them and runs up to
-    12 columns off on the rest. So the key is used for what it is -- the ``body`` dict key -- and
-    the column is reported as not projected rather than as a number that would be wrong.
+    4,006 call nodes, the key column equals the ``span.start`` column on only 629 of them, and on
+    the rest the difference runs from 1 to **110** columns, most often **4** (910 nodes). So the key
+    is used for what it is -- the ``body`` dict key -- and the column is reported as not projected
+    rather than as a number that would be wrong. (The graph carries no ``start_column`` on a
+    ``:JBodyNode`` at all; those figures are measured on the same analyzer's JSON, where the spans
+    the key would have to agree with do exist.)
     """
     start, end = props.get("start_line"), props.get("end_line")
     return JBodyNode(
         kind=props["kind"],
-        span=None if start is None or end is None else JSpan(start=(start, -1), end=(end, -1), bytes=(0, 0)),
+        span=None if start is None or end is None else JSpan(start=(start, _UNKNOWN), end=(end, _UNKNOWN), bytes=(_UNKNOWN, _UNKNOWN)),
         method_name=props.get("method_name"),
         receiver_expr=props.get("receiver_expr"),
         receiver_type=props.get("receiver_type"),
@@ -261,7 +278,7 @@ def callable_(
         types=types,
         is_implicit=implicit,
         is_entrypoint=bool(props.get("is_entrypoint", False)),
-        span=span(props, length=len(props.get("code") or "")),
+        span=span(props),
     )
 
 
@@ -290,7 +307,7 @@ def type_(
         types=types,
         is_entrypoint_class=bool(props.get("is_entrypoint", False)),
         # ``span`` is required on a type and the projection always carries its lines.
-        span=span(props) or JSpan(start=(-1, 0), end=(-1, 0), bytes=(0, 0)),
+        span=span(props) or _unknown_span(),
     )
 
 
@@ -302,7 +319,7 @@ def compilation_unit(props: Props, *, import_declarations: List[JImport], types:
         content_hash=props.get("content_hash"),
         imports=import_declarations,
         types=types,
-        span=JSpan(start=(-1, 0), end=(-1, 0), bytes=(0, 0)),
+        span=_unknown_span(),
     )
 
 
@@ -329,7 +346,7 @@ def artifact(props: Props, *, config_keys: List[JConfigKey]) -> JArtifact:
         roles=list(props.get("roles") or []),
         size_bytes=props["size_bytes"],
         sha256=props["sha256"],
-        source=props.get("source", ""),
+        source=props["source"],
         text_truncated=bool(props.get("text_truncated", False)),
         extraction=props["extraction"],
         config_keys=config_keys,
@@ -345,8 +362,8 @@ def dependency(edge: Props, package: Props, declared_in: str) -> JDependency:
         group=package.get("group"),
         name=package["name"],
         ecosystem=package["ecosystem"],
-        spec=edge.get("spec", ""),
-        kind=edge.get("kind", "runtime"),
+        spec=edge["spec"],
+        kind=edge["kind"],
         extras=list(edge.get("extras") or []),
         declared_in=declared_in,
         direct=bool(edge.get("direct", False)),

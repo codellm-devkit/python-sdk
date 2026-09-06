@@ -19,8 +19,10 @@
 These need no live Neo4j: every lookup here is answered from the reconstructed
 :class:`JApplication` and its index, so the test seeds ``.application`` directly from the same
 codeanalyzer-java 3.0.1 fixture the in-memory :class:`JCodeanalyzer` tests use, bypassing the
-attach (which opens a driver and probes the graph). ``application`` is a ``cached_property``, so
-assigning it is the documented seam -- what a reconstruction would have produced, without one.
+attach (which opens a driver and probes the graph). The seam is the private ``_application``
+cache: writing ``backend.__dict__["_application"]`` stores exactly what that ``cached_property``
+would have stored, so the derived ``_idx`` and ``_call_graph`` caches are built from it. The public
+``application`` is a read-only property over it, so nothing can rebind it out from under them.
 """
 
 import pytest
@@ -37,8 +39,16 @@ _LOG_TRACE_METHOD = "trace(java.lang.String)"
 def backend(analysis_json) -> JNeo4jBackend:
     backend = JNeo4jBackend.__new__(JNeo4jBackend)
     backend.application_name = "daytrader8"
-    backend.application = JAnalysis.model_validate_json(analysis_json).application
+    backend.__dict__["_application"] = JAnalysis.model_validate_json(analysis_json).application
     return backend
+
+
+def test_the_application_view_is_read_only(backend):
+    """``_idx`` and ``_call_graph`` are cached beside ``_application``; rebinding the public view
+    would leave them answering from the object it replaced, so it cannot be rebound."""
+    assert backend.application is backend._application
+    with pytest.raises(AttributeError):
+        backend.application = backend.application
 
 
 def test_get_class_miss_returns_none(backend):

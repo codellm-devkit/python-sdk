@@ -407,7 +407,15 @@ class JCallable(_Node):
     def code(self) -> str:
         """The 1.x ``code``: the **body block** (``body_span``), which is what ``code_start_line``
         and ``TreesitterJava.get_calling_lines`` were written against; the declaration slice
-        (``span``) only when there is no body (abstract / interface methods)."""
+        (``span``) only when there is no body (abstract / interface methods).
+
+        That holds for a callable read from ``analysis.json``. One read from the Neo4j projection
+        instead carries the whole **declaration** — the graph projects one line range per callable
+        and no ``body_span`` — so its ``code`` starts at ``public …`` and *ends with* what this
+        property would return. Likewise :attr:`body` there holds the ``call`` nodes only, about 30%
+        of the graph's body nodes, so :attr:`call_sites` is complete and nothing else about the
+        body is.
+        """
         return self._slice(self.body_span or self.span)
 
     @property
@@ -494,10 +502,21 @@ class JType(_Node):
 
     @property
     def qualified_name(self) -> str:
-        """``package.Outer.Inner`` — the source spelling (nested types joined with ``.``)."""
-        enclosing = self._enclosing_type()
-        if enclosing is not None:
-            return f"{enclosing.qualified_name}.{self.name}"
+        """``package.Outer.Inner`` for a member type — the source spelling, nested types joined
+        with ``.``. A **local or anonymous** class additionally carries the signature of the
+        callable that declares it (``package.Outer.m(int).$anon$0``), mirroring the analyzer's id
+        grammar (``…/Outer/m(int)/$anon$0``): ``$anon$N`` is numbered *per declaring callable*, so
+        two sibling callables of one type each declare ``$anon$0`` and dropping the callable
+        segment collides them (measured on ThingsBoard: 97 names, 381 of 5,102 declarations
+        shadowed). A member type needs no such qualifier — its simple name is unique within its
+        enclosing type, so nested spellings are unchanged."""
+        owner = self._owner
+        if isinstance(owner, JCallable):
+            enclosing = owner._owner_type
+            prefix = f"{enclosing.qualified_name}." if enclosing is not None else ""
+            return f"{prefix}{owner.signature}.{self.name}"
+        if owner is not None:
+            return f"{owner.qualified_name}.{self.name}"
         package = self._unit.package if self._unit is not None else ""
         return f"{package}.{self.name}" if package else self.name
 

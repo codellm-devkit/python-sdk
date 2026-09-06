@@ -118,6 +118,22 @@ paths, entrypoints) is 2.5b, on codeanalyzer-typescript 1.3.0 when it is cut.
   as a parameter), `levels.py` (the `-a` integers), `artifacts.py` (the shared artifact-layer
   reconstructors) and `backend.semver` (the version-floor parser). Python re-imports every name;
   nothing changed in behaviour or count.
+- **BREAKING on Java: a local or anonymous class's qualified name now carries the signature of the
+  callable that declares it.** `JType.qualified_name` — and with it every `get_class(...)` key,
+  `get_all_classes()` key and `get_call_graph()` node key on both Java backends — spells a local
+  class `p.Outer.m(int).$anon$0`, not `p.Outer.$anon$0`, mirroring the id grammar the analyzer
+  already uses (`…/Outer/m(int)/$anon$0`). `$anon$N` is numbered *per declaring callable*, so
+  without the callable segment two sibling callables of one type both spell `$anon$0`: on
+  ThingsBoard that was 97 colliding names shadowing 381 of 5,102 type declarations, and it made
+  every index-routed accessor on `JNeo4jBackend` raise. Member (nested) types are unchanged —
+  `p.Outer.Inner`. *Migration:* if you addressed a local class by name, take the key from
+  `get_all_classes()` rather than composing it; a call-graph node's owning class is also on
+  `cg.nodes[key]["method_detail"].klass`.
+- **Java `JNeo4jBackend` reports an unknown column or byte offset as `-1`, not `0`.** The Neo4j
+  projection carries `start_line`/`end_line` and nothing else, so every reconstructed
+  `JSpan.start`/`end` column and both `JSpan.bytes` offsets are the model's own "not known" on
+  types, callables, fields, local variables, call sites and compilation units. `start_line` /
+  `end_line` are unaffected.
 
 ### Removed
 - `TypeScriptAnalysis.get_entry_point_methods` and `get_service_entry_point_methods`, which only ever
