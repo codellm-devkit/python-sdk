@@ -620,25 +620,37 @@ def test_the_audit_sees_every_inline_statement_too():
         assert any(name.startswith(expected + "@") for name in inline), f"{expected}'s statement is not harvested"
 
 
-def test_no_statement_names_retired_vocabulary():
-    """The 0.4.3 labels/types the backend was migrated off, and the ``_module`` property 1.2.0's
-    ``main`` retired (#166): a statement naming any of them matches nothing on the graph."""
+#: The 0.4.3 labels and relationship types the backend was migrated off, plus the ``_module``
+#: property 1.2.0's ``main`` retired (#166). A statement naming any of these matches nothing on a
+#: graph this backend accepts.
+_RETIRED = (
+    "._module",
+    "_module IN",
+    ":Symbol",
+    ":Callable",
+    ":CallSite",
+    "HAS_CALLSITE",
+    "[:CALLS]",
+    ":Decorator)",
+    "{name: $app}",
+)
+
+#: Labels this backend deliberately does not target **yet**. ``TSCanNode``/``JSCanNode`` are the
+#: *newer* per-language marker labels the live graph already carries -- not retired vocabulary --
+#: and cants#95 is expected to land them as the prefixed replacement for the bare ``CanNode``
+#: merge label. Until it does, every statement here anchors on ``CanNode`` or the specific label
+#: (the measured seek rule), so naming a marker label would be an untested seek, not a fix.
+_NOT_TARGETED_YET = ("TSCanNode", "JSCanNode")
+
+
+def test_no_statement_names_retired_or_untargeted_vocabulary():
     for name, s in _every_statement().items():
-        for retired in (
-            "._module",
-            "_module IN",
-            ":Symbol",
-            ":Callable",
-            ":CallSite",
-            "HAS_CALLSITE",
-            "[:CALLS]",
-            ":Decorator)",
-            "DECORATED_BY]" if "TS_DECORATED_BY" not in s else "\0",
-            "{name: $app}",
-            "TSCanNode",
-            "JSCanNode",
-        ):
+        for retired in _RETIRED:
             assert retired not in s, f"{name} names retired vocabulary {retired!r}: {s[:160]!r}"
+        if "TS_DECORATED_BY" not in s:
+            assert "DECORATED_BY]" not in s, f"{name} names retired vocabulary 'DECORATED_BY]': {s[:160]!r}"
+        for untargeted in _NOT_TARGETED_YET:
+            assert untargeted not in s, f"{name} names {untargeted!r}, a label this backend deliberately does not target yet (cants#95): {s[:160]!r}"
 
 
 def test_no_statement_spells_the_scope_with_any():

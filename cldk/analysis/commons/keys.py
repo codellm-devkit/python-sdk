@@ -143,7 +143,15 @@ def module_dotted(path: str, *, extensions: Sequence[str] = (".py",)) -> str:
     """The dotted module name a repo-relative path spells: ``"odoo/tools/mail.py"`` →
     ``"odoo.tools.mail"``, ``"pkg/__init__.py"`` → ``"pkg"``. The same derivation the analyzer's
     signatures embody, so ``in_module=`` can be written the way a signature reads. ``extensions`` is
-    the language's source suffixes; the Python default keeps every existing call site as it was."""
+    the language's source suffixes; the Python default keeps every existing call site as it was.
+
+    One step is **Python-specific and unconditional**: a trailing ``/__init__`` is stripped, because
+    a Python package's ``__init__.py`` is addressed by the package name. No other language's
+    conventional index file is stripped -- a TypeScript ``src/foo/index.ts`` dots to
+    ``src.foo.index``, not ``src.foo`` -- and callers that want that must not rely on this helper
+    for it. Harmless where the convention does not exist (no ``__init__`` segment, nothing to
+    strip); if a second language ever needs its own index name, that is a parameter, not a
+    branch here."""
     stem = next((path[: -len(ext)] for ext in extensions if path.endswith(ext)), path)
     if stem.endswith("/__init__"):
         stem = stem[: -len("/__init__")]

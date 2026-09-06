@@ -279,6 +279,20 @@ def test_imports_and_exports_name_the_projection_gap(analysis):
         analysis.get_exports()
 
 
+def test_extends_comes_from_the_relationship_and_implements_names_the_absent_type(analysis, cypher):
+    """The split comes from the relationships, not from the never-written ``implements_types``."""
+    # Subtracting implements_types from base_classes would have returned a class's interfaces as
+    # its extended classes. This graph declares no TS_IMPLEMENTS at all, so that half raises
+    # naming the type rather than reporting that nothing implements anything.
+    assert cypher("MATCH (c:TSClass|TSInterface) RETURN count(c.implements_types) AS n")[0]["n"] == 0
+    assert "TS_IMPLEMENTS" not in {r["relationshipType"] for r in cypher("CALL db.relationshipTypes()")}
+    scoped_c = SCOPED.replace("x.", "c.")
+    row = cypher(f"MATCH (c:TSClass)-[:TS_EXTENDS]->(b) WHERE {scoped_c} RETURN c.signature AS sig, collect(DISTINCT b.signature) AS bases LIMIT 1", **SCOPE)[0]
+    assert analysis.get_extended_classes(row["sig"]) == sorted(row["bases"])
+    with pytest.raises(CodeanalyzerExecutionException, match="TS_IMPLEMENTS"):
+        analysis.get_implemented_interfaces(row["sig"])
+
+
 def test_variables_and_hierarchy(analysis, count):
     variables = analysis.get_variables()
     assert set(variables) == set(analysis.get_symbol_table())
@@ -406,4 +420,12 @@ def test_application_view_round_trips(analysis, count):
     assert set(app.symbol_table) == set(analysis.get_symbol_table())
     assert len(app.call_graph) == count(f"MATCH (x)-[r:TS_CALLS]->() WHERE {SCOPED} RETURN count(r) AS n")
     assert len(app.external_symbols) == len(analysis.get_external_symbols())
+    # The artifact layer is in the view, not only behind the dedicated accessors (which is what a
+    # caller reading app.dependencies sees). param_in/param_out stay empty: 2.5a reads no dataflow.
+    backend = analysis.backend
+    assert set(app.artifacts) == set(backend.get_artifacts())
+    assert sum(len(a.config_keys) for a in app.artifacts.values()) == len(backend.get_config_keys())
+    assert len(app.dependencies) == len(backend.get_dependencies())
+    assert len(app.config_uses) == len(backend.get_config_uses())
+    assert app.param_in == [] and app.param_out == [] and app.config_reads == [] and app.unresolved_imports == []
     assert app.model_dump_json()

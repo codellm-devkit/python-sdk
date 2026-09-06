@@ -18,6 +18,11 @@
 
 ``TSCallEdge``, ``TSExternalSymbol``, ``TSSynthesizedCallable``, ``TSClassAttribute``, ``TSEnumMember`` and
 ``TSVariableDeclaration`` are 1.x names kept as aliases of their v2 classes.
+
+``TSCallsite`` and ``TSSymbol`` are 1.x *shapes* the v2 wire no longer carries, kept importable for
+the same reason: ``TSCallsite`` is still the return type of the call-site accessors, rebuilt from a
+``body`` node; ``TSSymbol`` has no v2 counterpart at all (accessed symbols left the schema) and no
+accessor returns one -- it is an import alias and nothing more.
 """
 
 from .models import (

@@ -107,8 +107,15 @@ class TSAnalysisBackend(AnalysisBackend[TSApplication, TSModule, TSType, TSCalla
 
     @abstractmethod
     def get_synthesized_callables(self) -> Dict[str, TSSynthesizedCallable]:
-        """The analyzer's anonymous-callable compatibility index, as emitted: keyed by the older
-        anonymous id, each value carrying the tree id that replaced it. Empty below level 2."""
+        """The application's anonymous callables, each value carrying the ``can://`` tree id of
+        the callable it stands for. Empty below level 2.
+
+        **The key is backend-dependent**, and each backend's own docstring says which it uses: a
+        backend reading ``analysis.json`` passes the analyzer's compatibility index through as
+        emitted, so the key is the *older* anonymous id and the value's ``id`` is the tree id that
+        replaced it (key != ``id``); a backend reading the Neo4j projection has the tree nodes and
+        not the index, so it keys by the node's own id (key == ``id``). Do not key a cross-backend
+        lookup on this map -- ask for the value's ``id``."""
 
     @abstractmethod
     def get_typescript_file(self, qualified_name: str) -> str | None:
@@ -172,7 +179,9 @@ class TSAnalysisBackend(AnalysisBackend[TSApplication, TSModule, TSType, TSCalla
 
     @abstractmethod
     def get_all_nested_classes(self, qualified_class_name: str) -> List[TSClass]:
-        """The classes declared inside a class."""
+        """The classes declared inside a class -- on schema v2 always ``[]``, on every backend: a
+        class holds only ``callables`` and ``fields``, so no class nests a type. A class declared
+        inside a *callable* survives as ``TSCallable.inner_classes``. Kept for the 1.x surface."""
 
     @abstractmethod
     def get_all_sub_classes(self, qualified_class_name: str) -> Dict[str, TSClass]:

@@ -97,9 +97,10 @@ class GraphSchemaMismatch(RuntimeError):
     makes that mismatch loud: it names what the backend expected, what it actually found on
     the graph, and which relationship types are missing.
 
-    Raised by a one-time schema probe run at connection time (e.g.
-    :meth:`~cldk.analysis.python.neo4j.neo4j_backend.PyNeo4jBackend._probe_schema`), never by
-    an individual query.
+    Raised by a one-time schema probe run at connection time -- every language's Neo4j backend has
+    one (``PyNeo4jBackend._probe_schema``, ``TSNeo4jBackend._probe_schema``) -- never by an
+    individual query. A probe may also raise it with a precomputed ``message`` when the vocabulary
+    matches but the graph's ``analyzer_version`` is below the backend's floor.
 
     Attributes:
         expected (set[str]): The relationship types the backend requires.
@@ -127,9 +128,9 @@ class GraphSchemaMismatch(RuntimeError):
     def _describe(expected: set[str], found: set[str], missing: set[str]) -> str:
         if "PY_HAS_CALLSITE" in found:
             generation = (
-                "This looks like a graph built by codeanalyzer-python 0.3.x (it has "
-                "PY_HAS_CALLSITE / :PyCallSite instead of PY_HAS_BODY_NODE / :PyBodyNode). "
-                "Re-ingest the project with codeanalyzer-python>=1.4.0."
+                "The graph is a codeanalyzer-python 0.3.x graph: it has PY_HAS_CALLSITE / "
+                ":PyCallSite instead of PY_HAS_BODY_NODE / :PyBodyNode, the call-site vocabulary "
+                "every language's analyzer retired, and no backend of any generation reads it."
             )
         elif not found:
             generation = "The graph has no relationship types at all — an empty or asset-only database, not a codeanalyzer application graph."

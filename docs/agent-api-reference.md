@@ -46,9 +46,17 @@ and the message names what it found and the floor. What attaching to each genera
 Status: leg 2.5a (`codeanalyzer-typescript` 1.2.0 pinned; graphs emitted by 1.2.0 or newer
 served). What attaches today is the **1.x accessor surface** — symbol table, classes / interfaces /
 enums / type aliases / namespaces, methods, fields, call graph, call sites, decorators, externals,
-synthesized callables, the four bulk accessors and the repository-artifact layer — on both backends,
-every accessor exercised against the live superset-frontend graph (2,184 `.ts/.tsx` files plus its
-JavaScript). **The query surface documented in the rest of this reference** (`locate`, the scoping
+synthesized callables, the four bulk accessors and the repository-artifact layer — on both backends.
+Every accessor is **called** against the live superset-frontend graph (1,841 modules: 1,557
+TypeScript, 284 JavaScript) and asserted against raw Cypher counts, but that corpus does not
+exercise all of them on data: it holds **no `TSDecorator` nodes and no `TS_DECORATED_BY`,
+`TS_IMPLEMENTS` or `TS_USES_CONFIG` relationship types at all**, so `get_decorators`,
+`get_class_decorators`, `get_methods_with_decorators`, `get_classes_with_decorators`,
+`get_decorated_callables` and `get_config_uses` are verified only to return their empty there, and
+`get_implemented_interfaces` only to raise. Their query shapes are pinned offline against a fake
+two-application graph that does carry those edges; their behaviour on a decorator-heavy or
+`implements`-heavy corpus (an Angular or NestJS project) is **untested by corpus**.
+**The query surface documented in the rest of this reference** (`locate`, the scoping
 keywords, `get_cfg`/`get_cdg`/`get_ddg`, slices, reachability, paths, `describe`, entrypoints,
 `SelectorNotInGraph` / `AmbiguousName`) **is not on `TypeScriptAnalysis` yet — it arrives in leg
 2.5b**, on codeanalyzer-typescript 1.3.0. Design record:
@@ -91,6 +99,10 @@ documented empty comes back.
 | `get_imports()`, `get_exports()` | **raises** — no import/export vocabulary in the graph |
 | `get_unresolved_config_reads()` | **raises** — `config_reads` not projected; `[]` would read as "every read resolved" |
 | `get_method_parameters(cls, m)` | **raises** for a found method (no parameters on `:TSCallable`); `[]` for a missing one |
+| `get_extended_classes(sig)`, `get_implemented_interfaces(sig)` | read off `TS_EXTENDS` / `TS_IMPLEMENTS`, so **resolved in-repo bases only** (a library base is in `base_classes` with no node to point at); each **raises** when its relationship type is absent from the database — as `TS_IMPLEMENTS` is on superset-frontend. The `implements_types` property the in-memory split uses is written by no node in the projection, so subtracting it would return the interfaces as extended classes |
+| `get_config_uses(key=None)` | `[]` also when the database declares no `TS_USES_CONFIG` at all (superset-frontend): indistinguishable from a corpus with no config reads. Not raised — a project that reads no configuration is a valid project, and refusing it at attach would be worse |
+| `get_nested_classes(sig)` | permanently `[]`, on **both** backends and not a projection gap: a schema-v2 class holds only `callables` and `fields`, so no class nests a class. `TSCallable.inner_classes` is the surviving case |
+| `get_application_view().param_in` / `.param_out` | empty — leg 2.5a reads **no** dataflow overlay (2.5b does). `.config_reads` and `.unresolved_imports` are empty for their own reasons: not projected, and no accessor reads `TS_UNRESOLVED_IMPORT`. `.artifacts` / `.dependencies` / `.config_uses` **are** populated, from the same rows the dedicated accessors return |
 | `TSCallable.parameters`, `comments`, `type_parameters`, `overload_signatures`, `body`, `cfg`/`cdg`/`ddg`/`summary` | empty |
 | `TSEnumMember.value`; `TSModule.source` / `imports` / `exports` / `comments`; decorator positions; a call site's `method_name`, receiver and argument facets | empty / `None` |
 | `code` on any node | the text the graph projected for that node, on a line-only span (columns `0`) |

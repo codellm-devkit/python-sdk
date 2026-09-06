@@ -55,7 +55,11 @@ are not projected at all; call sites keep lines and the resolved callee only; th
 index is keyed by the tree node's own id rather than the analyzer's older compatibility key;
 ``config_reads`` are not projected (see :meth:`get_unresolved_config_reads`); an unresolved
 call site contributes ``""`` to :meth:`get_call_targets` where the in-memory backend contributes
-the call's ``method_name``. One more is the emitter's: two declarations of one name (TypeScript
+the call's ``method_name``; the extends/implements split is read off ``TS_EXTENDS``/``TS_IMPLEMENTS``
+rather than the never-written ``implements_types`` property, so it covers resolved in-repo bases
+only and raises when the relationship type is absent (:meth:`_heritage`); and
+:meth:`get_application_view` leaves the L4 ``param_in``/``param_out`` overlay empty because 2.5a
+reads no dataflow at all (2.5b does). One more is the emitter's: two declarations of one name (TypeScript
 declaration merging -- ``const X = …`` + ``interface X``, ``const X = …`` + ``type X``, ``type X`` +
 a field ``X``) share one id, so ``MERGE`` collapses them onto one node carrying both labels and the
 ``kind`` of whichever was written last. Such a node is rebuilt as the facet the containment edge
@@ -82,13 +86,16 @@ from cldk.analysis.typescript.neo4j.reconstruct import CALLABLE_KINDS, TYPE_KIND
 from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
 from cldk.models.typescript import (
     TSApplication,
+    TSArtifact,
     TSCallable,
     TSCallableOverview,
     TSCallGraphEdge,
     TSCallsite,
     TSClass,
     TSClassAttribute,
+    TSConfigUse,
     TSDecorator,
+    TSDependency,
     TSEnum,
     TSEnumMember,
     TSExport,
@@ -137,6 +144,11 @@ class TSNeo4jBackend(TSAnalysisBackend):
     #: The oldest codeanalyzer-typescript whose graph this backend serves: 1.2.0 introduced the
     #: ``can://`` id grammar and the body-node shape every statement here reads.
     _ANALYZER_FLOOR = (1, 2, 0)
+    #: Every relationship type the attached database declares, recorded by :meth:`_probe_schema`.
+    #: A type absent from it is absent from the graph, so an accessor that can only be answered
+    #: over that type raises naming the gap instead of returning an empty the caller would read as
+    #: a fact (:meth:`_heritage`). The class-level default is for the ``object.__new__`` seam.
+    _relationship_types: FrozenSet[str] = frozenset()
     #: Set by :meth:`_probe_schema`; the class-level ``None`` is for the ``object.__new__`` seam.
     _analyzer_version: Tuple[int, int, int] | None = None
     _call_graph: nx.DiGraph | None = None
@@ -204,7 +216,8 @@ class TSNeo4jBackend(TSAnalysisBackend):
             self._modules = list(self._module_ids)
             self.__dict__.pop("_module_set", None)
         raise CodeanalyzerExecutionException(
-            f"A node of application {self.application_name!r} belongs to none of the {len(self._module_set)} module keys the graph holds for it, even after reloading them. Re-attach to the graph."
+            f"The node {node_id!r} of application {self.application_name!r} belongs to none of the {len(self._module_set)} module keys the graph holds for it, "
+            "even after reloading them. Re-attach to the graph."
         )
 
     # -----[ lifecycle ]-----
@@ -263,6 +276,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
                 message=f"The graph for application {self.application_name!r} {what}; this backend needs a graph emitted by codeanalyzer-typescript {floor} or newer.",
             )
         self._analyzer_version = version
+        self._relationship_types = frozenset(found)
 
     def _load_module_keys(self) -> Dict[str, str]:
         """``file key -> module id`` for the application's modules (``TSModule.name`` holds the key)."""
@@ -306,7 +320,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
             if kind not in TYPE_KINDS and kind not in CALLABLE_KINDS:
                 # A declaration-merged node (see the module docstring): TS_DECLARES says type or
                 # callable; the labels must name exactly one type facet, else it is a defect.
-                facets = [TYPE_LABEL_KINDS[l] for l in p.get("_labels", []) if l in TYPE_LABEL_KINDS]
+                facets = [TYPE_LABEL_KINDS[label] for label in p.get("_labels", []) if label in TYPE_LABEL_KINDS]
                 if len(facets) != 1:
                     raise CodeanalyzerExecutionException(
                         self._merged_defect(p, "is declared by its parent but its kind is neither a type nor a callable kind, and its labels do not name one type facet")
@@ -366,14 +380,33 @@ class TSNeo4jBackend(TSAnalysisBackend):
     # application / whole-program
     # =====================================================================================
     def get_application_view(self) -> TSApplication:
-        """The symbol table, the call graph as wire edges, the externals and the anonymous index.
-        The artifact layer is answered by its own five accessors (shared ``Py*`` models) and is not
-        rebuilt into the view; ``param_in``/``param_out`` (L4) are not rebuilt either."""
+        """The symbol table, the call graph as wire edges, the externals, the anonymous index and
+        the repository-artifact layer.
+
+        The artifact layer comes from the same three accessors a caller would reach for
+        (:meth:`get_artifacts` -- config keys included -- :meth:`get_dependencies`,
+        :meth:`get_config_uses`), retyped from the shared ``Py*`` models onto the wire's ``TS*``
+        ones; a dependency's ``ecosystem`` has no field on ``TSDependency`` and is dropped here
+        (:meth:`get_dependencies` keeps it).
+
+        Three overlays stay at their model defaults, deliberately, and each for its own reason:
+
+        * ``param_in``/``param_out`` -- the L4 dataflow overlay. Leg 2.5a reads **none** of it
+          (no ``TS_PARAM_IN``/``TS_PARAM_OUT``/``TS_DDG``/``TS_SUMMARY`` statement exists on this
+          class); the whole dataflow surface, this overlay with it, is leg 2.5b.
+        * ``config_reads`` -- not projected at all (see :meth:`get_unresolved_config_reads`, which
+          raises rather than answer ``[]`` here).
+        * ``unresolved_imports`` -- ``TS_UNRESOLVED_IMPORT`` is in the projection but no accessor
+          on this surface reads it, so the view does not invent one.
+        """
         externals = {e.id: e for e in self.get_external_symbols().values()}
         return TSApplication(
             id=self._app_id,
             symbol_table=self.get_symbol_table(),
             call_graph=[TSCallGraphEdge(src=r["src"], dst=r["dst"], prov=list(r["prov"] or []), weight=r["weight"] or 1) for r in self._call_rows()],
+            artifacts={a.path: TSArtifact.model_validate(a.model_dump()) for a in self.get_artifacts().values()},
+            dependencies=[TSDependency.model_validate(d.model_dump(exclude={"ecosystem"})) for d in self.get_dependencies()],
+            config_uses=[TSConfigUse.model_validate(u.model_dump()) for u in self.get_config_uses()],
             external_symbols=externals,
             synthesized_callables=self.get_synthesized_callables(),
         )
@@ -572,25 +605,52 @@ class TSNeo4jBackend(TSAnalysisBackend):
         return self._types_by_signature("TSTypeAlias")
 
     def get_all_nested_classes(self, qualified_class_name: str) -> List[TSClass]:
-        # The v2 class facet nests no types (only namespaces and callables do); same as in-memory.
+        """Always ``[]``, on this backend and in-memory alike -- not a projection gap. In the
+        schema-v2 tree a class holds only ``callables`` and ``fields``: no ``types`` bucket, so no
+        containment edge from a class to a type exists to walk. A class declared inside a
+        *callable* survives as ``TSCallable.inner_classes``."""
         return []
 
     def get_all_sub_classes(self, qualified_class_name: str) -> Dict[str, TSClass]:
         roots, children = self._fetch(f"(root:TSClass) WHERE {_scoped('root')} AND $sig IN root.base_classes", sig=qualified_class_name, **self._scope_params)
         return {p["signature"]: self._type(p, children) for p in roots}
 
-    def _heritage(self, qualified_class_name: str) -> Tuple[List[str], List[str]]:
+    def _heritage(self, qualified_class_name: str, rel: str, verb: str) -> List[str]:
+        """The signatures a class's ``rel`` edges point at, sorted.
+
+        The split is read off the relationships, never off the properties. ``base_classes`` is the
+        **union** of extends and implements, and ``implements_types`` -- the property the
+        subtraction would need -- is written by no node in any graph this backend has been measured
+        against (0 of 207 classes and 0 of 687 interfaces on superset-frontend), so subtracting it
+        would silently return the interfaces as extended classes. ``TS_EXTENDS``/``TS_IMPLEMENTS``
+        are drawn only for a heritage clause the analyzer **resolved in-repo**: a base that is a
+        library type is in ``base_classes`` with no node to point at, and is not returned here.
+
+        A graph that declares no ``rel`` at all cannot be asked this question -- ``[]`` would read
+        as "extends nothing"/"implements nothing" -- so it raises naming the gap, as the four other
+        projection gaps on this class do."""
+        if rel not in self._relationship_types:
+            raise CodeanalyzerExecutionException(
+                f"The graph for application {self.application_name!r} declares no {rel} relationship type, so it cannot say what {qualified_class_name!r} {verb}; "
+                "the projection carries only the extends-implements union in base_classes, and the split exists in analysis.json."
+            )
         rows = self._run(
-            f"MATCH (c:TSClass {{signature: $sig}}) WHERE {_scoped('c')} RETURN c.base_classes AS bases, c.implements_types AS impl", sig=qualified_class_name, **self._scope_params
+            f"MATCH (c:TSClass {{signature: $sig}}) WHERE {_scoped('c')} MATCH (c)-[:{rel}]->(b) RETURN DISTINCT b.signature AS sig ORDER BY sig",
+            sig=qualified_class_name,
+            **self._scope_params,
         )
-        return (list(rows[0]["bases"] or []), list(rows[0]["impl"] or [])) if rows else ([], [])
+        return [r["sig"] for r in rows if r["sig"]]
 
     def get_extended_classes(self, qualified_class_name: str) -> List[str]:
-        bases, impl = self._heritage(qualified_class_name)
-        return [b for b in bases if b not in impl]
+        """The base classes ``TS_EXTENDS`` draws from this class -- resolved in-repo bases only.
+        See :meth:`_heritage` for why the property is not read and when this raises."""
+        return self._heritage(qualified_class_name, "TS_EXTENDS", "extends")
 
     def get_implemented_interfaces(self, qualified_class_name: str) -> List[str]:
-        return self._heritage(qualified_class_name)[1]
+        """The interfaces ``TS_IMPLEMENTS`` draws from this class, on :meth:`_heritage`'s terms.
+        The superset-frontend reference graph declares no ``TS_IMPLEMENTS`` at all, so this raises
+        there rather than reporting that no class implements anything."""
+        return self._heritage(qualified_class_name, "TS_IMPLEMENTS", "implements")
 
     # =====================================================================================
     # methods / functions / fields
@@ -716,6 +776,15 @@ class TSNeo4jBackend(TSAnalysisBackend):
         return {ck.id: ck for ck in (shared.config_key(r["p"]) for r in rows)}
 
     def get_config_uses(self, key: str | None = None) -> List[PyConfigUseEdge]:
+        """The ``TS_USES_CONFIG`` edges from a body node to the ``:ConfigKey`` it names.
+
+        ``[]`` covers two states this graph cannot tell apart: a corpus in which the analyzer
+        matched no config read, and a database that declares no ``TS_USES_CONFIG`` relationship
+        type at all (the superset-frontend reference graph is the second). Unlike
+        :meth:`get_unresolved_config_reads`, the empty is **not** raised: a project that genuinely
+        reads no configuration is an ordinary project, and refusing it at attach -- which is what
+        adding the type to :attr:`_REQUIRED_RELATIONSHIP_TYPES` would do -- would reject a valid
+        graph. The count is therefore a floor, not a verdict on the corpus."""
         query = f"MATCH (bn:TSBodyNode)-[u:TS_USES_CONFIG]->(ck:ConfigKey) WHERE {_scoped('bn')}"
         params: Dict[str, Any] = dict(self._scope_params)
         if key is not None:

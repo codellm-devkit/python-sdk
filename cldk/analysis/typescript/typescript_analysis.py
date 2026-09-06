@@ -249,6 +249,10 @@ class TypeScriptAnalysis:
         return self.backend.get_typescript_module(file_path)
 
     def get_nested_classes(self, qualified_class_name: str) -> List[TSClass]:
+        """Always ``[]`` on schema v2, on both backends -- permanently, not for want of data. A
+        v2 class node holds only ``callables`` and ``fields``: the tree gives a class no ``types``
+        bucket, so no class can nest a class. A class declared inside a *callable* is the surviving
+        case and reads as ``TSCallable.inner_classes``. Kept because the 1.x surface had it (G3)."""
         return self.backend.get_all_nested_classes(qualified_class_name)
 
     def get_sub_classes(self, qualified_class_name: str) -> Dict[str, TSClass]:

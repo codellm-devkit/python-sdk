@@ -24,7 +24,13 @@ paths, entrypoints) is 2.5b, on codeanalyzer-typescript 1.3.0 when it is cut.
   `source/target/provenance/tags`), with `can://` ids as endpoints; `TSExternalSymbol` /
   `TSSynthesizedCallable` are the id-keyed `TSExternalNode` / `TSSynthesizedNode`; `TSCallable` has no
   `path`, `call_sites`, `accessed_symbols`, `local_variables` or `code_start_line`. The 1.x class names
-  stay importable as aliases.
+  stay importable as aliases. **BREAKING (public classmethod):**
+  `TSCallableOverview.from_callable(c, owner_signature, owner_kind)` now takes a required
+  keyword-only `path` — a v2 `TSCallable` no longer carries one, so the caller walking
+  `symbol_table` must pass the module's key. `TSCallableOverview` itself is unchanged.
+  `is_entrypoint`/`entrypoints` (1.3.0 additive, `Optional`) are declared on **every** type kind,
+  not only `TSClass`, so a 1.3.0 payload that stamps them on an interface, enum, type alias or
+  namespace validates under `extra="forbid"` before the pin moves.
 - **JavaScript modules are in scope** (`.js/.jsx/.mjs/.cjs`; spec TS-3). The analyzer ids them
   `can://javascript/<app>/…` beside `can://typescript/<app>/…`, and every accessor on both backends
   reads both: the symbol table lists them, and the Neo4j backend scopes every statement by the two
@@ -66,21 +72,45 @@ paths, entrypoints) is 2.5b, on codeanalyzer-typescript 1.3.0 when it is cut.
   their empty value would read as a fact: `get_imports` and `get_exports` (no import/export
   vocabulary in the graph), `get_unresolved_config_reads` (no `config_reads`; `[]` would read as
   "every read resolved") and `get_method_parameters` for a **found** method (`:TSCallable` projects
-  no parameters; a missing method still answers `[]`). Everything else returns the model's
-  documented empty where the graph is silent: a callable's `parameters`, `comments`,
+  no parameters; a missing method still answers `[]`). Two more join them where a *wrong* value was
+  the alternative: **`get_extended_classes` and `get_implemented_interfaces` read the split off
+  `TS_EXTENDS`/`TS_IMPLEMENTS`**, not off `base_classes`/`implements_types` — `base_classes` is the
+  extends-implements union and `implements_types` is written by no node in the projection (0 of 207
+  classes and 0 of 687 interfaces on the reference graph), so subtracting it would have returned a
+  class's interfaces as its extended classes. They cover **resolved in-repo bases only** (a library
+  base is in `base_classes` with no node to point at) and each **raises** when its relationship type
+  is absent from the database — as `TS_IMPLEMENTS` is on superset-frontend. Everything else returns
+  the model's documented empty where the graph is silent: a callable's `parameters`, `comments`,
   `type_parameters`, `overload_signatures`, `body`, `cfg`/`cdg`/`ddg`/`summary`; an enum member's
   `value`; a module's `source`, `imports`, `exports`, `comments`; a decorator's position; a call
   site's `method_name`/receiver/argument facets and columns. Each rebuilt node's `code` is the text
   the graph projected for it, on a line-only span. `get_call_targets` differs by one value: an
   unresolved call site contributes `""` from the graph where the in-memory backend contributes the
   call's `method_name`. `get_synthesized_callables` is keyed by the anonymous node's own id on Neo4j
-  (the analyzer's older compatibility key exists only in `analysis.json`).
+  (the analyzer's older compatibility key exists only in `analysis.json`); the ABC's docstring now
+  states that keying as backend-dependent rather than describing the in-memory backend only.
+  `get_config_uses` returns `[]` both for a corpus the analyzer found no config read in and for a
+  database that declares no `TS_USES_CONFIG` at all — indistinguishable on this graph, and
+  deliberately **not** refused at attach, since a project that reads no configuration is a valid
+  project. `get_nested_classes` is permanently `[]` on **both** backends and is not a projection
+  gap at all: a schema-v2 class holds only `callables` and `fields`, so no class nests a class
+  (`TSCallable.inner_classes` is the surviving case).
+- **`get_application_view()` on `TSNeo4jBackend` now carries the repository-artifact layer** —
+  `artifacts` (with their config keys), `dependencies` and `config_uses`, from the same rows the
+  dedicated accessors return, retyped onto the wire's `TSArtifact`/`TSDependency`/`TSConfigUse` (a
+  dependency's `ecosystem` has no field there and is dropped; `get_dependencies()` keeps it). It
+  used to hand back an empty artifact layer while the dedicated accessors answered 832 artifacts,
+  3,601 dependencies and 526 config keys on the same attach, so `app.dependencies` read as "this
+  project declares none". Three overlays stay empty, each stated in the docstring: `param_in`/
+  `param_out` (leg 2.5a reads **no** dataflow overlay; 2.5b does), `config_reads` (not projected)
+  and `unresolved_imports` (no accessor on this surface reads `TS_UNRESOLVED_IMPORT`).
 - **Known emitter limitation (declaration merging).** codeanalyzer-typescript mints one id for a
   value and a type of the same name (`const X = …` + `interface X`, `const X = …` + `type X`,
   `type X` + a field `X`), so its own `MERGE` collapses them onto one node carrying both labels and
   the last writer's `kind`. The Neo4j backend rebuilds such a node as the one facet its containment
   edge and labels name, keeps it out of the accessors for the other facet, and raises when the
-  labels name none or several. Three such nodes on the 2,184-file superset-frontend reference graph.
+  labels name none or several. Three such nodes on the superset-frontend reference graph (1,841
+  modules: 1,557 TypeScript, 284 JavaScript).
 - Internal: the language-neutral helpers leg 1.5/1.6 built inside `cldk/analysis/python/` moved to
   `cldk/analysis/commons/` — `bounds.py` (bounds, keyset paging, `EdgeOrder`), `graphs.py`
   (bounded subgraphs, path assembly, the `SDG_RELS`/`VIA` tables as functions of the `P` prefix),

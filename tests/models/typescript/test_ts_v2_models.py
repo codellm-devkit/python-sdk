@@ -30,7 +30,11 @@ from cldk.models.typescript import (
     TSCallable,
     TSCallGraphEdge,
     TSClass,
+    TSEnum,
+    TSInterface,
     TSModule,
+    TSNamespace,
+    TSTypeAlias,
 )
 
 FIXTURES = Path(__file__).resolve().parents[2] / "resources" / "typescript" / "analysis_json" / "v2"
@@ -218,3 +222,17 @@ def test_unknown_type_kind_is_rejected():
     next(iter(mod["types"].values()))["kind"] = "mixin"
     with pytest.raises(ValidationError):
         TSAnalysis.model_validate(raw)
+
+
+def test_every_type_kind_accepts_the_1_3_0_entrypoint_fields():
+    # TS-8: both fields are declared on the shared ``_Type`` base, so a 1.3.0 payload that stamps
+    # them on any of the five kinds validates under ``extra="forbid"`` before the pin moves --
+    # declaring them on ``TSClass`` alone would fail validation on the other four.
+    span = {"start": (1, 1), "end": (2, 1), "bytes": (0, 4)}
+    entrypoint = {"framework": "express", "route": "/x", "http_methods": ["GET"]}
+    for cls, kind in ((TSClass, "class"), (TSInterface, "interface"), (TSEnum, "enum"), (TSTypeAlias, "type_alias"), (TSNamespace, "namespace")):
+        raw = {"id": "can://typescript/app/src/a.ts/X", "kind": kind, "name": "X", "signature": "src/a.X", "span": span, "is_entrypoint": True, "entrypoints": [entrypoint]}
+        node = cls.model_validate(raw)
+        assert node.is_entrypoint is True, kind
+        assert node.entrypoints and node.entrypoints[0].framework == "express", kind
+        assert cls.model_validate({k: v for k, v in raw.items() if k not in ("is_entrypoint", "entrypoints")}).is_entrypoint is None, kind

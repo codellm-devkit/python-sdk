@@ -393,6 +393,12 @@ class _Type(_Spanned):
     comments: List[TSComment] = []
     is_exported: bool = False
     is_ambient: bool = False
+    # 1.3.0 additive, on *every* type kind (TS-8): the analyzer stamps the entrypoint tier on
+    # whatever declaration a ruleset matched, so an interface, enum, type alias or namespace can
+    # carry it too. Declaring it only on TSClass would fail ``extra="forbid"`` on those four the
+    # day the pin moves -- exactly the breakage TS-8 exists to prevent.
+    entrypoints: Optional[List[TSEntrypoint]] = None
+    is_entrypoint: Optional[bool] = None
 
     def __hash__(self) -> int:
         return hash(self.signature)
@@ -411,8 +417,6 @@ class TSClass(_Type):
     type_parameters: List[TSTypeParameter] = []
     extends_ids: List[str] = []  # resolved can:// ids, present only when resolved
     implements_ids: List[str] = []
-    entrypoints: Optional[List[TSEntrypoint]] = None  # 1.3.0 additive
-    is_entrypoint: Optional[bool] = None  # 1.3.0 additive
 
     @property
     def methods(self) -> Dict[str, TSCallable]:
