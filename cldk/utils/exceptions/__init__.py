@@ -19,13 +19,19 @@ Exceptions package
 """
 
 from .exceptions import (
+    AmbiguousName,
     CldkInitializationException,
     CodeanalyzerExecutionException,
+    CodeanalyzerUsageException,
     GraphSchemaMismatch,
+    SelectorNotInGraph,
 )
 
 __all__ = [
+    "AmbiguousName",
     "CodeanalyzerExecutionException",
+    "CodeanalyzerUsageException",
     "CldkInitializationException",
     "GraphSchemaMismatch",
+    "SelectorNotInGraph",
 ]

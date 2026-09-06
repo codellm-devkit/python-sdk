@@ -60,10 +60,39 @@ from codeanalyzer.options import AnalysisOptions, EmitTarget
 from codeanalyzer.schema import Analysis, model_dump_json
 
 from cldk.analysis import AnalysisLevel
-from cldk.analysis.commons.results import CallableRef, Diagnostic, EntrypointCoverage, LocateResult, ModuleRef, TypeRef
-from cldk.analysis.python.backend import PythonAnalysisBackend, body_key_column, resolve_module_key
+from cldk.analysis.commons.resolve import CallableCandidate, body_node_kind, resolve_callable_signature, resolve_value_name, resolve_within, value_candidate
+from cldk.analysis.commons.results import CallableRef, Diagnostic, EdgePage, EntrypointCoverage, FlowPaths, LocateResult, ModuleRef, Slice, SliceNode, TypeRef
+from cldk.utils.exceptions import CodeanalyzerUsageException
+from cldk.analysis.python.backend import (
+    CDG_ORDER,
+    CFG_ORDER,
+    DDG_ORDER,
+    DEFAULT_DEPTH,
+    DEFAULT_MAX_NODES,
+    DEFAULT_MAX_PATHS,
+    DEFAULT_PAGE_SIZE,
+    VIA,
+    PythonAnalysisBackend,
+    body_key_column,
+    bounded_subgraph,
+    call_graph_scope,
+    check_depth,
+    check_max_nodes,
+    check_distinct_endpoints,
+    check_max_paths,
+    check_page_size,
+    cone_sinks,
+    edge_page,
+    flow_path,
+    resolve_module_key,
+    scope_paths,
+    slice_resolved,
+)
 from cldk.models.python import (
     BodyNode,
+    CdgEdge,
+    CfgEdge,
+    DdgEdge,
     PyApplication,
     PyArtifact,
     PyCallEdge,
@@ -85,9 +114,111 @@ from cldk.models.python import (
 
 logger = logging.getLogger(__name__)
 
+#: The SDK's :class:`~cldk.analysis.AnalysisLevel` vocabulary → codeanalyzer-python's integer
+#: ``--analysis-level``. The analyzer's own ladder (``codeanalyzer/__main__.py``): 1 = symbol
+#: table + Jedi call graph, 2 = + defuse-linker call graph, 3 = + intraprocedural dataflow
+#: (CFG/CDG/DDG), 4 = + interprocedural SDG (``formal_in``/``formal_out`` vertices, alias-aware
+#: DDG). The four SDK names line up with those four integers in order.
+_ANALYZER_LEVELS = {
+    AnalysisLevel.symbol_table: 1,
+    AnalysisLevel.call_graph: 2,
+    AnalysisLevel.program_dependency_graph: 3,
+    AnalysisLevel.system_dependency_graph: 4,
+}
 
-def _overview(c: PyCallable, class_signature: str | None, kind: str) -> PyCallableOverview:
+#: The inverse, by the member name a caller writes (``"call_graph"``, not ``"call graph"``) — so
+#: an error about the level in use names it the way it was asked for.
+_LEVEL_NAMES = {n: lvl.name for lvl, n in _ANALYZER_LEVELS.items()}
+
+
+def analyzer_level(level: "AnalysisLevel | str") -> int:
+    """The analyzer's integer level for one of the SDK's :class:`~cldk.analysis.AnalysisLevel`
+    names.
+
+    Accepts the enum, its value (``"call graph"``) and its member name (``"call_graph"``): the
+    facade's parameter is typed ``str``, and the underscore spelling is what a caller writing
+    ``analysis_level="system_dependency_graph"`` produces. An unrecognised name raises rather than
+    falling back to a default — a level that silently becomes 1 is the defect this function exists
+    to close.
+
+    ``AnalysisOptions``'s other two dataflow knobs are left at their defaults on purpose:
+    ``graphs="cfg,dfg,pdg,sdg"`` already selects every section the SDK can surface (``sdg`` is
+    inert below level 4, where it only widens a ``want_pdg`` that ``pdg`` already sets), and
+    ``graph_field_depth=3`` is the analyzer's own access-path k-limit, which the SDK exposes no
+    parameter for.
+    """
+    key = str(getattr(level, "value", level)).replace("_", " ")
+    try:
+        return _ANALYZER_LEVELS[AnalysisLevel(key)]
+    except ValueError:
+        raise ValueError(f"unknown analysis_level {level!r}; expected one of {[lvl.name for lvl in AnalysisLevel]}") from None
+
+
+def body_node_id(callable_id: str, body_key: str) -> str:
+    """The analyzer's own global id for one of a callable's body nodes.
+
+    This is the emitter's rule, adopted rather than re-derived — ``codeanalyzer/neo4j/project.py``'s
+    ``_global_ordinal``, whose own docstring says it must agree with ``IdentityMap.global_id``::
+
+        return (f"{callable_id}{local_key}" if local_key.startswith("@")
+                else f"{callable_id}@{local_key}")
+
+    **It must keep tracking that function.** The leading ``@`` is already part of every synthetic
+    key (``"@entry"``, ``"@exit"``, ``"@formal_in:1"``, ``"@formal_out:0"``) and absent from the
+    bare ``"line:col"`` statement keys; joining with an unconditional ``"@"`` produced
+    ``…charge(self,invoice_id)@@formal_in:1``, which names nothing in the graph and nothing in
+    ``PyCallable.body``.
+    """
+    return f"{callable_id}{body_key}" if body_key.startswith("@") else f"{callable_id}@{body_key}"
+
+
+def _local_slice_node(entry: "Tuple[PyCallable, str, str]", ref: str) -> SliceNode:
+    """One reached body node as a :class:`SliceNode`, from the in-memory model.
+
+    The Neo4j twin is ``neo4j_backend._slice_node`` and the two must describe a node identically;
+    they share the translation that decides it (:func:`~cldk.analysis.commons.resolve.body_node_kind`)
+    and differ only in where the fields are read from. A parameter-passing vertex has no span of
+    its own, so the *callable's* first line stands in — the rule
+    :attr:`~cldk.analysis.commons.results.SliceNode.line` states.
+    """
+    c, key, path = entry
+    node = (c.body or {})[key]
+    kind, name, defined_in = body_node_kind(node.kind, node.of)
+    return SliceNode(
+        file=path,
+        line=node.span.start[0] if node.span else c.start_line,
+        callable=c.signature,
+        kind=kind,
+        name=name,
+        defined_in=defined_in,
+        source=None,
+        ref=ref,
+    )
+
+
+def _external_name(symbol: "PyExternalSymbol | None", fallback: str) -> str:
+    """An external call target's readable dotted name, from its own properties.
+
+    ``module`` + ``name`` (``"odoo.exceptions.ValidationError" + "__init__"``), never the
+    ``can://…/@external/…`` id — the SDK does not parse the analyzer's id grammar (E6), it reads
+    the fields the analyzer already published. ``fallback`` is the id, used only when the symbol
+    table has no entry for it at all, which is a graph the SDK cannot describe better than by
+    echoing what it was given.
+    """
+    if symbol is None:
+        return fallback
+    return f"{symbol.module}.{symbol.name}" if symbol.module else symbol.name
+
+
+def _overview(c: PyCallable, class_signature: str | None, kind: str, path: str) -> PyCallableOverview:
     """Project a :class:`PyCallable` into a lightweight :class:`PyCallableOverview`.
+
+    ``path`` is the owning module's symbol-table key (threaded in by
+    :meth:`PyCodeanalyzer._iter_callables`, exactly as :func:`_class_overview` takes it), *not*
+    ``c.path``: ``PyCallable.path`` is the absolute path on whichever machine ran the analysis, so
+    projecting it handed callers a string that joins to nothing they hold -- not
+    ``locate().module.path``, not ``PyClassOverview.path``, not ``get_symbol_table()``'s keys, and
+    not any path that exists on another host.
 
     ``c.decorators`` is 1.4.0's structured ``List[PyDecorator]`` (#128 upstream), not 0.3.x's
     flat ``List[str]`` — ``PyCallableOverview.decorators`` is CLDK's own model and keeps its
@@ -103,7 +234,7 @@ def _overview(c: PyCallable, class_signature: str | None, kind: str) -> PyCallab
         name=c.name,
         class_signature=class_signature,
         kind=kind,
-        path=c.path,
+        path=path,
         start_line=c.start_line,
         end_line=c.end_line,
         decorators=[d.qualified_name or d.name for d in c.decorators],
@@ -380,13 +511,18 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         self.analysis: Analysis = self._run_analyzer()
         self.application: PyApplication = self.analysis.application
         # Class-signature → file path lookup, built once.
+        # Built on first use by ``_sdg()``: the whole application's SDG adjacency, which every
+        # slice reads and nothing else needs, so it is not paid for by a caller who never slices.
+        self._sdg_cache: "Tuple[Dict[str, Dict[str, set]], Dict[str, Tuple[PyCallable, str, str]]] | None" = None
         self._class_to_file: Dict[str, str] = {}
         for file_path, module in self.application.symbol_table.items():
             for class_sig in module.types:
                 self._class_to_file[class_sig] = file_path
 
-        if analysis_level == AnalysisLevel.call_graph:
-            self.call_graph: nx.DiGraph | None = self._build_call_graph(self.application.call_graph, self._id_to_signature())
+        # ``>=``, not ``==``: every level from ``call_graph`` up produces a call graph, so asking
+        # for a *deeper* analysis than the one that builds it must not hand back ``None``.
+        if analyzer_level(analysis_level) >= _ANALYZER_LEVELS[AnalysisLevel.call_graph]:
+            self.call_graph: nx.DiGraph | None = self._build_call_graph(self.application.call_graph, self._id_to_signature(), self._class_ids())
         else:
             self.call_graph = None
 
@@ -419,6 +555,11 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             input=self.project_dir,
             output=self.analysis_json_path,
             emit=EmitTarget.JSON,
+            # Without this the analyzer ran at its own default (1) whatever the caller
+            # asked for, so ``cfg``/``cdg``/``ddg`` were always empty and no ``formal_in`` vertex
+            # ever existed. ``graphs`` / ``graph_field_depth`` stay at their defaults — see
+            # :func:`analyzer_level`.
+            analysis_level=analyzer_level(self.analysis_level),
             using_ray=self.use_ray,
             rebuild_analysis=self.eager_analysis,
             skip_tests=True,
@@ -440,24 +581,43 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         so edges are resolved back to that identity once here, rather than a dual-backend
         divergence where the local graph is id-keyed and the Neo4j one isn't.
         """
-        return {c.id: c.signature for c, _, _, _ in self._iter_callables()}
+        return {c.id: c.signature for c, _, _, _, _ in self._iter_callables()}
+
+    def _class_ids(self) -> set:
+        """The ids of every class this application declares -- the local twin of ``MATCH
+        (:PyClass)`` -- so :meth:`_build_call_graph` can drop the call edges that land on one."""
+        return {cls.id for cls, _ in self._iter_classes() if cls.id}
 
     @staticmethod
-    def _build_call_graph(edges: List[PyCallEdge], id_to_signature: Dict[str, str]) -> nx.DiGraph:
+    def _build_call_graph(edges: List[PyCallEdge], id_to_signature: Dict[str, str], class_ids: "Iterable[str] | None" = None) -> nx.DiGraph:
         """Convert a list of call edges into a NetworkX directed graph.
 
         Transforms the flat list of :class:`PyCallEdge` objects from the
         analysis results into a NetworkX directed graph structure for
         efficient graph queries.
 
+        **The same shape the Neo4j backend's ``_call_rows`` produces**, which is what lets
+        ``reaches`` / ``callers_of`` / ``call_paths_between`` / ``backward_cone`` agree across
+        backends. That query keeps ``(s:PyCallable|PyExternal)-[:PY_CALLS]->(t:PyCallable|PyExternal)
+        WHERE s._module IN $mods`` -- so it drops an edge *originating* at an external ghost
+        (5,307 on odoo-slim-19; a ghost has no body, so it cannot be the start of anything this
+        surface can be asked about) and an edge landing on a ``:PyClass`` node rather than a
+        callable (51 there). The local mirror of those two label tests: the source must be a
+        declared callable's id, and the target must not be a declared class's id. Everything else
+        -- a declared callable, or any ``@external`` id -- is kept, as the graph keeps every
+        ``:PyExternal``. Before this the local graph kept both excluded kinds, so a bounded cone
+        or a reachability answer could differ by backend on the same project.
+
         Args:
             edges: List of :class:`~cldk.models.python.PyCallEdge` objects
                 representing call relationships between methods/functions.
             id_to_signature: Maps a declared callable's ``id`` to its ``signature`` (see
                 :meth:`_id_to_signature`) — used to resolve ``edge.src``/``.dst`` (1.4.0's are
-                ``can://`` ids) back to the signature every other accessor keys by. A target that
-                isn't in the map (an ``@external`` id, not a declared callable) keeps its raw id
-                rather than the edge being dropped.
+                ``can://`` ids) back to the signature every other accessor keys by. An external
+                target keeps its raw ``@external`` id rather than the edge being dropped.
+            class_ids: The ids of every class the application declares (the ``:PyClass`` nodes),
+                whose incoming call edges are dropped. ``None`` means no class inventory to hand,
+                and no target is dropped on that account.
 
         Returns:
             A ``networkx.DiGraph`` where:
@@ -471,9 +631,14 @@ class PyCodeanalyzer(PythonAnalysisBackend):
                   hardcodes the same constant, and Java/TypeScript both assert it too
                   (``test_jcodeanalyzer.py``, ``test_typescript_neo4j_backend.py``).
         """
+        classes = set(class_ids or ())
         graph = nx.DiGraph()
         for edge in edges:
-            src = id_to_signature.get(edge.src, edge.src)
+            if edge.src not in id_to_signature:
+                continue  # originates at a ghost: not a call this application's code makes
+            if edge.dst in classes:
+                continue  # lands on a class node, which the graph's ``t:PyCallable|PyExternal`` excludes
+            src = id_to_signature[edge.src]
             dst = id_to_signature.get(edge.dst, edge.dst)
             graph.add_edge(src, dst, type="CALL_DEP", weight=edge.weight, provenance=tuple(edge.prov))
         return graph
@@ -488,14 +653,25 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         """
         return self.application
 
-    def get_symbol_table(self) -> Dict[str, PyModule]:
+    def get_symbol_table(self, *, paths: Sequence[str] | None = None) -> Dict[str, PyModule]:
         """Return the symbol table mapping file paths to modules.
+
+        Args:
+            paths: Restrict to these modules, named by symbol-table key. ``None`` (the default)
+                returns the whole table — the same object it always returned.
 
         Returns:
             A dictionary where keys are file paths (strings) and values
             are :class:`~cldk.models.python.PyModule` objects.
+
+        Raises:
+            ValueError: ``paths`` is an empty sequence — omit it to enumerate everything.
+            SelectorNotInGraph: a path names no module in this application
+                (see :func:`~cldk.analysis.python.backend.scope_paths`).
         """
-        return self.application.symbol_table
+        table = self.application.symbol_table
+        keys = scope_paths(paths, table.keys())
+        return table if keys is None else {k: table[k] for k in keys}
 
     def get_modules(self) -> List[PyModule]:
         """Return all analyzed modules as a list.
@@ -506,18 +682,39 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         """
         return list(self.application.symbol_table.values())
 
-    def get_call_graph(self) -> nx.DiGraph:
+    def get_call_graph(self, *, roots: Sequence[str] | None = None, depth: int | None = None) -> nx.DiGraph:
         """Return the call graph as a NetworkX directed graph.
 
-        Lazily builds the call graph from edge data if not already constructed.
+        Lazily builds the whole call graph from edge data if not already constructed, then — when
+        ``roots`` is given — carves the reachable sub-graph out of it. The full graph is already
+        in memory here, so there is nothing to push down: the cache is built once and every scoped
+        call is served from it (see :func:`~cldk.analysis.python.backend.bounded_subgraph`; the
+        Neo4j backend reaches the same shape through Cypher instead).
+
+        Args:
+            roots: Restrict to the sub-graph reachable from these callables, by signature.
+                ``None`` (the default) returns the whole graph, the cached object itself.
+            depth: Maximum call hops from a root; ``None`` is unbounded.
 
         Returns:
             A ``networkx.DiGraph`` representing method/function call
             relationships across the project.
+
+        Raises:
+            ValueError: ``depth`` below 1, or ``depth`` without ``roots``.
+            SelectorNotInGraph: a root that is neither declared by this application nor a node of
+                the call graph.
         """
+        scope = call_graph_scope(roots, depth)
         if self.call_graph is None:
-            self.call_graph = self._build_call_graph(self.application.call_graph, self._id_to_signature())
-        return self.call_graph
+            self.call_graph = self._build_call_graph(self.application.call_graph, self._id_to_signature(), self._class_ids())
+        if scope is None:
+            return self.call_graph
+        # The inventory, not the graph, is what a root is checked against: the graph is built from
+        # call edges alone, so a declared callable in no edge is not a node in it (444 of odoo's
+        # 15,549) and checking membership here would raise for a callable that plainly exists,
+        # where Neo4j — matching roots by label — returns the one-node graph. See bounded_subgraph.
+        return bounded_subgraph(self.call_graph, scope, depth, (c.signature for c, _, _, _, _ in self._iter_callables()))
 
     def get_call_graph_json(self) -> str:
         """Return the complete application model serialized as JSON.
@@ -552,19 +749,30 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         return self._class_to_file.get(qualified_class_name)
 
     # ----------------------------------------------------------- classes
-    def get_all_classes(self) -> Dict[str, PyClass]:
+    def get_all_classes(self, *, module: str | None = None) -> Dict[str, PyClass]:
         """Return all classes from all modules in the project.
 
         Aggregates class definitions from all analyzed modules into a
         single dictionary for convenient access.
 
+        Args:
+            module: Restrict to one module's classes, named by symbol-table key (not a dotted
+                module name). ``None`` (the default) aggregates the whole application.
+
         Returns:
             A dictionary mapping qualified class names to
             :class:`~cldk.models.python.PyClass` objects.
+
+        Raises:
+            SelectorNotInGraph: ``module`` names no module in this application. It resolves
+                through the same :func:`~cldk.analysis.python.backend.scope_paths` as ``paths=``
+                but reports itself as ``module``, so the error names the keyword the caller wrote.
         """
+        table = self.application.symbol_table
+        keys = scope_paths(None if module is None else [module], table.keys(), kind="module")
         result: Dict[str, PyClass] = {}
-        for module in self.application.symbol_table.values():
-            result.update(module.types)
+        for mod in table.values() if keys is None else (table[k] for k in keys):
+            result.update(mod.types)
         return result
 
     def get_class(self, qualified_class_name: str) -> PyClass | None:
@@ -780,39 +988,45 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         return list(cls.attributes.values()) if cls else []
 
     # ----------------------------------------------------------- bulk / projected accessors
-    def _iter_callables(self) -> Iterator[Tuple[PyCallable, "str | None", str, str]]:
-        """Yield ``(callable, class_signature, kind, module_source)`` for every callable in the
-        application.
+    def _iter_callables(self) -> Iterator[Tuple[PyCallable, "str | None", str, str, str]]:
+        """Yield ``(callable, class_signature, kind, module_path, module_source)`` for every
+        callable in the application.
 
         Walks the in-memory symbol table the same way the Neo4j backend's ``MATCH (c:PyCallable)``
         sees nodes: a callable is a ``"method"`` only when a class declares it directly (mirroring
         ``PY_HAS_METHOD``); module-level functions and functions nested inside a callable are
         ``"function"`` with a ``None`` class signature. The two backends therefore enumerate the
-        same set. ``module_source`` (the owning module's full source text) rides along so callers
+        same set.
+
+        ``module_path`` is the symbol table's own key — the repo-relative module path, matching the
+        graph's ``_module`` property and what :meth:`_iter_classes` threads through for the same
+        reason. It is the only path this backend hands out for a callable; ``PyCallable.path`` is
+        the absolute path on the analysing machine and joins to nothing (see :func:`_overview`).
+        ``module_source`` (the owning module's full source text) rides along so callers
         needing the callable's own source can slice it via :func:`_code_of` — a callable's
         ``span`` offsets are always relative to its top-level module, however deeply nested.
         """
 
-        def from_callable(c: PyCallable, source: str):
+        def from_callable(c: PyCallable, path: str, source: str):
             for inner in c.callables.values():
-                yield inner, None, "function", source
-                yield from from_callable(inner, source)
+                yield inner, None, "function", path, source
+                yield from from_callable(inner, path, source)
             for inner_cls in c.types.values():
-                yield from from_class(inner_cls, source)
+                yield from from_class(inner_cls, path, source)
 
-        def from_class(cls: PyClass, source: str):
+        def from_class(cls: PyClass, path: str, source: str):
             for m in cls.callables.values():
-                yield m, cls.signature, "method", source
-                yield from from_callable(m, source)
+                yield m, cls.signature, "method", path, source
+                yield from from_callable(m, path, source)
             for inner_cls in cls.types.values():
-                yield from from_class(inner_cls, source)
+                yield from from_class(inner_cls, path, source)
 
-        for module in self.application.symbol_table.values():
+        for path, module in self.application.symbol_table.items():
             for cls in module.types.values():
-                yield from from_class(cls, module.source)
+                yield from from_class(cls, path, module.source)
             for fn in module.functions.values():
-                yield fn, None, "function", module.source
-                yield from from_callable(fn, module.source)
+                yield fn, None, "function", path, module.source
+                yield from from_callable(fn, path, module.source)
 
     def _iter_classes(self) -> Iterator[Tuple[PyClass, str]]:
         """Yield ``(class, module_path)`` for every class in the application, including classes
@@ -846,14 +1060,14 @@ class PyCodeanalyzer(PythonAnalysisBackend):
     def get_callables_overview(self) -> List[PyCallableOverview]:
         """Return a lightweight overview of every callable in the application (see
         :meth:`PythonAnalysisBackend.get_callables_overview`)."""
-        return [_overview(c, class_sig, kind) for c, class_sig, kind, _ in self._iter_callables()]
+        return [_overview(c, class_sig, kind, path) for c, class_sig, kind, path, _ in self._iter_callables()]
 
     def get_method_bodies(self, signatures: List[str]) -> Dict[str, str]:
         """Return ``{signature: code}`` for the requested signatures that exist and have a body
         (omits callables whose ``code`` is ``None``)."""
         wanted = set(signatures)
         out: Dict[str, str] = {}
-        for c, _, _, source in self._iter_callables():
+        for c, _, _, _, source in self._iter_callables():
             if c.signature not in wanted:
                 continue
             code = _code_of(c, source)
@@ -863,19 +1077,29 @@ class PyCodeanalyzer(PythonAnalysisBackend):
 
     def get_source(self, node_id: str) -> str:
         """Return the source text named by ``node_id`` (see
-        :meth:`PythonAnalysisBackend.get_source`) — a callable's own signature, or
-        ``"<signature>@<body key>"`` for one of its body nodes, sliced out of the owning module's
-        text by ``span.bytes`` via :func:`_slice`, the same byte-accurate helper
-        :meth:`get_method_bodies` uses for the callable case.
+        :meth:`PythonAnalysisBackend.get_source`) — a callable, or one of its body nodes, sliced
+        out of the owning module's text by ``span.bytes`` via :func:`_slice`, the same
+        byte-accurate helper :meth:`get_method_bodies` uses for the callable case.
+
+        The callable half of the id is matched against **both** of a callable's names: its
+        ``signature`` (the dotted module path, which is what every other accessor keys by and what
+        callers have passed since leg 1) and its ``id`` (the ``can://`` containment path, which is
+        what :meth:`locate` now returns inside a body-node id — #320). Accepting either is what
+        keeps ``get_source(locate(...).node_id)`` working across that change without asking the
+        caller to know which vocabulary it is holding.
         """
         sig, sep, body_key = node_id.partition("@")
-        for c, _, _, source in self._iter_callables():
-            if c.signature != sig:
+        for c, _, _, _, source in self._iter_callables():
+            if sig not in (c.signature, c.id):
                 continue
             if not sep:
                 code = _code_of(c, source)
             else:
-                node = (c.body or {}).get(body_key)
+                # The inverse of :func:`body_node_id`: ``partition("@")`` strips the joining ``@``,
+                # but a synthetic key owns a leading ``@`` of its own, so ``"…@@formal_in:1"``
+                # splits to ``"@formal_in:1"`` and ``"…@9:8"`` to ``"9:8"``. Try both spellings
+                # rather than reimplementing the split.
+                node = (c.body or {}).get(body_key) or (c.body or {}).get("@" + body_key)
                 if node is None:
                     raise KeyError(f"{sig!r} has no body node keyed {body_key!r} (from node_id {node_id!r})")
                 code = _slice(node.span, source)
@@ -884,19 +1108,513 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             return code
         raise KeyError(f"no callable with signature {sig!r} (from node_id {node_id!r})")
 
+    # -----[ addressing ]-----
+    def resolve_callable(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> SliceNode:
+        """Resolve a callable name against the in-memory symbol table (see
+        :meth:`PythonAnalysisBackend.resolve_callable`).
+
+        The candidate domain is :meth:`_iter_callables` — module functions, class methods and
+        anything nested inside either — which is the same set :meth:`get_callables_overview`
+        reports and the same set the Neo4j backend resolves against (there it is
+        ``(c:PyCallable) WHERE c._module IN $mods``). Nothing is filtered before the shared policy
+        runs: this backend has the whole list in memory already, so there is no round trip to save
+        by pre-narrowing, and handing the policy the unfiltered domain is the strongest form of
+        "both backends resolve over the same set".
+        """
+        # Two callables sharing a signature collapse into one entry here, and the resolver would
+        # then hand back whichever won with no signal -- so record the collisions and raise if the
+        # name resolves onto one. Not reachable on a real application (measured: 15,549
+        # signatures, all distinct), which is why it is checked on the answer rather than eagerly
+        # over the whole domain: a duplicate elsewhere must not break every unrelated resolution.
+        found: Dict[str, Tuple[PyCallable, str | None, str]] = {}
+        collisions: set[str] = set()
+        for c, class_sig, _, path, _ in self._iter_callables():
+            if c.signature in found:
+                collisions.add(c.signature)
+            found[c.signature] = (c, class_sig, path)
+        candidates = [CallableCandidate(sig, class_sig, path) for sig, (_, class_sig, path) in found.items()]
+        sig = resolve_callable_signature(name, candidates, in_class=in_class, in_module=in_module)
+        if sig in collisions:
+            raise ValueError(f"{sig!r} is carried by more than one analysed callable; neither can be addressed unambiguously")
+        c, _, path = found[sig]
+        # ``PyCallable.id`` defaults to ``""`` and ``start_line`` to ``-1``; both are addresses a
+        # caller is meant to be able to use, and a sentinel is worse than an error because it fails
+        # somewhere else, later.
+        if not c.id or c.start_line < 0:
+            raise KeyError(f"{c.signature!r} carries no usable address (id={c.id!r}, start_line={c.start_line})")
+        return SliceNode(file=path, line=c.start_line, callable=c.signature, kind="callable", name=c.name, source=None, ref=c.id)
+
+    def resolve_value(self, name: str, *, within: str) -> SliceNode:
+        """Resolve a value name inside a callable (see :meth:`PythonAnalysisBackend.resolve_value`).
+
+        ``c.body`` is keyed by the *local* half of a node's id — ``"@formal_in:1"`` for a synthetic
+        vertex, a bare ``"line:col"`` for a statement — and ``BodyNode.of`` carries the variable it
+        stands for, the same fact the graph projects as ``b.var``. The ``ref`` handed back is the
+        node's full id, joined by :func:`body_node_id`, so it is the very string the Neo4j backend
+        reads off ``b.id``.
+
+        ``of`` is the analyzer's vocabulary, not the caller's: :func:`~cldk.analysis.commons.resolve.value_candidate`
+        translates it, so a captured global comes back ``kind="global"``, ``name="AccessError"``,
+        ``defined_in="payment"`` rather than ``kind="parameter"``, ``name="<global>:payment::AccessError"``.
+        """
+        owner = resolve_within(self.resolve_callable, within)
+        c = next(c for c, _, _, _, _ in self._iter_callables() if c.signature == owner.callable)
+        # A list, not a dict keyed by name: two values that resolve to the same name are a genuine
+        # ambiguity the policy must see and raise on, and a dict would silently keep the last.
+        entries = [(key, value_candidate(node.of)) for key, node in (c.body or {}).items() if node.kind == "formal_in" and node.of]
+        chosen = resolve_value_name(name, [v.name for _, v in entries], within=owner.callable)
+        key, value = next((k, v) for k, v in entries if v.name == chosen)
+        return SliceNode(
+            file=owner.file,
+            line=owner.line,
+            callable=owner.callable,
+            kind=value.kind,
+            name=value.leaf,
+            defined_in=value.defined_in,
+            source=None,
+            ref=body_node_id(c.id, key),
+        )
+
+    # -----[ per-callable graphs ]-----
+    #: The analyzer level at which ``cfg``/``cdg``/``ddg`` first exist —
+    #: ``codeanalyzer/core.py``'s ``if self.analysis_level >= 3`` block, which is the only place
+    #: that calls ``emit_l3_body``. Below it the three lists are empty on every callable.
+    _DATAFLOW_LEVEL = _ANALYZER_LEVELS[AnalysisLevel.program_dependency_graph]
+
+    def _require_dataflow(self) -> None:
+        """Refuse, naming both levels, when this analysis was built below the dataflow pass.
+
+        The one guard, shared by the per-callable graphs and by the slices: they come from the same
+        analyzer pass and go dark together, and a second copy of this check is a second thing to
+        keep in step. It raises instead of returning empty because at a shallower level an empty
+        answer would mean "not analysed" while looking exactly like "no dependence" (D7).
+        """
+        level = analyzer_level(self.analysis_level)
+        if level < self._DATAFLOW_LEVEL:
+            in_use = _LEVEL_NAMES[level]
+            raise CodeanalyzerUsageException(
+                f"control and data flow need analysis_level='program_dependency_graph' or deeper "
+                f"(analyzer level {self._DATAFLOW_LEVEL}); this analysis was built at "
+                f"'{in_use}' (analyzer level {level}), where the analyzer emits no cfg/cdg/ddg at all. "
+                "Returning an empty result would be indistinguishable from a callable that has no "
+                "dependence, so this raises instead. Rebuild with "
+                "CLDK.python(..., analysis_level='system_dependency_graph')."
+            )
+
+    def _graphs_of(self, name: str, in_class: str | None, page_size: int) -> PyCallable:
+        """The callable ``name`` resolves to, once this backend is deep enough to have dataflow.
+
+        The level check is here rather than in each accessor because all three graphs come from
+        the same analyzer pass and go dark together. It raises instead of returning ``[]``: at a
+        level below 3 an empty list would mean "not analysed" while looking exactly like "no
+        dependence", and a caller cannot tell those apart (D7) — the Neo4j backend has no such
+        mode because ``--emit neo4j`` forces level 4, so this is where the contract stated on
+        :meth:`PythonAnalysisBackend.get_cfg` is enforced.
+
+        ``page_size`` is validated *first*, before the level guard and before resolution, so a
+        malformed argument is a ``ValueError`` before anything else -- the order the Neo4j backend
+        already applies, so the two cannot answer the same bad call with different exceptions.
+        Resolution is :meth:`resolve_callable`'s, not a second path.
+        """
+        check_page_size(page_size)
+        self._require_dataflow()
+        sig = self.resolve_callable(name, in_class=in_class).callable
+        return next(c for c, _, _, _, _ in self._iter_callables() if c.signature == sig)
+
+    def get_cfg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[CfgEdge]:
+        """One page of control flow within one callable (see :meth:`PythonAnalysisBackend.get_cfg`).
+
+        ``PyCallable.cfg`` keys its endpoints by the *local* body key (``"9:8"``, ``"@entry"``);
+        :func:`body_node_id` joins them to the callable id to give the same global spelling the
+        graph merges ``:PyBodyNode`` on, so an endpoint from this backend is the one the Neo4j
+        backend would return and the one :meth:`get_source` accepts. The join happens *before* the
+        sort, because the order is over the ids a caller sees, not over the local keys.
+        """
+        c = self._graphs_of(callable, in_class, page_size)
+        edges = [CfgEdge(src=body_node_id(c.id, e.src), dst=body_node_id(c.id, e.dst), kind=e.kind) for e in c.cfg or []]
+        return edge_page(CfgEdge, c.signature, edges, CFG_ORDER, page_size, cursor)
+
+    def get_cdg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[CdgEdge]:
+        """One page of control dependence within one callable (see :meth:`PythonAnalysisBackend.get_cdg`)."""
+        c = self._graphs_of(callable, in_class, page_size)
+        edges = [CdgEdge(src=body_node_id(c.id, e.src), dst=body_node_id(c.id, e.dst)) for e in c.cdg or []]
+        return edge_page(CdgEdge, c.signature, edges, CDG_ORDER, page_size, cursor)
+
+    def get_ddg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[DdgEdge]:
+        """One page of data dependence within one callable (see :meth:`PythonAnalysisBackend.get_ddg`)."""
+        c = self._graphs_of(callable, in_class, page_size)
+        edges = [DdgEdge(src=body_node_id(c.id, e.src), dst=body_node_id(c.id, e.dst), var=e.var, prov=list(e.prov or [])) for e in c.ddg or []]
+        return edge_page(DdgEdge, c.signature, edges, DDG_ORDER, page_size, cursor)
+
+    # -----[ slicing and reachability ]-----
+    # THE LOCAL BACKEND ANSWERS INTERPROCEDURALLY. The expectation going in was that it could not:
+    # it holds cfg/cdg/ddg per callable and has no cross-callable index, so an interprocedural
+    # slice looked like something to decline with a Diagnostic. The model says otherwise. A
+    # level-4 run carries the whole SDG:
+    #
+    #   PyCallable.ddg / .cdg   endpoints are LOCAL body keys -> joined by body_node_id
+    #   PyCallable.summary      a callee's pass-through at a call site, also local
+    #   PyApplication.param_in  actual_in -> formal_in, endpoints ALREADY global ids
+    #   PyApplication.param_out formal_out -> actual_out, likewise
+    #
+    # -- which are the very five lists codeanalyzer.neo4j.project emits as PY_DDG / PY_CDG /
+    # PY_SUMMARY / PY_PARAM_IN / PY_PARAM_OUT. So the index this backend lacks it can BUILD, out of
+    # the data the graph is projected from, and the answer it gives is the graph's answer rather
+    # than a narrower intraprocedural one dressed up as complete.
+    #
+    # Building it walks every callable once and is cached for the life of the backend. That is the
+    # honest cost of not having a database: the Neo4j backend pushes the same traversal into
+    # Cypher and never materialises 6,089,420 edges, while this one materialises the adjacency of
+    # whatever project it was pointed at. For the projects a local analysis is run on, that is the
+    # cheaper trade; for an application the size of the live graph it would not be, and the answer
+    # there is to attach the Neo4j backend, which is what it is for.
+    def _sdg(self) -> Tuple[Dict[str, Dict[str, Dict[str, list]]], Dict[str, Tuple[PyCallable, str, str]]]:
+        """``(adjacency, node index)`` over the whole application's SDG, built once and cached.
+
+        ``adjacency`` is ``{"forward": {src: {dst: [label]}}, "backward": {dst: {src: [label]}}}``
+        -- both directions, because a backward slice is not derivable from a forward index without
+        inverting it, and inverting it per call is the same work done repeatedly.
+
+        A ``label`` is ``(relationship type, var, prov)``: what :meth:`paths_between` has to report
+        for a hop, and what the graph carries on the corresponding relationship. It is a **list**
+        per ``(src, dst)`` pair because parallel edges are ordinary here -- one statement feeding
+        one argument on several different variables is six distinct paths on the live graph -- and
+        collapsing them would silently merge six pieces of evidence into one.
+
+        ``node index`` maps a global body-node id to ``(owning callable, local body key, module
+        path)``, which is everything :func:`_local_slice_node` needs to describe a reached node
+        without a second walk.
+        """
+        if self._sdg_cache is None:
+            forward: Dict[str, Dict[str, list]] = {}
+            backward: Dict[str, Dict[str, list]] = {}
+            nodes: Dict[str, Tuple[PyCallable, str, str]] = {}
+
+            def link(src: str, dst: str, label: tuple) -> None:
+                forward.setdefault(src, {}).setdefault(dst, []).append(label)
+                backward.setdefault(dst, {}).setdefault(src, []).append(label)
+
+            for c, _, _, path, _ in self._iter_callables():
+                for key in (c.body or {}):
+                    nodes[body_node_id(c.id, key)] = (c, key, path)
+                # The relationship name each list is projected as, so a hop reports the same
+                # ``via`` here as it does over the graph -- ``cldk.analysis.python.backend.VIA``
+                # is the single translation table and neither backend has its own.
+                for rel, edges in (("PY_DDG", c.ddg), ("PY_CDG", c.cdg), ("PY_SUMMARY", c.summary)):
+                    for e in edges or []:
+                        link(
+                            body_node_id(c.id, e.src),
+                            body_node_id(c.id, e.dst),
+                            (rel, getattr(e, "var", None), tuple(getattr(e, "prov", None) or ())),
+                        )
+            # Endpoints here are already global (``emit_l4`` resolved them through the endpoint
+            # functions' identity maps), so they are used as-is -- joining them again would mint
+            # ids that name nothing.
+            for rel, edges in (("PY_PARAM_IN", self.application.param_in), ("PY_PARAM_OUT", self.application.param_out)):
+                for e in edges or []:
+                    link(e.src, e.dst, (rel, None, ()))
+            self._sdg_cache = ({"forward": forward, "backward": backward}, nodes)
+        return self._sdg_cache
+
+    def _reach(self, ref: str, direction: str, depth: int | None) -> set:
+        """The set of node ids reachable from ``ref`` in at most ``depth`` hops.
+
+        Level-by-level rather than a plain stack, because ``depth`` is a hop budget and a
+        depth-first walk cannot count hops without revisiting. Shared by the slices and by the two
+        mixed flow queries so "reachable" means one thing on this backend.
+        """
+        edges = self._sdg()[0][direction]
+        seen, frontier, hops = {ref}, [ref], 0
+        while frontier and (depth is None or hops < depth):
+            nxt = [d for src in frontier for d in edges.get(src, ()) if d not in seen]
+            seen.update(nxt)
+            frontier = nxt
+            hops += 1
+        return seen
+
+    def _slice_from(self, root: SliceNode, direction: str, depth: int | None, max_nodes: int) -> Slice:
+        """:meth:`_reach`'s closure from ``root``, described and capped like the graph's.
+
+        The whole closure is computed and *then* cut: ``total`` has to be the size of the whole
+        slice for the cap to be reportable (E5), and there is nothing cheaper to compute it from --
+        the same reason the Cypher counts before it pages.
+        """
+        nodes = self._sdg()[1]
+        seen = self._reach(root.ref, direction, depth)
+        found = [_local_slice_node(nodes[ref], ref) for ref in sorted(seen) if ref in nodes]
+        return Slice(nodes=found[:max_nodes], roots=[root], resolved=slice_resolved([root]), total=len(found))
+
+    def slice_backward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """What affects this value (see :meth:`PythonAnalysisBackend.slice_backward`)."""
+        check_depth(depth)
+        check_max_nodes(max_nodes)
+        self._require_dataflow()
+        return self._slice_from(self.resolve_value(src, within=within), "backward", depth, max_nodes)
+
+    def slice_forward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """What this value affects (see :meth:`PythonAnalysisBackend.slice_forward`)."""
+        check_depth(depth)
+        check_max_nodes(max_nodes)
+        self._require_dataflow()
+        return self._slice_from(self.resolve_value(src, within=within), "forward", depth, max_nodes)
+
+    def reaches(self, src: str, dst: str, *, depth: int | None = None) -> bool:
+        """Is there a call path (see :meth:`PythonAnalysisBackend.reaches`)?
+
+        Over :meth:`get_call_graph`, the same edge set ``callers_of``/``callees_of`` read, so the
+        boolean cannot disagree with the neighbours a caller can enumerate for itself.
+        """
+        check_depth(depth)
+        a = self.resolve_callable(src).callable
+        b = self.resolve_callable(dst).callable
+        graph = self.get_call_graph()
+        if a not in graph or b not in graph:
+            return False
+        # ``nx.descendants`` is unbounded and ``ego_graph`` is the bounded form; both exclude the
+        # zero-hop case, which is what makes ``reaches(x, x)`` false unless a real cycle exists.
+        reachable = nx.descendants(graph, a) if depth is None else set(nx.ego_graph(graph, a, radius=depth).nodes) - {a}
+        return b in reachable
+
+    def backward_cone(self, sinks: Sequence[str], *, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """Everything that can reach these sinks (see :meth:`PythonAnalysisBackend.backward_cone`)."""
+        check_depth(depth)
+        check_max_nodes(max_nodes)
+        roots = cone_sinks(self.resolve_callable, sinks)
+        graph = self.get_call_graph()
+        reached: set = set()
+        for root in roots:
+            reached.add(root.callable)
+            if root.callable in graph:
+                # ``ego_graph`` follows *successors*, so it has to be given the reversed view to
+                # answer a backward question -- on the graph itself, ``backward_cone(x, depth=1)``
+                # returned the forward cone of ``x``. Latent while the default was unbounded (the
+                # ``nx.ancestors`` branch is correct); load-bearing now that it is not.
+                back = graph.reverse(copy=False)
+                reached |= nx.ancestors(graph, root.callable) if depth is None else set(nx.ego_graph(back, root.callable, radius=depth, undirected=False).nodes)
+        # Ordered by ``ref``, the order ``Slice.nodes`` documents and the graph's ``ORDER BY m.id``
+        # produces -- not by signature, which is a different key and would make a capped cone
+        # return different callables per backend.
+        found = sorted((n for n in (self._callable_node(sig) for sig in reached) if n is not None), key=lambda n: n.ref)
+        return Slice(nodes=found[:max_nodes], roots=roots, resolved=slice_resolved(roots), total=len(found))
+
+    def _callable_node(self, signature: str) -> "SliceNode | None":
+        """The declared callable ``signature`` names, as a :class:`SliceNode`, or ``None``.
+
+        ``None`` for a signature the call graph carries but the symbol table does not declare — an
+        ``@external`` ghost, which has no file, no line and nothing this method could describe.
+        """
+        for c, _, _, path, _ in self._iter_callables():
+            if c.signature == signature:
+                return SliceNode(file=path, line=c.start_line, callable=c.signature, kind="callable", name=c.name, source=None, ref=c.id)
+        return None
+
+    def callers_of(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> List[SliceNode]:
+        """Who calls this (see :meth:`PythonAnalysisBackend.callers_of`)."""
+        return self._call_neighbours(name, in_class, in_module, callers=True)
+
+    def callees_of(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> List[SliceNode]:
+        """What this calls, externals included (see :meth:`PythonAnalysisBackend.callees_of`)."""
+        return self._call_neighbours(name, in_class, in_module, callers=False)
+
+    def _call_neighbours(self, name: str, in_class: str | None, in_module: str | None, *, callers: bool) -> List[SliceNode]:
+        """One hop of the call graph, in the caller's vocabulary.
+
+        A neighbour the symbol table does not declare is an external — the local call graph spells
+        those as ``@external`` can-ids, and :meth:`get_external_symbols` is where their properties
+        live, so the readable name is taken from there rather than by parsing the id (E6). The
+        Neo4j backend reads the same two fields off the ``:PyExternal`` node's ``module``/``name``.
+        """
+        sig = self.resolve_callable(name, in_class=in_class, in_module=in_module).callable
+        graph = self.get_call_graph()
+        if sig not in graph:
+            return []
+        externals = self.get_external_symbols()
+        out: List[SliceNode] = []
+        for other in graph.predecessors(sig) if callers else graph.successors(sig):
+            node = self._callable_node(other)
+            if node is not None:
+                out.append(node)
+            elif not callers:  # an external callee; a caller is never external (see the ABC)
+                sym = externals.get(other)
+                out.append(SliceNode(file="", line=0, callable=_external_name(sym, other), kind="external", name=getattr(sym, "name", other), source=None, ref=other))
+        return out
+
+    # -----[ paths, mixed queries, hydration ]-----
+    @staticmethod
+    def _shortest_walks(edges: Dict[str, Dict[str, list]], src: str, dst: str, depth: int | None, limit: int) -> List[list]:
+        """Up to ``limit`` shortest ``src``->``dst`` walks over ``edges``, in the documented order.
+
+        The local twin of the graph's ``allShortestPaths``, and only shortest walks for its reason:
+        enumerating every walk does not terminate on a real dependence graph.
+
+        Two passes. The first is the same breadth-first level walk :meth:`_reach` does, keeping the
+        hop count each node was *first* reached at; the second is a depth-first replay that only
+        ever steps to a node whose recorded distance is exactly one more than the walk so far, so
+        it visits shortest walks and nothing else.
+
+        The replay's branch order is ``(via, var, to)`` -- exactly the per-hop key
+        :func:`~cldk.analysis.python.backend.hop_sort_key` documents -- and every walk found has
+        the same length, so a pre-order depth-first traversal emits them already sorted. That is
+        what makes ``limit`` a *prefix* of a total order rather than whichever ``limit`` walks the
+        recursion happened to find first.
+        """
+        dist, frontier, hops = {src: 0}, [src], 0
+        while frontier and dst not in dist and (depth is None or hops < depth):
+            hops += 1
+            nxt = []
+            for s in frontier:
+                for d in edges.get(s, ()):
+                    if d not in dist:
+                        dist[d] = hops
+                        nxt.append(d)
+            frontier = nxt
+        if dst not in dist or dist[dst] == 0:
+            return []
+        target, out = dist[dst], []
+
+        def walk(node: str, walked: list) -> None:
+            if len(walked) == target:
+                if node == dst:
+                    out.append(list(walked))
+                return
+            options = sorted(
+                (VIA[rel], var or "", d, (rel, var, prov))
+                for d, labels in edges.get(node, {}).items()
+                if dist.get(d) == len(walked) + 1
+                for rel, var, prov in labels
+            )
+            for _, _, d, label in options:
+                walked.append((d, label))
+                walk(d, walked)
+                walked.pop()
+                if len(out) >= limit:
+                    return
+
+        walk(src, [])
+        return out
+
+    def _value_paths(self, a: SliceNode, b: SliceNode, depth: int | None, max_paths: int) -> FlowPaths:
+        """Build the :class:`FlowPaths` for value ``a`` -> value ``b``."""
+        adjacency, nodes = self._sdg()
+        walks = self._shortest_walks(adjacency["forward"], a.ref, b.ref, depth, max_paths + 1)
+        described = {ref: _local_slice_node(nodes[ref], ref) for walk in walks for ref, _ in walk if ref in nodes}
+        described[a.ref] = a
+        paths = [flow_path([described[a.ref]] + [described[ref] for ref, _ in walk], [label for _, label in walk]) for walk in walks[:max_paths]]
+        return FlowPaths(paths=paths, complete=len(walks) <= max_paths)
+
+    def paths_between(self, src: str, dst: str, *, src_within: str, dst_within: str, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+        """How a value reaches another value (see :meth:`PythonAnalysisBackend.paths_between`)."""
+        check_depth(depth)
+        check_max_paths(max_paths)
+        self._require_dataflow()
+        a = self.resolve_value(src, within=src_within)
+        b = self.resolve_value(dst, within=dst_within)
+        check_distinct_endpoints(a, b)
+        return self._value_paths(a, b, depth, max_paths)
+
+    def call_paths_between(self, src: str, dst: str, *, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+        """How one callable reaches another (see :meth:`PythonAnalysisBackend.call_paths_between`).
+
+        Over :meth:`get_call_graph`, the same edge set :meth:`reaches` and :meth:`callees_of` read,
+        so the paths cannot disagree with the boolean that summarises them or with the neighbours a
+        caller can enumerate for itself. ``get_call_graph`` is a plain ``DiGraph``, so there is one
+        edge between any two callables and one shortest path per node sequence.
+        """
+        check_depth(depth)
+        check_max_paths(max_paths)
+        a_node, b_node = self.resolve_callable(src), self.resolve_callable(dst)
+        check_distinct_endpoints(a_node, b_node)
+        a, b = a_node.callable, b_node.callable
+        graph = self.get_call_graph()
+        if a not in graph or b not in graph:
+            return FlowPaths(paths=[], complete=True)
+        # The call graph re-projected as this module's ``{src: {dst: [label]}}`` adjacency, so one
+        # walker serves both kinds of path. O(E) per call, like every other call-graph accessor
+        # here (``reaches``, ``backward_cone``): the local backend rebuilds the graph each time and
+        # is the backend for projects where that is the cheaper trade.
+        edges: Dict[str, Dict[str, list]] = {n: {m: [("PY_CALLS", None, ())] for m in graph.successors(n)} for n in graph}
+        walks = self._shortest_walks(edges, a, b, depth, max_paths + 1)
+        externals = self.get_external_symbols()
+        described = {sig: self._call_graph_node(sig, externals) for walk in walks for sig, _ in walk}
+        described[a] = self._call_graph_node(a, externals)
+        paths = [flow_path([described[a]] + [described[sig] for sig, _ in walk], [label for _, label in walk]) for walk in walks[:max_paths]]
+        return FlowPaths(paths=paths, complete=len(walks) <= max_paths)
+
+    def _call_graph_node(self, signature: str, externals: Dict[str, PyExternalSymbol]) -> SliceNode:
+        """A call-graph vertex as a :class:`SliceNode` -- declared callable or external ghost.
+
+        The same decision :meth:`_call_neighbours` makes, factored out so a path's nodes and a
+        neighbour list describe the same vertex identically.
+        """
+        node = self._callable_node(signature)
+        if node is not None:
+            return node
+        sym = externals.get(signature)
+        return SliceNode(file="", line=0, callable=_external_name(sym, signature), kind="external", name=getattr(sym, "name", signature), source=None, ref=signature)
+
+    def _callee_values(self, signature: str) -> List[str]:
+        """The ids of every value that *enters* ``signature`` -- its parameters, and the globals and
+        captures it reads. The local twin of the graph's ``formal_in`` body nodes."""
+        c = next((c for c, _, _, _, _ in self._iter_callables() if c.signature == signature), None)
+        return [body_node_id(c.id, key) for key, node in (c.body or {}).items() if node.kind == "formal_in"] if c else []
+
+    def flows_to_call(self, src: str, callee: str, *, within: str, depth: int | None = None) -> bool:
+        """Does this value reach any argument of a call to ``callee``
+        (see :meth:`PythonAnalysisBackend.flows_to_call`)?"""
+        check_depth(depth)
+        self._require_dataflow()
+        root = self.resolve_value(src, within=within)
+        targets = self._callee_values(self.resolve_callable(callee).callable)
+        return bool(targets) and not self._reach(root.ref, "forward", depth).isdisjoint(set(targets) - {root.ref})
+
+    def flows_to_argument(self, src: str, callee: str, arg: str, *, within: str, depth: int | None = None) -> bool:
+        """Does this value reach ``callee``'s ``arg``
+        (see :meth:`PythonAnalysisBackend.flows_to_argument`)?"""
+        check_depth(depth)
+        self._require_dataflow()
+        root = self.resolve_value(src, within=within)
+        target = self.resolve_value(arg, within=callee).ref
+        return target != root.ref and target in self._reach(root.ref, "forward", depth)
+
+    def _sources_for(self, refs: Sequence[str]) -> Dict[str, "str | None"]:
+        """Source text for every ref this application holds (see
+        :meth:`PythonAnalysisBackend._sources_for`).
+
+        One walk of :meth:`_iter_callables` for the whole batch, not one per ref: ``get_source``
+        scans the callable list per call, which is fine for one node and quadratic for a slice.
+
+        A body node's text is sliced out of the owning module by its span, so this backend fills in
+        statements and call sites the graph cannot. A vertex with **no** span -- the synthetic
+        ``@entry``/``@exit`` and every ``formal_in`` -- maps to ``None``: it is a dataflow position,
+        not a region of the file, and there is nothing to read on either backend.
+        """
+        wanted = set(refs)
+        # An external ghost is found and has no text, by definition -- the same row the graph's
+        # ``:PyExternal`` arm returns, so ``describe(callees_of(x))`` composes on both backends.
+        found: Dict[str, "str | None"] = {ref: None for ref in wanted if ref in self.get_external_symbols()}
+        for c, _, _, _, source in self._iter_callables():
+            for name in (c.signature, c.id):
+                if name in wanted:
+                    found[name] = _code_of(c, source)
+            for key, node in (c.body or {}).items():
+                ref = body_node_id(c.id, key)
+                if ref in wanted:
+                    found[ref] = _slice(node.span, source)
+        return found
+
     def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:
         """Return overviews of callables decorated with any of ``markers``."""
         marker_set = set(markers)
         return [
-            _overview(c, class_sig, kind)
-            for c, class_sig, kind, _ in self._iter_callables()
+            _overview(c, class_sig, kind, path)
+            for c, class_sig, kind, path, _ in self._iter_callables()
             if marker_set.intersection(d.qualified_name or d.name for d in c.decorators)
         ]
 
     def get_entrypoints(self) -> List[PyCallableOverview]:
         """Return overviews of every callable marked ``is_entrypoint`` (see
         :meth:`PythonAnalysisBackend.get_entrypoints`)."""
-        return [_overview(c, class_sig, kind) for c, class_sig, kind, _ in self._iter_callables() if c.is_entrypoint]
+        return [_overview(c, class_sig, kind, path) for c, class_sig, kind, path, _ in self._iter_callables() if c.is_entrypoint]
 
     def get_entrypoint_classes(self) -> List[PyClassOverview]:
         """Return overviews of every class marked ``is_entrypoint`` (see
@@ -936,7 +1654,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         }
         return {
             c.signature: [_resolve_callee(cs, c.body, id_to_sig, declared_sigs, reverse_externals) for cs in c.call_sites]
-            for c, _, _, _ in self._iter_callables()
+            for c, _, _, _, _ in self._iter_callables()
             if c.signature in wanted
         }
 
@@ -1000,7 +1718,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         reading_ids = {e.src.rsplit("@", 1)[0] for e in self.get_config_uses(key)}
         if not reading_ids:
             return []
-        return [_overview(c, class_sig, kind) for c, class_sig, kind, _ in self._iter_callables() if c.id in reading_ids]
+        return [_overview(c, class_sig, kind, path) for c, class_sig, kind, path, _ in self._iter_callables() if c.id in reading_ids]
 
     # ----------------------------------------------------------- locate
     def _not_analysed(self, path: str, line: int) -> LocateResult:
@@ -1032,7 +1750,11 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         module = self.application.symbol_table.get(key)
         if module is None:
             return self._not_analysed(key, line)
-        module_ref = ModuleRef(path=module.file_path, module_name=module.module_name)
+        # ``key``, never ``module.file_path``: the latter is the absolute path on the analysing
+        # machine, which joins to nothing -- ``LocateResult.module.path`` shares its vocabulary with
+        # the symbol table's keys, ``PyCallableOverview.path`` and ``SliceNode.file``, and the
+        # Neo4j backend answers with the same repo-relative key.
+        module_ref = ModuleRef(path=key, module_name=module.module_name)
         found = _find_innermost(module, line)
         if found is None:
             return LocateResult(
@@ -1042,11 +1764,18 @@ class PyCodeanalyzer(PythonAnalysisBackend):
                 module=module_ref,
                 source=module.source,
                 span=Span(start=(line, 0), end=(line, 0), bytes=(0, 0)),
-                diagnostics=[Diagnostic(code="module_scope", message=f"line {line} is at module scope in {module.file_path}.")],
+                diagnostics=[Diagnostic(code="module_scope", message=f"line {line} is at module scope in {key}.")],
             )
         c, owner = found
         found_body = _find_body_node(c, line)
-        node, node_id = (found_body[1], f"{c.signature}@{found_body[0]}") if found_body else (None, None)
+        # The id is composed from ``c.id`` (the ``can://`` containment path), never ``c.signature``
+        # (the dotted module path), and joined by :func:`body_node_id`, which is the emitter's own
+        # rule -- ``codeanalyzer/neo4j/project.py``'s ``_global_ordinal`` (#320). ``BodyNode``
+        # itself carries no ``id`` field to read instead (codeanalyzer-python#176), which is why
+        # this one is still composed. ``locate`` only ever finds a span-bearing node, whose key is
+        # a bare ``"line:col"``, so this path was already right; it routes through the shared
+        # helper so it stays right if that ever changes.
+        node, node_id = (found_body[1], body_node_id(c.id, found_body[0])) if found_body else (None, None)
         return LocateResult(
             node=node,
             node_id=node_id,

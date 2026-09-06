@@ -79,9 +79,14 @@ def test_body_not_truncated():
 # ================================================================================================
 def test_get_source_of_a_body_node_local(py_local):
     """Line 11 (``Store.Meta.tag``'s body) is the fixture's non-ASCII line — byte-offset slicing is
-    exactly what would break silently on a naive character slice."""
+    exactly what would break silently on a naive character slice.
+
+    The id is ``<callable.id>@<body key>``, not ``<callable.signature>@<body key>``: #320 — the
+    emitter mints ``:PyBodyNode.id`` from the callable's ``can://`` id, so composing from
+    ``signature`` produced a string that named nothing in the graph.
+    """
     r = py_local.locate("src/app.py", 11)
-    assert r.node_id == "src.app.Store.Meta.tag@11:12"
+    assert r.node_id == "can://src/app.py#src.app.Store.Meta.tag@11:12"
     assert py_local.get_source(r.node_id) == _locate_code(11, 11)
     assert "café" in py_local.get_source(r.node_id)
 

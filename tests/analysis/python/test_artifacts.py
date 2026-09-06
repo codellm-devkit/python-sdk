@@ -137,7 +137,9 @@ def _artifacts_application() -> PyApplication:
         reason=_UNRESOLVED_READ_REASON,
         prov=list(_UNRESOLVED_READ_PROV),
     )
-    connect = PyCallable(name="connect", path=_MODULE_PATH, signature="src.db.connect", id=_CALLABLE_ID)
+    # ``path`` is deliberately the absolute spelling the analyzer emits, while the symbol table is
+    # keyed by _MODULE_PATH: get_config_readers must project the *key*, so both backends agree.
+    connect = PyCallable(name="connect", path="/analysis-machine/checkout/" + _MODULE_PATH, signature="src.db.connect", id=_CALLABLE_ID)
     module = PyModule(file_path=_MODULE_PATH, module_name="src.db", functions={"connect": connect})
     return PyApplication(
         symbol_table={_MODULE_PATH: module},
@@ -431,9 +433,11 @@ def test_artifacts_layer_parity_between_backends(py_local, py_neo4j):
     assert py_local.get_config_keys() == py_neo4j.get_config_keys()
     assert py_local.get_config_uses() == py_neo4j.get_config_uses()
     assert py_local.get_config_uses(key=_CONFIG_KEY_KEY) == py_neo4j.get_config_uses(key=_CONFIG_KEY_KEY)
-    assert [r.signature for r in py_local.get_config_readers(_CONFIG_KEY_KEY)] == [
-        r.signature for r in py_neo4j.get_config_readers(_CONFIG_KEY_KEY)
-    ]
+    # Path included: this projection also returns PyCallableOverview, so it has to speak the same
+    # repo-relative path vocabulary as every other overview accessor -- on both backends.
+    assert [(r.signature, r.path) for r in py_local.get_config_readers(_CONFIG_KEY_KEY)] == [
+        (r.signature, r.path) for r in py_neo4j.get_config_readers(_CONFIG_KEY_KEY)
+    ] == [("src.db.connect", _MODULE_PATH)]
     # Deliberately not full equality: the Neo4j reconstruction always has site="" (see
     # reconstruct.unresolved_config_read's docstring) while the local backend has a real one --
     # documented projection loss, not a bug. key/reason/callee/prov still agree exactly.

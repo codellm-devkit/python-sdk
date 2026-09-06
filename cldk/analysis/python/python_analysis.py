@@ -47,18 +47,21 @@ See Also:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Sequence, Set, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 import networkx as nx
 from tree_sitter import Tree
 
 from cldk.analysis.commons.backend_config import Neo4jConnectionConfig, PyBackend, PyCodeAnalyzerConfig, cache_subdir
-from cldk.analysis.commons.results import EntrypointCoverage, LocateResult
+from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, FlowPaths, LocateResult, Slice, SliceNode
 from cldk.analysis.commons.treesitter import TreesitterPython
-from cldk.analysis.python.backend import PythonAnalysisBackend
+from cldk.analysis.python.backend import DEFAULT_DEPTH, DEFAULT_MAX_NODES, DEFAULT_MAX_PATHS, DEFAULT_PAGE_SIZE, PythonAnalysisBackend
 from cldk.analysis.python.codeanalyzer import PyCodeanalyzer
 from cldk.analysis.python.neo4j import PyNeo4jBackend
 from cldk.models.python import (
+    CdgEdge,
+    CfgEdge,
+    DdgEdge,
     PyApplication,
     PyArtifact,
     PyCallable,
@@ -129,10 +132,14 @@ class PythonAnalysis:
                 (``*.py``). Required for the in-process backend (``source_code``
                 mode is not supported); optional for the Neo4j backend, whose
                 graph is populated out of band.
-            analysis_level: The depth of analysis to perform. Controls which
-                analysis artifacts are generated. Common values include
-                ``"symbol_table"`` and ``"call_graph"``. See
-                :class:`~cldk.analysis.AnalysisLevel` for options.
+            analysis_level: The depth of analysis to perform, and what the in-process
+                backend actually asks the analyzer for: ``"symbol_table"``,
+                ``"call_graph"``, ``"program_dependency_graph"`` (intraprocedural
+                CFG/CDG/DDG) or ``"system_dependency_graph"`` (interprocedural, the
+                level that produces the ``formal_in`` vertices ``resolve_value``
+                addresses). Deeper levels cost more analysis time. Ignored by the
+                Neo4j backend, whose graph is always emitted at full depth. See
+                :class:`~cldk.analysis.AnalysisLevel`.
             target_files: Optional list of specific file paths (relative to
                 ``project_dir``) to include in the analysis. When provided,
                 only these files are analyzed, which can significantly improve
@@ -262,12 +269,19 @@ class PythonAnalysis:
         """
         return self.backend.get_application_view()
 
-    def get_symbol_table(self) -> Dict[str, PyModule]:
+    def get_symbol_table(self, *, paths: Sequence[str] | None = None) -> Dict[str, PyModule]:
         """Return the symbol table mapping file paths to module objects.
 
         Returns a dictionary that maps each analyzed file's path to its
         corresponding :class:`PyModule` object. This is useful for looking
         up module information when you know the file path.
+
+        Args:
+            paths: Restrict the result to these modules, named by symbol-table key (the module's
+                file path). Absolute paths and native separators are accepted; a path naming no
+                module raises rather than contributing nothing. ``None`` (the default) returns the
+                whole application — on a large graph that is thousands of modules, so prefer naming
+                the ones you need.
 
         Returns:
             A dictionary where keys are file paths (as strings) and values are
@@ -275,11 +289,20 @@ class PythonAnalysis:
             analyzed structure of each file, including classes, functions,
             imports, and other symbols.
 
+        Raises:
+            TypeError: ``paths`` is a bare string. It takes a *sequence* of paths — a string is a
+                sequence of characters, and iterating it is never what you meant.
+            ValueError: ``paths`` is an empty sequence. Omit the keyword to enumerate everything;
+                the argument that means "the whole application" is the argument not passed.
+            SelectorNotInGraph: a path names no module in this application
+                (``cldk.utils.exceptions``, a ``ValueError``). A partial miss raises too, so a
+                short result can never be read as a complete one.
+
         See Also:
             :meth:`get_python_module`: For direct lookup by file path.
             :meth:`get_modules`: For a flat list without file paths.
         """
-        return self.backend.get_symbol_table()
+        return self.backend.get_symbol_table(paths=paths)
 
     def get_modules(self) -> List[PyModule]:
         """Return a list of all analyzed modules.
@@ -366,13 +389,27 @@ class PythonAnalysis:
         }
 
     # -----[ call graph ]-----
-    def get_call_graph(self) -> nx.DiGraph:
+    def get_call_graph(self, *, roots: Sequence[str] | None = None, depth: int | None = None) -> nx.DiGraph:
         """Return the project call graph as a NetworkX directed graph.
 
         Constructs and returns a directed graph representing method/function
         call relationships across the entire project. Each node represents
         a callable (function or method), and each edge represents a call
         from one callable to another.
+
+        Args:
+            roots: Restrict the result to the sub-graph reachable from these callables, named by
+                signature. ``None`` (the default) returns the whole application's call graph.
+            depth: Maximum number of call hops from a root, an ``int`` >= 1; ``None`` is
+                unbounded. Requires ``roots``.
+
+        The unscoped graph on a real application runs to hundreds of thousands of edges, which is
+        not an answer to a question about one function — ``roots=`` and ``depth=`` are how you ask
+        the question you actually have. The result is the *induced* sub-graph over the reached
+        nodes, so an edge between two nodes you can see is never silently absent, and a root that
+        calls nothing is a graph of one node rather than an empty one. A root the graph does not
+        hold raises :class:`~cldk.utils.exceptions.SelectorNotInGraph` instead of quietly
+        contributing nothing.
 
         The call graph is built using:
             - Jedi for semantic call resolution
@@ -394,7 +431,7 @@ class PythonAnalysis:
             :meth:`get_callees`: For finding callees of a specific method.
             :meth:`get_class_call_graph`: For call graph subset by class.
         """
-        return self.backend.get_call_graph()
+        return self.backend.get_call_graph(roots=roots, depth=depth)
 
     def get_call_graph_json(self) -> str:
         """Return the complete analysis results serialized as JSON.
@@ -598,9 +635,6 @@ class PythonAnalysis:
             :meth:`get_decorated_callables`: The same projection filtered by decorator instead.
             :meth:`get_entrypoint_classes`: The class-level sibling this walk never sees.
             :meth:`get_entrypoint_coverage`: Whether the detection pass itself had gaps.
-            :meth:`get_entry_point_methods`: Not this. Differs by a space and an underscore in
-                the name and raises ``NotImplementedError`` — a pre-existing, unrelated accessor.
-                Use this method instead.
         """
         return self.backend.get_entrypoints()
 
@@ -618,9 +652,6 @@ class PythonAnalysis:
 
         See Also:
             :meth:`get_entrypoints`: The callable-level projection.
-            :meth:`get_entry_point_classes`: Not this. Differs by one space in the name and
-                raises ``NotImplementedError`` — a pre-existing, unrelated accessor. Use this
-                method instead.
         """
         return self.backend.get_entrypoint_classes()
 
@@ -867,19 +898,56 @@ class PythonAnalysis:
         """
         return self.backend.locate_many(positions)
 
+    # -----[ addressing ]-----
+    def resolve_callable(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> SliceNode:
+        """Resolve a callable name to the one callable it names, in the caller's vocabulary.
+
+        The addressing step every name-taking accessor performs, exposed so a caller can perform it
+        once and keep the answer::
+
+            node = py.resolve_callable("invoice_transaction", in_class="PaymentPortal")
+            node.callable   # the full dotted signature -- what get_call_graph(roots=[...]) wants
+            node.file, node.line
+
+        ``name`` matches whole or as a dotted suffix; ``in_class`` is a dotted suffix of the owning
+        class, ``in_module`` a path (``"controllers/payment.py"``) or a dotted module name
+        (``"controllers.payment"``). Ambiguity raises with every candidate; nothing is guessed.
+
+        Raises:
+            AmbiguousName: More than one callable matched.
+            SelectorNotInGraph: Nothing matched -- naming the argument that missed.
+        """
+        return self.backend.resolve_callable(name, in_class=in_class, in_module=in_module)
+
+    def resolve_value(self, name: str, *, within: str) -> SliceNode:
+        """Resolve a value name inside a callable -- a parameter, a captured global or a closure
+        capture -- to the position that carries it.
+
+        The same resolution ``slice_backward`` / ``flows_to_call`` perform on their ``src``,
+        exposed so a caller can check what a name means before asking a question of it::
+
+            py.resolve_value("invoice_id", within="PaymentPortal.invoice_transaction").kind  # "parameter"
+            py.resolve_value("AccessError", within="…invoice_transaction").defined_in         # "payment"
+
+        Raises:
+            AmbiguousName: ``within`` named more than one callable, or ``name`` more than one value.
+            SelectorNotInGraph: No such callable, or no such value in it.
+        """
+        return self.backend.resolve_value(name, within=within)
+
     # -----[ source access ]-----
     def get_source(self, node_id: str) -> str:
         """Return the source text named by ``node_id`` — a callable, or one of its body nodes.
 
         Generalises :meth:`get_method_bodies` below callable granularity: ``node_id`` is either a
-        callable's signature, or ``"<signature>@<body key>"`` for one of that callable's body
-        nodes — exactly the string :attr:`~cldk.analysis.commons.results.LocateResult.node_id`
-        hands back alongside :attr:`~cldk.analysis.commons.results.LocateResult.node`, so a
-        statement or call site :meth:`locate` found can be re-fetched precisely, not just the
-        callable enclosing it.
+        callable's signature, or the opaque body-node id
+        :attr:`~cldk.analysis.commons.results.LocateResult.node_id` hands back alongside
+        :attr:`~cldk.analysis.commons.results.LocateResult.node`, so a statement or call site
+        :meth:`locate` found can be re-fetched precisely, not just the callable enclosing it.
 
         Args:
-            node_id: A callable signature, or ``"<signature>@<body key>"``.
+            node_id: A callable signature, or a body-node id from :meth:`locate` — passed back as
+                received, not composed.
 
         Returns:
             The source text, never an ambiguous empty string.
@@ -895,6 +963,467 @@ class PythonAnalysis:
             :meth:`locate`: The usual way to obtain a ``node_id`` in the first place.
         """
         return self.backend.get_source(node_id)
+
+    # -----[ per-callable graphs ]-----
+    def get_cfg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[CfgEdge]:
+        """Return one page of the control flow edges inside one callable.
+
+        The callable is the scope; the page is the size bound. Naming a callable says *which*
+        edges you want, not *how many* there will be — see :meth:`get_ddg`, where one callable's
+        answer runs to 1.39 million edges on a real application. CFG is the small one (the largest
+        measured is 402 edges), so this returns a single complete page in practice; it pages
+        anyway, because three sibling accessors that answer in two different shapes are a trap for
+        anything composing them.
+
+        ``src`` and ``dst`` are body-node ids in the same vocabulary
+        :attr:`~cldk.analysis.commons.results.LocateResult.node_id` uses, so an endpoint can be
+        handed straight back to :meth:`get_source`. No ``can://`` URI and no ordinal appears in
+        either the argument or the result.
+
+        Args:
+            callable: The callable's name — resolved the way :meth:`locate` and the addressing
+                layer resolve names, so ``"charge"`` is enough when it is unique and an ambiguous
+                name raises listing the candidates instead of being guessed at.
+            in_class: Narrow to the class this names, when the bare name is ambiguous.
+            page_size: Most edges in the page. Defaults to
+                :data:`~cldk.analysis.python.backend.DEFAULT_PAGE_SIZE`.
+            cursor: ``next_cursor`` from a previous page, to continue where it left off. ``None``
+                starts at the beginning.
+
+        Returns:
+            An :class:`~cldk.analysis.commons.results.EdgePage` of
+            :class:`~cldk.models.python.CfgEdge`, each carrying the edge ``kind``
+            (``"true"``/``"false"`` on a conditional, ``"exception"``, ``"loop_back"``, ...), in
+            the canonical order (source, target, kind) that makes this page the same page on
+            every backend.
+
+        Raises:
+            AmbiguousName: ``callable`` matched more than one callable.
+            SelectorNotInGraph: Nothing matched.
+            ValueError: ``page_size`` below 1, or ``cursor`` not from a previous page.
+            CodeanalyzerUsageException: This analysis was built below
+                ``analysis_level="program_dependency_graph"``, where the analyzer emits no control
+                or data flow at all — reported rather than returned as a misleading empty page.
+
+        See Also:
+            :meth:`get_cdg`, :meth:`get_ddg`: The other two graphs of the same callable.
+        """
+        return self.backend.get_cfg(callable, in_class=in_class, page_size=page_size, cursor=cursor)
+
+    def get_cdg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[CdgEdge]:
+        """Return one page of the control dependence edges inside one callable.
+
+        ``src`` is the branch a ``dst`` is control dependent on — "this statement runs only
+        because that test went this way" — computed by the analyzer over the CFG :meth:`get_cfg`
+        returns.
+
+        Args:
+            callable: The callable's name, resolved as in :meth:`get_cfg`.
+            in_class: Narrow to the class this names.
+            page_size: Most edges in the page.
+            cursor: ``next_cursor`` from a previous page.
+
+        Returns:
+            An :class:`~cldk.analysis.commons.results.EdgePage` of
+            :class:`~cldk.models.python.CdgEdge`, ordered by source then target. The largest CDG
+            measured on a real application is 314 edges, so this is one page in practice.
+
+        Raises:
+            AmbiguousName: ``callable`` matched more than one callable.
+            SelectorNotInGraph: Nothing matched.
+            ValueError: ``page_size`` below 1, or ``cursor`` not from a previous page.
+            CodeanalyzerUsageException: Analysis level below ``program_dependency_graph``.
+        """
+        return self.backend.get_cdg(callable, in_class=in_class, page_size=page_size, cursor=cursor)
+
+    def get_ddg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[DdgEdge]:
+        """Return one page of the data dependence edges inside one callable.
+
+        Every edge names the variable that flows (``var``) and the evidence for it (``prov``), so
+        a caller separates syntactic dependence from alias-aware dependence without asking a
+        second question. ``prov`` is one of ``"ssa"``, ``"reaching-defs"`` or ``"points-to"``;
+        ``"points-to"`` is the alias-derived delta that only a level-4 analysis carries, so a
+        level-3 answer is narrower rather than wrong.
+
+        The same statement pair appears more than once when it carries several variables or
+        several kinds of evidence — that is the point, not duplication.
+
+        **This is the accessor pagination exists for.** Per-callable scoping bounds which edges
+        you get, not how many: the largest single callable measured on a real application has
+        1,386,918 DDG edges — 27% of the whole application's 5,134,655 — and returning that as one
+        list is around half a gigabyte of objects. 15,520 of that application's 15,549 callables
+        have fewer than 10,000, so with the default page size the common case is still one call
+        and no loop::
+
+            page = py.get_ddg("Portal.charge")
+            page.total          # 169 — the size of the whole answer, not of this page
+            page.has_more       # False: this is everything
+
+            while page.has_more:                      # only the outliers need this
+                page = py.get_ddg("Portal.charge", cursor=page.next_cursor)
+
+        Nothing is discarded to make the page fit: the rest is reachable through
+        ``next_cursor``, and ``total`` says up front how much of it there is.
+
+        Args:
+            callable: The callable's name, resolved as in :meth:`get_cfg`.
+            in_class: Narrow to the class this names.
+            page_size: Most edges in the page. Defaults to
+                :data:`~cldk.analysis.python.backend.DEFAULT_PAGE_SIZE`.
+            cursor: ``next_cursor`` from a previous page.
+
+        Returns:
+            An :class:`~cldk.analysis.commons.results.EdgePage` of
+            :class:`~cldk.models.python.DdgEdge`, in the canonical order (source, target,
+            variable, provenance). An empty page whose ``total`` is 0, from a level-3-or-deeper
+            analysis, is an honest answer: this callable has no data dependence.
+
+        Raises:
+            AmbiguousName: ``callable`` matched more than one callable.
+            SelectorNotInGraph: Nothing matched.
+            ValueError: ``page_size`` below 1, or ``cursor`` not from a previous page.
+            CodeanalyzerUsageException: Analysis level below ``program_dependency_graph``, where an
+                empty page could not be told apart from the honest empty above.
+        """
+        return self.backend.get_ddg(callable, in_class=in_class, page_size=page_size, cursor=cursor)
+
+    # -----[ slicing and reachability ]-----
+    def slice_backward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """Return everything the value ``src`` depends on — its backward slice.
+
+        Address the value the way you would say it out loud: a parameter, a module global the
+        callable reads, or a name it closed over, scoped by the callable it lives in. No
+        ``can://`` id and no ordinal appears in either the argument or the result::
+
+            sl = py.slice_backward("invoice_id", within="PaymentPortal.invoice_transaction")
+            sl.total        # how big the whole answer is
+            sl.truncated    # whether you are looking at all of it
+            sl.resolved     # what the names matched, for audit
+
+        The traversal runs in the database, over data dependence, control dependence, argument
+        passing, returns and call summaries at once. What comes back is a **set** of positions,
+        not a path — ``paths_between`` is the accessor that answers "how", because one cone of
+        10,000 nodes holds millions of distinct paths.
+
+        **The traversal is bounded by default**, to five hops
+        (:data:`~cldk.analysis.python.backend.DEFAULT_DEPTH`). Unbounded, this question has only
+        two answers on a real application and nothing in between: a value in a callable nothing
+        calls slices back to exactly **one** node — itself, honestly, because nothing feeds it —
+        while a value in a called one reaches a median of **195,786**, a fifth of the program.
+        Capping the second kind at ``max_nodes`` would hand you 10,000 arbitrary nodes of a
+        195,819-node closure; bounding the hops instead answers a narrower question *completely*,
+        and measured over that distribution no slice at five hops is capped at all.
+
+        So ``truncated`` should normally be ``False`` and ``total`` should normally be the whole
+        of what you got. When you want the fifth of the program, ask for it: ``depth=None``.
+        Between the two, any ``depth=`` bounds the traversal and gives a complete slice of a
+        smaller question, while ``max_nodes`` only ever gives part of the large one.
+
+        Args:
+            src: The value's name. A global may be qualified by its module
+                (``"payment.AccessError"``) when the bare name is ambiguous inside the callable.
+            within: The callable to look inside — a suffix of its dotted signature is enough.
+                Required: a value name has no meaning outside a callable.
+            depth: Most hops from the seed. Defaults to
+                :data:`~cldk.analysis.python.backend.DEFAULT_DEPTH` (5); ``None`` for the whole
+                cone.
+            max_nodes: Most nodes in the result. Defaults to
+                :data:`~cldk.analysis.python.backend.DEFAULT_MAX_NODES`.
+
+        Returns:
+            A :class:`~cldk.analysis.commons.results.Slice` containing the seed, ordered by an
+            opaque node id, with ``source`` left unhydrated — pass the nodes you care about to
+            ``describe()`` when you want to read them.
+
+        Raises:
+            AmbiguousName: ``within`` matched more than one callable, or ``src`` more than one
+                value inside it. The error carries every candidate; nothing is guessed.
+            SelectorNotInGraph: No such callable, or no such value in it.
+            ValueError: ``depth`` is not a positive ``int``, or ``max_nodes`` is below 1.
+            CodeanalyzerUsageException: This analysis was built below
+                ``analysis_level="program_dependency_graph"``, where there is no dataflow to slice.
+
+        See Also:
+            :meth:`slice_forward`: The same question the other way round.
+            :meth:`get_ddg`: One callable's data dependence, without traversal.
+        """
+        return self.backend.slice_backward(src, within=within, depth=depth, max_nodes=max_nodes)
+
+    def slice_forward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """Return everything the value ``src`` can affect — its forward slice.
+
+        The taint direction, and usually the informative one for a value entering a callable:
+        nothing flows *into* a parameter except from its callers, so :meth:`slice_backward` from
+        one is often the seed alone, while this follows it through the body and out through every
+        call it feeds::
+
+            sl = py.slice_forward("invoice_id", within="PaymentPortal.invoice_transaction")
+            [n for n in sl.nodes if n.kind == "argument"]   # where it is passed on
+
+        Arguments, bounds and failures are :meth:`slice_backward`'s, including the five-hop
+        default. Forward cones are the larger of the two — measured *unbounded*, p95 440,270 nodes
+        of 885,218 on a real application — so ``depth=None`` is the more expensive request here.
+        """
+        return self.backend.slice_forward(src, within=within, depth=depth, max_nodes=max_nodes)
+
+    def reaches(self, src: str, dst: str, *, depth: int | None = None) -> bool:
+        """Return whether there is a call path from ``src`` to ``dst``.
+
+        The cheap question to ask before the expensive one: a boolean, computed in the database as
+        a bounded search, so "is this sink reachable at all" costs no more than it has to. When
+        the answer is yes and you need the chain, that is ``call_paths_between``.
+
+        Args:
+            src: The calling callable's name — a dotted suffix is enough when it is unique.
+            dst: The called callable's name.
+            depth: Most call hops; ``None`` (the default) for any distance. Unlike the slices,
+                this one is unbounded by default: a hop budget on a boolean would report "no path"
+                for a path that is merely long, and the unbounded call is cheap anyway (measured
+                20ms mean, 112ms worst over 200 random pairs).
+
+        Returns:
+            ``True`` when a call path exists. Self-reachability is ``True`` only through a real
+            cycle: ``reaches(x, x)`` is not vacuously true.
+
+        Raises:
+            AmbiguousName: Either name matched more than one callable.
+            SelectorNotInGraph: Either name matched none.
+            ValueError: ``depth`` is not a positive ``int``.
+        """
+        return self.backend.reaches(src, dst, depth=depth)
+
+    def backward_cone(self, sinks: Sequence[str], *, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """Return every callable that can reach any of ``sinks`` — "what could get here".
+
+        A call-graph cone, so its nodes are callables rather than positions inside them. The sinks
+        are in the result, and a sink nothing calls comes back as its own one-node cone rather
+        than as an empty answer that could not be told from a name that matched nothing::
+
+            cone = py.backward_cone(["AccountMove.write"])
+            cone.total                              # within five call hops, the default
+            py.backward_cone([...], depth=None)     # the whole cone: 9,282 for every .write
+
+        Args:
+            sinks: The callables to walk back from. A bare string is refused — pass ``["name"]``
+                to walk back from just one — and an empty sequence is refused too, because
+                "everything" is the argument omitted and there is no everything here.
+            depth: Most call hops back. Defaults to
+                :data:`~cldk.analysis.python.backend.DEFAULT_DEPTH` (5), for one rule across the
+                three traversals; ``None`` for the whole cone. A cone is smaller than a slice — the
+                largest measured is 9,346 callables, under ``max_nodes`` — so here the default buys
+                interpretability rather than protection from truncation.
+            max_nodes: Most nodes in the result; a cap that fires is reported by ``truncated``
+                and quantified by ``total``.
+
+        Raises:
+            AmbiguousName: A sink name matched more than one callable.
+            SelectorNotInGraph: A sink name matched none.
+            TypeError: ``sinks`` is a bare string.
+            ValueError: ``sinks`` is empty, ``depth`` is not a positive ``int``, or ``max_nodes``
+                is below 1.
+        """
+        return self.backend.backward_cone(sinks, depth=depth, max_nodes=max_nodes)
+
+    def callers_of(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> List[SliceNode]:
+        """Return the callables that call ``name``, addressed by name.
+
+        The name-based sibling of :meth:`get_all_callers`: that one takes a class signature plus a
+        method name and returns raw dicts, this one takes a name you already have and returns the
+        same :class:`~cldk.analysis.commons.results.SliceNode` shape everything else in this
+        surface speaks, so going from "who calls this" to a slice needs no translation.
+
+        An empty list is unambiguous — a name matching nothing raises, so ``[]`` means "nothing
+        calls it".
+
+        Args:
+            name: The callable's name, whole or a dotted suffix of its signature.
+            in_class: Disambiguate by owning class.
+            in_module: Disambiguate by module.
+
+        Raises:
+            AmbiguousName: ``name`` matched more than one callable.
+            SelectorNotInGraph: Nothing matched.
+        """
+        return self.backend.callers_of(name, in_class=in_class, in_module=in_module)
+
+    def callees_of(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> List[SliceNode]:
+        """Return what ``name`` calls, addressed by name — **including calls out of the project**.
+
+        An external callee comes back with ``kind="external"`` and a readable dotted name
+        (``"odoo.exceptions.ValidationError.__init__"``); it has no ``file`` and no ``line``,
+        because it was never analysed, and ``kind`` is what tells you that rather than leaving
+        ``""`` and ``0`` to be discovered. They are 10% of the call edges on a real application and
+        usually the ones a caller tracing a sink is looking for, which is why they are not dropped.
+
+        Args:
+            name: The callable's name, whole or a dotted suffix of its signature.
+            in_class: Disambiguate by owning class.
+            in_module: Disambiguate by module.
+
+        Raises:
+            AmbiguousName: ``name`` matched more than one callable.
+            SelectorNotInGraph: Nothing matched.
+        """
+        return self.backend.callees_of(name, in_class=in_class, in_module=in_module)
+
+    # -----[ paths, mixed queries, hydration ]-----
+    def paths_between(self, src: str, dst: str, *, src_within: str, dst_within: str, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+        """Return how a value reaches another value — the ordered hops, with the evidence for each.
+
+        Where :meth:`slice_forward` answers *what a value reaches* as a set,
+        this answers *how it gets there* as sequences, so a caller can argue a flow rather than
+        assert one::
+
+            for path in py.paths_between(
+                "invoice_id", "invoice_ids",
+                src_within="PaymentPortal.invoice_transaction",
+                dst_within="PaymentPortal._process_transaction",
+            ):
+                for hop in path.hops:
+                    print(hop.via, hop.var, "->", hop.to.callable, hop.to.kind, hop.to.name)
+                print("weakest evidence:", path.weakest.via, path.weakest.prov)
+
+        Only **shortest** paths come back, and at most ``max_paths`` of them; the result's
+        ``complete`` says whether that was all of them. ``weakest`` on each path names the hop
+        that caps the claim — the most approximate one (``ssa`` > ``reaching-defs`` >
+        ``points-to``).
+
+        Both callables are required. A value cannot be addressed without the callable it enters,
+        and ``dst_within`` does not default to ``src_within`` because two values of one callable
+        are joined only through recursion — a default would make the default call the degenerate
+        case. ``depth`` is unbounded by default, as on every predicate and path accessor: a bound
+        turns a real flow into an empty result with nothing to say the bound fired (see
+        :data:`~cldk.analysis.python.backend.DEFAULT_DEPTH`).
+
+        Args:
+            src: The value the flow starts at, named as you would say it (``"invoice_id"``).
+            dst: The value it must reach.
+            src_within: The callable ``src`` enters.
+            dst_within: The callable ``dst`` enters.
+            depth: Most hops a path may take; ``None`` (the default) for no bound. A flow longer
+                than an explicit ``depth`` comes back empty.
+            max_paths: Most paths to return.
+
+        Raises:
+            AmbiguousName: A name matched more than one thing.
+            SelectorNotInGraph: A name matched nothing.
+            ValueError: ``depth`` is not a positive ``int``, ``max_paths`` is below 1, or ``src``
+                and ``dst`` are the same position — a path from a node to itself is refused rather
+                than answered ``[]``; ``reaches`` is what asks whether a cycle exists.
+
+        See Also:
+            :meth:`slice_forward`: The same reachability as a set, with a ``total``.
+            :meth:`call_paths_between`: The same shape over the call graph.
+        """
+        return self.backend.paths_between(src, dst, src_within=src_within, dst_within=dst_within, depth=depth, max_paths=max_paths)
+
+    def call_paths_between(self, src: str, dst: str, *, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+        """Return how one callable reaches another, as ordered call hops.
+
+        The evidence-carrying form of :meth:`reaches`: that says *whether*, this says *how*::
+
+            for path in py.call_paths_between("PaymentPortal.invoice_transaction", "AccountMove.write"):
+                print(" -> ".join(h.to.callable for h in path.hops))
+
+        Every hop is ``via="call"`` with no ``var`` and no ``prov``, because a call edge carries
+        neither. Takes no ``within``: a callable is addressed by name alone.
+
+        Args:
+            src: The calling callable.
+            dst: The callable it must reach.
+            depth: Most call hops; ``None`` (the default) for no bound, as on :meth:`reaches`.
+            max_paths: Most paths to return; the result's ``complete`` says whether that was all.
+
+        Raises:
+            AmbiguousName: Either name matched more than one callable.
+            SelectorNotInGraph: Either matched nothing.
+            ValueError: ``depth`` is not a positive ``int``, ``max_paths`` is below 1, or ``src``
+                and ``dst`` are the same callable.
+        """
+        return self.backend.call_paths_between(src, dst, depth=depth, max_paths=max_paths)
+
+    def flows_to_call(self, src: str, callee: str, *, within: str, depth: int | None = None) -> bool:
+        """Does ``src`` reach **any** argument of a call to ``callee``?
+
+        A dataflow claim, not a "runs before" one: the target is the set of values that *enter*
+        ``callee``, so ``True`` means the value was passed into a real call. ``within`` scopes
+        ``src`` only — ``callee`` is a callable, addressed by name alone, so there is nothing else
+        to scope. Unbounded by default, like every predicate here: at five hops this returned
+        ``False`` for a flow that exists, and a bare ``False`` cannot say a bound fired.
+
+        Args:
+            src: The value, named as you would say it.
+            callee: The called callable.
+            within: The callable ``src`` enters.
+            depth: Most hops; ``None`` (the default) for no bound. With an explicit bound,
+                ``False`` means "not within ``depth`` hops", which is why the bound is nameable.
+
+        Raises:
+            AmbiguousName: A name matched more than one thing.
+            SelectorNotInGraph: A name matched nothing.
+
+        See Also:
+            :meth:`flows_to_argument`: The narrower question, and a different answer.
+        """
+        return self.backend.flows_to_call(src, callee, within=within, depth=depth)
+
+    def flows_to_argument(self, src: str, callee: str, arg: str, *, within: str, depth: int | None = None) -> bool:
+        """Does ``src`` reach the argument ``arg`` of a call to ``callee``?
+
+        **Not** the same question as :meth:`flows_to_call`, which is why it is a separate call: on
+        odoo-slim-19, ``invoice_id`` of ``PaymentPortal.invoice_transaction`` reaches six of
+        ``_process_transaction``'s seven entering values and not the seventh, so answering the
+        narrow question with the broad one would over-report. Reaching an argument does imply
+        reaching the call, and that direction holds by construction.
+
+        ``arg`` is matched to the parameter **by name** — never by position.
+
+        Args:
+            src: The value the flow starts at.
+            callee: The called callable.
+            arg: The callee's parameter (or global, or capture) by name.
+            within: The callable ``src`` enters; ``arg`` is scoped by ``callee`` itself.
+            depth: Most hops; ``None`` (the default) for no bound, as on :meth:`flows_to_call`.
+
+        Raises:
+            AmbiguousName: A name matched more than one thing.
+            SelectorNotInGraph: A name matched nothing — including ``arg`` naming no value of
+                ``callee``, which is a mistake worth stopping on rather than a ``False``.
+        """
+        return self.backend.flows_to_argument(src, callee, arg, within=within, depth=depth)
+
+    def describe(self, nodes: Sequence[object]) -> List[SliceNode]:
+        """Fill in ``source`` for these positions, in one round trip.
+
+        A slice, a cone and a path all answer *where*; this answers *what*, and it is a second call
+        because source is the one field with no size ceiling — a 195,784-node slice carrying text
+        would be tens of megabytes nobody asked for::
+
+            sl = py.slice_backward("found_email", within="odoo.tools.mail.email_domain_extract")
+            for node in py.describe(sl.nodes[:5]):
+                print(node.file, node.line, node.source)
+
+        Takes anything carrying an address — slice nodes, the ``frm``/``to`` of a path hop, a
+        ``locate()`` result — and gives back the same
+        :class:`~cldk.analysis.commons.results.SliceNode` shape with ``source`` filled, so nothing
+        downstream has to branch on whether a node has been hydrated.
+
+        Afterwards, ``source=None`` means exactly one thing: **this position exists and there is no
+        text for it.** A ref that names nothing raises instead. Which positions have no text
+        depends on the backend, honestly: a callable hydrates on both; a value vertex (a parameter,
+        global or capture) hydrates on neither, because it is a dataflow position and not a region
+        of the file; a statement or call site hydrates only on the local backend, because the graph
+        carries no text below callable granularity.
+
+        Args:
+            nodes: The positions to hydrate. An empty sequence costs no round trip.
+
+        Raises:
+            KeyError: A ref names nothing in this application — a stale ref, or one minted against
+                a different graph.
+            TypeError: An element carries no ref at all.
+        """
+        return self.backend.describe(nodes)
 
     # -----[ repository artifacts ]-----
     def get_artifacts(self) -> Dict[str, PyArtifact]:
@@ -988,23 +1517,34 @@ class PythonAnalysis:
         return self.backend.get_config_readers(key)
 
     # -----[ classes ]-----
-    def get_classes(self) -> Dict[str, PyClass]:
+    def get_classes(self, *, module: str | None = None) -> Dict[str, PyClass]:
         """Return all classes in the project.
 
         Retrieves all class definitions discovered during analysis, organized
         by their fully qualified names. This includes regular classes,
         dataclasses, abstract base classes, and nested classes.
 
+        Args:
+            module: Restrict the result to one module's classes, named by symbol-table key (the
+                module's file path — *not* a dotted module name, so it reads the same way as
+                :meth:`get_symbol_table`'s ``paths``). A key naming no module raises. ``None``
+                (the default) returns every class in the application.
+
         Returns:
             A dictionary mapping fully qualified class names (strings) to
             :class:`~cldk.models.python.PyClass` objects containing class
             metadata, methods, attributes, and inheritance information.
 
+        Raises:
+            SelectorNotInGraph: ``module`` names no module in this application
+                (``cldk.utils.exceptions``, a ``ValueError``). A mistyped key used to return the
+                same ``{}`` as a module that genuinely declares no classes.
+
         See Also:
             :meth:`get_class`: For a single class by name.
             :meth:`get_classes_by_criteria`: For filtered class retrieval.
         """
-        return self.backend.get_all_classes()
+        return self.backend.get_all_classes(module=module)
 
     def get_class(self, qualified_class_name: str) -> PyClass | None:
         """Return a specific class by its qualified name.
@@ -1125,7 +1665,6 @@ class PythonAnalysis:
 
         See Also:
             :meth:`get_extended_classes`: For the reverse (what a class extends).
-            :meth:`get_class_hierarchy`: For the full inheritance graph (not implemented).
         """
         return self.backend.get_all_sub_classes(qualified_class_name)
 
@@ -1145,310 +1684,9 @@ class PythonAnalysis:
 
         Note:
             Python does not distinguish between classes and interfaces,
-            so all base types are returned here. Use this method instead
-            of :meth:`get_implemented_interfaces`.
+            so all base types are returned here.
 
         See Also:
             :meth:`get_sub_classes`: For finding classes that extend this class.
         """
         return self.backend.get_extended_classes(qualified_class_name)
-
-    # -----[ unsupported ]-----
-    def get_class_hierarchy(self) -> nx.DiGraph:
-        """Return the complete class inheritance hierarchy as a graph.
-
-        This method is intended to return a NetworkX directed graph representing
-        the full class inheritance relationships in the project.
-
-        Returns:
-            Would return a ``networkx.DiGraph`` with classes as nodes and
-            inheritance edges from subclass to superclass.
-
-        Raises:
-            NotImplementedError: This functionality is not yet implemented
-                for Python analysis.
-
-        See Also:
-            :meth:`get_sub_classes`: For finding subclasses of a specific class.
-            :meth:`get_extended_classes`: For finding base classes of a class.
-        """
-        raise NotImplementedError("Class hierarchy is not implemented yet.")
-
-    def get_service_entry_point_classes(self, **kwargs) -> Dict[str, PyClass]:
-        """Return classes that serve as service entry points.
-
-        This method is intended to identify classes that act as entry points
-        for services, such as Flask views, Django views, FastAPI endpoints,
-        or other framework-specific entry points.
-
-        Args:
-            **kwargs: Framework-specific filtering options.
-
-        Returns:
-            Would return a dictionary of class names to :class:`PyClass` objects.
-
-        Raises:
-            NotImplementedError: This functionality is not yet implemented
-                for Python analysis.
-
-        See Also:
-            :meth:`get_entry_point_classes`: Related entry point detection.
-        """
-        raise NotImplementedError(
-            "Support for this functionality has not been implemented yet."
-        )
-
-    def get_service_entry_point_methods(self, **kwargs) -> Dict[str, Dict[str, PyCallable]]:
-        """Return methods that serve as service entry points.
-
-        This method is intended to identify methods decorated with framework-
-        specific decorators like ``@app.route``, ``@api_view``, etc.
-
-        Args:
-            **kwargs: Framework-specific filtering options.
-
-        Returns:
-            Would return a nested dictionary of class names to method names
-            to :class:`PyCallable` objects.
-
-        Raises:
-            NotImplementedError: This functionality is not yet implemented
-                for Python analysis.
-
-        See Also:
-            :meth:`get_methods_with_decorators`: For finding decorated methods.
-        """
-        raise NotImplementedError(
-            "Support for this functionality has not been implemented yet."
-        )
-
-    def get_entry_point_classes(self) -> Dict[str, PyClass]:
-        """Return classes identified as application entry points.
-
-        This method is intended to identify main application classes,
-        CLI entry points, and other classes that serve as program starting
-        points.
-
-        Returns:
-            Would return a dictionary of class names to :class:`PyClass` objects.
-
-        Raises:
-            NotImplementedError: This functionality is not yet implemented
-                for Python analysis.
-
-        See Also:
-            :meth:`get_entrypoint_classes`: Not this. Differs by one space in the name and
-                actually works — returns :class:`~cldk.models.python.PyClassOverview` objects
-                for every entrypoint class. Use that instead.
-        """
-        raise NotImplementedError(
-            "Support for this functionality has not been implemented yet."
-        )
-
-    def get_entry_point_methods(self) -> Dict[str, Dict[str, PyCallable]]:
-        """Return methods identified as application entry points.
-
-        This method is intended to identify main functions, CLI commands,
-        and other methods that serve as program starting points.
-
-        Returns:
-            Would return a nested dictionary of class names to method names
-            to :class:`PyCallable` objects.
-
-        Raises:
-            NotImplementedError: This functionality is not yet implemented
-                for Python analysis.
-
-        See Also:
-            :meth:`get_entrypoints`: Not this. Differs by a space and an underscore in the name
-                and actually works — returns :class:`~cldk.models.python.PyCallableOverview`
-                objects for every entrypoint callable. Use that instead.
-        """
-        raise NotImplementedError(
-            "Support for this functionality has not been implemented yet."
-        )
-
-    def get_implemented_interfaces(self, qualified_class_name: str) -> List[str]:
-        """Return interfaces implemented by a class.
-
-        This method exists for API parity with Java analysis. In Python,
-        there is no syntactic distinction between classes and interfaces;
-        abstract base classes (ABCs) and protocols serve similar purposes
-        but are syntactically identical to regular classes.
-
-        Args:
-            qualified_class_name: The class to query.
-
-        Raises:
-            NotImplementedError: Always raised. Use :meth:`get_extended_classes`
-                instead to get all base classes, which may include ABCs or
-                Protocol classes.
-
-        See Also:
-            :meth:`get_extended_classes`: The correct method for Python
-                to get parent classes including abstract base classes.
-        """
-        raise NotImplementedError(
-            "Python does not distinguish interfaces from base classes; use get_extended_classes."
-        )
-
-    def get_methods_with_decorators(
-        self, decorators: List[str]
-    ) -> Dict[str, List[Dict]]:
-        """Return methods decorated with specific decorators.
-
-        This method is intended to find all methods that have any of the
-        specified decorators applied, such as ``@property``, ``@staticmethod``,
-        ``@classmethod``, or custom decorators.
-
-        Args:
-            decorators: List of decorator names to search for (e.g.,
-                ``["property", "staticmethod", "app.route"]``).
-
-        Returns:
-            Would return a dictionary mapping decorator names to lists of
-            method information dictionaries.
-
-        Raises:
-            NotImplementedError: This functionality is not yet implemented
-                for Python analysis.
-
-        See Also:
-            :meth:`get_methods`: To manually filter methods by decorators.
-        """
-        raise NotImplementedError(
-            "Support for this functionality has not been implemented yet."
-        )
-
-    def get_test_methods(self) -> Dict[str, str]:
-        """Return methods identified as test methods.
-
-        This method is intended to find all test methods in the project,
-        typically methods starting with ``test_`` or decorated with
-        ``@pytest.mark`` or similar test framework decorators.
-
-        Returns:
-            Would return a dictionary mapping test method identifiers to
-            their source code or signatures.
-
-        Raises:
-            NotImplementedError: This functionality is not yet implemented
-                for Python analysis.
-
-        See Also:
-            :meth:`get_methods_with_decorators`: Alternative approach to
-                find pytest-decorated methods.
-        """
-        raise NotImplementedError(
-            "Support for this functionality has not been implemented yet."
-        )
-
-    def get_calling_lines(self, target_method_name: str) -> List[int]:
-        """Return line numbers where a method is called.
-
-        This method is intended to find all line numbers in the project
-        where the specified method is invoked.
-
-        Args:
-            target_method_name: The name of the method to find calls to.
-
-        Returns:
-            Would return a list of line numbers (integers).
-
-        Raises:
-            NotImplementedError: This functionality is not yet implemented
-                for Python analysis.
-
-        See Also:
-            :meth:`get_callers`: For finding caller methods instead of lines.
-        """
-        raise NotImplementedError(
-            "Support for this functionality has not been implemented yet."
-        )
-
-    def get_call_targets(self, declared_methods: dict) -> Set[str]:
-        """Return call targets using simple name resolution.
-
-        This method is intended to find all methods that could be called
-        based on simple name matching, without full semantic analysis.
-
-        Args:
-            declared_methods: Dictionary of declared method names and signatures.
-
-        Returns:
-            Would return a set of method names that are call targets.
-
-        Raises:
-            NotImplementedError: This functionality is not yet implemented
-                for Python analysis.
-
-        See Also:
-            :meth:`get_call_graph`: For full semantic call resolution.
-        """
-        raise NotImplementedError(
-            "Support for this functionality has not been implemented yet."
-        )
-
-    def get_all_crud_operations(self) -> Dict:
-        """Return all CRUD (Create, Read, Update, Delete) operations.
-
-        This method is intended for web application analysis to identify
-        database operations and REST API endpoints.
-
-        Returns:
-            Would return a dictionary of CRUD operations categorized by type.
-
-        Raises:
-            NotImplementedError: CRUD analysis is not supported for Python.
-                This feature is primarily designed for Java enterprise
-                applications with JPA/Hibernate.
-
-        See Also:
-            :meth:`get_all_create_operations`: For create operations only.
-            :meth:`get_all_read_operations`: For read operations only.
-        """
-        raise NotImplementedError("CRUD analysis is not supported for Python.")
-
-    def get_all_create_operations(self) -> Dict:
-        """Return all Create operations from CRUD analysis.
-
-        Returns:
-            Would return a dictionary of create/insert operations.
-
-        Raises:
-            NotImplementedError: CRUD analysis is not supported for Python.
-        """
-        raise NotImplementedError("CRUD analysis is not supported for Python.")
-
-    def get_all_read_operations(self) -> Dict:
-        """Return all Read operations from CRUD analysis.
-
-        Returns:
-            Would return a dictionary of read/select operations.
-
-        Raises:
-            NotImplementedError: CRUD analysis is not supported for Python.
-        """
-        raise NotImplementedError("CRUD analysis is not supported for Python.")
-
-    def get_all_update_operations(self) -> Dict:
-        """Return all Update operations from CRUD analysis.
-
-        Returns:
-            Would return a dictionary of update operations.
-
-        Raises:
-            NotImplementedError: CRUD analysis is not supported for Python.
-        """
-        raise NotImplementedError("CRUD analysis is not supported for Python.")
-
-    def get_all_delete_operations(self) -> Dict:
-        """Return all Delete operations from CRUD analysis.
-
-        Returns:
-            Would return a dictionary of delete operations.
-
-        Raises:
-            NotImplementedError: CRUD analysis is not supported for Python.
-        """
-        raise NotImplementedError("CRUD analysis is not supported for Python.")

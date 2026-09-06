@@ -27,6 +27,13 @@ from codeanalyzer.schema.py_schema import PyApplication, PyCallable, PyCallsite,
 
 from cldk.analysis.python.codeanalyzer.codeanalyzer import PyCodeanalyzer
 
+# The two spellings of "where this code lives" that the analyzer emits side by side: the symbol
+# table is keyed by the repo-relative path, while every ``PyCallable.path`` is the absolute path on
+# the machine that ran the analysis. Kept deliberately different here so a projection that reaches
+# for the wrong one is visible (see ``test_overview_path_is_the_repo_relative_module_key``).
+_MODULE_KEY = "pkg/models.py"
+_ABSOLUTE_PATH = "/analysis-machine/checkout/" + _MODULE_KEY
+
 
 def _backend():
     """A PyCodeanalyzer wired to a hand-built application, bypassing the analyzer run.
@@ -58,7 +65,7 @@ def _backend():
     def callable_(name, signature, *, code="", decorators=None, inner_callables=None, inner_classes=None, call_sites=None):
         return PyCallable(
             name=name,
-            path="pkg/models.py",
+            path=_ABSOLUTE_PATH,
             signature=signature,
             span=add_code(code),
             decorators=[decorator(d) for d in (decorators or [])],
@@ -102,13 +109,13 @@ def _backend():
         inner_classes={"pkg.models.Entity.Meta": meta},
     )
     module = PyModule(
-        file_path="pkg/models.py",
+        file_path=_ABSOLUTE_PATH,
         module_name="pkg.models",
         types={"pkg.models.Entity": entity},
         functions={"greet": greet},
         source="".join(source_parts),
     )
-    app = PyApplication(symbol_table={"pkg/models.py": module})
+    app = PyApplication(symbol_table={_MODULE_KEY: module})
 
     backend = object.__new__(PyCodeanalyzer)
     backend.application = app
@@ -146,6 +153,27 @@ def test_overview_kind_and_owning_class():
     nested = overviews["pkg.models.greet.<locals>._decorate"]
     assert nested.kind == "function"
     assert nested.class_signature is None
+
+
+def test_overview_path_is_the_repo_relative_module_key():
+    """``PyCallableOverview.path`` speaks the *same* path vocabulary as the symbol table.
+
+    ``PyCallable.path`` is the absolute path on whichever machine ran the analysis, so projecting it
+    straight through handed callers a string that joins to nothing — not to ``get_symbol_table()``'s
+    keys, not to ``locate().module.path``, not to ``PyClassOverview.path``, and not to any path that
+    exists on another host. The overview therefore carries the symbol table's own key instead.
+    """
+    for o in _backend().get_callables_overview():
+        assert o.path == _MODULE_KEY, f"{o.signature} projected {o.path!r}, not the module key"
+
+
+def test_every_overview_producing_accessor_shares_that_vocabulary():
+    """Every accessor returning ``PyCallableOverview`` — not just ``get_callables_overview`` — has
+    to speak it, or the vocabulary is only fixed on whichever one had a test."""
+    backend = _backend()
+    rows = backend.get_decorated_callables(["app.route", "property"])
+    assert rows, "fixture has decorated callables"
+    assert {o.path for o in rows} == {_MODULE_KEY}
 
 
 def test_method_bodies_returns_only_requested_existing():

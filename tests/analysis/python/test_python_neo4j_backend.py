@@ -16,21 +16,28 @@
 
 """Integration parity tests: the read-only Neo4j backend vs the in-memory backend.
 
-These assert that :class:`PyNeo4jBackend` answers every query **identically** to the canonical
-:class:`PyCodeanalyzer` (analysis.json) backend on the same project — the definition of the
-"1-to-1 map". The harness loads the graph out of band, in-process, via the analyzer's own
-``emit_neo4j`` (the same projection a cloud deployment would run), then queries it read-only.
+**THIS MODULE WRITES TO THE DATABASE.** Its fixture runs the analyzer's own ``emit_neo4j`` to
+project a throwaway application (``APP_NAME``) into the target server before querying it. The
+*queries* are read-only; getting to them is not. Point it only at a database you are willing to
+have written to — never at a populated one you care about. Teardown deletes what the fixture
+emitted (see :func:`_purge_application`), so a deliberate run leaves the server as it found it,
+but a run interrupted before teardown leaves ``APP_NAME``'s subgraph behind.
 
-The whole module is skipped unless a Neo4j server is reachable. Point the tests at one with:
+The whole module skips unless ``CLDK_TEST_NEO4J_WRITE_URI`` is set. That variable is deliberately
+distinct from the ``CLDK_TEST_NEO4J_URI`` the read-only suites use, and there is deliberately **no
+default URI and no default credentials**: an unset environment must mean "do not run", not "run
+against whatever is listening on the usual port". Point the tests at a scratch server with:
 
-    CLDK_TEST_NEO4J_URI=bolt://localhost:7687 \
-    CLDK_TEST_NEO4J_USER=neo4j \
-    CLDK_TEST_NEO4J_PASSWORD=test \
+    CLDK_TEST_NEO4J_WRITE_URI=bolt://localhost:7687 \
+    CLDK_TEST_NEO4J_WRITE_USER=neo4j \
+    CLDK_TEST_NEO4J_WRITE_PASSWORD=test \
     pytest tests/analysis/python/test_python_neo4j_backend.py
 
 (e.g. `docker run -p 7687:7687 -e NEO4J_AUTH=neo4j/test neo4j:5`).
 
-Parity is asserted modulo the projection's documented-lossy fields (see
+These assert that :class:`PyNeo4jBackend` answers every query **identically** to the canonical
+:class:`PyCodeanalyzer` (analysis.json) backend on the same project — the definition of the
+"1-to-1 map". Parity is asserted modulo the projection's documented-lossy fields (see
 ``cldk.analysis.python.neo4j.reconstruct``): comments collapse to a docstring, and
 ``PyVariableDeclaration`` loses ``value`` and its column span. The ``norm`` helper strips exactly
 those before comparing; everything else must match byte-for-byte.
@@ -43,9 +50,11 @@ import pytest
 
 logging.getLogger("neo4j").setLevel(logging.ERROR)
 
-NEO4J_URI = os.environ.get("CLDK_TEST_NEO4J_URI", "bolt://localhost:7687")
-NEO4J_USER = os.environ.get("CLDK_TEST_NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.environ.get("CLDK_TEST_NEO4J_PASSWORD", "neo4j")
+# No defaults, by design: a default URI plus default credentials is how an unset environment turns
+# an emitting test into a write against whatever happens to be listening (#324).
+NEO4J_URI = os.environ.get("CLDK_TEST_NEO4J_WRITE_URI")
+NEO4J_USER = os.environ.get("CLDK_TEST_NEO4J_WRITE_USER")
+NEO4J_PASSWORD = os.environ.get("CLDK_TEST_NEO4J_WRITE_PASSWORD")
 APP_NAME = "cldk_py_parity"
 
 MODELS_PY = '''\
@@ -100,6 +109,8 @@ def make_user(n: str) -> User:
 
 
 def _neo4j_reachable() -> bool:
+    if not NEO4J_URI:
+        return False
     try:
         from neo4j import GraphDatabase
     except ModuleNotFoundError:
@@ -115,8 +126,74 @@ def _neo4j_reachable() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _neo4j_reachable(),
-    reason=f"no Neo4j reachable at {NEO4J_URI} (set CLDK_TEST_NEO4J_URI / _USER / _PASSWORD)",
+    reason=(
+        "this module WRITES to the database (its fixture emits an application into it); set "
+        "CLDK_TEST_NEO4J_WRITE_URI / _WRITE_USER / _WRITE_PASSWORD to a scratch server to run it"
+    ),
 )
+
+
+# The emitter's own project wipe (``codeanalyzer/neo4j/cypher.py::_wipe``), reproduced verbatim so
+# the two cannot drift, and scoped to one ``:PyApplication`` by name. It can reach nothing outside
+# APP_NAME's subgraph: the anchor is a parameterised name match, and everything else is reached
+# through that node's own PY_HAS_MODULE / declaration edges.
+_PURGE = (
+    "MATCH (a:PyApplication {name: $app}) "
+    "OPTIONAL MATCH (a)-[:PY_HAS_MODULE]->(m:PyModule) "
+    "OPTIONAL MATCH (m)-[:PY_DECLARES|PY_HAS_METHOD|PY_HAS_ATTRIBUTE|PY_DECLARES_VAR|PY_HAS_CALLSITE*1..]->(x) "
+    "DETACH DELETE x, m, a"
+)
+
+# The emitter's wipe is a *re-emission* guard, not a teardown: everything it leaves standing is
+# something the following MERGE statements immediately overwrite. A teardown has no MERGE after it,
+# so the leftovers are litter that accumulates across runs. Measured on a real 1,626-module graph,
+# the wipe above reaches 67,535 nodes and leaves these behind, every one of them created by the
+# emitter for this application alone:
+#
+#     :PyBodyNode   885,218   hangs off :PyCallable by PY_HAS_BODY_NODE, which the wipe's
+#                             relationship list does not include, so DETACH DELETE of the callable
+#                             orphans rather than removes it
+#     :Artifact      10,196   anchored on the application by HAS_ARTIFACT, not PY_HAS_MODULE
+#     :PyExternal     5,715   ghost callees, reached only through PY_CALLS
+#     :ConfigKey         93   hangs off :Artifact by DEFINES_CONFIG
+#
+# All four are addressable by one rule rather than a second traversal to keep in sync: the emitter
+# mints their ids under ``can://python/<app>/`` or ``can://artifact/<app>/``, so the application
+# name is *in the key*. That is also why this cannot reach a neighbour: another application's nodes
+# carry its own name in the same position, and the trailing slash stops ``odoo-slim-19`` matching
+# ``odoo-slim-19-b``.
+_PURGE_UNANCHORED = "MATCH (n) WHERE n.id STARTS WITH $py OR n.id STARTS WITH $artifact DETACH DELETE n"
+
+
+def _purge_application() -> None:
+    """Delete the application this module emitted, so a deliberate run leaves nothing behind.
+
+    The one place in this suite where destructive Cypher is correct. Two statements: the emitter's
+    own wipe (:data:`_PURGE`), then the four node kinds that wipe deliberately leaves for a
+    re-emission's MERGE to overwrite (:data:`_PURGE_UNANCHORED`). Neither can touch another
+    application — one anchors on ``$app`` by name, the other on ids that embed it.
+
+    Three kinds are left behind **on purpose**, exactly as the emitter leaves them:
+    ``:PyPackage`` (keyed by distribution name), ``:Package`` (keyed by purl, e.g.
+    ``pkg:pypi/babel``) and ``:PyDecorator`` (keyed by qualified name). None carries an application
+    in its key, because none belongs to one: they are shared vocabulary that a second application
+    on the same server MERGEs onto rather than duplicates, so deleting them here would corrupt a
+    neighbour's graph. They are also bounded — 664 nodes for a 2,364-file application — so they do
+    not accumulate the way the four above would.
+    """
+    from neo4j import GraphDatabase
+
+    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+    try:
+        with driver.session() as session:
+            session.run(_PURGE, app=APP_NAME).consume()
+            session.run(
+                _PURGE_UNANCHORED,
+                py=f"can://python/{APP_NAME}/",
+                artifact=f"can://artifact/{APP_NAME}/",
+            ).consume()
+    finally:
+        driver.close()
 
 
 def _norm(o):
@@ -168,8 +245,11 @@ def backends(tmp_path_factory):
         emit_neo4j(az.analyze(), opts)
 
     neo = PyNeo4jBackend(neo4j_uri=NEO4J_URI, neo4j_username=NEO4J_USER, neo4j_password=NEO4J_PASSWORD, application_name=APP_NAME)
-    yield ref, neo
-    neo.close()
+    try:
+        yield ref, neo
+    finally:
+        neo.close()
+        _purge_application()
 
 
 def test_symbol_table_parity(backends):

@@ -288,6 +288,10 @@ def overview(row: Props) -> PyCallableOverview:
     ``row`` is a flat ``RETURN`` projection (not a node's ``properties()``): ``signature``, ``name``,
     ``decorators``, ``path``, ``start_line``, ``end_line``, and ``class_signature`` (the owning
     class via ``PY_HAS_METHOD``, or ``None`` for a module-level / nested function).
+
+    ``path`` is projected from ``:PyCallable._module`` — the repo-relative module key, the same
+    vocabulary :func:`class_overview` and ``locate`` speak — *not* ``:PyCallable.path``, which is
+    the absolute path on the machine that ran the analysis.
     """
     class_sig = row.get("class_signature")
     return PyCallableOverview(
