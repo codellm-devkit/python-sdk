@@ -31,14 +31,19 @@ import os
 import shlex
 import subprocess
 import warnings
+from collections import defaultdict
+from functools import cached_property
 from pathlib import Path
 from subprocess import CompletedProcess
-from typing import Dict, Iterator, List, Set, Tuple, Union
+from typing import Dict, Iterator, List, Sequence, Set, Tuple, Union
 
 import networkx as nx
 
+from cldk.analysis.commons.keys import body_key_column, resolve_module_key
 from cldk.analysis.commons.levels import analyzer_level
-from cldk.analysis.typescript.backend import TSAnalysisBackend
+from cldk.analysis.commons.resolve import CallableCandidate, resolve_callable_signature, resolve_value_name, resolve_within
+from cldk.analysis.commons.results import BodyRef, CallableRef, Diagnostic, LocateResult, ModuleRef, SliceNode, Span, TypeRef
+from cldk.analysis.typescript.backend import TSAnalysisBackend, ts_module_dotted
 from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
 from cldk.models.typescript import (
     TSAnalysis,
@@ -59,6 +64,7 @@ from cldk.models.typescript import (
     TSInterface,
     TSModule,
     TSNamespace,
+    TSSpan,
     TSSynthesizedCallable,
     TSTypeAlias,
     TSVariableDeclaration,
@@ -70,6 +76,10 @@ logger = logging.getLogger(__name__)
 #: The codeanalyzer-typescript release that removed ``--tsc-only`` (the resolver is no longer a
 #: choice; 1.x's ``tsc`` and ``defuse`` provenances are both emitted and tagged per edge).
 _TSC_ONLY_REMOVED_IN = "1.0.0"
+
+#: The analyzer level at which cants resolves a call node's ``callee`` (its level-2 pass). Below
+#: it every ``call`` body node carries ``callee: null`` -- what ``has_resolution_edges`` reports.
+_CALLEE_RESOLUTION_LEVEL = 2
 
 
 class TSCodeanalyzer(TSAnalysisBackend):
@@ -705,3 +715,208 @@ class TSCodeanalyzer(TSAnalysisBackend):
             if c is not None:
                 result[sig] = [self._callsite(k, n) for k, n in self._call_nodes(c)]
         return result
+
+    # =====================================================================================
+    # The addressing surface (leg 2.5b, TS-2) -- over the in-memory tree.
+    # =====================================================================================
+    @cached_property
+    def _by_module(self) -> Dict[str, List[Tuple[TSCallable, str | None, str | None]]]:
+        """``module key -> the callables declared in it``, with their owner pair.
+
+        Built lazily rather than in :meth:`_index`: every existing accessor answers without it, and
+        on a real application (superset-frontend: 11,085 callables) an index nobody asked for is
+        memory nobody asked for. :meth:`_iter_callables` is the domain, so ``locate`` and
+        ``resolve_callable`` see exactly the set ``get_callables_overview`` reports.
+        """
+        out: Dict[str, List[Tuple[TSCallable, str | None, str | None]]] = defaultdict(list)
+        for c, owner_sig, owner_kind in self._iter_callables():
+            out[self._file_of[c.signature]].append((c, owner_sig, owner_kind))
+        return dict(out)
+
+    def _owner_name(self, owner_sig: str | None) -> str | None:
+        owner = self._classes.get(owner_sig or "") or self._interfaces.get(owner_sig or "")
+        return owner.name if owner is not None else None
+
+    @staticmethod
+    def _contains(span: TSSpan | None, line: int) -> bool:
+        return span is not None and span.start[0] <= line <= span.end[0]
+
+    def _not_analysed(self, path: str, line: int) -> LocateResult:
+        """The ``file_not_in_graph`` outcome, with the one distinction this backend *can* draw.
+
+        Unlike the Neo4j backend (which attaches to a graph and may not have the project checked
+        out), this one runs against the project directory, so it can tell "the file is there and
+        was not analysed" -- a ``--target-files`` narrowing, an excluded directory, a parse the
+        analyzer skipped -- from "there is no such file". The code stays ``file_not_in_graph``
+        either way; the distinction rides in the message, which is the field an agent reads.
+        """
+        on_disk = Path(path).is_file() or bool(self.project_dir and (Path(self.project_dir) / path).is_file())
+        why = "the file exists but no analysed module covers it" if on_disk else "no such file in the analysed project"
+        return LocateResult(
+            body=None,
+            callable=None,
+            type=None,
+            module=ModuleRef(path=str(path)),
+            source="",
+            span=Span(start=(line, 0), end=(line, 0), bytes=(0, 0)),
+            diagnostics=[Diagnostic(code="file_not_in_graph", message=f"{path} is not covered by any analysed module ({why}).")],
+        )
+
+    def _body_ref(self, c: TSCallable, line: int) -> BodyRef | None:
+        """The innermost body node of ``c`` containing ``line``, as the language-neutral handle.
+
+        ``None`` is a real outcome, not an error: a position on a declaration line or a blank line
+        inside a callable is contained by the callable and by no body node, and the caller still
+        gets the callable. Ties break the same way the Neo4j backend breaks them -- narrowest line
+        span, then the deeper column parsed out of the node's own key
+        (:func:`~cldk.analysis.commons.keys.body_key_column`), then the key -- so both backends
+        resolve a tie to the same node.
+        """
+        matches = [(k, n) for k, n in (c.body or {}).items() if self._contains(n.span, line)]
+        if not matches:
+            return None
+        key, node = min(matches, key=lambda kn: (kn[1].span.end[0] - kn[1].span.start[0], -body_key_column(kn[0]), kn[0]))
+        if not node.id:
+            raise CodeanalyzerExecutionException(
+                f"body node {key!r} of {c.signature!r} carries no id: codeanalyzer-typescript {self.analysis.analyzer.version} "
+                "emitted an unaddressable body node (ids are required from 1.3.0, cants#165)"
+            )
+        return BodyRef(id=node.id, kind=node.kind, span=node.span, callee=node.callee)
+
+    def _locate_one(self, path: str, line: int) -> LocateResult:
+        # Whatever the caller's scanner printed ("./src/app.ts", an absolute path) is normalised to
+        # the symbol-table key first; an unnormalised path would otherwise read as file_not_in_graph.
+        key = resolve_module_key(str(path), self.application.symbol_table.keys())
+        module = self.application.symbol_table.get(key)
+        if module is None:
+            return self._not_analysed(key, line)
+        module_ref = ModuleRef(path=key)
+        # Innermost callable = narrowest line span containing the position. A position between two
+        # callables, or at module scope, matches none and falls through to module_scope rather than
+        # snapping to a neighbour. Equal widths (an arrow inside a one-line function) tie, and the
+        # tie is broken on the longer signature, deeper first -- a nested callable's signature
+        # extends its owner's -- which is the rule the Neo4j backend applies to the same rows.
+        found = min(
+            ((c, o, k) for c, o, k in self._by_module.get(key, ()) if self._contains(c.span, line)),
+            key=lambda cok: (cok[0].span.end[0] - cok[0].span.start[0], -len(cok[0].signature), cok[0].signature),
+            default=None,
+        )
+        if found is None:
+            return LocateResult(
+                body=None,
+                callable=None,
+                type=None,
+                module=module_ref,
+                source=module.source,
+                span=Span(start=(line, 0), end=(line, 0), bytes=(0, 0)),
+                diagnostics=[Diagnostic(code="module_scope", message=f"line {line} is at module scope in {key}.")],
+            )
+        c, owner_sig, _ = found
+        owner_name = self._owner_name(owner_sig)
+        body = self._body_ref(c, line)
+        return LocateResult(
+            body=body,
+            node_id=body.id if body else None,
+            callable=CallableRef(signature=c.signature, name=c.name, class_signature=owner_sig),
+            type=TypeRef(signature=owner_sig, name=owner_name) if owner_sig and owner_name else None,
+            module=module_ref,
+            source=c.code or "",
+            span=c.span,
+            diagnostics=[],
+        )
+
+    def locate(self, path: str, line: int) -> LocateResult:
+        """Resolve a source position to its enclosing callable (see :meth:`TSAnalysisBackend.locate`)."""
+        return self._locate_one(path, line)
+
+    def locate_many(self, positions: Sequence[Tuple[str, int]]) -> List[LocateResult]:
+        """Resolve many positions (see :meth:`TSAnalysisBackend.locate_many`). Purely in memory
+        here -- there is no round trip to batch -- but the results still come back in input order,
+        matching the Neo4j backend's contract."""
+        return [self._locate_one(path, line) for path, line in positions]
+
+    def resolve_callable(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> SliceNode:
+        """Resolve a callable name against the in-memory tree (see
+        :meth:`TSAnalysisBackend.resolve_callable`).
+
+        The candidate domain is :meth:`_iter_callables` -- the same set
+        :meth:`get_callables_overview` reports and the same set the Neo4j backend resolves against.
+        Nothing is filtered before the shared policy runs: this backend has the whole list in memory
+        already, so handing the policy the unfiltered domain is the strongest form of "both backends
+        resolve over the same set".
+        """
+        candidates = [CallableCandidate(c.signature, owner_sig, self._file_of[c.signature]) for c, owner_sig, _ in self._iter_callables()]
+        sig = resolve_callable_signature(name, candidates, in_class=in_class, in_module=in_module, dotted=ts_module_dotted)
+        c = self._callables[sig]
+        return SliceNode(file=self._file_of[sig], line=c.span.start[0], callable=sig, kind="callable", name=c.name, source=None, ref=c.id)
+
+    def resolve_value(self, name: str, *, within: str) -> SliceNode:
+        """Resolve a value name inside a callable (see :meth:`TSAnalysisBackend.resolve_value`).
+
+        ``TSBodyNode.of`` carries the value a ``formal_in`` vertex stands for -- the same fact the
+        graph projects as ``b.of`` -- and in TypeScript it is the parameter's own text, with none of
+        the ``"<global>:mod::name"`` grammar codeanalyzer-python marks captured globals with. So
+        there is nothing to translate and no kind to infer: it is a parameter.
+        """
+        owner = resolve_within(self.resolve_callable, within)
+        c = self._callables[owner.callable]
+        # A list, not a dict keyed by name: two values that resolve to the same name are a genuine
+        # ambiguity the policy must see and raise on, and a dict would silently keep the last.
+        entries = [(n, n.of) for n in (c.body or {}).values() if n.kind == "formal_in" and n.of]
+        chosen = resolve_value_name(name, [v for _, v in entries], within=owner.callable)
+        node = next(n for n, v in entries if v == chosen)
+        return SliceNode(file=owner.file, line=owner.line, callable=owner.callable, kind="parameter", name=chosen, source=None, ref=node.id or "")
+
+    def _sources_for(self, refs: Sequence[str]) -> Dict[str, "str | None"]:
+        """Source text for every ref this application holds (see
+        :meth:`TSAnalysisBackend._sources_for`).
+
+        One walk of the callable tree for the whole batch, not one per ref. A callable answers to
+        both of its names (signature and ``can://`` id); a body node is sliced out of its module by
+        its span, so this backend fills in the statements and call sites the graph cannot. A vertex
+        with **no** span -- every ``formal_in``/``formal_out``/``actual_*`` -- maps to ``None``: it
+        is a dataflow position, not a region of the file, and there is nothing to read on either
+        backend. An external ghost is likewise found and textless, by definition.
+        """
+        wanted = set(refs)
+        found: Dict[str, "str | None"] = {}
+        for key, ext in (self.application.external_symbols or {}).items():
+            for ref in (key, ext.id):
+                if ref in wanted:
+                    found[ref] = None
+        for c, _, _ in self._iter_callables():
+            source = self.application.symbol_table[self._file_of[c.signature]].source
+            for ref in (c.signature, c.id):
+                if ref in wanted:
+                    found[ref] = c.code or None
+            for node in (c.body or {}).values():
+                if node.id in wanted:
+                    found[node.id] = source[node.span.bytes[0] : node.span.bytes[1]] if node.span else None
+        return found
+
+    def get_source(self, node_id: str) -> str:
+        """Source text for one node (see :meth:`TSAnalysisBackend.get_source`).
+
+        Routed through :meth:`_sources_for` rather than re-walking the tree with its own splitting
+        rule: a TypeScript body-node id cannot be taken apart on ``@`` (an anonymous callable's own
+        id contains one), so the id is looked up whole, and the two ways of having no text stay
+        apart -- absent from the mapping is "nothing carries this id", ``None`` is "this exists and
+        has no recoverable source".
+        """
+        found = self._sources_for([node_id])
+        if node_id not in found:
+            raise KeyError(f"no callable, body node or external symbol of application {self.application.id!r} is addressed by {node_id!r}")
+        code = found[node_id]
+        if not code:
+            raise KeyError(f"no recoverable source for {node_id!r} (it carries no span, or the analyzer emitted no text for it)")
+        return code
+
+    @property
+    def has_resolution_edges(self) -> bool:
+        """See :meth:`TSAnalysisBackend.has_resolution_edges`. ``True`` from analysis level 2, the
+        level at which cants resolves a call node's ``callee``; below it every call node carries
+        ``callee: null`` and every ``callee_signature`` from :meth:`get_callsites_for` is ``None``
+        for that reason and not because the individual sites failed to resolve. Read off
+        ``analysis.max_level`` -- what the analyzer actually produced -- not off the level the
+        caller asked for."""
+        return self.analysis.max_level >= _CALLEE_RESOLUTION_LEVEL

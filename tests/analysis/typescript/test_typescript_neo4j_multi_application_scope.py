@@ -48,6 +48,7 @@ import pytest
 
 from cldk.analysis.typescript.neo4j import neo4j_backend
 from cldk.analysis.typescript.neo4j.neo4j_backend import TSNeo4jBackend
+from cldk.utils.exceptions import SelectorNotInGraph
 
 from .conftest import FakeDriver
 
@@ -143,21 +144,31 @@ GRAPH = _build()
 # =====================================================================================
 _NODE = re.compile(r"\((\w*)(?::([\w|:]+))?(?: \{([^}]*)\})?\)")
 _HOP = re.compile(r"(<)?-\[(\w*)(?::([\w|]+))?(\*0\.\.)?\]-(>)?")
-_SCOPE = re.compile(r"\((\w+)\.id STARTS WITH \$p1 OR \1\.id STARTS WITH \$p2\)")
-_COND = re.compile(r"(\w+)\.(\w+) (STARTS WITH|IN|=|<>) (\$\w+|'[^']*')|(\$\w+) IN (\w+)\.(\w+)|(\w+)\.(\w+) IS NOT NULL")
+_COND = re.compile(r"(\w+)\.(\w+) (STARTS WITH|ENDS WITH|IN|=|<>) (\$\w+|'[^']*'|\w+\.\w+)|(\$\w+) IN (\w+)\.(\w+)|(\w+)\.(\w+) IS NOT NULL")
+#: ``a.x <= b.y`` / ``b.y <= a.x`` -- the line-containment comparisons ``_LOCATE_QUERY`` is built on.
+_ORDER = re.compile(r"(\w+\.\w+) (<=|>=|<|>) (\w+\.\w+)")
 
 
-def _value(token: str, params: Dict[str, Any]) -> Any:
-    return params[token[1:]] if token.startswith("$") else token.strip("'")
+def _value(token: str, params: Dict[str, Any], row: Dict[str, Any] | None = None) -> Any:
+    """A Cypher scalar: a ``$parameter``, a ``'literal'``, or -- inside an ``UNWIND``ed statement --
+    a property of a bound row variable (``pos.path``), which is what ``_LOCATE_QUERY`` compares
+    against."""
+    if token.startswith("$"):
+        return params[token[1:]]
+    if "." in token and row is not None:
+        var, _, prop = token.partition(".")
+        if isinstance(row.get(var), dict):
+            return row[var][prop]
+    return token.strip("'")
 
 
-def _node_ok(node_id: str, labels: str | None, props: str | None, params: Dict[str, Any]) -> bool:
+def _node_ok(node_id: str, labels: str | None, props: str | None, params: Dict[str, Any], row: Dict[str, Any] | None = None) -> bool:
     node_labels, node_props = GRAPH.nodes[node_id]
     if labels and not any(set(alt.split(":")) <= node_labels for alt in labels.split("|")):
         return False
     for item in filter(None, (props or "").split(", ")):
         key, token = item.split(": ")
-        if node_props.get(key) != _value(token, params):
+        if node_props.get(key) != _value(token, params, row):
             return False
     return True
 
@@ -203,18 +214,18 @@ def _match(pattern: str, rows: List[Dict[str, Any]], params: Dict[str, Any], opt
                 for b in cur:
                     if var in b:
                         landed = b.pop("_next", b[var])
-                        if b[var] is not None and landed == b[var] and _node_ok(b[var], labels, props, params):
+                        if b[var] is not None and landed == b[var] and _node_ok(b[var], labels, props, params, b):
                             nxt.append(b)
                     elif "_next" in b:
                         n = b.pop("_next")
-                        if _node_ok(n, labels, props, params):
+                        if _node_ok(n, labels, props, params, b):
                             nxt.append({**b, var: n})
                     else:
-                        nxt += [{**b, var: n} for n in GRAPH.nodes if _node_ok(n, labels, props, params)]
+                        nxt += [{**b, var: n} for n in GRAPH.nodes if _node_ok(n, labels, props, params, b)]
                 cur, prev_var = nxt, var
             else:
                 rvar, rels, back, var_len = t
-                cur = [{**b, "_next": n, **({rvar: e} if rvar else {})} for b in cur for n, e in _walk(b[prev_var], rels, back, var_len)]
+                cur = [{**b, "_next": n, **({rvar: e} if rvar else {})} for b in cur if b.get(prev_var) is not None for n, e in _walk(b[prev_var], rels, back, var_len)]
         if cur:
             out += cur
         elif optional:
@@ -222,34 +233,75 @@ def _match(pattern: str, rows: List[Dict[str, Any]], params: Dict[str, Any], opt
     return out
 
 
-def _where(clause: str, rows: List[Dict[str, Any]], params: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _conjunct_ok(clause: str, b: Dict[str, Any], params: Dict[str, Any]) -> bool:
+    """One ``AND``-conjunct of a ``WHERE``, with no top-level disjunction left in it."""
+    for cm in re.finditer(r"(coalesce\([^)]*\)) = (\$\w+)", clause):
+        if _expr(cm.group(1), b, params) != _value(cm.group(2), params):
+            return False
+    for m in _COND.finditer(re.sub(r"coalesce\([^)]*\) = \$\w+", "", clause)):
+        if m.group(1):
+            if isinstance(b.get(m.group(1)), dict):
+                continue  # the left-hand side is an UNWIND row, not a node -- judged by _ORDER
+            if b.get(m.group(1)) is None:
+                return False  # a predicate on a null variable is null, i.e. not true
+            actual = GRAPH.nodes[b[m.group(1)]][1].get(m.group(2))
+            op, expected = m.group(3), _value(m.group(4), params, b)
+            if not {
+                "STARTS WITH": lambda: str(actual).startswith(expected),
+                "ENDS WITH": lambda: str(actual).endswith(expected),
+                "IN": lambda: actual in expected,
+                "=": lambda: actual == expected,
+                "<>": lambda: actual != expected,
+            }[op]():
+                return False
+        elif m.group(5):
+            if b.get(m.group(6)) is None or _value(m.group(5), params) not in (GRAPH.nodes[b[m.group(6)]][1].get(m.group(7)) or []):
+                return False
+        elif b.get(m.group(8)) is None or GRAPH.nodes[b[m.group(8)]][1].get(m.group(9)) is None:
+            return False
+    for om in _ORDER.finditer(clause):
+        left, right = _expr(om.group(1), b, params), _expr(om.group(3), b, params)
+        if left is None or right is None:
+            return False
+        if not {"<=": lambda: left <= right, ">=": lambda: left >= right, "<": lambda: left < right, ">": lambda: left > right}[om.group(2)]():
+            return False
+    return True
+
+
+def _where(clause: str, rows: List[Dict[str, Any]], params: Dict[str, Any], optional_vars: Sequence[str] = ()) -> List[Dict[str, Any]]:
+    """``AND`` of conjuncts, each of which may be a parenthesised ``OR`` of conditions.
+
+    ``optional_vars`` are the variables the *immediately preceding* ``OPTIONAL MATCH`` introduced.
+    Cypher reads such a ``WHERE`` as part of that optional match, so a row for which the predicate
+    holds of nothing survives with those variables null rather than being dropped -- which is
+    exactly the "no callable contains this line" case ``locate`` reports as module scope.
+
+    Disjunction is evaluated generically rather than pattern-matched one shape at a time: the
+    backend spells three of them -- the two-prefix application scope ``(x.id STARTS WITH $p1 OR
+    x.id STARTS WITH $p2)``, the resolver's ``(c.signature = $name OR c.signature ENDS WITH
+    $dotted)``, and ``describe``'s ``(c.id IN $refs OR c.signature IN $refs)`` -- and a special case
+    per shape is a harness that silently answers "no rows" the day a fourth appears.
+    """
+
     def ok(b: Dict[str, Any]) -> bool:
-        for cm in re.finditer(r"(coalesce\([^)]*\)) = (\$\w+)", clause):
-            if _expr(cm.group(1), b, params) != _value(cm.group(2), params):
-                return False
-        for sm in _SCOPE.finditer(clause):
-            nid = b[sm.group(1)]
-            if not (nid.startswith(params["p1"]) or nid.startswith(params["p2"])):
-                return False
-        for m in _COND.finditer(re.sub(r"coalesce\([^)]*\) = \$\w+", "", _SCOPE.sub("", clause))):
-            if m.group(1):
-                actual = GRAPH.nodes[b[m.group(1)]][1].get(m.group(2))
-                op, expected = m.group(3), _value(m.group(4), params)
-                if not {
-                    "STARTS WITH": lambda: str(actual).startswith(expected),
-                    "IN": lambda: actual in expected,
-                    "=": lambda: actual == expected,
-                    "<>": lambda: actual != expected,
-                }[op]():
-                    return False
-            elif m.group(5):
-                if _value(m.group(5), params) not in (GRAPH.nodes[b[m.group(6)]][1].get(m.group(7)) or []):
-                    return False
-            elif GRAPH.nodes[b[m.group(8)]][1].get(m.group(9)) is None:
+        for conjunct in _split_top(clause, " AND "):
+            conjunct = conjunct.strip()
+            inner = conjunct[1:-1] if conjunct.startswith("(") and conjunct.endswith(")") else conjunct
+            disjuncts = _split_top(inner, " OR ")
+            if not any(_conjunct_ok(d, b, params) for d in disjuncts):
                 return False
         return True
 
-    return [b for b in rows if ok(b)]
+    kept = [b for b in rows if ok(b)]
+    if not optional_vars:
+        return kept
+    base = lambda b: {k: v for k, v in b.items() if k not in optional_vars}
+    survived = {repr(base(b)) for b in kept}
+    for b in rows:
+        if repr(base(b)) not in survived:
+            survived.add(repr(base(b)))
+            kept.append({**base(b), **{v: None for v in optional_vars}})
+    return kept
 
 
 def _split_top(text: str, sep: str) -> List[str]:
@@ -320,16 +372,26 @@ def _return(clause: str, rows: List[Dict[str, Any]], params: Dict[str, Any]) -> 
 
 def fake_cypher(query: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Evaluate one read statement against :data:`GRAPH` -- honestly (see the module docstring)."""
+    if " UNION " in query:
+        return [row for arm in query.split(" UNION ") for row in fake_cypher(arm, params)]
     rows: List[Dict[str, Any]] = [{}]
-    clauses = re.split(r"(?<!STARTS)(?<!OPTIONAL) (?=MATCH |OPTIONAL MATCH |WHERE |WITH |RETURN )", query.strip())
+    #: The variables the immediately preceding OPTIONAL MATCH introduced -- see :func:`_where`.
+    optional_vars: List[str] = []
+    clauses = re.split(r"(?<!STARTS)(?<!ENDS)(?<!OPTIONAL) (?=MATCH |OPTIONAL MATCH |WHERE |WITH |RETURN |UNWIND )", query.strip())
     for clause in clauses:
         kw, _, body = clause.partition(" ")
-        if kw == "OPTIONAL":
+        if kw == "UNWIND":
+            source, _, var = body.partition(" AS ")
+            rows = [{**b, var: item} for b in rows for item in _value(source.strip(), params)]
+        elif kw == "OPTIONAL":
+            before = set().union(*(set(b) for b in rows)) if rows else set()
             rows = _match(body[len("MATCH ") :], rows, params, optional=True)
+            optional_vars = sorted((set().union(*(set(b) for b in rows)) if rows else set()) - before)
+            continue
         elif kw == "MATCH":
             rows = _match(body, rows, params, optional=False)
         elif kw == "WHERE":
-            rows = _where(body, rows, params)
+            rows = _where(body, rows, params, optional_vars)
         elif kw == "WITH":
             keep = body.replace("DISTINCT ", "").split(", ")
             seen, projected = set(), []
@@ -341,6 +403,7 @@ def fake_cypher(query: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
             rows = projected
         elif kw == "RETURN":
             return _return(body, rows, params)
+        optional_vars = []
     raise AssertionError(f"statement has no RETURN: {query!r}")
 
 
@@ -490,6 +553,111 @@ def test_get_typescript_file_derives_the_module_key_from_the_id():
     assert backend.get_typescript_file(CLASS_SIG) == "a/mod.ts"
     assert backend.get_typescript_file("a/legacy.legacy_fn") == "a/legacy.js"
     assert backend.get_typescript_file("nope") is None
+
+
+# =====================================================================================
+# The addressing surface (leg 2.5b) answers out of one application, and out of the right facet
+# =====================================================================================
+def test_locate_resolves_a_shared_module_key_inside_its_own_application():
+    """``src/index.ts`` exists in both applications with a different function on the same line.
+    The statement seeks the *module's own id* prefix, not the module key, so B's function cannot
+    win -- the failure this fixture exists to catch."""
+    r = _backend().locate(SHARED_MODULE, 1)
+    assert r.callable is not None and r.callable.name == "alpha_fn"
+    assert r.callable.signature == "src/index.alpha_fn"
+    assert r.module.path == SHARED_MODULE and r.diagnostics == []
+    assert r.source == "fn"
+
+
+def test_locate_finds_the_innermost_callable_and_its_body_node():
+    r = _backend().locate("a/mod.ts", 5)
+    assert r.callable.signature == METHOD_SIG and r.type is not None and r.type.signature == CLASS_SIG
+    assert r.body is not None and r.body.kind == "call"
+    assert r.body.id == f"can://typescript/{APP_A}/a/mod.ts/Widget/render@5:3"
+    assert r.node_id == r.body.id
+    # ``callee`` is a property on a TypeScript body node, so this backend fills it in -- unlike the
+    # Python Neo4j backend, where callee resolution is a separate edge and the field stays None.
+    assert r.body.callee == f"can://typescript/{APP_A}/a/mod.ts/Widget/render@5:3".replace("@5:3", "/inner_fn")
+    # Line-only span: the projection carries no columns and no offsets.
+    assert r.body.span.start == (5, 0) and r.body.span.bytes == (0, 0)
+
+
+def test_locate_at_module_scope_says_the_graph_has_no_module_text():
+    r = _backend().locate("a/mod.ts", 20)
+    assert r.callable is None and r.body is None and r.source == ""
+    assert [d.code for d in r.diagnostics] == ["module_scope", "module_source_unavailable"]
+
+
+def test_locate_in_another_applications_module_is_file_not_in_graph():
+    r = _backend().locate("b/mod.ts", 2)
+    assert r.callable is None and [d.code for d in r.diagnostics] == ["file_not_in_graph"]
+
+
+def test_locate_many_answers_in_input_order_including_the_misses():
+    out = _backend().locate_many([("a/legacy.js", 1), ("b/mod.ts", 2), ("a/mod.ts", 5)])
+    assert [r.callable.signature if r.callable else None for r in out] == ["a/legacy.legacy_fn", None, METHOD_SIG]
+
+
+def test_resolve_callable_honours_the_javascript_prefix():
+    n = _backend().resolve_callable("legacy_fn")
+    assert n.callable == "a/legacy.legacy_fn" and n.file == "a/legacy.js"
+    assert n.ref == f"can://javascript/{APP_A}/a/legacy.js/legacy_fn"
+
+
+def test_resolve_callable_does_not_see_another_applications_colliding_signature():
+    n = _backend().resolve_callable("Widget.render")
+    assert n.name == "alpha_method" and n.ref.startswith(f"can://typescript/{APP_A}/")
+
+
+def test_resolve_callable_takes_the_dotted_module_form():
+    assert _backend().resolve_callable("alpha_fn", in_module="src.index").callable == "src/index.alpha_fn"
+    assert _backend().resolve_callable("alpha_fn", in_module="src/index.ts").callable == "src/index.alpha_fn"
+
+
+def test_an_anonymous_callable_is_addressed_by_its_signature():
+    n = _backend().resolve_callable("<anon@2:2>")
+    assert n.callable == "src/index.<anon@2:2>" and n.name == "(anonymous)"
+    with pytest.raises(SelectorNotInGraph):
+        _backend().resolve_callable("(anonymous)")
+
+
+def test_a_declaration_merged_node_resolves_only_to_the_facet_its_kind_names():
+    """``a/mod.Option`` is one node carrying ``TSCallable`` **and** ``TSInterface`` (the emitter
+    minted one id for ``const Option = () => …`` and ``interface Option``). Its ``kind`` is the
+    arrow's, so it resolves as the callable it is. ``a/mod.Gran`` is the other shape -- labels
+    ``TSTypeAlias``/``TSField``, kind ``field`` -- and must not be reachable through a *callable*
+    accessor at all, which is what the ``kind IN`` guard buys: a miss, never a wrong facet."""
+    assert _backend().resolve_callable("Option").callable == "a/mod.Option"
+    with pytest.raises(SelectorNotInGraph):
+        _backend().resolve_callable("Gran")
+
+
+def test_get_source_answers_for_a_callable_and_refuses_below_it():
+    backend = _backend()
+    assert backend.get_source(METHOD_SIG) == "alpha code"
+    assert backend.get_source(f"can://typescript/{APP_A}/a/mod.ts/Widget/render") == "alpha code"
+    with pytest.raises(NotImplementedError):
+        backend.get_source(f"can://typescript/{APP_A}/a/mod.ts/Widget/render@5:3")
+    with pytest.raises(KeyError):
+        backend.get_source("no.such.thing")
+
+
+def test_get_source_does_not_answer_with_another_applications_text():
+    with pytest.raises(KeyError):
+        _backend().get_source(f"can://typescript/{APP_B}/b/mod.ts/Widget/render")
+
+
+def test_describe_hydrates_a_callable_and_leaves_a_body_node_textless():
+    backend = _backend()
+    located = backend.locate("a/mod.ts", 5)
+    resolved = backend.resolve_callable("Widget.render")
+    out = backend.describe([resolved, located])
+    assert out[0].source == "alpha code"
+    assert out[1].source is None  # the graph carries no text below callable granularity
+
+
+def test_has_resolution_edges_is_probed_against_this_applications_edges():
+    assert _backend().has_resolution_edges is True
 
 
 # =====================================================================================

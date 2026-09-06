@@ -37,11 +37,17 @@ another application's node carries the two-prefix predicate :func:`_scoped` spel
 application, or walks out from the ``:Application`` anchor. There is no ``_module`` property to
 fall back on (retired on ``main``, #166).
 
-**Seek labels (measured on the superset graph).** Signature and prefix statements anchor on the
-specific label alone (``:TSCallable``): 11,085 callables scan in ~8 ms, and ``:CanNode`` turns the
-two-prefix predicate into a slower range-seek union. Id-equality point lookups anchor on
-``:CanNode:<Label>``: the ``CanNode.id`` uniqueness constraint makes them a 1.5 ms unique-index
-seek instead of a label scan.
+**Seek labels (measured on the superset graph).** What decides the anchor is how narrow the
+predicate is, not what shape it has. Statements scoped by the two *application* prefixes -- nearly
+every node -- anchor on the specific label alone (``:TSCallable``): 11,085 callables scan in ~8 ms,
+and ``:CanNode`` turns the two-prefix predicate into a slower range-seek union (``resolve_callable``
+re-measured this at 24-28 ms bare against 44-51 ms on ``:CanNode``). Id-equality point lookups
+anchor on ``:CanNode:<Label>``: the ``CanNode.id`` uniqueness constraint makes them a 1.5 ms
+unique-index seek instead of a label scan. So does a **per-module** prefix, which is the same
+narrowness by another route: ``locate_many`` over 40 positions costs 346-358 ms on ``:TSCallable``
+and 97-102 ms on ``:CanNode:TSCallable`` (3.5x, same 113 rows). ``:TSCanNode`` was faster still
+there and is refused on correctness -- it is the per-namespace marker, so it drops every
+``can://javascript/<app>/`` module.
 
 **Round trips.** A declaration's whole containment subtree is fetched in one statement
 (``_SUBTREE``: a variable-length walk over the containment types from the anchored roots), so a
@@ -59,7 +65,12 @@ the call's ``method_name``; the extends/implements split is read off ``TS_EXTEND
 rather than the never-written ``implements_types`` property, so it covers resolved in-repo bases
 only and raises when the relationship type is absent (:meth:`_heritage`); and
 :meth:`get_application_view` leaves the L4 ``param_in``/``param_out`` overlay empty because 2.5a
-reads no dataflow at all (2.5b does). One more is the emitter's: two declarations of one name (TypeScript
+reads no dataflow at all (2.5b's Task 2 does). One more arrived with the addressing surface:
+``:TSModule`` carries no ``source`` and ``:TSBodyNode`` no text, so :meth:`locate` at module scope
+answers ``""`` plus a ``module_source_unavailable`` diagnostic and :meth:`get_source` refuses a
+body-node id outright, where the local backend answers both. One thing is *less* lossy here than in
+the Python twin: a TypeScript ``call`` body node carries ``callee`` as a property, so
+``LocateResult.body.callee`` is populated over Neo4j too. One more is the emitter's: two declarations of one name (TypeScript
 declaration merging -- ``const X = …`` + ``interface X``, ``const X = …`` + ``type X``, ``type X`` +
 a field ``X``) share one id, so ``MERGE`` collapses them onto one node carrying both labels and the
 ``kind`` of whichever was written last. Such a node is rebuilt as the facet the containment edge
@@ -73,14 +84,16 @@ from __future__ import annotations
 import logging
 from collections import defaultdict
 from functools import cached_property
-from typing import Any, Dict, FrozenSet, List, Set, Tuple
+from typing import Any, Dict, FrozenSet, List, Sequence, Set, Tuple
 
 import networkx as nx
 
 from cldk.analysis.commons import artifacts as shared  # the artifact layer every analyzer projects identically
 from cldk.analysis.commons.backend import semver
-from cldk.analysis.commons.keys import module_key_of
-from cldk.analysis.typescript.backend import TSAnalysisBackend
+from cldk.analysis.commons.keys import body_key_column, module_key_of, resolve_module_key
+from cldk.analysis.commons.resolve import CallableCandidate, resolve_callable_signature, resolve_value_name, resolve_within
+from cldk.analysis.commons.results import BodyRef, CallableRef, Diagnostic, LocateResult, ModuleRef, SliceNode, Span, TypeRef
+from cldk.analysis.typescript.backend import TSAnalysisBackend, ts_module_dotted
 from cldk.analysis.typescript.neo4j import reconstruct as R
 from cldk.analysis.typescript.neo4j.reconstruct import CALLABLE_KINDS, TYPE_KINDS, TYPE_LABEL_KINDS
 from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
@@ -155,6 +168,9 @@ class TSNeo4jBackend(TSAnalysisBackend):
     _relationship_types: FrozenSet[str] = frozenset()
     #: Set by :meth:`_probe_schema`; the class-level ``None`` is for the ``object.__new__`` seam.
     _analyzer_version: Tuple[int, int, int] | None = None
+    #: Set by :meth:`_probe_resolution_edges`; the class-level default is for the ``object.__new__``
+    #: seam the unit tests build instances through.
+    _has_resolution_edges: bool = False
     _call_graph: nx.DiGraph | None = None
     _module_ids: Dict[str, str] = {}
 
@@ -182,6 +198,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
         self._probe_schema()
         self._module_ids = self._load_module_keys()
         self._modules: List[str] = list(self._module_ids)
+        self._has_resolution_edges = self._probe_resolution_edges()
         self._call_graph = None
 
     # -----[ scope ]-----
@@ -875,3 +892,338 @@ class TSNeo4jBackend(TSAnalysisBackend):
             **self._scope_params,
         )
         return [self._overview(r) for r in rows]
+
+    # =====================================================================================
+    # The addressing surface (leg 2.5b, TS-2) -- over Cypher.
+    #
+    # SEEK LABELS, MEASURED ON THE SUPERSET GRAPH (PROFILE-shaped statements timed over the driver,
+    # median of 5 with the first discarded, two runs; recorded in the leg plan). The two new
+    # statement families land on OPPOSITE anchors, so 2.5a's "bare label for prefix statements" is
+    # refined rather than repeated -- what decides it is how narrow the prefix is:
+    #
+    #   * ``locate_many`` seeks a per-MODULE id prefix, tens of nodes out of 150,443, so the
+    #     ``CanNode.id`` index earns its seek: 357.9/346.2 ms on ``(c:TSCallable)`` against
+    #     97.0/102.2 ms on ``(c:CanNode:TSCallable)``, same 113 rows -- 3.5x.
+    #   * ``resolve_callable`` seeks the per-APPLICATION prefixes, nearly every node, so the same
+    #     index is a full range walk and the 11,085-node label scan wins: 24-28 ms on
+    #     ``(c:TSCallable)`` against 44-51 ms on ``(c:CanNode:TSCallable)``, across four names.
+    #
+    # ``:TSCanNode`` was measured faster still on locate (37.9/35.5 ms) and is refused on
+    # CORRECTNESS: it is the per-namespace marker, so it drops every ``can://javascript/<app>/``
+    # module -- 40 rows where the right answer is 113. Java's leg-3a ruling is not ported here, and
+    # neither is 2.5a's, unexamined.
+    # =====================================================================================
+    #: Both layers of containment in one statement, so the whole resolution is one round trip: the
+    #: **callable** by line containment over its own ``start_line``/``end_line`` (present at every
+    #: analysis level), which treats a gap between two callables and a module-level line the same
+    #: way -- nothing matches, so it falls through to module scope rather than snapping to a
+    #: neighbour; then the **body node** by line containment under that same candidate. Synthetic
+    #: dataflow vertices (``formal_in``/``formal_out``/``actual_*``: 55,778 of the 125,532) carry no
+    #: lines at all, and the ``IS NOT NULL`` guard is what stops one being read as "contains
+    #: everything". ``pos.module_prefix`` is the module's own id plus ``/``, so a same-valued
+    #: ``name`` from another application cannot win and neither can a module whose key merely
+    #: extends this one's spelling.
+    _LOCATE_QUERY = (
+        "UNWIND $positions AS pos "
+        "OPTIONAL MATCH (:Application {id: $app_id})-[:TS_HAS_MODULE]->(m:TSModule {name: pos.path}) "
+        "WITH pos, m "
+        "OPTIONAL MATCH (c:CanNode:TSCallable) "
+        "WHERE c.id STARTS WITH pos.module_prefix AND c.kind IN $callable_kinds "
+        "AND c.start_line IS NOT NULL AND c.end_line IS NOT NULL "
+        "AND c.start_line <= pos.line AND pos.line <= c.end_line "
+        "WITH pos, m, c "
+        "OPTIONAL MATCH (o:TSClass|TSInterface)-[:TS_HAS_METHOD]->(c) WHERE o.kind IN $owner_kinds "
+        "WITH pos, m, c, o "
+        "OPTIONAL MATCH (c)-[:TS_HAS_BODY_NODE]->(b:TSBodyNode) "
+        "WHERE b.start_line IS NOT NULL AND b.end_line IS NOT NULL "
+        "AND b.start_line <= pos.line AND pos.line <= b.end_line "
+        "RETURN pos.idx AS idx, properties(m) AS module_props, properties(c) AS callable_props, "
+        "properties(o) AS owner_props, properties(b) AS body_props"
+    )
+
+    @staticmethod
+    def _line_span(start_line: int, end_line: int) -> Span:
+        """A :class:`Span` over the only positional data the graph carries: line numbers.
+
+        The projection writes ``start_line``/``end_line`` on ``:TSCallable`` and ``:TSBodyNode`` and
+        nothing finer -- no columns, no offsets into the module source. The columns and ``bytes``
+        here are therefore ``0`` placeholders, documented as meaningless on this backend rather
+        than dressed up as real (see :class:`~cldk.analysis.commons.results.LocateResult`).
+        """
+        return Span(start=(start_line, 0), end=(end_line, 0), bytes=(0, 0))
+
+    def _body_ref(self, rows: List[Dict[str, Any]], signature: str) -> BodyRef | None:
+        """The tightest body node of ``signature`` the locate statement matched, or ``None``.
+
+        ``None`` is a real outcome: a position on a declaration line or a blank line inside a
+        callable is contained by the callable and by no body node, and the caller still gets the
+        callable. The id is read straight off the node -- never composed -- and the tie between two
+        nodes on one line breaks on the deeper column parsed out of the id's trailing key, the same
+        rule the local backend applies to the same key
+        (:func:`~cldk.analysis.commons.keys.body_key_column`), so both resolve a tie to the same
+        node. ``callee`` is a property here, not a separate ``TS_RESOLVES_TO`` hop, so this backend
+        fills it in exactly as the local one does.
+        """
+        matches = [r["body_props"] for r in rows if r["body_props"] is not None and r["callable_props"] is not None and r["callable_props"]["signature"] == signature]
+        if not matches:
+            return None
+
+        def rank(b: Dict[str, Any]) -> Tuple[int, int, str]:
+            key = str(b.get("id", "")).rsplit("@", 1)[-1]
+            return (b["end_line"] - b["start_line"], -body_key_column(key), key)
+
+        best = min(matches, key=rank)
+        return BodyRef(id=best["id"], kind=best["kind"], span=self._line_span(best["start_line"], best["end_line"]), callee=best.get("callee"))
+
+    def _locate_result(self, path: str, line: int, rows: List[Dict[str, Any]]) -> LocateResult:
+        module_props = next((r["module_props"] for r in rows if r["module_props"] is not None), None)
+        if module_props is None:
+            return LocateResult(
+                body=None,
+                callable=None,
+                type=None,
+                module=ModuleRef(path=path),
+                source="",
+                span=self._line_span(line, line),
+                diagnostics=[
+                    Diagnostic(
+                        code="file_not_in_graph",
+                        message=(
+                            f"{path} is not covered by any analysed module of application {self.application_name!r}. "
+                            "This backend reads an attached graph and has no access to the project sources, so it "
+                            "cannot tell a file that was never analysed from one that is not on disk."
+                        ),
+                    )
+                ],
+            )
+        module_ref = ModuleRef(path=module_props.get("name", path))
+        # Innermost callable = narrowest line span containing the position. Rows with a null
+        # callable are the OPTIONAL MATCH misses; there is one row per (callable, body node) pair,
+        # so the same callable repeats. Equal widths tie, and `min` would then be decided by
+        # Cypher's row order -- nondeterministic, and different from the local walk's. Break it on
+        # the longer signature, deeper first, exactly as the local backend does: a nested callable's
+        # signature extends its owner's.
+        best = min(
+            (r for r in rows if r["callable_props"] is not None),
+            key=lambda r: (
+                r["callable_props"]["end_line"] - r["callable_props"]["start_line"],
+                -len(r["callable_props"]["signature"]),
+                r["callable_props"]["signature"],
+            ),
+            default=None,
+        )
+        if best is None:
+            # Module scope is a real position, not an absence -- but the graph genuinely does not
+            # carry module text (``:TSModule`` projects name/lines/content_hash/flags and no
+            # source), so say so instead of inventing something. Reading the file from disk is not
+            # an option: this backend attaches to a graph someone else built and may not have the
+            # project checked out, and concatenating the callables' ``code`` would silently drop
+            # every module-level statement.
+            return LocateResult(
+                body=None,
+                callable=None,
+                type=None,
+                module=module_ref,
+                source="",
+                span=self._line_span(line, line),
+                diagnostics=[
+                    Diagnostic(code="module_scope", message=f"line {line} is at module scope in {module_ref.path}."),
+                    Diagnostic(
+                        code="module_source_unavailable",
+                        message=(
+                            "The attached graph does not carry module text: :TSModule nodes project "
+                            "name/kind/lines/content_hash/is_tsx/is_declaration_file and no source. "
+                            "The local codeanalyzer backend returns the module's text for this position."
+                        ),
+                    ),
+                ],
+            )
+        c, owner = best["callable_props"], best["owner_props"]
+        body = self._body_ref(rows, c["signature"])
+        return LocateResult(
+            body=body,
+            node_id=body.id if body else None,
+            callable=CallableRef(signature=c["signature"], name=c["name"], class_signature=owner["signature"] if owner else None),
+            type=TypeRef(signature=owner["signature"], name=owner["name"]) if owner else None,
+            module=module_ref,
+            source=c.get("code") or "",
+            span=self._line_span(c["start_line"], c["end_line"]),
+            diagnostics=[],
+        )
+
+    def locate(self, path: str, line: int) -> LocateResult:
+        """Resolve a source position to its enclosing callable (see :meth:`TSAnalysisBackend.locate`)."""
+        return self.locate_many([(path, line)])[0]
+
+    def locate_many(self, positions: Sequence[Tuple[str, int]]) -> List[LocateResult]:
+        """Resolve many positions in **one** Cypher round trip (see
+        :meth:`TSAnalysisBackend.locate_many`) -- the position list travels as a single parameter
+        via ``UNWIND``, never a loop over :meth:`locate`. Results come back in input order
+        regardless of the order Neo4j returns rows in."""
+        positions = list(positions)
+        if not positions:
+            return []
+        # Whatever the caller's scanner printed ("./src/app.ts", an absolute path) is normalised to
+        # the graph's module key before it becomes a Cypher parameter -- an unnormalised path would
+        # match no :TSModule and read back as file_not_in_graph.
+        keys = [resolve_module_key(path, self._module_ids) for path, _ in positions]
+        # A key the application does not hold is never sent: its ``module_prefix`` would be the raw
+        # path, which is not application-stamped and could seek outside this application. It has no
+        # rows either way, and no rows is exactly the ``file_not_in_graph`` outcome.
+        asked = [
+            {"idx": i, "path": key, "module_prefix": self._module_ids[key] + "/", "line": line}
+            for i, (key, (_, line)) in enumerate(zip(keys, positions))
+            if key in self._module_ids
+        ]
+        rows = self._run(self._LOCATE_QUERY, app_id=self._app_id, callable_kinds=sorted(CALLABLE_KINDS), owner_kinds=_OWNER_KINDS, positions=asked) if asked else []
+        by_idx: Dict[int, List[Dict[str, Any]]] = defaultdict(list)
+        for r in rows:
+            by_idx[r["idx"]].append(r)
+        return [self._locate_result(key, line, by_idx.get(i, [])) for i, (key, (_, line)) in enumerate(zip(keys, positions))]
+
+    #: The resolver's own predicate, not a coarse pre-filter that happens to be close to it:
+    #: ``segment_match`` is *exactly* "equal, or ends with the separator plus the name", so this
+    #: ``WHERE`` keeps precisely the rows
+    #: :func:`~cldk.analysis.commons.resolve.resolve_callable_signature` would keep. Pushing it into
+    #: Cypher narrows the *round trip*, not the *domain* -- the candidate set is the same one the
+    #: local backend resolves over. The ``kind`` guard alongside the label is what keeps a
+    #: declaration-merged node out of the facet it is not (see the module docstring): the domain is
+    #: the kind, not the label, so a node the emitter collapsed onto a type's kind can never come
+    #: back described as a callable.
+    _RESOLVE_CALLABLE_QUERY = (
+        f"MATCH (c:TSCallable) WHERE {_scoped('c')} AND c.kind IN $callable_kinds "
+        "AND (c.signature = $name OR c.signature ENDS WITH $dotted) "
+        "OPTIONAL MATCH (o:TSClass|TSInterface)-[:TS_HAS_METHOD]->(c) WHERE o.kind IN $owner_kinds "
+        "RETURN c.id AS id, c.signature AS signature, c.name AS name, c.start_line AS start_line, o.signature AS class_signature"
+    )
+
+    def resolve_callable(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> SliceNode:
+        """Resolve a callable name against the graph (see :meth:`TSAnalysisBackend.resolve_callable`)."""
+        rows = self._run(
+            self._RESOLVE_CALLABLE_QUERY,
+            name=name,
+            dotted="." + name,
+            callable_kinds=sorted(CALLABLE_KINDS),
+            owner_kinds=_OWNER_KINDS,
+            **self._scope_params,
+        )
+        # Two callables sharing a signature would collapse into one entry and resolve arbitrarily;
+        # recorded and raised on only if the name lands on one, so an unrelated duplicate cannot
+        # break every unrelated resolution. Not reachable on the reference application (11,085
+        # callables, 11,085 distinct signatures, none null).
+        by_sig: Dict[str, Dict[str, Any]] = {}
+        collisions: Set[str] = set()
+        for r in rows:
+            if r["signature"] in by_sig:
+                collisions.add(r["signature"])
+            by_sig[r["signature"]] = r
+        candidates = [CallableCandidate(r["signature"], r["class_signature"], self._module_key(r["id"])) for r in by_sig.values()]
+        sig = resolve_callable_signature(name, candidates, in_class=in_class, in_module=in_module, dotted=ts_module_dotted)
+        if sig in collisions:
+            raise CodeanalyzerExecutionException(f"{sig!r} is carried by more than one analysed callable; neither can be addressed unambiguously")
+        row = by_sig[sig]
+        return SliceNode(file=self._module_key(row["id"]), line=row["start_line"], callable=sig, kind="callable", name=row["name"], source=None, ref=row["id"])
+
+    def resolve_value(self, name: str, *, within: str) -> SliceNode:
+        """Resolve a value name inside a callable (see :meth:`TSAnalysisBackend.resolve_value`).
+
+        Two round trips, not one: the callable is resolved first, because an ambiguous ``within``
+        must raise naming *callables* rather than failing obscurely on a value search over a set of
+        them -- through :func:`~cldk.analysis.commons.resolve.resolve_within`, so the advice it
+        gives names a keyword ``resolve_value`` actually accepts.
+        """
+        owner = resolve_within(self.resolve_callable, within)
+        rows = self._run(
+            f"MATCH (c:TSCallable) WHERE {_scoped('c')} AND c.signature = $sig "
+            "MATCH (c)-[:TS_HAS_BODY_NODE]->(b:TSBodyNode {kind: 'formal_in'}) WHERE b.of IS NOT NULL "
+            "RETURN b.of AS of, b.id AS id",
+            sig=owner.callable,
+            **self._scope_params,
+        )
+        # A list, not a dict keyed by name: two values that resolve to the same name are a genuine
+        # ambiguity the policy must see and raise on, and a dict would silently keep the last row.
+        entries = [(r["id"], r["of"]) for r in rows]
+        chosen = resolve_value_name(name, [v for _, v in entries], within=owner.callable)
+        node_id = next(i for i, v in entries if v == chosen)
+        return SliceNode(file=owner.file, line=owner.line, callable=owner.callable, kind="parameter", name=chosen, source=None, ref=node_id)
+
+    #: One statement, three arms, so ``describe`` costs one round trip whatever it is handed. A
+    #: callable answers to both of its names; a body node and an external are *found* and textless
+    #: -- which is what keeps "no text for this position" apart from "this ref names nothing".
+    _SOURCES = (
+        f"MATCH (c:TSCallable) WHERE {_scoped('c')} AND (c.id IN $refs OR c.signature IN $refs) AND c.kind IN $callable_kinds "
+        "RETURN c.id AS id, c.signature AS sig, c.code AS code "
+        f"UNION MATCH (b:TSBodyNode) WHERE {_scoped('b')} AND b.id IN $refs RETURN b.id AS id, null AS sig, null AS code "
+        "UNION MATCH (e:TSExternal) WHERE e.id STARTS WITH $ext_prefix AND e.id IN $refs RETURN e.id AS id, null AS sig, null AS code"
+    )
+
+    def _sources_for(self, refs: Sequence[str]) -> Dict[str, "str | None"]:
+        """Source text for every ref this graph holds (see :meth:`TSAnalysisBackend._sources_for`).
+
+        A callable's ``code`` is a real property; nothing below it is (``:TSBodyNode`` carries a
+        line span and no text, ``:TSModule`` no source to slice one out of), so a body node maps to
+        ``None`` here where the local backend fills it in. ``""`` maps to ``None`` too -- the 27
+        callables the emitter writes no ``code`` for are the implicit constructors, which the local
+        backend also has no text for.
+        """
+        wanted = set(refs)
+        found: Dict[str, "str | None"] = {}
+        rows = self._run(
+            self._SOURCES,
+            refs=list(wanted),
+            callable_kinds=sorted(CALLABLE_KINDS),
+            ext_prefix=f"{self._app_id}/@external/",
+            **self._scope_params,
+        )
+        for row in rows:
+            # A callable answers to both of its names, exactly as ``get_source`` accepts either --
+            # a ``SliceNode.ref`` is the ``can://`` id, but a caller holding a signature must not
+            # get "names nothing" for a callable that plainly exists.
+            for ref in (row["id"], row["sig"]):
+                if ref in wanted:
+                    found[ref] = row["code"] or None
+        return found
+
+    def get_source(self, node_id: str) -> str:
+        """Source text for one node (see :meth:`TSAnalysisBackend.get_source`).
+
+        Only a callable is answerable here. A body-node id names something the graph structurally
+        cannot supply text for, so that case raises rather than silently substituting the enclosing
+        callable's (far larger) text -- and the two are told apart by *asking the graph what the id
+        names*, never by splitting the id: an anonymous callable's own id contains an ``@``, so
+        ``partition("@")`` would mistake ``…/<anon@22:52>`` for a body node of ``…/<anon``.
+        """
+        found = self._sources_for([node_id])
+        code = found.get(node_id)
+        if code:
+            return code
+        if node_id in found:
+            rows = self._run(f"MATCH (b:CanNode:TSBodyNode {{id: $id}}) WHERE {_scoped('b')} RETURN b.id AS id", id=node_id, **self._scope_params)
+            if rows:
+                raise NotImplementedError(
+                    f"get_source({node_id!r}): the attached graph carries no source text below callable granularity -- "
+                    ":TSBodyNode has a line span and no code property, and :TSModule has no source to slice one out of. "
+                    "Only the local codeanalyzer backend can answer for a statement or call site."
+                )
+            raise KeyError(f"no recoverable source for {node_id!r} (the graph carries no text for it)")
+        raise KeyError(f"no callable, body node or external symbol of application {self.application_name!r} is addressed by {node_id!r}")
+
+    @property
+    def has_resolution_edges(self) -> bool:
+        """See :meth:`TSAnalysisBackend.has_resolution_edges`. Fixed at construction by
+        :meth:`_probe_resolution_edges`."""
+        return self._has_resolution_edges
+
+    def _probe_resolution_edges(self) -> bool:
+        """Whether this application has a single ``TS_RESOLVES_TO`` edge, asked once at attach.
+
+        ``--emit neo4j`` is always full depth (level and ``--graphs`` cannot even be passed
+        alongside it), so callee resolution always ran and this is expected to be ``True`` on any
+        graph built that way -- 16,324 edges on the reference application. The probe is defensive
+        against a graph built some other way (a hand-populated database, an older or forked
+        emitter), not against a gap in the documented pipeline. This is information, not an error:
+        it never raises the way :meth:`_probe_schema` does.
+        """
+        if "TS_RESOLVES_TO" not in self._relationship_types:
+            return False
+        return bool(self._run(f"MATCH (s:TSBodyNode)-[:TS_RESOLVES_TO]->() WHERE {_scoped('s')} RETURN s LIMIT 1", **self._scope_params))

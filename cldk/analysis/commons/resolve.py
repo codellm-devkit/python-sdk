@@ -189,6 +189,7 @@ def resolve_callable_signature(
     *,
     in_class: Optional[str] = None,
     in_module: Optional[str] = None,
+    dotted: Callable[[str], str] = module_dotted,
 ) -> str:
     """The signature of the one callable ``name`` names, narrowed by ``in_class`` / ``in_module``.
 
@@ -220,6 +221,13 @@ def resolve_callable_signature(
         in_class: Keep only callables whose owning class this names. A callable with no owning
             class is excluded outright, not silently kept.
         in_module: Keep only callables whose module this names, by path or by dotted name.
+        dotted: How this language spells a module path as a dotted name -- the Python default
+            strips a trailing ``/__init__`` and knows only ``.py``. TypeScript passes a
+            :func:`~cldk.analysis.commons.keys.module_dotted` bound to its six source extensions
+            and ``package_index=None``, because ``__init__.ts`` is a module in its own right there.
+            One injected function rather than two forwarded keywords: the caller already has to
+            know its own convention, and threading each knob separately is how the two backends of
+            one language start disagreeing about it.
 
     Raises:
         AmbiguousName: More than one callable matched.
@@ -230,7 +238,7 @@ def resolve_callable_signature(
     """
     filters = {
         "in_class": (in_class, lambda c: bool(c.class_signature) and segment_match(in_class, c.class_signature)),
-        "in_module": (in_module, lambda c: segment_match(in_module, c.path, sep="/") or segment_match(in_module, module_dotted(c.path))),
+        "in_module": (in_module, lambda c: segment_match(in_module, c.path, sep="/") or segment_match(in_module, dotted(c.path))),
     }
     by_name = set(_narrow(name, [c.signature for c in candidates]))
     matched = [c for c in candidates if c.signature in by_name]

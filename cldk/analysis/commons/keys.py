@@ -139,20 +139,46 @@ def module_key_of(node_id: str, prefix: str, known: Collection[str]) -> str:
     raise KeyError(node_id)
 
 
-def module_dotted(path: str, *, extensions: Sequence[str] = (".py",)) -> str:
+def module_dotted(path: str, *, extensions: Sequence[str] = (".py",), package_index: str | None = "__init__") -> str:
     """The dotted module name a repo-relative path spells: ``"odoo/tools/mail.py"`` →
     ``"odoo.tools.mail"``, ``"pkg/__init__.py"`` → ``"pkg"``. The same derivation the analyzer's
     signatures embody, so ``in_module=`` can be written the way a signature reads. ``extensions`` is
     the language's source suffixes; the Python default keeps every existing call site as it was.
 
-    One step is **Python-specific and unconditional**: a trailing ``/__init__`` is stripped, because
-    a Python package's ``__init__.py`` is addressed by the package name. No other language's
-    conventional index file is stripped -- a TypeScript ``src/foo/index.ts`` dots to
-    ``src.foo.index``, not ``src.foo`` -- and callers that want that must not rely on this helper
-    for it. Harmless where the convention does not exist (no ``__init__`` segment, nothing to
-    strip); if a second language ever needs its own index name, that is a parameter, not a
-    branch here."""
+    ``package_index`` is the file name a language addresses by its *package* name -- Python's
+    ``__init__``, stripped from the stem's tail. It is a parameter rather than an unconditional
+    step because it is a language convention and nothing stops another language having a file of
+    that name: a TypeScript ``src/foo/__init__.ts`` is a module in its own right and must dot to
+    ``src.foo.__init__``, so :mod:`cldk.analysis.typescript` passes ``package_index=None``. Passing
+    a name TypeScript *does* use (``"index"``) would be a different ruling and is deliberately not
+    made here -- ``src/foo/index.ts`` dots to ``src.foo.index``, because that is the module key it
+    is addressed by everywhere else on the surface."""
     stem = next((path[: -len(ext)] for ext in extensions if path.endswith(ext)), path)
-    if stem.endswith("/__init__"):
-        stem = stem[: -len("/__init__")]
+    if package_index and stem.endswith("/" + package_index):
+        stem = stem[: -len(package_index) - 1]
     return stem.replace("/", ".")
+
+
+def body_key_column(key: str) -> int:
+    """The start column encoded in a body node's local key (``"21:12"`` -> ``12``), or ``-1``.
+
+    Both backends of a language need one tie-break for two body nodes that span the *same* line --
+    ``if x: return x`` emits an ``if`` and a ``return`` each spanning one line -- and line numbers
+    are the only positional data a Neo4j projection carries, so the span cannot break it. The local
+    *key* can: it is ``<line>:<col>`` (sometimes suffixed, as in ``"22:8/actual_in:0"``), it exists
+    on both sides (locally the ``body`` dict key, over Neo4j the trailing segment of
+    ``<callable id>@<key>``), and a larger column is the more deeply nested statement. Comparing the
+    keys as *strings* instead would order ``"29:10"`` before ``"29:4"`` and pick the outer node, so
+    the column is parsed as an int.
+
+    ``-1`` for a key with no column (the synthetic ``@entry`` / ``@exit`` vertices). In Python those
+    carry no span and are filtered out before ranking; in TypeScript they span the whole callable,
+    so they lose on width to anything nested inside them and reach this only in a one-line callable,
+    where ranking last is the right answer -- a statement inside the callable is the more precise
+    position.
+
+    Lifted out of ``cldk/analysis/python/backend.py`` unchanged (leg 2.5b): it reads a key grammar
+    both analyzers emit, and a second copy is a second thing to keep in step.
+    """
+    _, _, col = key.split("/", 1)[0].partition(":")
+    return int(col) if col.isdigit() else -1

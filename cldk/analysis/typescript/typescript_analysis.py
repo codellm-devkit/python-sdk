@@ -25,11 +25,12 @@ those, delegates all indexing and query work to its backend (:class:`TSCodeanaly
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Sequence, Set, Tuple
 
 import networkx as nx
 
 from cldk.analysis.commons.backend_config import CodeAnalyzerConfig, Neo4jConnectionConfig, TSBackend, cache_subdir
+from cldk.analysis.commons.results import LocateResult, SliceNode
 from cldk.analysis.typescript.backend import TSAnalysisBackend
 from cldk.analysis.typescript.codeanalyzer import TSCodeanalyzer
 from cldk.analysis.typescript.neo4j import TSNeo4jBackend
@@ -354,3 +355,148 @@ class TypeScriptAnalysis:
             Signatures with no matching callable are omitted.
         """
         return self.backend.get_callsites_for(signatures)
+
+    # -----[ addressing (leg 2.5b) ]-----
+    def locate(self, path: str, line: int) -> LocateResult:
+        """Resolve a source position to its enclosing callable, with the source in hand.
+
+        The single most-needed query for triaging a scanner alert: an alert arrives as
+        ``file:line`` and this resolves it to the enclosing callable in one call, rather than
+        ``get_method``, falling back to ``get_callers``, falling back to scanning the symbol table
+        by hand. Four outcomes stay distinguishable — see
+        :class:`~cldk.analysis.commons.results.LocateResult`: inside a callable (``callable`` set,
+        plus ``body`` when a body node is that precise), at real module scope (``module_scope``
+        diagnostic), in the gap between two callables (also module scope, never snapped to the
+        nearest callable), or in a file the analysis has no module for (``file_not_in_graph``).
+
+        There is no ``col`` parameter. Column-level disambiguation would have to be honoured by
+        both backends to mean anything, and the Neo4j graph projects only ``start_line`` /
+        ``end_line`` on ``:TSCallable`` and ``:TSBodyNode`` — so a ``col`` would work in-process and
+        be silently ignored over Neo4j. Better absent than documented and inert.
+
+        Args:
+            path: The file path. Normalised against the backend's module keys, so a ``./``-prefixed
+                or absolute path resolves rather than reading back as ``file_not_in_graph``.
+            line: The 1-based line number.
+
+        Returns:
+            A :class:`~cldk.analysis.commons.results.LocateResult` carrying the innermost body
+            node, the enclosing callable, its owning class/interface, its module, and the source
+            slice — never an ambiguous empty.
+
+        See Also:
+            :meth:`locate_many`: The bulk form — the point, not an optimisation.
+        """
+        return self.backend.locate(path, line)
+
+    def locate_many(self, positions: Sequence[Tuple[str, int]]) -> List[LocateResult]:
+        """Resolve many ``(path, line)`` positions in one round trip, in input order.
+
+        Args:
+            positions: The ``(path, line)`` pairs to resolve, e.g. from a scanner's alert list.
+
+        Returns:
+            One :class:`~cldk.analysis.commons.results.LocateResult` per input position, in the
+            same order.
+
+        See Also:
+            :meth:`locate`: The single-position form.
+        """
+        return self.backend.locate_many(positions)
+
+    def resolve_callable(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> SliceNode:
+        """Resolve a callable name to the one callable it names, in the caller's vocabulary.
+
+        The addressing step every name-taking accessor performs, exposed so a caller can perform it
+        once and keep the answer::
+
+            node = ts.resolve_callable("show", in_class="UserController")
+            node.callable   # the full dotted signature — what every other accessor keys by
+            node.file, node.line
+
+        ``name`` matches whole or as a dotted suffix; ``in_class`` is a dotted suffix of the owning
+        class or interface, ``in_module`` a module key (``"src/controllers.ts"``) or the dotted form
+        (``"src.controllers"``). An anonymous callable is addressed by its ``<anon@line:col>``
+        signature, never by its name — cants calls every one of them ``"(anonymous)"``. Ambiguity
+        raises with every candidate; nothing is guessed.
+
+        Raises:
+            AmbiguousName: More than one callable matched.
+            SelectorNotInGraph: Nothing matched — naming the argument that missed.
+        """
+        return self.backend.resolve_callable(name, in_class=in_class, in_module=in_module)
+
+    def resolve_value(self, name: str, *, within: str) -> SliceNode:
+        """Resolve a value name inside a callable — in TypeScript, a parameter — to the position
+        that carries it.
+
+        The same resolution the dataflow accessors perform on their ``src``, exposed so a caller can
+        check what a name means before asking a question of it::
+
+            ts.resolve_value("id", within="UserController.show").kind   # "parameter"
+
+        Raises:
+            AmbiguousName: ``within`` named more than one callable, or ``name`` more than one value.
+            SelectorNotInGraph: No such callable, or no such value in it.
+        """
+        return self.backend.resolve_value(name, within=within)
+
+    def get_source(self, node_id: str) -> str:
+        """Return the source text named by ``node_id`` — a callable, or one of its body nodes.
+
+        Generalises :meth:`get_method_bodies` below callable granularity: ``node_id`` is a
+        callable's signature, a callable's opaque id, or the body-node id
+        :attr:`~cldk.analysis.commons.results.LocateResult.node_id` hands back, so a statement or
+        call site :meth:`locate` found can be re-fetched precisely.
+
+        Args:
+            node_id: A callable signature, or an id from :meth:`locate` / :meth:`resolve_callable` —
+                passed back as received, not composed.
+
+        Returns:
+            The source text, never an ambiguous empty string.
+
+        Raises:
+            KeyError: Nothing matches ``node_id``, or it has no recoverable source.
+            NotImplementedError: (Neo4j backend only) ``node_id`` names a body node — the attached
+                graph carries no source text below callable granularity.
+        """
+        return self.backend.get_source(node_id)
+
+    def describe(self, nodes: Sequence[object]) -> List[SliceNode]:
+        """Fill in ``source`` for these positions, in one round trip.
+
+        Addressing answers *where*; this answers *what*, and it is a second call because source is
+        the one field with no size ceiling. Takes anything carrying an address — slice nodes, a
+        ``locate()`` result — and gives back the same
+        :class:`~cldk.analysis.commons.results.SliceNode` shape with ``source`` filled.
+
+        Afterwards, ``source=None`` means exactly one thing: **this position exists and there is no
+        text for it.** A ref that names nothing raises instead.
+
+        Args:
+            nodes: The positions to hydrate. An empty sequence costs no round trip.
+
+        Returns:
+            The same positions, in the same order, with ``source`` filled where the backend has
+            text for them.
+
+        Raises:
+            KeyError: A ref names nothing in this application.
+            TypeError: An element carries no address to look up.
+        """
+        return self.backend.describe(nodes)
+
+    @property
+    def has_resolution_edges(self) -> bool:
+        """Whether :meth:`get_callsites_for` can resolve call sites on this backend right now.
+
+        ``False`` means every ``callee_signature=None`` it returns is explained by the view having
+        been built below the level at which cants resolves callees, not by individual call sites
+        failing to resolve. On the local backend that is ``analysis.max_level < 2``; over Neo4j it
+        is a graph carrying no ``TS_RESOLVES_TO`` edge for this application.
+
+        See Also:
+            :meth:`get_callsites_for`: The accessor whose ``None`` this disambiguates.
+        """
+        return self.backend.has_resolution_edges

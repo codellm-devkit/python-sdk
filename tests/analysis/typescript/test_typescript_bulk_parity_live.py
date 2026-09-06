@@ -46,6 +46,7 @@ import pytest
 from cldk import CLDK
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.backend_config import CodeAnalyzerConfig, Neo4jConnectionConfig
+from cldk.analysis.commons.results import SliceNode
 
 from .test_typescript_neo4j_backend import (
     APP_NAME,
@@ -204,3 +205,153 @@ def test_callsites_parity(ts_dual):
 
     # unknown signatures are omitted identically on both backends
     assert ref.get_callsites_for(["nope.not.here"]) == neo.get_callsites_for(["nope.not.here"]) == {}
+
+
+# =====================================================================================
+# Leg 2.5b Task 1: the addressing surface answers identically on both backends -- including on
+# the miss paths, where the two must raise the same exception type naming the same subject.
+#
+# This is the only harness in the repo that runs *both* backends over the same code, so it is
+# where the parity claim belongs. It writes the graph (see the module docstring), so it skips
+# unless CLDK_TEST_NEO4J_WRITE_* names a disposable server; the read-only live suite on the
+# reference graph exercises the Neo4j half at scale, and the offline suite the local half.
+# =====================================================================================
+def _same_raise(ref_call, neo_call):
+    """Both backends refuse, with the same exception type and the same subject named."""
+    with pytest.raises(Exception) as r:
+        ref_call()
+    with pytest.raises(Exception) as n:
+        neo_call()
+    assert type(r.value) is type(n.value), f"{type(r.value).__name__} locally, {type(n.value).__name__} over Neo4j"
+    return r.value, n.value
+
+
+def _positions(ref):
+    """Every ``(module key, line)`` a callable's first line gives, plus a module-scope line and a
+    file the analysis has no module for -- the four ``locate`` outcomes over the whole sample app."""
+    out = [(o.path, o.start_line) for o in ref.get_callables_overview() if o.start_line > 0]
+    out += [(path, 1) for path in ref.get_symbol_table()]
+    return out + [("src/definitely-not-here.ts", 3)]
+
+
+def test_locate_many_parity_over_every_callable_and_every_module(ts_dual):
+    ref, neo = ts_dual
+    positions = _positions(ref)
+    ref_out, neo_out = ref.locate_many(positions), neo.locate_many(positions)
+    assert len(ref_out) == len(neo_out) == len(positions)
+    for (path, line), a, b in zip(positions, ref_out, neo_out):
+        where = f"{path}:{line}"
+        assert a.module.path == b.module.path, where
+        assert (a.callable and a.callable.signature) == (b.callable and b.callable.signature), where
+        assert (a.type and a.type.signature) == (b.type and b.type.signature), where
+        assert (a.body and a.body.id) == (b.body and b.body.id), where
+        assert (a.body and a.body.kind) == (b.body and b.body.kind), where
+        assert (a.body and a.body.callee) == (b.body and b.body.callee), where
+        assert a.node_id == b.node_id, where
+        # The one honest divergence, documented on both backends: the graph carries no module text,
+        # so a module-scope position is `""` plus a second diagnostic there and the module's source
+        # locally. Everywhere else the diagnostics agree exactly.
+        if [d.code for d in a.diagnostics] == ["module_scope"]:
+            assert [d.code for d in b.diagnostics] == ["module_scope", "module_source_unavailable"], where
+            assert b.source == "" and a.source, where
+        else:
+            assert [d.code for d in a.diagnostics] == [d.code for d in b.diagnostics], where
+            assert a.source == b.source, where
+        # Lines are real on both; columns and byte offsets are placeholders over Neo4j only.
+        assert a.span.start[0] == b.span.start[0] and a.span.end[0] == b.span.end[0], where
+
+
+def test_resolve_callable_parity_over_every_callable(ts_dual):
+    ref, neo = ts_dual
+    for o in ref.get_callables_overview():
+        a, b = ref.resolve_callable(o.signature), neo.resolve_callable(o.signature)
+        assert (a.callable, a.kind, a.name, a.file, a.line, a.ref) == (b.callable, b.kind, b.name, b.file, b.line, b.ref)
+
+
+def test_resolve_callable_miss_paths_agree(ts_dual):
+    ref, neo = ts_dual
+    a, b = _same_raise(lambda: ref.resolve_callable("noSuchCallable"), lambda: neo.resolve_callable("noSuchCallable"))
+    assert "noSuchCallable" in str(a) and "noSuchCallable" in str(b)
+    a, b = _same_raise(lambda: ref.resolve_callable("describe"), lambda: neo.resolve_callable("describe"))
+    assert a.candidates == b.candidates, "the two backends resolved over different candidate sets"
+    a, b = _same_raise(
+        lambda: ref.resolve_callable("describe", in_module="no/such/module.ts"),
+        lambda: neo.resolve_callable("describe", in_module="no/such/module.ts"),
+    )
+    assert "in_module" in str(a) and "in_module" in str(b)
+
+
+def test_resolve_callable_scoping_keywords_agree(ts_dual):
+    ref, neo = ts_dual
+    for o in ref.get_callables_overview():
+        if o.owner_signature:
+            assert ref.resolve_callable(o.name, in_class=o.owner_signature).ref == neo.resolve_callable(o.name, in_class=o.owner_signature).ref
+        dotted = o.path.rsplit(".", 1)[0].replace("/", ".")
+        assert ref.resolve_callable(o.signature, in_module=dotted).ref == neo.resolve_callable(o.signature, in_module=dotted).ref
+        assert ref.resolve_callable(o.signature, in_module=o.path).ref == neo.resolve_callable(o.signature, in_module=o.path).ref
+
+
+def test_resolve_value_parity_over_every_callable(typescript_application, tmp_path_factory, ts_dual):
+    """Every named value entering every callable, resolved on both.
+
+    The local reference here is a **level-4** one of its own: ``ts_dual``'s is built at
+    ``call_graph`` for the bulk accessors, and ``formal_in`` vertices -- the whole domain of
+    ``resolve_value`` -- first exist at level 4. ``--emit neo4j`` is always full depth, so the graph
+    side already has them; comparing it against a level-2 reference would be comparing analysis
+    levels, not backends. The parity assertion is on the *values*; the level is just what makes
+    both sides hold them.
+    """
+    _, neo = ts_dual
+    ref = CLDK.typescript(
+        project_path=typescript_application,
+        eager=True,
+        analysis_level=AnalysisLevel.system_dependency_graph,
+        backend=CodeAnalyzerConfig(cache_dir=str(tmp_path_factory.mktemp("ts_addressing_parity_cache"))),
+    )
+    seen = 0
+    for o in ref.get_callables_overview():
+        owner = o.owner_signature or o.signature.rsplit(".", 1)[0]
+        callable_ = ref.get_method(owner, o.name)
+        for value in sorted({n.of for n in (callable_.body if callable_ else {}).values() if n.kind == "formal_in" and n.of}):
+            a, b = ref.resolve_value(value, within=o.signature), neo.resolve_value(value, within=o.signature)
+            assert (a.kind, a.name, a.defined_in, a.callable, a.ref) == (b.kind, b.name, b.defined_in, b.callable, b.ref)
+            seen += 1
+        _same_raise(lambda: ref.resolve_value("noSuchValue", within=o.signature), lambda: neo.resolve_value("noSuchValue", within=o.signature))
+    assert seen, "the level-4 reference carried no formal_in vertex at all; this test proved nothing"
+
+
+def test_get_source_parity_and_the_one_documented_divergence(ts_dual):
+    ref, neo = ts_dual
+    for o in ref.get_callables_overview():
+        try:
+            expected = ref.get_source(o.signature)
+        except KeyError:
+            _same_raise(lambda: ref.get_source(o.signature), lambda: neo.get_source(o.signature))
+            continue
+        assert neo.get_source(o.signature) == expected
+        assert neo.get_source(ref.resolve_callable(o.signature).ref) == expected
+    _same_raise(lambda: ref.get_source("no.such.node"), lambda: neo.get_source("no.such.node"))
+    # Below callable granularity the two differ, deliberately and loudly: the local backend slices
+    # the module text, the graph has none to slice and says so with a distinct exception type.
+    body = next((r.node_id for r in ref.locate_many(_positions(ref)) if r.node_id), None)
+    assert body, "no position in the sample app landed on a body node"
+    assert ref.get_source(body)
+    with pytest.raises(NotImplementedError):
+        neo.get_source(body)
+
+
+def test_describe_parity(ts_dual):
+    ref, neo = ts_dual
+    names = [o.signature for o in ref.get_callables_overview()]
+    ref_nodes = [ref.resolve_callable(n) for n in names]
+    neo_nodes = [neo.resolve_callable(n) for n in names]
+    assert [n.ref for n in ref_nodes] == [n.ref for n in neo_nodes]
+    assert [n.source for n in ref.describe(ref_nodes)] == [n.source for n in neo.describe(neo_nodes)]
+    assert ref.describe([]) == neo.describe([]) == []
+    stale = SliceNode(file="x.ts", line=1, callable="x", kind="callable", name="x", ref="can://typescript/nope/x")
+    _same_raise(lambda: ref.describe([stale]), lambda: neo.describe([stale]))
+
+
+def test_has_resolution_edges_agrees(ts_dual):
+    ref, neo = ts_dual
+    assert ref.has_resolution_edges is neo.has_resolution_edges is True

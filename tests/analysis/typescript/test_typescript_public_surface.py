@@ -19,6 +19,10 @@
 Every public accessor's name and signature is pinned here. A change to this list is a public-API
 change and must be deliberate: the only removals so far are the two accessors that only ever
 raised ``NotImplementedError``; additions land with the query surface (2.5b) and extend the list.
+
+Leg 2.5b Task 1 adds the seven addressing accessors, six of them methods and one
+(``has_resolution_edges``) a property — which :func:`inspect.isfunction` cannot see, so it is
+frozen separately in :data:`PROPERTIES`.
 """
 
 import ast
@@ -30,6 +34,7 @@ import pytest
 from cldk.analysis.typescript.typescript_analysis import TypeScriptAnalysis
 
 SURFACE = {
+    "describe": "(self, nodes: 'Sequence[object]') -> 'List[SliceNode]'",
     "get_application_view": "(self) -> 'TSApplication'",
     "get_call_graph": "(self) -> 'nx.DiGraph'",
     "get_call_graph_json": "(self) -> 'str'",
@@ -69,6 +74,7 @@ SURFACE = {
     "get_methods_with_decorators": "(self, decorators: 'List[str]') -> 'Dict[str, List[str]]'",
     "get_modules": "(self) -> 'List[TSModule]'",
     "get_nested_classes": "(self, qualified_class_name: 'str') -> 'List[TSClass]'",
+    "get_source": "(self, node_id: 'str') -> 'str'",
     "get_sub_classes": "(self, qualified_class_name: 'str') -> 'Dict[str, TSClass]'",
     "get_symbol_table": "(self) -> 'Dict[str, TSModule]'",
     "get_synthesized_callables": "(self) -> 'Dict[str, TSSynthesizedCallable]'",
@@ -76,13 +82,24 @@ SURFACE = {
     "get_typescript_file": "(self, qualified_name: 'str') -> 'str | None'",
     "get_typescript_module": "(self, file_path: 'str') -> 'TSModule | None'",
     "get_variables": "(self) -> 'Dict[str, List[TSVariableDeclaration]]'",
+    "locate": "(self, path: 'str', line: 'int') -> 'LocateResult'",
+    "locate_many": "(self, positions: 'Sequence[Tuple[str, int]]') -> 'List[LocateResult]'",
+    "resolve_callable": "(self, name: 'str', *, in_class: 'str | None' = None, in_module: 'str | None' = None) -> 'SliceNode'",
+    "resolve_value": "(self, name: 'str', *, within: 'str') -> 'SliceNode'",
 }
+
+#: Public *properties* — frozen the same way, since ``inspect.isfunction`` does not see them.
+PROPERTIES = {"has_resolution_edges": "bool"}
 
 REMOVED = ["get_entry_point_methods", "get_service_entry_point_methods"]
 
 
 def _public():
     return {n: f for n, f in inspect.getmembers(TypeScriptAnalysis, inspect.isfunction) if not n.startswith("_")}
+
+
+def _public_properties():
+    return {n for n, v in vars(TypeScriptAnalysis).items() if isinstance(v, property) and not n.startswith("_")}
 
 
 def test_the_public_surface_is_exactly_the_frozen_list():
@@ -92,6 +109,15 @@ def test_the_public_surface_is_exactly_the_frozen_list():
 @pytest.mark.parametrize("name", sorted(SURFACE))
 def test_signature_is_frozen(name):
     assert str(inspect.signature(getattr(TypeScriptAnalysis, name))) == SURFACE[name]
+
+
+def test_the_public_properties_are_exactly_the_frozen_list():
+    assert _public_properties() == set(PROPERTIES)
+
+
+@pytest.mark.parametrize("name", sorted(PROPERTIES))
+def test_property_return_annotation_is_frozen(name):
+    assert inspect.signature(vars(TypeScriptAnalysis)[name].fget).return_annotation == PROPERTIES[name]
 
 
 @pytest.mark.parametrize("name", REMOVED)
