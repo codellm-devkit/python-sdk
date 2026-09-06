@@ -14,274 +14,341 @@
 # limitations under the License.
 ################################################################################
 
-"""Pure rehydration: Neo4j property maps → ``analysis.json``-shaped dicts for ``cldk.models.java``.
+"""Rebuild the ``cldk.models.java`` (schema v2) models from codeanalyzer-java 3.0.1 Neo4j node and
+edge property maps.
 
-:class:`~cldk.analysis.java.neo4j.JNeo4jBackend` bulk-fetches every node + relationship for an
-application, groups children by parent, and feeds the grouped props here. Each function returns a
-plain ``dict`` matching the corresponding pydantic model's field names, so the backend can assemble a
-single ``analysis.json``-shaped payload and hand it to ``JApplication(**payload)`` — the exact same
-constructor path the in-memory :class:`~cldk.analysis.java.codeanalyzer.JCodeanalyzer` uses
-(``_init_japplication``). That guarantees the reconstructed objects are identical.
+Pure functions: they take the flat property dictionaries the analyzer's Neo4j projection wrote
+(``schema.neo4j.json`` at the 3.0.1 tag is the authority for what each label carries) and return
+the same pydantic objects the in-memory :class:`~cldk.analysis.java.codeanalyzer.JCodeanalyzer`
+returns. :class:`~cldk.analysis.java.neo4j.JNeo4jBackend` fetches the rows and assembles the
+containment tree; the per-node shape lives here.
 
-The source graph is the one ``codeanalyzer-java`` (>= 2.4.0) emits with ``--emit neo4j`` — see its
-``neo4j/GraphProjector.java`` / ``schema.neo4j.json`` for the property flattening these functions
-invert. Java comments are first-class ``:JComment`` nodes (``J_HAS_COMMENT``), so unlike the Python
-backend they round-trip losslessly.
+**Booleans.** The projection writes a boolean property only when it is ``True`` (verified:
+``text_truncated`` exists on 16 of 5,007 ``:Artifact`` nodes, ``is_implicit`` on 99 of 1,216
+daytrader8 callables, ``is_wildcard`` only on wildcard imports). An absent boolean therefore *is*
+``False`` in the contract, and reading one with a ``False`` default is not a default hiding drift.
+Every non-boolean property the contract declares on a label is read with ``props[...]``.
 
-Parity caveats (inherent to what the projection stores, not bugs): a ``JType``'s
-``is_class_or_interface_declaration`` and ``is_concrete_class`` flags are not projected (only the
-``kind`` discriminator is), so they rehydrate to their defaults; the order of ``call_graph`` edges
-is sorted rather than original-insertion order.
+What the projection does **not** carry, and therefore comes back at the model's own empty default
+(measured against the live graph, not assumed):
+
+* **``JModule.source``** -- the graph stores each *callable's* own text in ``JCallable.code`` and
+  nothing else, so a reconstructed :class:`JCompilationUnit` has ``source=""``. Its ``span`` is
+  unknown too (``:JModule`` carries no lines at all), so it rehydrates as the model's own ``-1``.
+  A callable is pointed at the text the graph did project through :func:`thread_code`; every other
+  node's ``code`` is ``""``.
+* **``JCallable.body_span``** -- the graph projects one line range per callable, the *declaration*
+  span. So ``JCallable.code`` here is the whole declaration (``public void f() {…}``), where the
+  local backend's is the body block (``{…}``); ``code_start_line`` is the declaration's first line,
+  which is the body block's first line too except where the opening brace sits on a later line.
+* **comments** -- there are no ``:JComment`` nodes (0 in the reference graph). A type, callable,
+  field, enum constant and record component carries a single ``docstring`` property holding its
+  javadoc, rebuilt here as a one-element ``comments`` list; a non-javadoc comment on a declaration,
+  and every file-level comment, is not projected at all.
+* **``JCallable.body``** -- only the ``call`` nodes are rebuilt (what ``call_sites`` is a view
+  over); a call site's ``arguments`` (body-key references) and end column are not projected, and
+  its start column is recovered from the body key the node id ends with.
+* ``cfg`` / ``cdg`` / ``ddg`` / ``summary`` (``None``: 3b reads them per callable on demand),
+  ``type_parameters``, ``JCompilationUnit.comments``, ``JApplication.param_in`` / ``param_out`` /
+  ``external_symbols``, and a decorator's / import's / enum constant's / record component's span.
 """
 
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Mapping
+from typing import Any, Dict, List, Mapping, Optional
+
+from cldk.models.java.models import (
+    JArtifact,
+    JBodyNode,
+    JCallable,
+    JCallableParameter,
+    JComment,
+    JCompilationUnit,
+    JConfigKey,
+    JDecorator,
+    JDependency,
+    JField,
+    JImport,
+    JLocalVariable,
+    JEnumConstant,
+    JRecordComponent,
+    JSpan,
+    JType,
+)
 
 Props = Mapping[str, Any]
 
-
-# -----[ helpers ]-----
-def _arr(props: Props, key: str) -> List[str]:
-    return list(props.get(key, []) or [])
-
-
+#: ``JType.kind`` values, and the ``JCallable.kind`` values, the analyzer emits. A ``:JSymbol`` row
+#: whose labels and ``kind`` name neither facet is an emitter defect, not a third kind of symbol.
+TYPE_KINDS = frozenset({"class", "interface", "enum", "annotation", "record"})
+CALLABLE_KINDS = frozenset({"method", "constructor", "initializer"})
 
 
-def _kind_flags(kind: str | None) -> Dict[str, bool]:
-    """Derive the type-discriminator booleans from the projected ``kind`` string."""
-    return {
-        "is_interface": kind == "interface",
-        "is_enum_declaration": kind == "enum",
-        "is_annotation_declaration": kind == "annotation",
-        "is_record_declaration": kind == "record",
-    }
+class _ProjectedText:
+    """Stands in for the owning :class:`JCompilationUnit` on a callable, so its ``code`` view reads
+    the text the graph projected for it.
+
+    ``:JModule`` carries no ``source``, so a reconstructed unit can slice nothing; ``:JCallable``
+    carries its own ``code``. The models reach the unit only through the private ``_unit``
+    back-reference, and only for :meth:`JCompilationUnit.slice` and ``package`` -- so pointing a
+    callable at one of these is what turns ``JCallable.code`` from an empty slice into that text
+    (see :func:`thread_code`).
+    """
+
+    __slots__ = ("_code", "package")
+
+    def __init__(self, code: str, package: str) -> None:
+        self._code, self.package = code, package
+
+    def slice(self, span: JSpan) -> str:
+        """The callable's whole projected text: the graph keeps one text per callable, not the
+        module source the span would index into."""
+        return self._code
 
 
-# -----[ leaf nodes ]-----
-def comment(props: Props) -> dict:
-    return {
-        "content": props.get("content"),
-        "start_line": props.get("start_line", -1),
-        "end_line": props.get("end_line", -1),
-        "start_column": props.get("start_column", -1),
-        "end_column": props.get("end_column", -1),
-        "is_javadoc": props.get("is_javadoc", False),
-    }
+def thread_code(unit: JCompilationUnit, code: Mapping[str, str]) -> None:
+    """Point every callable in ``unit`` at its projected text, keyed by node id.
+
+    Runs after the unit is validated, because :meth:`JCompilationUnit.model_post_init` threads
+    itself onto every node it owns and would otherwise win.
+    """
+
+    def walk(t: JType) -> None:
+        for c in t.callables.values():
+            c._unit = _ProjectedText(code.get(c.id, ""), unit.package)
+            for local in c.types.values():
+                walk(local)
+        for nested in t.types.values():
+            walk(nested)
+
+    for top in unit.types.values():
+        walk(top)
 
 
-def parameter(props: Props) -> dict:
-    return {
-        "name": props.get("name"),
-        "type": props.get("type", ""),
-        "annotations": _arr(props, "annotations"),
-        "modifiers": _arr(props, "modifiers"),
-        "start_line": props.get("start_line", -1),
-        "end_line": props.get("end_line", -1),
-        "start_column": props.get("start_column", -1),
-        "end_column": props.get("end_column", -1),
-    }
+# ----------------------------------------------------------------------------------------------
+# leaves
+# ----------------------------------------------------------------------------------------------
+def span(props: Props, *, length: int = 0) -> Optional[JSpan]:
+    """The line-only span the projection carries, or ``None`` when it carries no lines (an implicit
+    callable). Columns are ``0`` and ``bytes`` sizes the node's own text: neither is projected."""
+    start, end = props.get("start_line"), props.get("end_line")
+    return None if start is None or end is None else JSpan(start=(start, 0), end=(end, 0), bytes=(0, length))
 
 
-def field(props: Props, *, comment_node: dict | None = None) -> dict:
-    raw = props.get("variable_initializers_json")
-    return {
-        "comment": comment_node,
-        "type": props.get("type", ""),
-        "start_line": props.get("start_line", -1),
-        "end_line": props.get("end_line", -1),
-        "variables": _arr(props, "variables"),
-        "modifiers": _arr(props, "modifiers"),
-        "annotations": _arr(props, "annotations"),
-        "variable_initializers": json.loads(raw) if raw else {},
-    }
+def docstring(props: Props) -> List[JComment]:
+    """The node's javadoc as the one-element ``comments`` list it stands in for (see the module
+    docstring); empty when the declaration carries none."""
+    text = props.get("docstring")
+    return [JComment(content=text, is_javadoc=True)] if text is not None else []
 
 
-def variable(props: Props, *, comment_node: dict | None = None) -> dict:
-    return {
-        "comment": comment_node,
-        "name": props.get("name", ""),
-        "type": props.get("type", ""),
-        "initializer": props.get("initializer", ""),
-        "start_line": props.get("start_line", -1),
-        "start_column": props.get("start_column", -1),
-        "end_line": props.get("end_line", -1),
-        "end_column": props.get("end_column", -1),
-    }
+def decorator(node: Props, edge: Props) -> JDecorator:
+    """An annotation use from its ``:JAnnotation`` node (keyed by name) and the ``J_ANNOTATED_BY``
+    edge's ``arguments`` (the source spellings)."""
+    return JDecorator(name=node["name"], args=list(edge.get("arguments") or []))
 
 
-def enum_constant(props: Props) -> dict:
-    return {"name": props.get("name", ""), "arguments": _arr(props, "arguments")}
+def field(props: Props, decorators: List[JDecorator]) -> JField:
+    return JField(
+        id=props["id"],
+        name=props["name"],
+        type=props["type"],
+        modifiers=list(props.get("modifiers") or []),
+        decorators=decorators,
+        comments=docstring(props),
+        initializer=props.get("initializer"),
+        span=span(props),
+    )
 
 
-def record_component(props: Props, *, comment_node: dict | None = None) -> dict:
-    return {
-        "comment": comment_node,
-        "name": props.get("name", ""),
-        "type": props.get("type", ""),
-        "modifiers": _arr(props, "modifiers"),
-        "annotations": _arr(props, "annotations"),
-        "default_value": props.get("default_value"),
-        "is_var_args": props.get("is_var_args", False),
-    }
+def variable(props: Props) -> JLocalVariable:
+    return JLocalVariable(name=props["name"], type=props["type"], initializer=props.get("initializer"), span=span(props))
 
 
-def crud_operation(props: Props) -> dict:
-    return {"line_number": props.get("line_number", -1), "operation_type": props.get("operation_type")}
+def enum_constant(props: Props) -> JEnumConstant:
+    return JEnumConstant(name=props["name"], arguments=list(props.get("arguments") or []), comments=docstring(props))
 
 
-def crud_query(props: Props) -> dict:
-    return {
-        "line_number": props.get("line_number", -1),
-        "query_arguments": props.get("query_arguments"),
-        "query_type": props.get("query_type"),
-    }
+def record_component(props: Props) -> JRecordComponent:
+    return JRecordComponent(
+        name=props["name"],
+        type=props["type"],
+        modifiers=list(props.get("modifiers") or []),
+        comments=docstring(props),
+        is_variadic=bool(props.get("is_variadic", False)),
+    )
 
 
-def callsite(props: Props, *, comment_node: dict | None = None, crud_op: dict | None = None, crud_q: dict | None = None) -> dict:
-    return {
-        "comment": comment_node,
-        "method_name": props.get("method_name", ""),
-        "receiver_expr": props.get("receiver_expr", ""),
-        "receiver_type": props.get("receiver_type", ""),
-        "argument_types": _arr(props, "argument_types"),
-        "argument_expr": _arr(props, "argument_expr"),
-        "return_type": props.get("return_type", ""),
-        "callee_signature": props.get("callee_signature", ""),
-        "is_static_call": props.get("is_static_call"),
-        "is_private": props.get("is_private"),
-        "is_public": props.get("is_public"),
-        "is_protected": props.get("is_protected"),
-        "is_unspecified": props.get("is_unspecified"),
-        "is_constructor_call": props.get("is_constructor_call", False),
-        "crud_operation": crud_op,
-        "crud_query": crud_q,
-        "start_line": props.get("start_line", -1),
-        "start_column": props.get("start_column", -1),
-        "end_line": props.get("end_line", -1),
-        "end_column": props.get("end_column", -1),
-    }
+def parameters(props: Props) -> List[JCallableParameter]:
+    """``JCallable.parameters_json`` -- the analyzer's own serialisation of the parameter list, so
+    the parameters (names, types, spans with byte offsets, modifiers, annotations, variadic flag)
+    round-trip exactly. Absent on a callable that takes none."""
+    raw = props.get("parameters_json")
+    return [JCallableParameter.model_validate(p) for p in json.loads(raw)] if raw else []
 
 
-# -----[ declarations ]-----
-def init_block(
-    props: Props,
-    *,
-    comments: List[dict] | None = None,
-    call_sites: List[dict] | None = None,
-    variable_declarations: List[dict] | None = None,
-) -> dict:
-    return {
-        "file_path": props.get("file_path", ""),
-        "comments": comments or [],
-        "annotations": _arr(props, "annotations"),
-        "thrown_exceptions": _arr(props, "thrown_exceptions"),
-        "code": props.get("code", ""),
-        "start_line": props.get("start_line", -1),
-        "end_line": props.get("end_line", -1),
-        "is_static": props.get("is_static", False),
-        "referenced_types": _arr(props, "referenced_types"),
-        "accessed_fields": _arr(props, "accessed_fields"),
-        "call_sites": call_sites or [],
-        "variable_declarations": variable_declarations or [],
-        "cyclomatic_complexity": props.get("cyclomatic_complexity", 0),
-    }
+def body_node(props: Props, callee_signature: Optional[str]) -> JBodyNode:
+    """A ``call`` body node. ``callee_signature`` is the ``signature`` of whatever the node's
+    ``J_RESOLVES_TO`` edge points at -- a project callable or an external -- and ``None`` when the
+    analyzer left the call unresolved.
+
+    **Columns are the model's own ``-1``, not the body key's.** The key a body node's id ends with
+    (``@65:28``) spells a *different* position from the node's span: measured over daytrader8's
+    4,006 call nodes, the key column equals ``span.start`` column on only 629 of them and runs up to
+    12 columns off on the rest. So the key is used for what it is -- the ``body`` dict key -- and
+    the column is reported as not projected rather than as a number that would be wrong.
+    """
+    start, end = props.get("start_line"), props.get("end_line")
+    return JBodyNode(
+        kind=props["kind"],
+        span=None if start is None or end is None else JSpan(start=(start, -1), end=(end, -1), bytes=(0, 0)),
+        method_name=props.get("method_name"),
+        receiver_expr=props.get("receiver_expr"),
+        receiver_type=props.get("receiver_type"),
+        return_type=props.get("return_type"),
+        accessibility=props.get("accessibility"),
+        argument_types=list(props.get("argument_types") or []),
+        argument_expr=list(props.get("argument_expr") or []),
+        callee_signature=callee_signature,
+        is_static_call=props.get("is_static_call"),
+        is_constructor_call=bool(props.get("is_constructor_call", False)),
+    )
 
 
+def imports(edge: Props) -> List[JImport]:
+    """One :class:`JImport` per spelling on a ``J_IMPORTS`` edge. The projection aggregates every
+    import of a module that resolves to the same target onto one edge carrying their full dotted
+    ``spellings``, so the simple name is the last dotted segment and the source order within a file
+    is not recoverable."""
+    static, wildcard = bool(edge.get("is_static", False)), bool(edge.get("is_wildcard", False))
+    return [JImport(name=s.rsplit(".", 1)[-1], path=s, is_static=static, is_wildcard=wildcard) for s in (edge.get("spellings") or [])]
+
+
+# ----------------------------------------------------------------------------------------------
+# declarations
+# ----------------------------------------------------------------------------------------------
 def callable_(
     props: Props,
     *,
-    comments: List[dict] | None = None,
-    parameters: List[dict] | None = None,
-    call_sites: List[dict] | None = None,
-    variable_declarations: List[dict] | None = None,
-    crud_operations: List[dict] | None = None,
-    crud_queries: List[dict] | None = None,
-) -> dict:
-    return {
-        "signature": props.get("signature", ""),
-        "is_implicit": props.get("is_implicit", False),
-        "is_constructor": props.get("is_constructor", False),
-        "comments": comments or [],
-        "annotations": _arr(props, "annotations"),
-        "modifiers": _arr(props, "modifiers"),
-        "thrown_exceptions": _arr(props, "thrown_exceptions"),
-        "declaration": props.get("declaration", ""),
-        "parameters": parameters or [],
-        "return_type": props.get("return_type"),
-        "code": props.get("code", ""),
-        "start_line": props.get("start_line", -1),
-        "end_line": props.get("end_line", -1),
-        "code_start_line": props.get("code_start_line", -1),
-        "referenced_types": _arr(props, "referenced_types"),
-        "accessed_fields": _arr(props, "accessed_fields"),
-        "call_sites": call_sites or [],
-        "is_entrypoint": props.get("is_entrypoint", False),
-        "variable_declarations": variable_declarations or [],
-        "crud_operations": crud_operations or [],
-        "crud_queries": crud_queries or [],
-        "cyclomatic_complexity": props.get("cyclomatic_complexity", 0),
-    }
+    decorators: List[JDecorator],
+    body: Dict[str, JBodyNode],
+    local_variables: List[JLocalVariable],
+    types: Dict[str, JType],
+) -> JCallable:
+    metrics = props.get("cyclomatic_complexity")
+    # ``refs`` is a whole-object absence on the wire, not an empty one, and exactly for an implicit
+    # callable -- there is no body to analyse (measured: 99 of daytrader8's 1,216 callables carry no
+    # ``refs``, and all 99 are the implicit ones, while 225 non-implicit ones carry two empty
+    # lists). The graph omits both properties in either case, so ``is_implicit`` is what tells the
+    # two apart; deriving it from the properties' absence would report 225 as "not computed".
+    implicit = bool(props.get("is_implicit", False))
+    return JCallable(
+        id=props["id"],
+        kind=props["kind"],
+        signature=props["signature"],
+        declaration=props.get("declaration"),
+        return_type=props.get("return_type"),
+        parameters=parameters(props),
+        modifiers=list(props.get("modifiers") or []),
+        error_channel=list(props.get("error_channel") or []),
+        decorators=decorators,
+        comments=docstring(props),
+        metrics=None if metrics is None else {"cyclomatic": metrics},
+        refs=None if implicit else {"types": list(props.get("referenced_types") or []), "fields": list(props.get("accessed_fields") or [])},
+        local_variables=local_variables,
+        body=body,
+        types=types,
+        is_implicit=implicit,
+        is_entrypoint=bool(props.get("is_entrypoint", False)),
+        span=span(props, length=len(props.get("code") or "")),
+    )
 
 
 def type_(
     props: Props,
     *,
-    comments: List[dict] | None = None,
-    callable_declarations: Dict[str, dict] | None = None,
-    field_declarations: List[dict] | None = None,
-    enum_constants: List[dict] | None = None,
-    record_components: List[dict] | None = None,
-    initialization_blocks: List[dict] | None = None,
-) -> dict:
-    out = {
-        "is_inner_class": props.get("is_inner_class", False),
-        "is_local_class": props.get("is_local_class", False),
-        "is_nested_type": props.get("is_nested_type", False),
-        "comments": comments or [],
-        "extends_list": _arr(props, "extends_list"),
-        "implements_list": _arr(props, "implements_list"),
-        "modifiers": _arr(props, "modifiers"),
-        "annotations": _arr(props, "annotations"),
-        "parent_type": props.get("parent_type", ""),
-        "nested_type_declarations": _arr(props, "nested_type_declarations"),
-        "callable_declarations": callable_declarations or {},
-        "field_declarations": field_declarations or [],
-        "enum_constants": enum_constants or [],
-        "record_components": record_components or [],
-        "initialization_blocks": initialization_blocks or [],
-        "is_entrypoint_class": props.get("is_entrypoint_class", False),
-    }
-    out.update(_kind_flags(props.get("kind")))
-    return out
+    decorators: List[JDecorator],
+    fields: Dict[str, JField],
+    callables: Dict[str, JCallable],
+    types: Dict[str, JType],
+    enum_constants: List[JEnumConstant],
+    record_components: List[JRecordComponent],
+) -> JType:
+    return JType(
+        id=props["id"],
+        kind=props["kind"],
+        modifiers=list(props.get("modifiers") or []),
+        base_types=list(props.get("base_types") or []),
+        interfaces=list(props.get("interfaces") or []),
+        decorators=decorators,
+        comments=docstring(props),
+        enum_constants=enum_constants,
+        record_components=record_components,
+        fields=fields,
+        callables=callables,
+        types=types,
+        is_entrypoint_class=bool(props.get("is_entrypoint", False)),
+        # ``span`` is required on a type and the projection always carries its lines.
+        span=span(props) or JSpan(start=(-1, 0), end=(-1, 0), bytes=(0, 0)),
+    )
 
 
-def compilation_unit(
-    props: Props,
-    *,
-    comments: List[dict] | None = None,
-    import_declarations: List[dict] | None = None,
-    type_declarations: Dict[str, dict] | None = None,
-) -> dict:
-    return {
-        "file_path": props.get("file_path", props.get("file_key", "")),
-        "package_name": props.get("package_name", ""),
-        "comments": comments or [],
-        "import_declarations": import_declarations or [],
-        "type_declarations": type_declarations or {},
-        "is_modified": props.get("is_modified", False),
-    }
+def compilation_unit(props: Props, *, import_declarations: List[JImport], types: Dict[str, JType]) -> JCompilationUnit:
+    return JCompilationUnit(
+        id=props["id"],
+        package=props["package"],
+        source="",
+        content_hash=props.get("content_hash"),
+        imports=import_declarations,
+        types=types,
+        span=JSpan(start=(-1, 0), end=(-1, 0), bytes=(0, 0)),
+    )
 
 
-def call_edge(source: dict, target: dict, props: Props) -> dict:
-    """A ``JGraphEdges``-shaped raw dict; endpoints resolve via JApplication's lookup table."""
-    weight = props.get("weight")
-    return {
-        "source": source,
-        "target": target,
-        "type": props.get("type", "CALL_DEP"),
-        "weight": str(weight) if weight is not None else "1",
-        "source_kind": props.get("source_kind"),
-        "destination_kind": props.get("destination_kind"),
-    }
+# ----------------------------------------------------------------------------------------------
+# the repository-artifact layer (unprefixed labels; the Java models, not the shared Py* ones --
+# the five ABC accessors convert, exactly as JCodeanalyzer does off the wire)
+# ----------------------------------------------------------------------------------------------
+def config_key(props: Props) -> JConfigKey:
+    return JConfigKey(
+        id=props["id"],
+        key=props["key"],
+        namespace=props["namespace"],
+        value=props.get("value"),
+        references=list(props.get("references") or []),
+        span=span(props),
+    )
+
+
+def artifact(props: Props, *, config_keys: List[JConfigKey]) -> JArtifact:
+    return JArtifact(
+        id=props["id"],
+        path=props["path"],
+        format=props["format"],
+        roles=list(props.get("roles") or []),
+        size_bytes=props["size_bytes"],
+        sha256=props["sha256"],
+        source=props.get("source", ""),
+        text_truncated=bool(props.get("text_truncated", False)),
+        extraction=props["extraction"],
+        config_keys=config_keys,
+    )
+
+
+def dependency(edge: Props, package: Props, declared_in: str) -> JDependency:
+    """A declared dependency from the ``DECLARES_DEPENDENCY`` edge plus its endpoints: the
+    coordinate off the ``:Package`` node, the declaring manifest's id off the ``:Artifact``.
+    ``locked_version`` rides a separate ``LOCKS`` edge (a per-package fact, and no relationship of
+    that type exists in a Maven projection) and stays ``None``."""
+    return JDependency(
+        group=package.get("group"),
+        name=package["name"],
+        ecosystem=package["ecosystem"],
+        spec=edge.get("spec", ""),
+        kind=edge.get("kind", "runtime"),
+        extras=list(edge.get("extras") or []),
+        declared_in=declared_in,
+        direct=bool(edge.get("direct", False)),
+        prov=list(edge.get("prov") or []),
+    )
