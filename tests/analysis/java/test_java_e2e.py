@@ -16,9 +16,18 @@
 
 """End-to-end: the real codeanalyzer-java analyzer on the daytrader8 sample application, at the
 symbol-table and call-graph levels. Both the jar and the JVM it runs on come from the pinned
-``codeanalyzer-java`` wheel (the ``java`` extra), so the run needs no JDK on the machine and no
-``JAVA_HOME``; the analyzer builds the project with Maven itself. Skips only when
-``CLDK_SKIP_JAVA_E2E`` is set."""
+``codeanalyzer-java`` wheel (the ``java`` extra), so *starting* the analyzer needs no JDK on the
+machine and no ``JAVA_HOME``.
+
+**The full answer still needs Maven.** The analyzer builds the project itself, and its auto-build
+shells out to ``mvn``, which brings its own JDK; on a ``PATH`` with neither, codeanalyzer-java
+degrades rather than failing — exit 0, the level still stamped, and a call graph of **1,391
+declared-only** edges where the built run has **1,862**. So the call-graph assertions here require
+``analyzer_diagnostics == []``: ``number_of_edges() > 0`` alone passes on the degraded graph, which
+is how a Java-less runner would go green on a partial answer (#341, and
+``test_java_degradation.py`` for the degraded path itself).
+
+Skips only when ``CLDK_SKIP_JAVA_E2E`` is set."""
 
 import os
 from pathlib import Path
@@ -78,6 +87,10 @@ def test_call_graph_nodes_are_fqn_dot_signature_strings(analysis):
     if AnalysisLevel(analysis.analysis_level) is AnalysisLevel.symbol_table:
         assert graph.number_of_edges() == 0
     else:
+        assert analysis.backend.analyzer_diagnostics == [], "the analyzer degraded (no build tool?); this is not the full call graph"
         assert graph.number_of_edges() > 0
         for _, _, data in graph.edges(data=True):
             assert data["type"] == "CALL_DEP" and isinstance(data["weight"], int) and isinstance(data["calling_lines"], list)
+            # J-8/#8: absolute file lines, sorted — not offsets into ``JCallable.code``, which is a
+            # different string on each backend.
+            assert data["calling_lines"] == sorted(data["calling_lines"]) and all(n > 0 for n in data["calling_lines"])

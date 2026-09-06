@@ -89,8 +89,7 @@ from typing import Any, Dict, FrozenSet, Iterable, List, Tuple
 
 import networkx as nx
 
-from cldk.analysis.commons.treesitter import TreesitterJava
-from cldk.analysis.java.backend import CRUD_UNAVAILABLE, CRUDRow, JavaAnalysisBackend, duplicate_type_name, unhomed_endpoint
+from cldk.analysis.java.backend import CRUD_UNAVAILABLE, CallingLines, CRUDRow, JavaAnalysisBackend, duplicate_type_name, unhomed_endpoint
 from cldk.analysis.java.neo4j import reconstruct as R
 from cldk.models.java import JGraphEdges
 from cldk.models.java.models import (
@@ -528,10 +527,6 @@ class JNeo4jBackend(JavaAnalysisBackend):
             raise CodeanalyzerExecutionException(unhomed_endpoint(node_id)) from None
         return f"{t.qualified_name}.{c.signature}", self._detail(t.qualified_name, c)
 
-    @staticmethod
-    def _calling_lines(tsu: TreesitterJava, source: JCallable, target: JCallable) -> List[int]:
-        return tsu.get_calling_lines(source.code, target.signature) if source.code else []
-
     def get_call_graph(self) -> nx.DiGraph:
         """Build (and cache) the call graph keyed by ``"<type fqn>.<signature>"`` (J-1): node attrs
         ``method_detail`` / ``kind="callable"``; edge attrs ``type="CALL_DEP"``, ``weight``,
@@ -539,13 +534,13 @@ class JNeo4jBackend(JavaAnalysisBackend):
         if self._call_graph is not None:
             return self._call_graph
         cg = nx.DiGraph()
-        tsu = TreesitterJava()
+        lines = CallingLines()
         for edge in self.application.call_graph:
             src, src_detail = self._node_of(edge.src)
             dst, dst_detail = self._node_of(edge.dst)
             cg.add_node(src, method_detail=src_detail, kind="callable")
             cg.add_node(dst, method_detail=dst_detail, kind="callable")
-            cg.add_edge(src, dst, type="CALL_DEP", weight=edge.weight, calling_lines=self._calling_lines(tsu, src_detail.method, dst_detail.method))
+            cg.add_edge(src, dst, type="CALL_DEP", weight=edge.weight, calling_lines=lines.of(src_detail.method, dst_detail.method))
         self._call_graph = cg
         return cg
 
@@ -612,13 +607,13 @@ class JNeo4jBackend(JavaAnalysisBackend):
     # the callable index, so the two must agree edge for edge on the same symbol table.
     def _symbol_table_call_graph(self, qualified_class_name: str, method_signature: str | None, is_target: bool = False) -> nx.DiGraph:
         cg = nx.DiGraph()
-        tsu = TreesitterJava()
+        lines = CallingLines()
         edges = self._st_edges_into(qualified_class_name, method_signature) if is_target else self._st_edges_from(qualified_class_name, method_signature)
         for source, target in edges:
             src, dst = f"{source.klass}.{source.method.signature}", f"{target.klass}.{target.method.signature}"
             cg.add_node(src, method_detail=source, kind="callable")
             cg.add_node(dst, method_detail=target, kind="callable")
-            cg.add_edge(src, dst, type="CALL_DEP", weight=1, calling_lines=self._calling_lines(tsu, source.method, target.method))
+            cg.add_edge(src, dst, type="CALL_DEP", weight=1, calling_lines=lines.of(source.method, target.method))
         return cg
 
     def _st_edges_from(self, qualified_class_name: str, method_signature: str | None) -> Iterable[Tuple[JMethodDetail, JMethodDetail]]:
@@ -779,7 +774,16 @@ class JNeo4jBackend(JavaAnalysisBackend):
         return deps
 
     def get_config_keys(self) -> Dict[str, PyConfigKey]:
-        return {ck.id: PyConfigKey(**ck.model_dump()) for a in self.application.artifacts.values() for ck in a.config_keys}
+        """Every configuration key flattened out of the config-bearing artifacts, keyed
+        ``"<artifact repo-relative path>@key/<dotted key>"`` (``pom.xml@key/project.artifactId``).
+
+        That key is the analyzer's own id with its ``can://artifact/<app>/`` prefix dropped: the
+        application name belongs to the run, not to the key, so keying by the raw id made the two
+        backends share **zero** keys whenever the graph was emitted under a different ``--app-name``
+        than the local run passes (the SDK passes the project directory's name). ``can://`` ids also
+        stay off the public surface (E6); the id is still on ``PyConfigKey.id``.
+        """
+        return {f"{path}@key/{ck.key}": PyConfigKey(**ck.model_dump()) for path, a in self.application.artifacts.items() for ck in a.config_keys}
 
     def get_config_uses(self, key: str | None = None) -> List[PyConfigUseEdge]:
         """Always empty, and not a projection gap: codeanalyzer-java 3.0.1 emits no code-to-config
