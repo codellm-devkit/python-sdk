@@ -38,8 +38,11 @@ Parity caveats (inherent to what the projection stores, not bugs):
 from __future__ import annotations
 
 import json
-from typing import Any, Collection, Dict, List, Mapping
+from typing import Any, Dict, List, Mapping
 
+# ``module_key_of`` lives in ``commons.keys`` (leg 2.5a, G4); re-exported for the callers that have
+# always addressed it through this module.
+from cldk.analysis.commons.keys import module_key_of  # noqa: F401
 from cldk.models.python import (
     BodyNode,
     PyArtifact,
@@ -66,26 +69,6 @@ from cldk.models.python import (
 )
 
 Props = Mapping[str, Any]
-
-
-# -----[ ids ]-----
-def module_key_of(node_id: str, prefix: str, known: Collection[str]) -> str:
-    """The repo-relative module key embedded in a ``can://`` id (F4).
-
-    Ids are ``<prefix><file_key>/<rest>`` (or exactly ``<prefix><file_key>`` for a module), and a
-    file key can itself contain ``.py/`` as a directory name, so the key is never recovered by
-    splitting: every ``/``-boundary prefix of the id is tried longest first and the first that is
-    a member of ``known`` -- the application's verified module keys -- wins. A miss raises: a key
-    we cannot verify is a defect, not a guess. ``known`` should be a set; this runs once per row.
-    """
-    if not node_id.startswith(prefix):
-        raise KeyError(node_id)
-    parts = node_id[len(prefix) :].split("/")
-    for n in range(len(parts), 0, -1):
-        candidate = "/".join(parts[:n])
-        if candidate in known:
-            return candidate
-    raise KeyError(node_id)
 
 
 # -----[ helpers ]-----

@@ -49,6 +49,7 @@ from __future__ import annotations
 
 from typing import Callable, List, NamedTuple, Optional, Sequence, TypeVar
 
+from cldk.analysis.commons.keys import module_dotted
 from cldk.utils.exceptions import AmbiguousName, SelectorNotInGraph
 
 T = TypeVar("T")
@@ -245,15 +246,6 @@ def resolve_callable_signature(
     narrow_with = " or ".join(unused + ["by naming more of the dotted path"]) if unused else "by naming more of the dotted path"
     return resolve_name(name, [c.signature for c in candidates], kind="callable", narrow_with=narrow_with)
 
-
-def module_dotted(path: str) -> str:
-    """The dotted module name a repo-relative path spells: ``"odoo/tools/mail.py"`` →
-    ``"odoo.tools.mail"``, ``"pkg/__init__.py"`` → ``"pkg"``. The same derivation the analyzer's
-    signatures embody, so ``in_module=`` can be written the way a signature reads."""
-    stem = path[:-3] if path.endswith(".py") else path
-    if stem.endswith("/__init__"):
-        stem = stem[: -len("/__init__")]
-    return stem.replace("/", ".")
 
 
 def resolve_within(resolve_callable: Callable[[str], "T"], within: str) -> "T":

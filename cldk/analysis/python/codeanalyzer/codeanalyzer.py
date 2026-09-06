@@ -1499,7 +1499,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         walks = self._shortest_walks(adjacency["forward"], a.ref, b.ref, depth, max_paths + 1)
         described = {ref: _local_slice_node(nodes[ref], ref) for walk in walks for ref, _ in walk if ref in nodes}
         described[a.ref] = a
-        paths = [flow_path([described[a.ref]] + [described[ref] for ref, _ in walk], [label for _, label in walk]) for walk in walks[:max_paths]]
+        paths = [flow_path([described[a.ref]] + [described[ref] for ref, _ in walk], [label for _, label in walk], via=VIA) for walk in walks[:max_paths]]
         return FlowPaths(paths=paths, complete=len(walks) <= max_paths)
 
     def paths_between(self, src: str, dst: str, *, src_within: str, dst_within: str, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
@@ -1537,7 +1537,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         externals = self.get_external_symbols()
         described = {sig: self._call_graph_node(sig, externals) for walk in walks for sig, _ in walk}
         described[a] = self._call_graph_node(a, externals)
-        paths = [flow_path([described[a]] + [described[sig] for sig, _ in walk], [label for _, label in walk]) for walk in walks[:max_paths]]
+        paths = [flow_path([described[a]] + [described[sig] for sig, _ in walk], [label for _, label in walk], via=VIA) for walk in walks[:max_paths]]
         return FlowPaths(paths=paths, complete=len(walks) <= max_paths)
 
     def _call_graph_node(self, signature: str, externals: Dict[str, PyExternalSymbol]) -> SliceNode:
