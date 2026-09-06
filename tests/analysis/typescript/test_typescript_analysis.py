@@ -71,15 +71,17 @@ def test_symbol_table_is_not_empty(ts_analysis):
     assert "src/models.ts" in symtab
 
 
-def test_call_graph_has_no_dangling_nodes(ts_analysis):
+def test_call_graph_nodes_are_accessor_keys(ts_analysis):
     graph = ts_analysis.get_call_graph()
     assert isinstance(graph, nx.DiGraph)
     assert graph.number_of_edges() > 0
-    # every edge endpoint is a node — internal callable OR phantom external symbol
-    nodes = set(graph.nodes)
-    for src, dst in graph.edges:
-        assert src in nodes
-        assert dst in nodes
+    # every node is a key an accessor returns — a module file key, a signature or an external's
+    # "<module>.<name>" — never a raw can:// id
+    known = (
+        set(ts_analysis.get_symbol_table()) | set(ts_analysis.get_classes()) | {c.signature for c in ts_analysis.get_callables_overview()} | set(ts_analysis.get_external_symbols())
+    )
+    assert set(graph.nodes) <= known, set(graph.nodes) - known
+    assert not any(n.startswith("can://") for n in graph.nodes)
 
 
 def test_phantom_external_nodes(ts_analysis):

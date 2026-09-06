@@ -121,7 +121,7 @@ class TypeScriptAnalysis:
     def get_call_graph(self) -> nx.DiGraph:
         """NetworkX DiGraph of the call edges, keyed as every other accessor keys things (module
         file key, type/callable signature, ``"<module>.<name>"`` for an external), each node
-        tagged ``kind`` (``module | class | callable | external``) and ``id``. TypeScript's own
+        tagged ``kind`` (``module | class | interface | enum | type_alias | namespace | callable | external``) and ``id``. TypeScript's own
         endpoints are kept: a module is the caller of its top-level code and a class the callee of
         ``new X()``; filter on ``kind == "callable"`` for Python's shape."""
         return self.backend.get_call_graph()

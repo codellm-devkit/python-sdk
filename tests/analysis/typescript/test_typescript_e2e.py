@@ -29,8 +29,11 @@ import toml
 from cldk import CLDK
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.backend_config import CodeAnalyzerConfig
+from cldk.analysis.typescript.backend import CALL_GRAPH_NODE_KINDS
 
-KINDS = {"module", "class", "callable", "external"}
+#: The documented vocabulary (backend module docstring, facade docstring, CHANGELOG) — pinned here so
+#: the three cannot drift from what the index stores.
+KINDS = {"module", "class", "interface", "enum", "type_alias", "namespace", "callable", "external"}
 
 
 def _binary() -> str | None:
@@ -73,11 +76,15 @@ def test_symbol_table_is_not_empty(analysis):
     assert "src/models.User" in analysis.get_classes()
 
 
-def test_call_graph_is_dangling_free_and_kind_tagged(analysis):
+def test_call_graph_nodes_are_accessor_keys_and_kind_tagged(analysis):
+    """Every node is a key some accessor returns (module file key, signature, ``"<module>.<name>"``)
+    and never a raw ``can://`` id — nx would happily create a node from an unresolved endpoint,
+    so "every endpoint is a node" proves nothing; this can go red."""
     graph = analysis.get_call_graph()
-    nodes = set(graph.nodes)
-    for src, dst in graph.edges:
-        assert src in nodes and dst in nodes
+    known = set(analysis.get_symbol_table()) | set(analysis.get_classes()) | {c.signature for c in analysis.get_callables_overview()} | set(analysis.get_external_symbols())
+    assert set(graph.nodes) <= known, set(graph.nodes) - known
+    assert not any(n.startswith("can://") for n in graph.nodes)
+    assert CALL_GRAPH_NODE_KINDS == KINDS
     for node, attrs in graph.nodes(data=True):
         assert attrs["kind"] in KINDS, (node, attrs)
         assert attrs["id"].startswith("can://"), (node, attrs)

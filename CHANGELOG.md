@@ -25,8 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `PyConfigKey` / `PyConfigUseEdge` / `PyConfigRead` models (a TypeScript dependency's `ecosystem` is
   `"npm"`; a non-string config value is rendered as its JSON text).
 - **`get_call_graph()` on TypeScript** keys nodes as every other accessor does (module file key,
-  signature, `"<module>.<name>"` for an external) with `id` and `kind` (`module | class | callable |
-  external`) node attributes, and edges carry `type="CALL_DEP"`, `weight` and `provenance` (a tuple) as
+  signature, `"<module>.<name>"` for an external) with `id` and `kind` (`module | class | interface | enum | type_alias | namespace | callable | external`) node attributes, and edges carry `type="CALL_DEP"`, `weight` and `provenance` (a tuple) as
   Python's do; the 1.x `tags` dict is gone with the wire. Module callers and class callees are kept,
   not dropped as on Python — filter on `kind == "callable"` for that shape. `get_external_symbols()`
   is keyed `"<module>.<name>"` to match. `get_call_sites` / `get_calling_lines` / `get_call_targets` /

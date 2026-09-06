@@ -34,9 +34,11 @@ from cldk import CLDK
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.backend_config import CodeAnalyzerConfig
 from cldk.analysis.typescript.neo4j import TSNeo4jBackend
+from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 from cldk.models.typescript import (
     TSAnalysis,
     TSApplication,
+    TSBodyNode,
     TSCallable,
     TSCallableParameter,
     TSCallEdge,
@@ -44,6 +46,7 @@ from cldk.models.typescript import (
     TSModule,
     TSNamespace,
     TSSpan,
+    TSSynthesizedNode,
 )
 
 # -----[ shared fixture data ]-----
@@ -98,13 +101,13 @@ def _build_application() -> TSApplication:
     )
 
 
-def _build_analysis_json() -> str:
+def _build_analysis_json(application: TSApplication | None = None) -> str:
     return TSAnalysis(
         schema_version="2.0.0",
         language="typescript",
         max_level=2,
         analyzer={"name": "codeanalyzer-typescript", "version": "1.2.0"},
-        application=_build_application(),
+        application=application or _build_application(),
     ).model_dump_json()
 
 
@@ -179,6 +182,79 @@ def test_local_module_function_participates_in_call_edge(ts_analysis):
     # sanity check on the fixture itself: baz is a real call-graph participant
     graph = ts_analysis.get_call_graph()
     assert graph.has_edge("src/mod.baz", "src/mod.Foo.bar")
+
+
+# -----[ unhomed endpoints: a raw can:// id never becomes a key, and never reaches a return field ]-----
+
+
+def _analysis_over(application: TSApplication, typescript_application, tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEANALYZER_TS_BIN", "codeanalyzer-typescript")
+    with patch(
+        "cldk.analysis.typescript.codeanalyzer.codeanalyzer.subprocess.run",
+        side_effect=_fake_run_writing_output(_build_analysis_json(application)),
+    ):
+        return CLDK.typescript(
+            project_path=typescript_application,
+            eager=True,
+            analysis_level=AnalysisLevel.call_graph,
+            backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)),
+        )
+
+
+def test_call_node_with_unindexed_callee_raises_rather_than_leaking_the_id(typescript_application, tmp_path, monkeypatch):
+    app = _build_application()
+    baz = app.symbol_table["src/mod.ts"].functions["baz"]
+    baz.body["2:3"] = TSBodyNode(kind="call", callee=f"{MOD}/Ghost/nope", method_name="nope", span=SPAN)
+    analysis = _analysis_over(app, typescript_application, tmp_path, monkeypatch)
+    for query in (
+        lambda: analysis.get_call_sites("src/mod.baz"),
+        lambda: analysis.get_call_targets("src/mod.baz"),
+        lambda: analysis.get_calling_lines("src/mod.Foo.bar"),
+        lambda: analysis.get_callsites_for(["src/mod.baz"]),
+    ):
+        with pytest.raises(CodeanalyzerExecutionException, match="Ghost/nope"):
+            query()
+
+
+def test_call_node_with_null_callee_is_unresolved_not_an_error(typescript_application, tmp_path, monkeypatch):
+    app = _build_application()
+    app.symbol_table["src/mod.ts"].functions["baz"].body["2:3"] = TSBodyNode(kind="call", callee=None, method_name="dyn", span=SPAN)
+    analysis = _analysis_over(app, typescript_application, tmp_path, monkeypatch)
+    assert [cs.callee_signature for cs in analysis.get_call_sites("src/mod.baz")] == [None]
+    assert analysis.get_call_targets("src/mod.baz") == {"dyn"}
+
+
+def test_synthesized_entry_pointing_at_a_tree_callable_keys_on_its_signature(typescript_application, tmp_path, monkeypatch):
+    app = _build_application()
+    old = f"{MOD}/baz@9:9"
+    app.synthesized_callables = {old: TSSynthesizedNode(id=f"{MOD}/baz")}
+    app.call_graph.append(TSCallEdge(src=f"{MOD}/Foo/bar", dst=old, prov=["defuse"]))
+    graph = _analysis_over(app, typescript_application, tmp_path, monkeypatch).get_call_graph()
+    assert graph.has_edge("src/mod.Foo.bar", "src/mod.baz")
+    assert not any(n.startswith("can://") for n in graph.nodes)
+
+
+def test_named_residual_synthesized_node_keys_on_its_name(typescript_application, tmp_path, monkeypatch):
+    app = _build_application()
+    residual = "can://typescript/t/@synthetic/cb"
+    app.synthesized_callables = {residual: TSSynthesizedNode(id=residual, name="cb", path="src/mod.ts")}
+    app.call_graph.append(TSCallEdge(src=f"{MOD}/Foo/bar", dst=residual, prov=["defuse"]))
+    graph = _analysis_over(app, typescript_application, tmp_path, monkeypatch).get_call_graph()
+    assert graph.nodes["cb"] == {"id": residual, "kind": "callable"}
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        pytest.param({"can://typescript/t/@synthetic/cb": TSSynthesizedNode(id="can://typescript/t/@synthetic/cb")}, id="residual-without-name"),
+        pytest.param({f"{MOD}/baz@9:9": TSSynthesizedNode(id=f"{MOD}/nowhere/<anon@9:9>")}, id="non-residual-unindexed-id"),
+    ],
+)
+def test_unhomed_synthesized_entry_raises_at_load(entry, typescript_application, tmp_path, monkeypatch):
+    app = _build_application()
+    app.synthesized_callables = entry
+    with pytest.raises(CodeanalyzerExecutionException, match="unhomed endpoint"):
+        _analysis_over(app, typescript_application, tmp_path, monkeypatch)
 
 
 # -----[ Neo4j backend ]-----

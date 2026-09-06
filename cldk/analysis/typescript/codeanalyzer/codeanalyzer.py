@@ -117,7 +117,7 @@ class TSCodeanalyzer(TSAnalysisBackend):
             warnings.warn(
                 f"tsc_only is a no-op: codeanalyzer-typescript removed --tsc-only in {_TSC_ONLY_REMOVED_IN}; " "every call edge now carries its resolver in `prov` instead.",
                 DeprecationWarning,
-                stacklevel=3,
+                stacklevel=4,  # warn at the CLDK.typescript(...) call, through the facade
             )
         self.analysis: TSAnalysis = self._init_codeanalyzer(analysis_level=analyzer_level(analysis_level))
         self.application: TSApplication = self.analysis.application
@@ -229,9 +229,20 @@ class TSCodeanalyzer(TSAnalysisBackend):
             self._id_index[ext.id] = node
         # The compatibility index: keyed by the older anonymous id, the value's id is the tree id
         # that replaced it (already indexed above); a residual fallback node (key == id, no tree
-        # home) is keyed by its own name.
+        # home) is keyed by its own name. Anything else is an analyzer defect, never a node keyed
+        # by a raw id.
         for key, syn in (self.application.synthesized_callables or {}).items():
-            self._id_index.setdefault(key, self._id_index.get(syn.id, (syn.name or key, "callable")))
+            if syn.id in self._id_index:
+                node = self._id_index[syn.id]
+            elif syn.id == key and syn.name:
+                node = (syn.name, "callable")
+            else:
+                raise CodeanalyzerExecutionException(
+                    f"synthesized callable {key!r} resolves to {syn.id!r}, which is neither a callable of application "
+                    f"{self.application.id!r} nor a named residual node: codeanalyzer-typescript "
+                    f"{self.analysis.analyzer.version} emitted an unhomed endpoint"
+                )
+            self._id_index.setdefault(key, node)
 
     def _add_type(self, t, fp: str) -> None:
         self._file_of[t.signature] = fp
@@ -296,10 +307,12 @@ class TSCodeanalyzer(TSAnalysisBackend):
             ) from None
 
     def _callee_signature(self, node: TSBodyNode) -> str | None:
-        """The graph key a call node's resolved ``callee`` id maps to; ``None`` when unresolved."""
+        """The graph key a call node's resolved ``callee`` id maps to; ``None`` when the analyzer
+        left it unresolved (``null``). A ``callee`` that is neither is the same unhomed-endpoint
+        defect :meth:`_node_of` raises for — a raw id never reaches a return field."""
         if node.callee is None:
             return None
-        return self._id_index.get(node.callee, (node.callee, "unresolved"))[0]
+        return self._node_of(node.callee)[0]
 
     def _callsite(self, key: str, node: TSBodyNode) -> TSCallsite:
         """The 1.x per-call record, read off a ``kind == "call"`` body node."""

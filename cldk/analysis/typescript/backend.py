@@ -34,7 +34,7 @@ support) is intentionally *not* part of the contract.
 
 The call graph both backends return keeps TypeScript's own endpoints (decision TS-11): cants emits
 a module as the caller of its top-level code and a class as the callee of ``new X()``, and both
-are kept, tagged with a ``kind`` node attribute (``module | class | callable | external``) so a
+are kept, tagged with a ``kind`` node attribute (:data:`CALL_GRAPH_NODE_KINDS`) so a
 caller wanting Python's callable-only shape filters in one line rather than the SDK erasing every
 top-level call.
 """
@@ -68,6 +68,12 @@ from cldk.models.typescript import (
     TSTypeAlias,
     TSVariableDeclaration,
 )
+
+
+#: The ``kind`` vocabulary of a call-graph node: what the id index holds — a module, any of the
+#: five type kinds (a class is the callee of ``new X()``; the others are indexed and would be kept
+#: if the analyzer ever emitted an edge to one), a callable, or an external.
+CALL_GRAPH_NODE_KINDS = frozenset({"module", "class", "interface", "enum", "type_alias", "namespace", "callable", "external"})
 
 
 class TSAnalysisBackend(AnalysisBackend[TSApplication, TSModule, TSType, TSCallable, TSField, str]):
