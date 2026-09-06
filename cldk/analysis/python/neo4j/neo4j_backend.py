@@ -494,8 +494,27 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         """The repo-relative module key a node's ``can://`` id embeds (F4). The graph stores no
         path property to project, so every ``path``/``file`` a caller sees is derived from the id
         it came with and verified against the application's module keys -- never split, never
-        guessed."""
-        return R.module_key_of(node_id, self._scope_prefix, self._module_set)
+        guessed.
+
+        The key set was read once, at attach, from a graph this backend does not own: a re-emit
+        since then can add a module, and its callables would then fail membership although they
+        are this application's. So a miss reloads the module keys **once** and retries; a second
+        miss is a genuine defect and is raised as such, without the id (E6).
+        """
+        try:
+            return R.module_key_of(node_id, self._scope_prefix, self._module_set)
+        except KeyError:
+            pass
+        self._modules = self._load_module_keys()
+        self.__dict__.pop("_module_set", None)  # drop the cached frozenset; rebuilt on next read
+        try:
+            return R.module_key_of(node_id, self._scope_prefix, self._module_set)
+        except KeyError:
+            raise CodeanalyzerExecutionException(
+                f"A node of application {self.application_name!r} belongs to none of the {len(self._module_set)} module keys the graph "
+                "holds for it, even after reloading them: the module set changed since attach, or the node is not one of its "
+                "declared modules'. Re-attach to the graph."
+            ) from None
 
     def _overview(self, row: Dict[str, Any]) -> PyCallableOverview:
         """A projected callable row (``_OVERVIEW_PROJECTION``'s shape) with its ``path`` derived."""

@@ -60,3 +60,46 @@ def test_the_module_id_itself_keys_to_its_own_key():
 def test_an_id_under_another_application_raises():
     with pytest.raises(KeyError):
         module_key_of("can://python/app-b/pkg/a.py/f()", APP, {"pkg/a.py"})
+
+
+# ----------------------------------------------------------------------------------------------
+# The backend's use of it: the key set is read once at attach, from a graph the SDK does not own.
+# ----------------------------------------------------------------------------------------------
+from cldk.analysis.python.neo4j.neo4j_backend import PyNeo4jBackend  # noqa: E402
+from cldk.utils.exceptions import CodeanalyzerExecutionException  # noqa: E402
+
+
+def _overview_row(node_id: str) -> dict:
+    return {"id": node_id, "signature": node_id.rsplit("/", 1)[1], "name": "f", "decorators": None, "start_line": 1, "end_line": 2, "class_signature": None}
+
+
+def test_a_module_added_since_attach_is_found_after_one_reload_and_a_foreign_id_is_a_typed_error(fake_driver):
+    """A re-emit can add a module after attach; its callables must not take down a whole-application
+    answer. One miss reloads the key set once and retries. A second miss is a real defect, raised
+    as an SDK exception that names the key count and never the ``can://`` id (E6)."""
+    graph = {"modules": ["a.py"], "callables": ["can://python/app/a.py/f"]}
+
+    def responder(query, params):
+        if "RETURN m.file_key AS k" in query:
+            return [{"k": k} for k in graph["modules"]]
+        if "OPTIONAL MATCH (owner:PyClass)-[:PY_HAS_METHOD]->(c)" in query:
+            return [_overview_row(i) for i in graph["callables"]]
+        return []
+
+    fake_driver.responder = responder
+    backend = PyNeo4jBackend._from_driver(fake_driver, application_name="app")
+    loads = lambda: sum("RETURN m.file_key AS k" in s for s in fake_driver.statements)  # noqa: E731
+    assert loads() == 1
+
+    graph["modules"].append("b.py")  # the graph moved under us
+    graph["callables"].append("can://python/app/b.py/g")
+    assert {o.path for o in backend.get_callables_overview()} == {"a.py", "b.py"}
+    assert loads() == 2, "one reload, on the first miss"
+
+    graph["callables"].append("can://python/app/zzz.py/h")  # no such module, before or after reload
+    with pytest.raises(CodeanalyzerExecutionException) as e:
+        backend.get_callables_overview()
+    assert loads() == 3
+    assert "changed since attach" in str(e.value) and "2 module keys" in str(e.value)
+    assert "can://" not in str(e.value) and "zzz" not in str(e.value)
+
