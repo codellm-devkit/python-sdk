@@ -15,24 +15,28 @@
 ################################################################################
 
 """
-Test Cases for JCodeanalyzer (codeanalyzer-java 3.0.1, schema v2). The analyzer subprocess is
+Test Cases for JCodeanalyzer (codeanalyzer-java 3.0.2, schema v2). The analyzer subprocess is
 mocked; ``analysis_json`` is daytrader8 at ``-a 1`` (no call graph), ``analysis_json_a4`` the
 four-file ``-a 4`` slice (247 call edges).
 """
 
 import json
+import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 from unittest.mock import patch, MagicMock
 
+import codeanalyzer_java
 import networkx as nx
 import pytest
 
+import cldk
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.java.backend import CRUD_UNAVAILABLE
 from cldk.analysis.java.codeanalyzer import JCodeanalyzer
-from cldk.analysis.java.codeanalyzer import _jdk
 from cldk.analysis.java.neo4j import JNeo4jBackend
 from cldk.models.java import JGraphEdges
 from cldk.models.java.models import JAnalysis, JApplication, JCallGraphEdge, JComment, JType, JCallable, JCompilationUnit, JMethodDetail
@@ -74,12 +78,12 @@ def _analyzer(payload: str, level=AnalysisLevel.symbol_table, project_dir=".", a
 
 
 @pytest.mark.parametrize("level, a", [(AnalysisLevel.symbol_table, "1"), (AnalysisLevel.call_graph, "2"), (AnalysisLevel.program_dependency_graph, "3"), (AnalysisLevel.system_dependency_graph, "4")])
-def test_argv_is_the_301_command_line(test_fixture, analysis_json, tmp_path, level, a):
+def test_argv_is_the_analyzer_command_line(test_fixture, analysis_json, tmp_path, level, a):
     """``-a`` carries the requested level (3 and 4 are new to Java); ``-o``/``-c`` only with a cache dir;
     ``--app-name`` is the project directory's name, which the analyzer stamps into every id."""
     analyzer, run_mock = _analyzer(analysis_json, level=level, project_dir=test_fixture, analysis_json_path=tmp_path, target_files=["a.java", "b.java"])
     argv = run_mock.call_args[0][0]
-    assert argv[1] == "-jar" and argv[2] == str(analyzer._locate_jar())
+    assert argv[:3] == codeanalyzer_java.command()
     assert argv[3:] == ["-i", str(test_fixture), "-a", a, "-o", str(tmp_path), "-c", str(tmp_path / "cache"), "--app-name", test_fixture.name, "-t", "a.java", "-t", "b.java"]
     assert isinstance(analyzer.application, JApplication)
 
@@ -98,7 +102,7 @@ def test_unknown_level_raises_instead_of_defaulting(test_fixture, analysis_json)
 def test_envelope_and_application_are_kept(test_fixture, analysis_json):
     analyzer, _ = _analyzer(analysis_json, project_dir=test_fixture)
     assert analyzer.analysis.schema_version == "2.0.0"
-    assert analyzer.analysis.analyzer.version == "3.0.1"
+    assert analyzer.analysis.analyzer.version == "3.0.2"
     assert analyzer.analysis.max_level == 1
     assert analyzer.application is analyzer.analysis.application
     assert analyzer.application.id == "can://java/daytrader8"
@@ -143,32 +147,43 @@ def test_unparsable_cache_triggers_a_rerun(test_fixture, analysis_json, tmp_path
     assert run_mock.called
 
 
-def test_jar_override_is_honoured(tmp_path, monkeypatch, analysis_json):
-    """``$CLDK_CODEANALYZER_JAVA_JAR`` points the backend at an uncommitted jar (the e2e's seam)."""
-    jar = tmp_path / "codeanalyzer-x.jar"
-    monkeypatch.setenv("CLDK_CODEANALYZER_JAVA_JAR", str(jar))
-    with pytest.raises(CodeanalyzerExecutionException, match="is not a file"):
-        _analyzer(analysis_json)
-    jar.write_bytes(b"")
-    _, run_mock = _analyzer(analysis_json)
-    assert run_mock.call_args[0][0][2] == str(jar)
-
-
-def test_no_cache_and_no_project_dir_is_refused_before_jdk_lookup():
-    with pytest.raises(CodeanalyzerExecutionException, match="no cache directory and no project directory"):
+def test_no_project_dir_is_refused():
+    with pytest.raises(CodeanalyzerExecutionException, match="no project directory"):
         JCodeanalyzer(project_dir=None, analysis_json_path=None, analysis_level=AnalysisLevel.symbol_table, eager_analysis=False, target_files=None)
 
 
-def test_ensure_jdk_reuses_the_nested_extracted_jdk_without_downloading(tmp_path, monkeypatch):
-    """Should find the cached JDK in its extracted (nested) layout instead of re-downloading over it (#328)"""
-    home = tmp_path / "jdk" / _jdk.JDK_RELEASE / _jdk.JDK_RELEASE / "Contents" / "Home"
-    (home / "bin").mkdir(parents=True)
-    (home / "bin" / "java").touch()
-    (home / "jmods").mkdir()
-    monkeypatch.delenv("JAVA_HOME", raising=False)
-    monkeypatch.setattr(_jdk.JdkLoader, "download_and_extract", lambda *a, **k: pytest.fail("attempted a JDK download"))
+def test_exec_is_the_wheels_own_command_and_java_home_is_untouched(test_fixture, analysis_json, monkeypatch):
+    """#339: the analyzer and the JVM it runs on both come from the ``codeanalyzer-java`` wheel, and
+    the SDK neither reads nor writes ``JAVA_HOME`` (3.0.x reads its primordial scope from ``jrt:/``)."""
+    monkeypatch.setenv("JAVA_HOME", "/nonexistent/sentinel")
+    analyzer, run_mock = _analyzer(analysis_json, project_dir=test_fixture)
+    assert analyzer._get_codeanalyzer_exec() == codeanalyzer_java.command()
+    assert run_mock.call_args[0][0][:3] == codeanalyzer_java.command()
+    assert os.environ["JAVA_HOME"] == "/nonexistent/sentinel"
+    package = Path(cldk.__file__).parent
+    for module in package.rglob("*.py"):
+        source = module.read_text(encoding="utf-8")
+        for token in ("JAVA_HOME", "ensure_jdk", "jmods"):
+            assert token not in source, f"{module.relative_to(package)} mentions {token}"
 
-    assert _jdk.ensure_jdk(tmp_path) == home.resolve()
+
+def test_a_missing_java_extra_names_the_distribution_and_the_install(test_fixture, monkeypatch):
+    """The extra is optional, so the import lives inside ``_get_codeanalyzer_exec``: ``import cldk``
+    works without it, and asking the backend to run says exactly what to install."""
+    monkeypatch.setitem(sys.modules, "codeanalyzer_java", None)  # a None entry makes `import` raise ImportError
+    with pytest.raises(CodeanalyzerExecutionException, match=re.escape('pip install "cldk[java]"')) as exc:
+        JCodeanalyzer(project_dir=test_fixture, analysis_json_path=None, analysis_level=AnalysisLevel.symbol_table, eager_analysis=False, target_files=None)
+    assert "codeanalyzer-java" in str(exc.value)
+
+
+def test_cldk_imports_without_the_java_extra():
+    """The import is lazy, so a Java-less install can still ``import cldk`` (and the Java package).
+
+    Run out of process with a ``None`` entry in ``sys.modules`` — which is exactly what ``import``
+    sees for an uninstalled module — so no import state leaks into the rest of the suite."""
+    probe = "import sys; sys.modules['codeanalyzer_java'] = None; import cldk, cldk.analysis.java; print(cldk.CLDK.java.__name__)"
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "java"
 
 
 # -----[ call graph (J-1) ]-----

@@ -14,13 +14,11 @@
 # limitations under the License.
 ################################################################################
 
-"""End-to-end: the real codeanalyzer-java 3.0.1 jar on the daytrader8 sample application, at the
-symbol-table and call-graph levels. The jar is not committed (python-sdk#339): point
-``CLDK_CODEANALYZER_JAVA_JAR`` at the release asset, or the test skips — the jar bundled in the tree
-is still 2.4.1 until the wheel-based exec path lands. The JDK comes from the SDK's own
-``ensure_jdk`` (a cached Temurin, a ``$JAVA_HOME`` with ``jmods``, or a download); the analyzer
-builds the project with Maven itself. Also skips when ``CLDK_SKIP_JAVA_E2E`` is set or no JDK can be
-provisioned."""
+"""End-to-end: the real codeanalyzer-java analyzer on the daytrader8 sample application, at the
+symbol-table and call-graph levels. Both the jar and the JVM it runs on come from the pinned
+``codeanalyzer-java`` wheel (the ``java`` extra), so the run needs no JDK on the machine and no
+``JAVA_HOME``; the analyzer builds the project with Maven itself. Skips only when
+``CLDK_SKIP_JAVA_E2E`` is set."""
 
 import os
 from pathlib import Path
@@ -31,12 +29,8 @@ import toml
 from cldk import CLDK
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.backend_config import CodeAnalyzerConfig
-from cldk.analysis.java.codeanalyzer._jdk import ensure_jdk
 
-pytestmark = [
-    pytest.mark.skipif(bool(os.environ.get("CLDK_SKIP_JAVA_E2E")), reason="CLDK_SKIP_JAVA_E2E is set"),
-    pytest.mark.skipif(not os.environ.get("CLDK_CODEANALYZER_JAVA_JAR"), reason="CLDK_CODEANALYZER_JAVA_JAR is unset: the bundled jar predates schema v2"),
-]
+pytestmark = pytest.mark.skipif(bool(os.environ.get("CLDK_SKIP_JAVA_E2E")), reason="CLDK_SKIP_JAVA_E2E is set")
 
 LEVELS = [AnalysisLevel.symbol_table, AnalysisLevel.call_graph]
 
@@ -49,10 +43,6 @@ def _pinned_version() -> str:
 @pytest.fixture(scope="module", params=LEVELS, ids=lambda lvl: lvl.name)
 def analysis(request, test_fixture, tmp_path_factory):
     cache = tmp_path_factory.mktemp(f"java-e2e-{request.param.name}")
-    try:
-        ensure_jdk(cache / "java")  # the same lookup the backend makes; a download failure is a skip, not a red
-    except Exception as exc:  # noqa: BLE001 — network / platform failures are not this test's subject
-        pytest.skip(f"no JDK could be provisioned: {exc}")
     return CLDK.java(
         project_path=test_fixture,
         analysis_level=request.param,

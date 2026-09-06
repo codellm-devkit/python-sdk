@@ -65,7 +65,7 @@ def analysis_json(analysis_json_fixture) -> str:
 
 @pytest.fixture(scope="session")
 def analysis_json_a4(analysis_json_fixture) -> str:
-    """The codeanalyzer-java 3.0.1 ``-a 4`` fixture (``v2/a4``) as a JSON string."""
+    """The codeanalyzer-java 3.0.2 ``-a 4`` fixture (``v2/a4``) as a JSON string."""
     with gzip.open(analysis_json_fixture.parent / "a4" / "analysis.json.gz", "rt", encoding="utf-8") as json_data:
         return json.dumps(json.load(json_data))
 
@@ -74,8 +74,8 @@ def analysis_json_a4(analysis_json_fixture) -> str:
 def codeanalyzer_backend_path():
     """Backend-path override for the Java analyzer in tests.
 
-    Returns None so the analyzer uses its default: the ``codeanalyzer-*.jar`` bundled under
-    ``cldk/analysis/java/codeanalyzer/jar/``, run on a cached JDK (``[java, -jar, <jar>]``).
+    Returns None so the analyzer uses its default: ``codeanalyzer_java.command()`` — the jar and
+    the JVM the pinned ``codeanalyzer-java`` wheel carries.
     """
     return None
 
