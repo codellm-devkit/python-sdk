@@ -126,6 +126,12 @@ surface** (3b). Design records: `docs/design/specs/2026-09-06-leg-2.5-typescript
   Python re-imports every name unchanged.
 
 ### Fixed
+- **`get_cfg`/`get_cdg`/`get_ddg` on the Python Neo4j backend no longer drop self-loop edges.** The
+  per-callable query bound the containment relationship twice, so Cypher's relationship-uniqueness rule
+  silently discarded every edge whose endpoints are the same body node — a statement that reads a
+  variable it also redefines. 64,702 such edges exist on the odoo reference graph; one callable returned
+  28,146 of its 28,394. `total` was counted from the same match, so the short page reported itself
+  complete. (#349)
 
 - **`JavaAnalysis.get_method_parameters()`** is annotated `List[JCallableParameter]`, which is what it has always
   returned.
