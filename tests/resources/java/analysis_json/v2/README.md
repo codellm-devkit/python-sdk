@@ -1,5 +1,5 @@
 Generated from `tests/resources/java/application/daytrader8-1.2.zip` (unzipped to `<daytrader8>` =
-`sample.daytrader8-1.2/`) by **codeanalyzer-java 3.0.2** — the pinned `codeanalyzer-java` wheel (the
+`sample.daytrader8-1.2/`) by **codeanalyzer-java 3.0.3** — the pinned `codeanalyzer-java` wheel (the
 `cldk[java]` extra), run as `codeanalyzer_java.command()`: the wheel's own jar on the JVM it bundles
 (`jdk4py`, Temurin 21.0.8), with `JAVA_HOME` unset. **Never hand-edit these files** — regenerate
 them when the pin moves.
@@ -24,13 +24,37 @@ earlier by a whole-project `-a 4` run of the analyzer on the unpruned tree (the 
 
     java -jar codeanalyzer.jar -i <daytrader8-pruned> -a 4 --no-build --app-name daytrader8 -o a4 -c <scratch>/fx-cache-a4
 
-Measured on the committed files: `a1` has `schema_version 2.0.0`, `analyzer.version 3.0.2`,
+Measured on the committed files: `a1` has `schema_version 2.0.0`, `analyzer.version 3.0.3`,
 `max_level 1`, 138 symbol-table keys, no `call_graph`/`param_in`/`param_out` keys at all, 235
 artifacts. `a4` has `max_level 4`, 4 symbol-table keys, `call_graph` 247 edges, `param_in` 258,
-`param_out` 97, 320 `ddg` edges with `prov == ["points-to"]`, 76 `summary` edges, 235 artifacts, and
-both `cancelOrder` overloads on `TradeDirect` (`cancelOrder(java.lang.Integer, boolean)`,
-`cancelOrder(java.sql.Connection, java.lang.Integer)`). Artifact text (default `--artifact-text`,
-256 KiB cap) is included in both; the four `jmeter_files/*.jmx` are the largest entries.
+`param_out` 97, 2,358 `ddg` edges (2,038 `ssa`, 320 with `prov == ["points-to"]`), 76 `summary`
+edges, 235 artifacts, and both `cancelOrder` overloads on `TradeDirect`
+(`cancelOrder(java.lang.Integer, boolean)`, `cancelOrder(java.sql.Connection, java.lang.Integer)`).
+Artifact text (default `--artifact-text`, 256 KiB cap) is included in both; the four
+`jmeter_files/*.jmx` are the largest entries.
+
+## What the 3.0.3 regeneration moved
+
+Both files were regenerated with the commands above when the pin moved from 3.0.2 to 3.0.3
+(python-sdk#354, analyzer-side codeanalyzer-java#227 / #228). Measured by loading the old and new
+copies and comparing them structurally:
+
+- `a1` is **identical apart from the `analyzer.version` stamp** — 138 units, 149 types, 1,216
+  callables, 235 artifacts, no `cfg`/`cdg`/`ddg` at L1.
+- `a4` differs in **`ddg` and nothing else**. Every pre-existing edge is still there; 867 `ssa`
+  edges were added (1,491 → 2,358), and all 867 join the port lattice to the statement graph:
+  `formal_in → call` 272, `statement → actual_in` 129, `formal_in → statement` 125,
+  `call → actual_in` 98, `return → formal_out` 77, `actual_out → statement` 76, and seven smaller
+  directions. `points-to` stays at 320, the 20 `ddg` self-loops stay, and `cfg` (1,570), `cdg`
+  (1,258), `summary` (76), `call_graph`, `param_in`, `param_out`, the artifacts, the callables and
+  the units are byte-identical.
+- 217 of `a4`'s 225 `formal_in` vertices now have an outgoing `ddg` edge (0 before). The eight
+  that have no outgoing SDG edge at all — `investmentReturn`'s `rnd1`/`rnd2`, `orderCompleted`'s
+  `userID`/`orderID`, `pingTwoPhase`'s `symbol`, `removeHolding`'s `orderID`,
+  `updateHoldingStatus`'s `symbol`, `requestDispatch`'s `userID` — are parameters nothing in the
+  callable depends on, so "every port is attached" would be the wrong assertion.
+- **Dangling `ddg` endpoints are 0 in both releases on this fixture**, so codeanalyzer-java#228 is
+  not observable here; it was only ever a whole-project fact.
 
 
 The committed files are gzip-compressed (`analysis.json.gz`, `gzip -9`) because the analyzer pretty-prints and the raw pair is 18.7 MB; `tests/conftest.py` reads them with `gzip.open`. Regenerate, then `gzip -9 -k` — never hand-edit.

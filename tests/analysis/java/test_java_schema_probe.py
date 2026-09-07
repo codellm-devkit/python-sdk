@@ -110,7 +110,7 @@ def test_probe_refuses_when_the_version_cannot_be_read(fake_driver, raw, found):
     assert found in str(e.value)
 
 
-@pytest.mark.parametrize("raw", ["3.0.1", "3.0.2", "3.1.0", "4.0.0"])
+@pytest.mark.parametrize("raw", ["3.0.1", "3.0.2", "3.0.3", "3.1.0", "4.0.0"])
 def test_probe_serves_every_generation_from_the_floor_up_silently(fake_driver, caplog, raw):
     fake_driver.analyzer_version = raw
     with caplog.at_level(logging.INFO, logger="cldk.analysis.java.neo4j.neo4j_backend"):
