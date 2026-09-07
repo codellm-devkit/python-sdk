@@ -149,28 +149,28 @@ def test_locate_callable_with_absent_span_does_not_raise(py_either):
 
 
 # ================================================================================================
-# LocateResult.node — the innermost body node.
+# LocateResult.body — the innermost body node, as a language-neutral BodyRef (TS-1).
 # ================================================================================================
 def test_locate_innermost_body_node(py_either):
     """Line 21 sits in both the ``if`` (20-21) and its ``return`` (21): the return must win."""
     r = py_either.locate("src/app.py", 21)
     assert r.callable.signature == "src.app.Store.key"
-    assert r.node is not None
-    assert r.node.kind == "return"
-    assert (r.node.span.start[0], r.node.span.end[0]) == (21, 21)
+    assert r.body is not None
+    assert r.body.kind == "return"
+    assert (r.body.span.start[0], r.body.span.end[0]) == (21, 21)
 
 
 def test_locate_body_node_when_only_the_outer_statement_contains_the_line(py_either):
     r = py_either.locate("src/app.py", 20)
-    assert r.node.kind == "if"
-    assert (r.node.span.start[0], r.node.span.end[0]) == (20, 21)
+    assert r.body.kind == "if"
+    assert (r.body.span.start[0], r.body.span.end[0]) == (20, 21)
 
 
 def test_locate_node_is_none_on_the_def_line(py_either):
     """No body node contains the ``def`` line. That is a real outcome, not an error: the callable
     is still resolved and there are no diagnostics."""
     r = py_either.locate("src/app.py", 19)
-    assert r.node is None
+    assert r.body is None
     assert r.callable.signature == "src.app.Store.key"
     assert r.diagnostics == []
 
@@ -179,13 +179,13 @@ def test_locate_spanless_body_node_never_matches(py_either):
     """``@entry``/``@exit`` carry no span, so they can never contain a position — a missing span
     must not read as "contains everything". ``key`` has both, and every position inside it either
     resolves to a real statement node or to None."""
-    kinds = {py_either.locate("src/app.py", line).node.kind if py_either.locate("src/app.py", line).node else None for line in (19, 20, 21, 22)}
+    kinds = {py_either.locate("src/app.py", line).body.kind if py_either.locate("src/app.py", line).body else None for line in (19, 20, 21, 22)}
     assert kinds == {None, "if", "return"}
 
 
 def test_locate_body_node_survives_a_callable_with_no_body(py_either):
     """``stub`` has an empty ``body``/no PY_HAS_BODY_NODE edges: node is None, not an exception."""
-    assert py_either.locate("src/app.py", 24).node is None
+    assert py_either.locate("src/app.py", 24).body is None
 
 
 # ================================================================================================
@@ -199,13 +199,13 @@ def test_locate_parity_inside_callable(py, py_local):
     assert a.source == b.source  # the callable's text: `code` property vs `span.bytes` slice
     assert [d.code for d in a.diagnostics] == [d.code for d in b.diagnostics] == []
     # ...and the same innermost body node, compared on the fields the graph actually carries.
-    assert (a.node.kind, a.node.span.start[0], a.node.span.end[0]) == (b.node.kind, b.node.span.start[0], b.node.span.end[0])
+    assert (a.body.kind, a.body.span.start[0], a.body.span.end[0]) == (b.body.kind, b.body.span.start[0], b.body.span.end[0])
 
 
 def test_locate_parity_innermost_node_agrees_at_every_position(py, py_local):
     def probe(backend, line):
         r = backend.locate("src/app.py", line)
-        node = r.node
+        node = r.body
         return (
             r.callable.signature if r.callable else None,
             r.type.signature if r.type else None,
@@ -331,8 +331,8 @@ def test_locate_innermost_body_node_wins_an_equal_width_tie(py_either):
     broken on the key's start column: the ``return`` at col 14 is nested inside the ``if`` at col 8."""
     r = py_either.locate("src/app.py", 29)
     assert r.callable.signature == "src.app.Store.two"
-    assert r.node.kind == "return"
-    assert (r.node.span.start[0], r.node.span.end[0]) == (29, 29)
+    assert r.body.kind == "return"
+    assert (r.body.span.start[0], r.body.span.end[0]) == (29, 29)
 
 
 def test_locate_parity_equal_width_ties_agree(py, py_local):
@@ -340,9 +340,9 @@ def test_locate_parity_equal_width_ties_agree(py, py_local):
     for line in (26, 29):
         a, b = py.locate("src/app.py", line), py_local.locate("src/app.py", line)
         assert a.callable == b.callable, line
-        assert (a.node is None) == (b.node is None), line
-        if a.node is not None:
-            assert (a.node.kind, a.node.span.start[0]) == (b.node.kind, b.node.span.start[0]), line
+        assert (a.body is None) == (b.body is None), line
+        if a.body is not None:
+            assert (a.body.kind, a.body.span.start[0]) == (b.body.kind, b.body.span.start[0]), line
 
 
 def test_locate_body_key_column_is_parsed_not_string_compared():

@@ -1271,9 +1271,9 @@ def test_the_rule_is_stated_once_and_cited_by_all_five():
     """The reasoning ``reaches`` gave for its unbounded default now lives on ``DEFAULT_DEPTH`` and
     names every accessor it applies to; each of the five points back at it rather than restating
     (or forgetting) it."""
-    import cldk.analysis.python.backend as backend_module
+    import cldk.analysis.commons.bounds as bounds_module  # where DEFAULT_DEPTH and its rule live since the leg-2.5a lift
 
-    source = inspect.getsource(backend_module)
+    source = inspect.getsource(bounds_module)
     rule = source[: source.index("\nDEFAULT_DEPTH = 5")]
     rule = rule[rule.rindex("#: Hops from the seed when the caller does not say") :]
     for name in UNBOUNDED_BY_DEFAULT + BOUNDED_BY_DEFAULT:

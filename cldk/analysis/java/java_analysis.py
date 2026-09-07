@@ -17,16 +17,14 @@
 """Java analysis facade module.
 
 This module provides the :class:`JavaAnalysis` class, which serves as the
-primary high-level interface for performing static analysis on Java projects
-and source files. It combines Tree-sitter-based parsing with the CodeAnalyzer
-backend to provide comprehensive code analysis capabilities.
+primary high-level interface for performing static analysis on Java projects.
+It combines Tree-sitter-based parsing with the CodeAnalyzer backend to provide
+comprehensive code analysis capabilities.
 
-The analysis supports two modes of operation:
-    - **Project mode**: Analyze an entire Java project directory, providing
-      access to cross-file analysis features like call graphs and class
-      hierarchies.
-    - **Source code mode**: Analyze a single Java source code string, useful
-      for quick syntactic analysis without a full project structure.
+The analysis operates on a project directory (cross-file call graphs, class
+hierarchies, the symbol table). The 1.x single-file ``source_code`` mode was
+removed in 2.0 (spec leg 3, J-10): pass the project directory, or hand a source
+string to :class:`~cldk.analysis.commons.treesitter.TreesitterJava` directly.
 
 Key capabilities include:
     - Symbol table extraction (classes, methods, fields, imports)
@@ -46,20 +44,45 @@ See Also:
     - :class:`~cldk.analysis.java.codeanalyzer.JCodeanalyzer`: Backend implementation.
 """
 
+from __future__ import annotations
+
 from pathlib import Path
-from typing import Dict, List, Tuple, Set, Union
+from typing import Dict, List, Sequence, Tuple, Set, Union
 import networkx as nx
 
 from tree_sitter import Tree
 
 from cldk.analysis.commons.backend_config import CodeAnalyzerConfig, JavaBackend, Neo4jConnectionConfig, cache_subdir
+from cldk.analysis.commons.bounds import DEFAULT_DEPTH, DEFAULT_MAX_NODES, DEFAULT_MAX_PATHS, DEFAULT_PAGE_SIZE
+from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, FlowPaths, LocateResult, Slice, SliceNode
 from cldk.analysis.commons.treesitter import TreesitterJava
 from cldk.models.java import JCallable
 from cldk.models.java import JApplication
-from cldk.models.java.models import JCRUDOperation, JComment, JCompilationUnit, JMethodDetail, JType, JField
+from cldk.models.java.models import (
+    JCallableParameter,
+    JCallSite,
+    JCdgEdge,
+    JCfgEdge,
+    JCRUDOperation,
+    JComment,
+    JCompilationUnit,
+    JDdgEdge,
+    JEnumConstant,
+    JExternalSymbol,
+    JField,
+    JMethodDetail,
+    JType,
+)
+from cldk.models.java.projections import JCallableOverview, JClassOverview
+from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
 from cldk.analysis.java.codeanalyzer import JCodeanalyzer
 from cldk.analysis.java.neo4j import JNeo4jBackend
 from cldk.analysis.java.backend import JavaAnalysisBackend
+
+#: The annotations that *declare* a test method, by simple name — JUnit 4/5 and TestNG. A lifecycle
+#: annotation (``@BeforeEach``, ``@AfterAll``) is deliberately not here: it marks a fixture, not a
+#: test. Read by :meth:`JavaAnalysis.get_test_methods`.
+_TEST_ANNOTATIONS = frozenset({"Test", "ParameterizedTest", "RepeatedTest", "TestFactory", "TestTemplate"})
 
 
 class JavaAnalysis:
@@ -69,12 +92,9 @@ class JavaAnalysis:
     on Java projects and source files. It combines Tree-sitter-based parsing for
     syntactic analysis with the CodeAnalyzer backend for semantic analysis.
 
-    The facade supports two modes of operation:
-        - **Project mode**: When initialized with ``project_dir``, provides full
-          analysis capabilities including cross-file call graphs, class hierarchies,
-          and symbol tables.
-        - **Source code mode**: When initialized with ``source_code``, provides
-          syntactic analysis capabilities like parsing and AST extraction.
+    The facade is initialized with ``project_dir`` and provides full analysis
+    capabilities including cross-file call graphs, class hierarchies, and symbol
+    tables; the single-file ``source_code`` mode was removed in 2.0.
 
     Key features:
         - Symbol table access with classes, methods, and fields
@@ -87,7 +107,6 @@ class JavaAnalysis:
 
     Attributes:
         project_dir (str | Path | None): Path to the Java project directory.
-        source_code (str | None): Java source code string for single-file mode (deprecated).
         analysis_level (str): The depth of analysis performed.
         eager_analysis (bool): Whether to force regeneration of analysis.
         target_files (List[str] | None): Specific files to analyze.
@@ -103,7 +122,6 @@ class JavaAnalysis:
     def __init__(
         self,
         project_dir: str | Path | None,
-        source_code: str | None,
         analysis_level: str,
         target_files: List[str] | None,
         eager_analysis: bool,
@@ -111,22 +129,16 @@ class JavaAnalysis:
     ) -> None:
         """Initialize the Java analysis facade.
 
-        Creates a new analysis facade for Java code. Either ``project_dir`` or
-        ``source_code`` must be provided, but not both.
+        Creates a new analysis facade for Java code.
 
         Args:
             project_dir: Absolute or relative path to the Java project directory.
                 The directory should contain Java source files (``.java``).
-                When provided, enables full analysis including call graphs.
-                Mutually exclusive with ``source_code``.
-            source_code: Java source code string for single-file analysis.
-                Useful for quick syntactic analysis without a project structure.
-                Mutually exclusive with ``project_dir``. Deprecated; will be
-                removed in a future release.
-            analysis_level: The depth of analysis to perform. Common values:
-                - ``"symbol_table"``: Extract symbols only (faster)
-                - ``"call_graph"``: Full call graph analysis (comprehensive)
-                See :class:`~cldk.analysis.AnalysisLevel` for all options.
+                Optional only for the read-only Neo4j backend.
+            analysis_level: The depth of analysis to perform — any
+                :class:`~cldk.analysis.AnalysisLevel`: ``"symbol_table"`` (1),
+                ``"call_graph"`` (2), ``"program_dependency_graph"`` (3),
+                ``"system_dependency_graph"`` (4); the level reaches the analyzer as ``-a``.
             target_files: Optional list of specific file paths (relative to
                 ``project_dir``) to include in the analysis. When provided,
                 only these files are analyzed, improving performance for
@@ -145,7 +157,6 @@ class JavaAnalysis:
         """
 
         self.project_dir = project_dir
-        self.source_code = source_code
         self.analysis_level = analysis_level
         self.eager_analysis = eager_analysis
         self.target_files = target_files
@@ -164,14 +175,12 @@ class JavaAnalysis:
                 application_name=application_name,
             )
         else:
-            # The config only carries the cache root. analysis.json is cached under <cache_dir>/java
-            # (None in source_code mode, where the analyzer streams results over a pipe).
+            # The config only carries the cache root. analysis.json is cached under <cache_dir>/java.
             cache_path = cache_subdir(self.backend_config.cache_dir, project_dir, "java")
             if cache_path is not None:
                 cache_path.mkdir(parents=True, exist_ok=True)
             self.backend = JCodeanalyzer(
                 project_dir=self.project_dir,
-                source_code=self.source_code,
                 eager_analysis=self.eager_analysis,
                 analysis_level=self.analysis_level,
                 analysis_json_path=cache_path,
@@ -279,16 +288,10 @@ class JavaAnalysis:
                 - Project-level metadata
                 - Aggregated statistics about the codebase
 
-        Raises:
-            NotImplementedError: If called in single-file mode (``source_code``
-                was provided instead of ``project_dir``).
-
         See Also:
             :meth:`get_symbol_table`: For direct access to the symbol table.
             :meth:`get_compilation_units`: For a list of compilation units.
         """
-        if self.source_code:
-            raise NotImplementedError("Support for this functionality has not been implemented yet.")
         return self.backend.get_application_view()
 
     def get_symbol_table(self) -> Dict[str, JCompilationUnit]:
@@ -405,16 +408,17 @@ class JavaAnalysis:
         relationships across the entire project. Each node represents a
         method, and each edge represents a call from one method to another.
 
-        The call graph requires ``analysis_level`` to be set to ``"call_graph"``
-        during initialization for accurate results.
+        The call graph requires ``analysis_level`` of at least ``"call_graph"``;
+        below it the graph is empty.
 
         Returns:
             A ``networkx.DiGraph`` where:
-                - Nodes represent methods with attributes containing method
-                  metadata (class name, signature, etc.)
+                - Nodes are keyed by the string ``"<type fqn>.<signature>"`` (e.g.
+                  ``"com.acme.Svc.run(java.lang.String)"``), with a
+                  :class:`~cldk.models.java.JMethodDetail` under ``method_detail``
+                  and ``kind="callable"``
                 - Edges represent call relationships, directed from caller
-                  to callee
-                - Edge attributes may include call site information
+                  to callee, with ``type``, ``weight`` and ``calling_lines``
 
         See Also:
             :meth:`get_callers`: For finding callers of a specific method.
@@ -435,15 +439,9 @@ class JavaAnalysis:
             including compilation units, classes, methods, and call
             relationships.
 
-        Raises:
-            NotImplementedError: If called in single-file mode (``source_code``
-                was provided instead of ``project_dir``).
-
         See Also:
             :meth:`get_call_graph`: For the graph object directly.
         """
-        if self.source_code:
-            raise NotImplementedError("Producing a call graph over a single file is not implemented yet.")
         return self.backend.get_call_graph_json()
 
     def get_callers(self, target_class_name: str, target_method_declaration: str, using_symbol_table: bool = False) -> Dict:
@@ -468,17 +466,10 @@ class JavaAnalysis:
                 - Call site locations (file and line)
                 - Caller class information
 
-        Raises:
-            NotImplementedError: If called in single-file mode (``source_code``
-                was provided instead of ``project_dir``).
-
         See Also:
             :meth:`get_callees`: For the reverse direction (what a method calls).
             :meth:`get_call_graph`: For the complete call relationship graph.
         """
-
-        if self.source_code:
-            raise NotImplementedError("Generating all callers over a single file is not implemented yet.")
         return self.backend.get_all_callers(target_class_name, target_method_declaration, using_symbol_table)
 
     def get_callees(self, source_class_name: str, source_method_declaration: str, using_symbol_table: bool = False) -> Dict:
@@ -503,16 +494,10 @@ class JavaAnalysis:
                 - Target class information
                 - Call site locations within the source method
 
-        Raises:
-            NotImplementedError: If called in single-file mode (``source_code``
-                was provided instead of ``project_dir``).
-
         See Also:
             :meth:`get_callers`: For the reverse direction (who calls a method).
             :meth:`get_call_graph`: For the complete call relationship graph.
         """
-        if self.source_code:
-            raise NotImplementedError("Generating all callees over a single file is not implemented yet.")
         return self.backend.get_all_callees(source_class_name, source_method_declaration, using_symbol_table)
 
     def get_methods(self) -> Dict[str, Dict[str, JCallable]]:
@@ -649,17 +634,24 @@ class JavaAnalysis:
             analyzed information about the method. Returns ``None`` if the
             method is not found.
 
+        Note:
+            Two fields depend on which backend answered. On the
+            ``analysis.json`` backend ``code`` is the **body block** and
+            ``body`` holds every body node. On the Neo4j backend ``code`` is
+            the whole **declaration** (it *ends with* the body block, because
+            the graph projects one line range per callable and no
+            ``body_span``) and ``body`` holds the ``call`` nodes only — about
+            30% of the graph's body nodes, which is what ``call_sites`` needs
+            and all it needs.
+
         See Also:
             :meth:`get_methods_in_class`: For all methods of a class.
             :meth:`get_method_parameters`: For just the parameter list.
         """
         return self.backend.get_method(qualified_class_name, qualified_method_name)
 
-    def get_method_parameters(self, qualified_class_name: str, qualified_method_name: str) -> List[str]:
-        """Return the parameter types for a specific method.
-
-        Retrieves the list of parameter type names defined in the method
-        signature.
+    def get_method_parameters(self, qualified_class_name: str, qualified_method_name: str) -> List[JCallableParameter]:
+        """Return the parameters of a specific method.
 
         Args:
             qualified_class_name: The fully qualified name of the class
@@ -667,9 +659,10 @@ class JavaAnalysis:
             qualified_method_name: The method signature to get parameters for.
 
         Returns:
-            A list of parameter type names as strings, in the order they
-            appear in the method signature. Returns an empty list if the
-            method is not found or has no parameters.
+            The :class:`~cldk.models.java.models.JCallableParameter` objects
+            (name, type, annotations, position), in signature order. Returns an
+            empty list if the method is not found or has no parameters. (1.x
+            annotated this ``List[str]``; it always returned the objects.)
 
         See Also:
             :meth:`get_method`: For complete method information.
@@ -960,19 +953,16 @@ class JavaAnalysis:
         from the source code, including Javadoc comments. This is useful
         for code analysis that should ignore comment content.
 
-        Returns:
-            A string containing the source code with all comments removed.
-            Whitespace where comments were removed may be preserved or
-            collapsed depending on the implementation.
-
-        Note:
-            This method operates on the ``source_code`` provided during
-            initialization. It requires single-file mode.
+        Raises:
+            NotImplementedError: always. This accessor only ever operated on the
+            ``source_code`` given to the 1.x constructor, and that single-file mode
+            was removed in 2.0 (J-10). Pass the source to
+            :meth:`TreesitterJava.remove_all_comments` directly.
 
         See Also:
             :meth:`get_all_comments`: For extracting comments instead.
         """
-        return self.backend.remove_all_comments(self.source_code)
+        raise NotImplementedError("single-file source mode was removed in 2.0; pass the source to TreesitterJava.remove_all_comments directly")
 
     def get_methods_with_annotations(self, annotations: List[str]) -> Dict[str, List[Dict]]:
         """Return methods decorated with specific annotations.
@@ -1003,24 +993,34 @@ class JavaAnalysis:
     def get_test_methods(self) -> Dict[str, str]:
         """Return methods identified as test methods.
 
-        Finds all test methods in the source code by looking for methods
-        annotated with common test framework annotations (e.g., ``@Test``
-        from JUnit).
+        A callable is a test method when one of its own annotations is a test-declaring one:
+        ``@Test`` (JUnit 4/5, TestNG), ``@ParameterizedTest``, ``@RepeatedTest``, ``@TestFactory``
+        or ``@TestTemplate``. The annotation is matched by simple name, so a fully qualified
+        spelling (``@org.junit.Test``) matches too, and its arguments are ignored — the same
+        marker rule the spec's J-5 gives ``get_decorated_callables``.
+
+        This reads the **analyzer's own** annotations off the model rather than re-parsing a
+        module's ``source``, so it answers identically on both backends: a Neo4j-backed analysis
+        carries no module ``source`` at all (``JCompilationUnit.source`` is ``""``), and the
+        source-parsing version returned ``{}`` there — an empty reading as "this application has
+        no tests" on an application with thousands.
 
         Returns:
-            A dictionary mapping test method signatures to their source
-            code bodies.
-
-        Note:
-            This method operates on the ``source_code`` provided during
-            initialization. It requires single-file mode.
+            A dictionary mapping ``"<type fqn>.<signature>"`` — the call-graph node key of J-1,
+            unique application-wide — to the callable's ``code``. Note that ``code`` is the body
+            block off ``analysis.json`` and the whole declaration off the Neo4j projection
+            (:attr:`~cldk.models.java.models.JCallable.code`).
 
         See Also:
             :meth:`get_methods_with_annotations`: For finding methods with
                 any annotation.
         """
-
-        return self.treesitter_java.get_test_methods(source_class_code=self.source_code)
+        return {
+            f"{klass}.{signature}": callable_.code
+            for klass, methods in self.get_methods().items()
+            for signature, callable_ in methods.items()
+            if any(d.name.rsplit(".", 1)[-1] in _TEST_ANNOTATIONS for d in callable_.decorators)
+        }
 
     def get_calling_lines(self, target_method_name: str) -> List[int]:
         """Return line numbers where a method is called.
@@ -1151,10 +1151,14 @@ class JavaAnalysis:
 
     # Some APIs to process comments
     def get_comments_in_a_method(self, qualified_class_name: str, method_signature: str) -> List[JComment]:
-        """Return all comments contained within a specific method.
+        """Return the method's own comment.
 
-        Retrieves all comment nodes (single-line, multi-line, and Javadoc)
-        that appear within the body of the specified method.
+        **Not** every comment inside the body: on both backends this is the
+        analyzer's per-declaration comment list, which holds the comment
+        immediately above the declaration and nothing else (at most one; 70 of
+        the 128 callables in the committed ``-a 4`` fixture have one, 65 of
+        them javadoc). Comments *inside* a method body reach the SDK only
+        through :meth:`get_comment_in_file`, which reports the whole file's.
 
         Args:
             qualified_class_name: The fully qualified name of the class
@@ -1165,6 +1169,14 @@ class JavaAnalysis:
             A list of :class:`~cldk.models.java.JComment` objects found
             within the method body. Returns empty list if method not found.
 
+        Note:
+            On a backend whose source keeps only per-declaration javadoc — the
+            Neo4j backend — this narrows to **the method's javadoc alone**: a
+            strictly smaller set than every comment in the body, and still a
+            real answer about a real declaration, which is why this accessor
+            narrows where :meth:`get_all_comments` and
+            :meth:`get_comment_in_file` refuse (J-16).
+
         See Also:
             :meth:`get_comments_in_a_class`: For class-level comments.
             :meth:`get_all_comments`: For all comments in the project.
@@ -1172,11 +1184,13 @@ class JavaAnalysis:
         return self.backend.get_comments_in_a_method(qualified_class_name, method_signature)
 
     def get_comments_in_a_class(self, qualified_class_name: str) -> List[JComment]:
-        """Return all comments contained within a specific class.
+        """Return the class's own comment.
 
-        Retrieves all comment nodes that appear within the class body,
-        including Javadoc comments, method-level comments, and inline
-        comments.
+        **Not** the comments inside the class body: on both backends this is
+        the type declaration's own comment list — the comment immediately
+        above ``class Foo``. A method's comment is on
+        :meth:`get_comments_in_a_method`, and an inline comment in a body is
+        on neither; :meth:`get_comment_in_file` reports the whole file's.
 
         Args:
             qualified_class_name: The fully qualified name of the class.
@@ -1184,6 +1198,10 @@ class JavaAnalysis:
         Returns:
             A list of :class:`~cldk.models.java.JComment` objects found
             within the class. Returns empty list if class not found.
+
+        Note:
+            Narrows to the class's javadoc alone on a javadoc-only backend, in
+            exactly the way :meth:`get_comments_in_a_method` does (J-16).
 
         See Also:
             :meth:`get_comments_in_a_method`: For method-specific comments.
@@ -1204,6 +1222,12 @@ class JavaAnalysis:
             A list of :class:`~cldk.models.java.JComment` objects found
             in the file. Returns empty list if file not found.
 
+        Raises:
+            CodeanalyzerExecutionException: If the backend's source carries no
+                file-level comments at all — the Neo4j projection does not —
+                naming what is missing and what to read instead. An empty list
+                would read as "this file has no comments" (J-16).
+
         See Also:
             :meth:`get_all_comments`: For comments across all files.
         """
@@ -1218,6 +1242,10 @@ class JavaAnalysis:
         Returns:
             A dictionary mapping file paths (strings) to lists of
             :class:`~cldk.models.java.JComment` objects.
+
+        Raises:
+            CodeanalyzerExecutionException: As :meth:`get_comment_in_file`
+                does, and for the same reason (J-16).
 
         See Also:
             :meth:`get_all_docstrings`: For Javadoc comments only.
@@ -1236,7 +1264,645 @@ class JavaAnalysis:
             :class:`~cldk.models.java.JComment` objects where
             ``is_javadoc`` is ``True``.
 
+        Note:
+            *Which* javadoc depends on the backend: the ``analysis.json``
+            backend reports each compilation unit's own comment list, holding
+            the **file-level** javadoc; the Neo4j backend reports the javadoc of
+            each **declaration** in the file (type, callable, field, enum
+            constant, record component). Both are javadoc keyed by file, and
+            they are different sets for the same file (J-16).
+
         See Also:
             :meth:`get_all_comments`: For all comment types.
         """
         return self.backend.get_all_docstrings()
+
+    # =====================================================================================
+    # The addressing surface (leg 3b, Task 1). Every signature is
+    # :class:`~cldk.analysis.python.python_analysis.PythonAnalysis`'s, keyword-for-keyword.
+    # =====================================================================================
+    def locate(self, path: str, line: int) -> LocateResult:
+        """Resolve a source position to its enclosing callable, with the source in hand.
+
+        The single most-needed query for triaging a scanner alert: an alert arrives as
+        ``file:line`` and this resolves it to the enclosing callable in one call, rather than
+        ``get_method``, falling back to ``get_callers``, falling back to scanning the symbol table
+        by hand. Four outcomes stay distinguishable — see
+        :class:`~cldk.analysis.commons.results.LocateResult`: inside a callable (``callable`` set,
+        plus ``body`` when a body node is that precise), at real module scope (``module_scope``
+        diagnostic), in the gap between two callables (also module scope, never snapped to the
+        nearest callable), or in a file the analysis has no module for (``file_not_in_graph``).
+
+        There is no ``col`` parameter: the Neo4j graph projects only ``start_line``/``end_line`` on
+        ``:JCallable`` and ``:JBodyNode``, so a column would work in process and be silently inert
+        over the graph.
+
+        Args:
+            path: The file path. Normalised against the backend's module keys, so a ``./``-prefixed
+                or absolute path resolves rather than reading back as ``file_not_in_graph``.
+            line: The 1-based line number.
+
+        Returns:
+            A :class:`~cldk.analysis.commons.results.LocateResult` carrying the innermost body
+            node, the enclosing callable, its owning type, its module, and the source slice — never
+            an ambiguous empty. ``module.module_name`` is the unit's **declared package** (J-2),
+            and ``source`` is the enclosing callable's text, which is the **body block** on the
+            ``analysis.json`` backend and the whole **declaration** over Neo4j (see
+            :meth:`get_source`). A module-scope result over Neo4j is ``""`` plus a
+            ``module_source_unavailable`` diagnostic: the graph carries no module text.
+
+        See Also:
+            :meth:`locate_many`: The bulk form — the point, not an optimisation.
+        """
+        return self.backend.locate(path, line)
+
+    def locate_many(self, positions: Sequence[Tuple[str, int]]) -> List[LocateResult]:
+        """Resolve many ``(path, line)`` positions in one round trip, in input order.
+
+        Args:
+            positions: The ``(path, line)`` pairs to resolve, e.g. from a scanner's alert list.
+
+        Returns:
+            One :class:`~cldk.analysis.commons.results.LocateResult` per input position, in the
+            same order.
+
+        See Also:
+            :meth:`locate`: The single-position form.
+        """
+        return self.backend.locate_many(positions)
+
+    def resolve_callable(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> SliceNode:
+        """Resolve a callable name to the one callable it names, in the caller's vocabulary.
+
+        The addressing step every name-taking accessor performs, exposed so a caller can perform it
+        once and keep the answer::
+
+            node = java.resolve_callable("cancelOrder(java.lang.Integer, boolean)", in_class="TradeDirect")
+            node.callable   # "…impl.direct.TradeDirect.cancelOrder(java.lang.Integer, boolean)"
+            node.file, node.line
+
+        ``name`` matches whole or as a dotted suffix, **and** against the signature with its
+        parameter tail cut, so ``"cancelOrder"`` names a method a caller has not typed the
+        parameters of; the tail-carrying spelling is what resolves one overload out of a pair
+        (J-3). ``in_class`` is a dotted suffix of the owning type's qualified name — which, for a
+        local or anonymous class, carries the callable that declares it (the J-1 erratum);
+        ``in_module`` is a repo-relative path suffix or a dotted spelling of the unit's **declared
+        package**, optionally qualified by a type it declares (J-2). Ambiguity raises with every
+        candidate; nothing is guessed.
+
+        Everything the analyzer emitted as a callable is addressable (J-6): an initializer
+        (``<clinit>$0()``) resolves and behaves like a method, and an **implicit** callable
+        resolves with ``line=-1`` — it has no span at all, which is why :meth:`get_source` refuses
+        it by name rather than returning an empty string.
+
+        Raises:
+            AmbiguousName: More than one callable matched.
+            SelectorNotInGraph: Nothing matched — naming the argument that missed.
+        """
+        return self.backend.resolve_callable(name, in_class=in_class, in_module=in_module)
+
+    def resolve_value(self, name: str, *, within: str) -> SliceNode:
+        """Resolve a value name inside a callable — in Java, a parameter — to the position that
+        carries it.
+
+        The same resolution the dataflow accessors perform on their ``src``, exposed so a caller can
+        check what a name means before asking a question of it::
+
+            java.resolve_value("orderID", within="TradeDirect.cancelOrder").kind   # "parameter"
+
+        Raises:
+            AmbiguousName: ``within`` named more than one callable, or ``name`` more than one value.
+            SelectorNotInGraph: No such callable, or no such value in it.
+        """
+        return self.backend.resolve_value(name, within=within)
+
+    def get_source(self, node_id: str) -> str:
+        """Return the source text named by ``node_id`` — a callable, or one of its body nodes.
+
+        ``node_id`` is a callable's ``"<type fqn>.<signature>"`` name (what :meth:`resolve_callable`
+        returns in ``callable``), a callable's opaque id (what it returns in ``ref``), or the
+        body-node id :attr:`~cldk.analysis.commons.results.LocateResult.node_id` hands back, so a
+        statement or call site :meth:`locate` found can be re-fetched precisely. Passed back as
+        received, never composed.
+
+        **What comes back for a callable depends on the backend, and it is the graph's difference,
+        not this method's.** On the ``analysis.json`` backend it is the **body block**; over Neo4j
+        it is the whole **declaration**, which *ends with* that body block — the projection carries
+        one line range per callable and no ``body_span`` (upstream codeanalyzer-java#176). The
+        relation is exact and total, so a caller reading either can rely on it; it is recorded in
+        the lossiness table of ``docs/agent-api-reference.md`` and asserted by the live parity
+        suite. A **body node** likewise has text only on the ``analysis.json`` backend: the graph
+        carries none below callable granularity.
+
+        Args:
+            node_id: A callable's name or id, or an id from :meth:`locate` — passed back as
+                received, not composed.
+
+        Returns:
+            The source text, never an ambiguous empty string.
+
+        Raises:
+            KeyError: Nothing matches ``node_id``, or it names a node with no recoverable source —
+                an implicit callable (the analyzer emits it with no span and no body), or, over
+                Neo4j, a body node. The message names the reason.
+        """
+        return self.backend.get_source(node_id)
+
+    def describe(self, nodes: Sequence[object]) -> List[SliceNode]:
+        """Fill in ``source`` for these positions, in one round trip.
+
+        Addressing answers *where*; this answers *what*, and it is a second call because source is
+        the one field with no size ceiling. Takes anything carrying an address — slice nodes, a
+        ``locate()`` result — and gives back the same
+        :class:`~cldk.analysis.commons.results.SliceNode` shape with ``source`` filled.
+
+        Afterwards, ``source=None`` means exactly one thing: **this position exists and there is no
+        text for it.** A ref that names nothing raises instead.
+
+        Args:
+            nodes: The positions to hydrate. An empty sequence costs no round trip.
+
+        Returns:
+            The same positions, in the same order, with ``source`` filled where the backend has
+            text for them.
+
+        Raises:
+            KeyError: A ref names nothing in this application.
+            TypeError: An element carries no address to look up.
+        """
+        return self.backend.describe(nodes)
+
+    # =====================================================================================
+    # The dataflow surface (leg 3b, Task 2). Every signature is
+    # :class:`~cldk.analysis.python.python_analysis.PythonAnalysis`'s, keyword-for-keyword.
+    # =====================================================================================
+    def get_cfg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[JCfgEdge]:
+        """Return one page of the control flow edges within one callable.
+
+        The intraprocedural half of "how does this method run": the analyzer's own CFG, one edge
+        per successor, with the branch kind on the edge rather than implied by order. Endpoints are
+        body-node ids :meth:`get_source` accepts, so a statement on a path can be read back.
+
+        Args:
+            callable: The callable's name, resolved as in :meth:`resolve_callable`.
+            in_class: Disambiguate by owning class.
+            page_size: Most edges to return.
+            cursor: ``next_cursor`` from a previous page.
+
+        Returns:
+            An :class:`~cldk.analysis.commons.results.EdgePage` of
+            :class:`~cldk.models.java.models.JCfgEdge`, whose ``complete`` says whether the page is
+            the whole graph and whose ``total`` says how large that is.
+
+        Raises:
+            AmbiguousName: ``callable`` named more than one callable.
+            SelectorNotInGraph: Nothing matched.
+            ValueError: ``page_size`` below 1, or a cursor from another page.
+            CodeanalyzerUsageException: ``callable`` is an implicit callable — it resolves (J-6)
+                and the analyzer emits it with no body, so there is no flow to page — or the
+                analysis was built below ``analysis_level="program_dependency_graph"``.
+        """
+        return self.backend.get_cfg(callable, in_class=in_class, page_size=page_size, cursor=cursor)
+
+    def get_cdg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[JCdgEdge]:
+        """Return one page of the control dependence edges within one callable.
+
+        ``src`` is the branching node ``dst`` is control dependent on — the analyzer's
+        post-dominance over the CFG, not re-derived here. Arguments and failures are
+        :meth:`get_cfg`'s.
+        """
+        return self.backend.get_cdg(callable, in_class=in_class, page_size=page_size, cursor=cursor)
+
+    def get_ddg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[JDdgEdge]:
+        """Return one page of the data dependence edges within one callable.
+
+        Each edge names the variable it flows (``var``) and the evidence for it (``prov``), which in
+        Java is one of **two** tiers — ``ssa`` (324,959 edges on the reference graph) or
+        ``points-to`` (1,134). :func:`~cldk.analysis.commons.results.prov_rank` ranks ``points-to``
+        least certain, which is what a caller weighing two hops reads. Arguments and failures are
+        :meth:`get_cfg`'s.
+        """
+        return self.backend.get_ddg(callable, in_class=in_class, page_size=page_size, cursor=cursor)
+
+    def slice_backward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """Return everything the value ``src`` depends on.
+
+        On an analysis whose port lattice carries no dependence edge — codeanalyzer-java before
+        3.0.3, or ``--l3-engine wala`` — that is the seed plus the argument vertex at every call
+        site that passes a value into the parameter, and nothing behind those arguments. It is
+        still a real answer that varies with the program, which is why this one answers where
+        :meth:`slice_forward` refuses. From 3.0.3 the walk carries on into the statements that
+        computed those arguments.
+
+        Args:
+            src: The value's name — in Java, a parameter of ``within``.
+            within: The callable to look inside. Required: a value name is scoped by its callable.
+            depth: Most hops from the seed; ``None`` for the whole cone.
+            max_nodes: Most nodes to return. A cap that fires is reported, never silent.
+
+        Returns:
+            A :class:`~cldk.analysis.commons.results.Slice` containing the seed, ordered by node id.
+
+        Raises:
+            AmbiguousName: ``within`` or ``src`` matched more than one thing.
+            SelectorNotInGraph: Either matched nothing.
+            ValueError: ``depth`` is not a positive ``int``, or ``max_nodes`` is below 1.
+        """
+        return self.backend.slice_backward(src, within=within, depth=depth, max_nodes=max_nodes)
+
+    def slice_forward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """Return everything the value ``src`` can affect.
+
+        **Java cannot answer this today and says so.** A parameter vertex has no outgoing dependence
+        edge in codeanalyzer-java's output, so the result would be the seed alone for every
+        parameter of every application — indistinguishable from "this parameter affects nothing".
+        Arguments and names are judged first; then it raises naming the gap.
+
+        Raises:
+            CodeanalyzerExecutionException: The analyzer's port lattice carries no dependence edge.
+        """
+        return self.backend.slice_forward(src, within=within, depth=depth, max_nodes=max_nodes)
+
+    def backward_cone(self, sinks: Sequence[str], *, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """Return every callable that can reach any of ``sinks`` — "what could get here".
+
+        A call-graph cone, so its vertices are callables; the sinks are in the result and in
+        ``roots``. Bounded by default, because an unbounded cone on a real application is a
+        truncated answer to a question nobody asked; ``depth=None`` asks for the whole thing and
+        ``total`` says how much a cap left out.
+
+        Args:
+            sinks: The callables to walk back from, each resolved as in :meth:`resolve_callable`.
+            depth: Most call hops back; ``None`` for the whole cone.
+            max_nodes: Most nodes to return.
+
+        Raises:
+            AmbiguousName: A sink matched more than one callable.
+            SelectorNotInGraph: A sink matched none.
+            TypeError: ``sinks`` is a bare string.
+            ValueError: ``sinks`` is empty, or a bound is out of range.
+        """
+        return self.backend.backward_cone(sinks, depth=depth, max_nodes=max_nodes)
+
+    def reaches(self, src: str, dst: str, *, depth: int | None = None) -> bool:
+        """Return whether there is a call path from ``src`` to ``dst``.
+
+        The cheap check before asking for the paths themselves. **Unbounded by default**, unlike the
+        slices: a hop budget on a boolean would make "there is no path" and "there is no path within
+        five hops" the same ``False``.
+
+        Raises:
+            AmbiguousName: Either name matched more than one callable.
+            SelectorNotInGraph: Either matched none.
+            ValueError: ``depth`` is not a positive ``int``.
+        """
+        return self.backend.reaches(src, dst, depth=depth)
+
+    def callers_of(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> List[SliceNode]:
+        """Return the callables that call this one, one hop back, addressed by name.
+
+        The name-based sibling of :meth:`get_callers`, which takes a class name plus a method
+        signature and returns raw dicts; that one is a frozen 1.x signature and is unchanged. ``[]``
+        is unambiguous — a name matching nothing raises.
+
+        Raises:
+            AmbiguousName: ``name`` matched more than one callable.
+            SelectorNotInGraph: Nothing matched.
+        """
+        return self.backend.callers_of(name, in_class=in_class, in_module=in_module)
+
+    def callees_of(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> List[SliceNode]:
+        """Return the callables this one calls, one hop forward, addressed by name.
+
+        Java's call graph has no external vertices on either backend (J-1), so unlike Python's and
+        TypeScript's this never reports a ``kind="external"`` node; ``get_external_symbols`` is where
+        call targets outside the project live.
+
+        Raises:
+            AmbiguousName: ``name`` matched more than one callable.
+            SelectorNotInGraph: Nothing matched.
+        """
+        return self.backend.callees_of(name, in_class=in_class, in_module=in_module)
+
+    def paths_between(self, src: str, dst: str, *, src_within: str, dst_within: str, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+        """Return how the value ``src`` reaches the value ``dst`` — the sequences, where a slice is
+        the set.
+
+        Two scopes, not one, and neither defaults to the other: a value is addressed by a name plus
+        the callable it enters, and a single scope could never find the cross-callable path this
+        exists for.
+
+        **Java cannot answer this today and says so** — see :meth:`slice_forward`. Arguments and
+        names are judged first.
+
+        Raises:
+            AmbiguousName / SelectorNotInGraph: A name matched more than one thing, or nothing.
+            ValueError: A bound is out of range, or the two endpoints are the same position.
+            CodeanalyzerExecutionException: The analyzer's port lattice carries no dependence edge.
+        """
+        return self.backend.paths_between(src, dst, src_within=src_within, dst_within=dst_within, depth=depth, max_paths=max_paths)
+
+    def call_paths_between(self, src: str, dst: str, *, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+        """Return how one callable reaches another — the evidence-carrying form of :meth:`reaches`.
+
+        Every hop is ``via="call"`` with no ``var`` and no ``prov``: a call edge carries neither, and
+        saying so is better than inventing a provenance. Only shortest paths, ordered so that
+        ``max_paths`` truncates a prefix of one total order rather than an arbitrary subset.
+
+        Raises:
+            AmbiguousName / SelectorNotInGraph: A name matched more than one callable, or none.
+            ValueError: A bound is out of range, or ``src`` and ``dst`` name the same callable.
+        """
+        return self.backend.call_paths_between(src, dst, depth=depth, max_paths=max_paths)
+
+    def flows_to_call(self, src: str, callee: str, *, within: str, depth: int | None = None) -> bool:
+        """Return whether the value ``src`` reaches any argument of a call to ``callee``.
+
+        **Java cannot answer this today and says so** — see :meth:`slice_forward`.
+
+        Raises:
+            AmbiguousName / SelectorNotInGraph: A name matched more than one thing, or nothing.
+            ValueError: ``depth`` is not a positive ``int``.
+            CodeanalyzerExecutionException: The analyzer's port lattice carries no dependence edge.
+        """
+        return self.backend.flows_to_call(src, callee, within=within, depth=depth)
+
+    def flows_to_argument(self, src: str, callee: str, arg: str, *, within: str, depth: int | None = None) -> bool:
+        """Return whether the value ``src`` reaches ``callee``'s parameter ``arg``.
+
+        A different question from :meth:`flows_to_call`: a tainted value routinely reaches a method
+        without reaching the parameter that matters. ``arg`` is named, never numbered.
+
+        **Java cannot answer this today and says so** — see :meth:`slice_forward`.
+
+        Raises:
+            AmbiguousName / SelectorNotInGraph: A name matched more than one thing, or nothing —
+                including ``arg`` naming no parameter of ``callee``, which is a caller error and not
+                a ``False``.
+            ValueError: ``depth`` is not a positive ``int``.
+            CodeanalyzerExecutionException: The analyzer's port lattice carries no dependence edge.
+        """
+        return self.backend.flows_to_argument(src, callee, arg, within=within, depth=depth)
+
+    @property
+    def has_resolution_edges(self) -> bool:
+        """Whether call sites carry a resolved callee on this backend right now.
+
+        ``False`` means every empty ``callee_signature`` is explained by the attached graph
+        carrying no ``J_RESOLVES_TO`` edge for this application, not by individual call sites
+        failing to resolve. The ``analysis.json`` backend is unconditionally ``True``:
+        codeanalyzer-java resolves callees at every analysis level.
+        """
+        return self.backend.has_resolution_edges
+
+    # =====================================================================================
+    # Entrypoints, the bulk projections, the artifact layer and the type-kind leaf accessors
+    # (leg 3b, Task 3). The facade delegates; the policy lives once on
+    # :class:`~cldk.analysis.java.backend.JavaAnalysisBackend`, which both backends inherit.
+    # =====================================================================================
+    def get_callables_overview(self) -> List[JCallableOverview]:
+        """Return a lightweight overview of every callable in the project, in one bulk read.
+
+        A field-projected alternative to :meth:`get_methods` for enumeration: each
+        :class:`~cldk.models.java.projections.JCallableOverview` carries the callable's addressable
+        key, declaring type, kind, location, modifiers and annotation names — but not the full
+        reconstruction (body nodes, call sites, local classes). Body-inspect the few you need
+        afterwards via :meth:`get_method` or :meth:`get_method_bodies`.
+
+        Returns:
+            A flat list, one entry per callable the analyzer emitted — initializers, implicit
+            constructors and the callables of local and anonymous classes included (J-6).
+
+        See Also:
+            :meth:`get_decorated_callables`: The same projection filtered by annotation.
+            :meth:`get_method_bodies`: Bulk source fetch for chosen keys.
+        """
+        return self.backend.get_callables_overview()
+
+    def get_method_bodies(self, signatures: List[str]) -> Dict[str, str]:
+        """Return source text for the given callables, in one bulk read.
+
+        Args:
+            signatures: The keys :meth:`get_callables_overview` hands back
+                (``JCallableOverview.key``, the J-1 ``"<type fqn>.<signature>"`` name) — matched
+                exactly. A bare Java signature is unique only within its declaring type, so it is
+                not an address here.
+
+        Returns:
+            A dict mapping each key to its source text. Keys with no matching callable are omitted,
+            as are callables with no source text of their own — the implicit constructors, and only
+            those (1,117 of daytrader8's 1,216). The ``<clinit>$N()`` initializers carry a body
+            block and do come back. Every value is a real, non-empty ``str``.
+
+        Note:
+            The text differs by backend exactly as :meth:`get_source` does: the body block off
+            ``analysis.json``, the whole declaration off the Neo4j projection
+            (codeanalyzer-java#176).
+        """
+        return self.backend.get_method_bodies(signatures)
+
+    def get_decorated_callables(self, markers: List[str]) -> List[JCallableOverview]:
+        """Return overviews of callables annotated with any of the given markers, in one bulk read.
+
+        Args:
+            markers: Annotation names. Each matches by simple name (``Test``), with a leading ``@``
+                ignored (``@Test``), or by fully-qualified name (``org.junit.Test``) — J-5. Nothing
+                is matched fuzzily (E8).
+
+        Returns:
+            A list of :class:`~cldk.models.java.projections.JCallableOverview`, one per matching
+            callable.
+
+        See Also:
+            :meth:`get_callables_overview`: The unfiltered projection.
+        """
+        return self.backend.get_decorated_callables(markers)
+
+    def get_entrypoints(self) -> List[JCallableOverview]:
+        """Return overviews of every callable the analyzer marked as an entrypoint, in one bulk read.
+
+        codeanalyzer-java's own detection pass already finds servlet methods, JAX-RS resource
+        methods, MDB listeners and the rest; this surfaces that mark instead of making a caller
+        rediscover it. 133 of daytrader8's 1,216 callables carry it.
+
+        Returns:
+            A list of :class:`~cldk.models.java.projections.JCallableOverview`. Empty means the pass
+            found no entrypoint *callables* — the mark itself is never missing, on either backend.
+
+        See Also:
+            :meth:`get_entrypoint_classes`: The type-level sibling this walk never sees.
+            :meth:`get_entrypoint_coverage`: Whether the pass itself had gaps — which Java, alone
+                of the three languages, cannot say.
+        """
+        return self.backend.get_entrypoints()
+
+    def get_entrypoint_classes(self) -> List[JClassOverview]:
+        """Return overviews of every type the analyzer marked as an entrypoint in its own right.
+
+        :meth:`get_entrypoints` walks callables only, so a type marked at the declaration with no
+        individually-marked method is invisible to it. This is that sibling — the projected form of
+        :meth:`get_entry_point_classes`, which keeps its 1.x ``Dict[str, JType]`` shape.
+        """
+        return self.backend.get_entrypoint_classes()
+
+    def get_entrypoint_coverage(self) -> EntrypointCoverage:
+        """Report the entrypoint pass's coverage — which for Java is that **there is no report**.
+
+        codeanalyzer-java 3.0.1 emits the entrypoint marks and nothing about the pass that made
+        them: ``analysis.json`` has no report key and the ``:JApplication`` anchor carries only
+        ``name``/``schema_version``/``analyzer_name``/``analyzer_version``. So this returns an
+        :class:`~cldk.analysis.commons.results.EntrypointCoverage` whose ``diagnostics`` carry
+        ``entrypoint_report_unavailable`` and whose other fields are therefore not coverage
+        information — the same "say so honestly" shape as
+        :attr:`~cldk.analysis.commons.results.LocateResult.diagnostics`'s
+        ``module_source_unavailable``, and identical on both backends (J-4).
+
+        It is deliberately **not** synthesised from the ``is_entrypoint`` booleans: a count of
+        syntactically-marked callables is not a coverage record.
+        """
+        return self.backend.get_entrypoint_coverage()
+
+    def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[JCallSite]]:
+        """Return the call sites of the given callables, keyed by the key that named them.
+
+        Avoids the per-callable reconstruction fan-out when call sites are wanted for a specific
+        frontier.
+
+        Args:
+            signatures: The keys :meth:`get_callables_overview` hands back, matched exactly.
+
+        Returns:
+            A dict mapping each existing key to its list of
+            :class:`~cldk.models.java.models.JCallSite` (empty when the callable makes no calls);
+            keys with no matching callable are omitted.
+
+        See Also:
+            :attr:`has_resolution_edges`: Distinguishes a genuinely unresolved callee from a graph
+                carrying no resolution at all.
+        """
+        return self.backend.get_callsites_for(signatures)
+
+    def get_external_symbols(self) -> Dict[str, JExternalSymbol]:
+        """Return every call-graph endpoint outside the analysed project, keyed by its
+        ``@external`` id.
+
+        Returns:
+            The analyzer's own ``external_symbols`` map. Empty means the run homed them and this
+            project's call graph makes no calls outside itself.
+
+        Raises:
+            CodeanalyzerExecutionException: The run never homed them, which is a different fact.
+                codeanalyzer-java emits ``external_symbols`` only under ``--external-calls``, which
+                ``--emit neo4j`` forces and a local ``-a`` run does not — so the Neo4j backend
+                answers and the local one refuses rather than returning an empty dict that would
+                read as "nothing outside".
+        """
+        return self.backend.get_external_symbols()
+
+    # -----[ repository artifacts ]-----
+    def get_artifacts(self) -> Dict[str, PyArtifact]:
+        """Return every non-code project artifact (``pom.xml``, properties files, descriptors, …),
+        keyed by repo-relative path.
+
+        This layer (``Artifact``/``ConfigKey``/``Package`` nodes) is the one part of the graph every
+        ``codeanalyzer-<lang>`` projects identically and unprefixed, so it is carried in the shared
+        ``Py*`` models rather than in Java-specific ones. ``JArtifact.text_truncated`` has no home
+        on the shared model; read it off ``JApplication.artifacts`` when it matters.
+
+        See Also:
+            :meth:`get_dependencies`, :meth:`get_config_keys`, :meth:`get_config_uses`.
+        """
+        return self.backend.get_artifacts()
+
+    def get_dependencies(self, *, direct_only: bool = False, ecosystem: str | None = None, declared_in: str | None = None) -> List[PyDependency]:
+        """Return every declared dependency, one entry per declaring manifest, optionally filtered.
+
+        All three filters default to "don't filter". The Maven ``group`` coordinate has no home on
+        the shared model; read it off ``JApplication.dependencies`` when ``name`` alone is
+        ambiguous.
+
+        Args:
+            direct_only: When ``True``, excludes lockfile-only transitive pins.
+            ecosystem: When given, only dependencies from this package ecosystem (``"maven"``).
+            declared_in: When given, only dependencies declared by this artifact id.
+        """
+        return self.backend.get_dependencies(direct_only=direct_only, ecosystem=ecosystem, declared_in=declared_in)
+
+    def get_config_keys(self) -> Dict[str, PyConfigKey]:
+        """Return every configuration key flattened out of a config-bearing artifact, keyed
+        ``"<artifact repo-relative path>@key/<dotted key>"`` (``pom.xml@key/project.artifactId``).
+
+        That is the analyzer's own id with its ``can://artifact/<app>/`` prefix dropped: the
+        application name belongs to the run, not to the key, and ``can://`` ids stay off the public
+        surface (E6). The full id is still on ``PyConfigKey.id``. Python and TypeScript key this by
+        the raw id today; aligning the three is tracked as python-sdk#346 and is deliberately not
+        done piecemeal here.
+        """
+        return self.backend.get_config_keys()
+
+    def get_config_uses(self, key: str | None = None) -> List[PyConfigUseEdge]:
+        """Return resolved code-to-config edges: which body node reads which config key.
+
+        Always ``[]`` on codeanalyzer-java 3.0.1, which has no code-to-config detector (there is no
+        ``config_uses`` on the Java wire) — so there is nothing for ``key`` to filter.
+
+        Args:
+            key: When given, only edges whose target key has this bare ``key``.
+
+        See Also:
+            :meth:`get_config_readers`: The same edges, resolved to their reading callables.
+            :meth:`get_unresolved_config_reads`: The reads this cannot show.
+        """
+        return self.backend.get_config_uses(key)
+
+    def get_unresolved_config_reads(self) -> List[PyConfigRead]:
+        """Return every detector-matched config read that never closed on exactly one declared key.
+
+        Always ``[]`` on codeanalyzer-java 3.0.1: there is no config-read detector, so there is
+        nothing to have failed to resolve.
+        """
+        return self.backend.get_unresolved_config_reads()
+
+    def get_config_readers(self, key: str) -> List[JCallableOverview]:
+        """Return overviews of every callable reading configuration key ``key``.
+
+        Always ``[]`` for the same reason :meth:`get_config_uses` is: with no code-to-config edges
+        on the Java wire there is no edge to resolve to a reading callable.
+
+        Args:
+            key: The bare configuration key, matched as :meth:`get_config_uses` matches it.
+        """
+        return self.backend.get_config_readers(key)
+
+    # -----[ the type-kind leaf accessors (J-7) ]-----
+    def get_interfaces(self) -> Dict[str, JType]:
+        """Return every interface in the project, keyed by qualified name.
+
+        The ``kind``-filtered siblings of :meth:`get_classes`, sharing TypeScript's names for the
+        same concepts (G3). Measured: 3 interfaces in daytrader8, 594 in ThingsBoard.
+        """
+        return self.backend.get_interfaces()
+
+    def get_enums(self) -> Dict[str, JType]:
+        """Return every enum in the project, keyed by qualified name (192 in ThingsBoard; daytrader8
+        declares none)."""
+        return self.backend.get_enums()
+
+    def get_enum_members(self, qualified_enum_name: str) -> List[JEnumConstant]:
+        """Return the constants declared by one enum.
+
+        Args:
+            qualified_enum_name: The enum's qualified name, as :meth:`get_enums` keys it.
+
+        Raises:
+            SelectorNotInGraph: The name is not an enum of this application — no type at all, or a
+                type of another kind. An empty list means an enum that declares no constant, which
+                is a different answer (D7).
+        """
+        return self.backend.get_enum_members(qualified_enum_name)
+
+    def get_records(self) -> Dict[str, JType]:
+        """Return every record in the project, keyed by qualified name — the one Java-only type kind
+        (35 in ThingsBoard; daytrader8 declares none). Annotation types have no leaf accessor of
+        their own and stay reachable through :meth:`get_classes` (J-7)."""
+        return self.backend.get_records()

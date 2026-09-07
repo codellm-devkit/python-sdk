@@ -28,16 +28,21 @@ getters below are the first genuinely new addition, for the reasons given after 
 discussion.
 
 What does *not* belong here is a query whose return type is one language's models. ``locate`` /
-``locate_many`` (the v2 query-facade spec's D3) is declared on
-:class:`~cldk.analysis.python.backend.PythonAnalysisBackend` instead, because
-:class:`~cldk.analysis.commons.results.LocateResult` carries ``codeanalyzer-python``'s ``BodyNode``
-and ``Span``: hoisted here it would be a shared contract Java and TypeScript cannot satisfy as
-typed. It is hoisted when a second language implements it and the language-neutral shape of a body
-node and a span is known from two examples rather than guessed from one.
+``locate_many`` (the v2 query-facade spec's D3) was declared on
+:class:`~cldk.analysis.python.backend.PythonAnalysisBackend` for exactly that reason:
+:class:`~cldk.analysis.commons.results.LocateResult` carried ``codeanalyzer-python``'s ``BodyNode``
+and ``Span``, so hoisted here it would have been a shared contract Java and TypeScript could not
+satisfy as typed. TS-1 (leg 2.5b) settled the language-neutral shape from two examples rather than
+one -- :class:`~cldk.analysis.commons.results.BodyRef` and the commons
+:class:`~cldk.analysis.commons.results.Span` -- so the type blocker is gone; the declaration itself
+is hoisted in the same leg's task that gives TypeScript an implementation, since it is a second
+implementation, not a neutral type, that earns a method its place here.
 
 The repository-artifact getters below (``get_artifacts`` / ``get_dependencies`` /
 ``get_config_keys`` / ``get_config_uses`` / ``get_unresolved_config_reads``) are the opposite case,
-even though they are typed on ``cldk.models.python``'s ``Py*`` classes today. Unlike
+even though they are typed on ``cldk.models.python``'s ``Py*`` classes today -- the one language
+import ``cldk/analysis/commons/`` still makes, pinned as such by
+``tests/analysis/commons/test_lifted_helpers.py``. Unlike
 ``PyModule``/``PyClass``/``BodyNode``, those models are not Python-specific shapes wearing a ``Py``
 prefix out of habit:
 ``codeanalyzer-python``'s own schema module documents the ``Py`` on ``PyArtifact`` / ``PyConfigKey``
@@ -52,12 +57,24 @@ when they implement this layer, not language-specific equivalents.
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
-from typing import ClassVar, Dict, Generic, List, TypeVar
+from typing import Any, ClassVar, Dict, Generic, List, Tuple, TypeVar
 
 import networkx as nx
 
 from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
+
+
+def semver(raw: Any) -> Tuple[int, int, int] | None:
+    """``"1.4.1"`` (or ``"1.4.1.post0"``) as ``(1, 4, 1)``; ``None`` for anything that does not
+    start with three dotted integers, so an unparsable version is *unknown*, never silently zero.
+
+    The parser behind every Neo4j backend's analyzer-version floor: the schema probe compares its
+    result against the backend's ``_ANALYZER_FLOOR`` and refuses the graph below it."""
+    m = re.match(r"(\d+)\.(\d+)\.(\d+)", raw) if isinstance(raw, str) else None
+    return (int(m[1]), int(m[2]), int(m[3])) if m else None
+
 
 AppT = TypeVar("AppT")
 ModuleT = TypeVar("ModuleT")

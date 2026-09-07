@@ -37,10 +37,57 @@ against whatever is listening on the usual port". Point the tests at a scratch s
 
 These assert that :class:`PyNeo4jBackend` answers every query **identically** to the canonical
 :class:`PyCodeanalyzer` (analysis.json) backend on the same project — the definition of the
-"1-to-1 map". Parity is asserted modulo the projection's documented-lossy fields (see
-``cldk.analysis.python.neo4j.reconstruct``): comments collapse to a docstring, and
-``PyVariableDeclaration`` loses ``value`` and its column span. The ``norm`` helper strips exactly
-those before comparing; everything else must match byte-for-byte.
+"1-to-1 map".
+
+**Two things the fixture makes equal before comparing**, because otherwise the two sides are not
+answering about the same analysis and every difference below would be noise:
+
+* The project is created in a directory *named* ``APP_NAME``. The in-memory backend derives the
+  application segment of every ``can://python/<app>/…`` id from the project directory's name,
+  while the emitter is told ``app_name=APP_NAME`` — give them different names and every id in the
+  graph disagrees with every id in memory for a reason that has nothing to do with the projection.
+* The graph is emitted at ``analysis_level=2``, matching the reference's ``"call_graph"``.
+  ``AnalysisOptions`` defaults to level 1, which emits **no** ``PY_RESOLVES_TO`` edges (so every
+  call site's ``callee_signature`` is ``None``) and none of the ``defuse``-provenance call edges
+  (so ``pkg.models.greet -> pkg.models.greet._decorate`` is missing from the call graph). Neither
+  is a projection loss; both are just a shallower analysis.
+
+**The tolerances that remain, each with its cause** (see
+``cldk.analysis.python.neo4j.reconstruct`` and ``PyNeo4jBackend._callable_full`` for the
+projection's side of each). Nothing here is tolerated because it was inconvenient, and where a
+relation is exact it is asserted rather than skipped:
+
+* ``PyModule.file_path`` is **absolute** in memory and the graph's own module key — repo-relative
+  — on Neo4j (``reconstruct.module`` sets ``file_path=file_key``). Exact and total, so it is
+  asserted both ways: the absolute path ends with the key, and the key is the symbol-table key.
+* ``PyModule.source`` is ``""``: ``:PyModule`` carries no source property at all (its keys are
+  ``id``, ``module_name``, ``last_modified``, ``content_hash``, ``file_key``, ``file_size``) — a
+  module's text is not projected.
+* ``PyModule.imports`` is ``[]``: ``PY_IMPORTS`` aggregates per distribution package, and this
+  project's only import is the relative ``from .models import User``, which is not one. The graph
+  declares no ``PY_IMPORTS`` relationship at all here, so the empty list is asserted, not skipped.
+* ``id`` is ``""`` on every reconstructed module, class and callable. **This one is recoverable
+  and simply not read**: the nodes do carry ``id`` (the teardown below matches on it), but no
+  ``reconstruct`` function copies it onto the model. Worth closing; not closed here, because this
+  module changes no SDK behaviour.
+* ``span`` is ``None``: a node carries ``start_line``/``end_line`` and nothing finer, so there are
+  no columns and no byte offsets to build a :class:`Span` from. The lines themselves survive and
+  are compared — they are inside the dicts these tests assert equal, not tolerated.
+* ``PyClassAttribute.initializer`` is ``None``, and a call site's ``arguments`` is ``[]``, although
+  ``:PyAttribute.initializer`` and ``:PyBodyNode.arguments_json`` are both **present in the
+  graph** — ``reconstruct.attribute`` / ``reconstruct.callsite`` read neither. Same shape as the
+  ``id`` gap above.
+* A call site's ``argument_types`` and its ``start_column``/``end_column`` are genuinely not
+  projected (``reconstruct.callsite``), so they come back ``[]`` / ``-1``.
+* ``callee_signature`` is ``None`` on every call site reached through ``_callable_full`` —
+  ``get_method``, ``get_class``, ``get_symbol_table`` and their siblings — because that path never
+  follows ``PY_RESOLVES_TO``. It is **not** tolerated on :meth:`get_callsites_for`, the one
+  accessor that does follow it: there the resolved callee is compared exactly.
+* ``PyCallable.body`` is ``{}``: ``_callable_full`` fetches a callable's ``call`` body nodes as
+  call sites and does not also assemble them into the ``body`` map. Asserted empty rather than
+  dropped.
+* Comments collapse to a single docstring, and ``PyVariableDeclaration`` loses ``value`` and its
+  column span (both documented in ``reconstruct``).
 """
 
 import logging
@@ -196,20 +243,33 @@ def _purge_application() -> None:
         driver.close()
 
 
-def _norm(o):
-    """``model_dump`` minus the projection's documented-lossy fields.
+def _norm(o, *, resolved_callees: bool = False):
+    """``model_dump`` minus the projection's lossy fields — the module docstring names each cause.
 
-    Drops ``comments`` everywhere; for a ``PyVariableDeclaration`` (identified by its
-    ``initializer``/``scope`` keys) also drops the un-projected ``value`` and column span.
+    Node shapes are told apart by their own keys, since what arrives here is already a dict:
+    a ``PyVariableDeclaration`` has ``initializer`` *and* ``scope``, a ``PyClassAttribute`` has
+    ``initializer`` without one, a ``PyCallsite`` has ``callee_signature``, a ``PyCallable`` has
+    ``call_sites``.
+
+    ``resolved_callees=True`` keeps ``callee_signature``, for the one accessor that populates it
+    (:meth:`PyNeo4jBackend.get_callsites_for` follows ``PY_RESOLVES_TO``; ``_callable_full`` does
+    not). Tolerating it everywhere would let that accessor's resolution regress unnoticed.
     """
     if hasattr(o, "model_dump"):
         o = o.model_dump()
     if isinstance(o, dict):
-        is_var = "initializer" in o and "scope" in o
-        drop = {"comments"} | ({"value", "start_column", "end_column"} if is_var else set())
-        return {k: _norm(v) for k, v in o.items() if k not in drop}
+        drop = {"comments", "id", "span"}
+        if "initializer" in o:
+            drop |= {"value", "start_column", "end_column"} if "scope" in o else {"initializer"}
+        if "callee_signature" in o:
+            drop |= {"argument_types", "arguments", "start_column", "end_column"}
+            if not resolved_callees:
+                drop |= {"callee_signature"}
+        if "call_sites" in o:
+            drop |= {"body"}
+        return {k: _norm(v, resolved_callees=resolved_callees) for k, v in o.items() if k not in drop}
     if isinstance(o, list):
-        return [_norm(x) for x in o]
+        return [_norm(x, resolved_callees=resolved_callees) for x in o]
     return o
 
 
@@ -222,7 +282,11 @@ def backends(tmp_path_factory):
     from codeanalyzer.neo4j.emit import emit_neo4j
     from codeanalyzer.options import AnalysisOptions, EmitTarget
 
-    proj = tmp_path_factory.mktemp("parity_proj")
+    # Named APP_NAME on purpose: the in-memory backend takes the can:// application segment from
+    # the project directory's name and the emitter takes it from --app-name, so this is what makes
+    # the two sides mint the same ids (see the module docstring).
+    proj = tmp_path_factory.mktemp("parity_root") / APP_NAME
+    proj.mkdir()
     pkg = proj / "pkg"
     pkg.mkdir()
     (pkg / "__init__.py").write_text("")
@@ -240,6 +304,10 @@ def backends(tmp_path_factory):
         neo4j_uri=NEO4J_URI,
         neo4j_user=NEO4J_USER,
         neo4j_password=NEO4J_PASSWORD,
+        # Level 2 == the reference's "call_graph". AnalysisOptions defaults to 1, which emits no
+        # PY_RESOLVES_TO edges and no defuse-provenance call edges -- comparing that against a
+        # level-2 reference measures the level difference, not the projection.
+        analysis_level=2,
     )
     with Codeanalyzer(opts) as az:
         emit_neo4j(az.analyze(), opts)
@@ -256,10 +324,20 @@ def test_symbol_table_parity(backends):
     ref, neo = backends
     st_ref, st_neo = ref.get_symbol_table(), neo.get_symbol_table()
     assert set(st_ref) == set(st_neo)
+    assert any(st_ref[fp].source for fp in st_ref), "the in-memory side does carry module text"
     for fp in st_ref:
         a, b = _norm(st_ref[fp]), _norm(st_neo[fp])
-        a.pop("imports", None)  # imports are reconstructed best-effort from aggregated edges
-        b.pop("imports", None)
+        # file_path: absolute in memory, the graph's own module key on Neo4j. Exact and total, so
+        # asserted in both directions rather than skipped.
+        assert b["file_path"] == fp, "the Neo4j file_path is the symbol-table key itself"
+        assert a.pop("file_path").endswith(b.pop("file_path"))
+        # source: :PyModule carries no source property, so a module's text is not projected.
+        assert b.pop("source") == ""
+        a.pop("source")
+        # imports: PY_IMPORTS aggregates per distribution package; this project's only import is
+        # relative, so the graph declares no PY_IMPORTS at all. Assert the empty list, don't drop it.
+        assert b.pop("imports") == []
+        a.pop("imports")
         assert a == b, f"module {fp} differs"
 
 
@@ -289,10 +367,21 @@ def test_methods_and_fields_parity(backends):
         mc = ref.get_all_methods_in_class(sig)
         assert set(mc) == set(neo.get_all_methods_in_class(sig))
         for mname in mc:
-            assert _norm(ref.get_method(sig, mname)) == _norm(neo.get_method(sig, mname)), f"{sig}.{mname} differs"
+            m_ref, m_neo = ref.get_method(sig, mname), neo.get_method(sig, mname)
+            assert _norm(m_ref) == _norm(m_neo), f"{sig}.{mname} differs"
+            # _callable_full turns a callable's `call` body nodes into call sites and does not also
+            # assemble them into `body`, so this path's body map is always empty. Asserted, so the
+            # day it is populated this test says so instead of quietly comparing nothing.
+            assert m_neo.body == {}
             assert ref.get_method_parameters(sig, mname) == neo.get_method_parameters(sig, mname)
         assert set(ref.get_all_constructors(sig)) == set(neo.get_all_constructors(sig))
-        assert _norm(ref.get_all_fields(sig)) == _norm(neo.get_all_fields(sig))
+        f_ref, f_neo = ref.get_all_fields(sig), neo.get_all_fields(sig)
+        assert _norm(f_ref) == _norm(f_neo)
+        # `initializer` is on the :PyAttribute node but reconstruct.attribute does not read it --
+        # a recoverable gap, not a projection loss. Both halves asserted so closing it breaks here.
+        assert all(f.initializer is None for f in f_neo)
+        if sig == "pkg.models.Entity":
+            assert {f.name: f.initializer for f in f_ref} == {"registry": "'default'"}
 
 
 def test_bulk_accessors_parity(backends):
@@ -322,8 +411,12 @@ def test_bulk_accessors_parity(backends):
     cs_ref = ref.get_callsites_for(sigs)
     cs_neo = neo.get_callsites_for(sigs)
     assert set(cs_ref) == set(cs_neo)
+    # resolved_callees=True: this is the only accessor that follows PY_RESOLVES_TO, so its
+    # callee_signature is compared exactly -- including the @external can-id an external target
+    # resolves to. Everywhere else it is None and tolerated (see the module docstring).
     for sig in cs_ref:
-        assert [_norm(s) for s in cs_ref[sig]] == [_norm(s) for s in cs_neo[sig]], f"call sites for {sig} differ"
+        assert [_norm(s, resolved_callees=True) for s in cs_ref[sig]] == [_norm(s, resolved_callees=True) for s in cs_neo[sig]], f"call sites for {sig} differ"
+    assert any(s.callee_signature for sites in cs_neo.values() for s in sites), "PY_RESOLVES_TO is followed here"
     assert ref.get_callsites_for(["nope.not.here"]) == neo.get_callsites_for(["nope.not.here"]) == {}
 
 
@@ -341,10 +434,15 @@ def test_call_graph_parity(backends):
 
     # Regression (#246): get_method / get_all_callers / get_all_callees must resolve module-level
     # functions too, scoped by module name rather than class name — "pkg.models.entry" calls
-    # "pkg.models.helper".
-    assert ref.get_method("pkg.models", "helper").signature == neo.get_method("pkg.models", "helper").signature == "pkg.models.helper"
-    callers_ref = ref.get_all_callers("pkg.models", "helper")
-    callers_neo = neo.get_all_callers("pkg.models", "helper")
+    # "pkg.models.helper". The scope key is the module's own `module_name`, which for pkg/models.py
+    # is the short "models" and not the dotted "pkg.models"; both backends agree on that, and on
+    # answering a scope key that resolves to nothing with an empty result rather than raising.
+    assert {m.module_name for m in ref.get_modules()} == {m.module_name for m in neo.get_modules()} >= {"models"}
+    assert ref.get_method("models", "helper").signature == neo.get_method("models", "helper").signature == "pkg.models.helper"
+    callers_ref = ref.get_all_callers("models", "helper")
+    callers_neo = neo.get_all_callers("models", "helper")
     assert callers_ref == callers_neo
+    assert callers_ref["target_method"] == "pkg.models.helper"
     assert [c["caller_signature"] for c in callers_ref["caller_details"]] == ["pkg.models.entry"]
-    assert ref.get_all_callees("pkg.models", "entry") == neo.get_all_callees("pkg.models", "entry")
+    assert ref.get_all_callees("models", "entry") == neo.get_all_callees("models", "entry")
+    assert ref.get_all_callers("pkg.models", "helper") == neo.get_all_callers("pkg.models", "helper") == {"caller_details": []}

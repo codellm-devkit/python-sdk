@@ -29,7 +29,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel
 
-from .models import TSCallable
+from .models import TSCallable, TSClass
 
 
 class TSCallableOverview(BaseModel):
@@ -87,6 +87,8 @@ class TSCallableOverview(BaseModel):
         c: TSCallable,
         owner_signature: Optional[str],
         owner_kind: Optional[str],
+        *,
+        path: str,
     ) -> TSCallableOverview:
         """Project a :class:`~cldk.models.typescript.TSCallable` into a
         :class:`TSCallableOverview`.
@@ -97,6 +99,8 @@ class TSCallableOverview(BaseModel):
                 module-level function, arrow, or namespace-owned function.
             owner_kind: The owner's node kind (``"class"`` or ``"interface"``), or ``None`` when
                 ``owner_signature`` is ``None``.
+            path: The declaring module's symbol-table key (repo-relative path). The v2 callable
+                does not carry it; the caller iterating ``symbol_table`` does.
 
         Returns:
             The projected overview.
@@ -107,7 +111,7 @@ class TSCallableOverview(BaseModel):
             owner_signature=owner_signature,
             owner_kind=owner_kind,
             kind=c.kind,
-            path=c.path,
+            path=path,
             start_line=c.start_line,
             end_line=c.end_line,
             decorators=[d.name for d in c.decorators],
@@ -115,4 +119,59 @@ class TSCallableOverview(BaseModel):
             is_async=c.is_async,
             is_static=c.is_static,
             accessibility=c.accessibility,
+        )
+
+
+class TSClassOverview(BaseModel):
+    """A lightweight projection of one class — the class-level counterpart to
+    :class:`TSCallableOverview`, for classes codeanalyzer-typescript marked as entrypoints in
+    their own right (``TSClass.is_entrypoint``), independently of any individual method.
+
+    Returned by ``TypeScriptAnalysis.get_entrypoint_classes``. It mirrors
+    :class:`~cldk.models.python.PyClassOverview` field for field, because the accessor that
+    returns it mirrors ``PythonAnalysis.get_entrypoint_classes``.
+
+    **Classes only, on purpose.** ``is_entrypoint`` is declared on all five TypeScript type kinds
+    (``TSClass``/``TSInterface``/``TSEnum``/``TSTypeAlias``/``TSNamespace`` all inherit it), but
+    the Neo4j projection stamps it onto ``:TSCallable`` and ``:TSClass`` nodes only — measured on
+    the 1.3.0 reference graph, where those are the only two labels carrying the property at all.
+    Widening this accessor past classes would therefore answer differently on the two backends,
+    which is the one thing the query surface may not do.
+
+    Attributes:
+        signature: The class's unique signature.
+        name: The class's short name.
+        path: Project-relative path of the declaring module. ``TSClass`` carries no ``path`` field
+            of its own — this is the owning module's key.
+        start_line / end_line: The class's line span.
+        decorators: The decorator names applied to the class (``TSDecorator.name`` only). Order is
+            not part of the cross-backend contract, exactly as on :class:`TSCallableOverview`.
+    """
+
+    signature: str
+    name: str
+    path: str
+    start_line: int
+    end_line: int
+    decorators: List[str] = []
+
+    @classmethod
+    def from_class(cls, c: TSClass, *, path: str) -> TSClassOverview:
+        """Project a :class:`~cldk.models.typescript.TSClass` into a :class:`TSClassOverview`.
+
+        Args:
+            c: The class to project.
+            path: The declaring module's symbol-table key (repo-relative path). The v2 type does
+                not carry it; the caller iterating ``symbol_table`` does.
+
+        Returns:
+            The projected overview.
+        """
+        return cls(
+            signature=c.signature,
+            name=c.name,
+            path=path,
+            start_line=c.start_line,
+            end_line=c.end_line,
+            decorators=[d.name for d in c.decorators],
         )

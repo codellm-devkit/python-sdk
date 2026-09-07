@@ -14,20 +14,36 @@
 # limitations under the License.
 ################################################################################
 
-"""The TypeScript backend contract: both backends implement the same ABC (no live Neo4j needed)."""
+"""The TypeScript backend contract: both backends implement the same ABC, and that ABC is the
+generic cross-language :class:`AnalysisBackend` (no live Neo4j needed)."""
 
 import inspect
 
 import pytest
 
+from cldk.analysis.commons.backend import AnalysisBackend
 from cldk.analysis.typescript.backend import TSAnalysisBackend
 from cldk.analysis.typescript.codeanalyzer.codeanalyzer import TSCodeanalyzer
 from cldk.analysis.typescript.neo4j import TSNeo4jBackend
 
+BACKENDS = [TSCodeanalyzer, TSNeo4jBackend]
+GENERIC_METHODS = sorted(AnalysisBackend.__abstractmethods__)
 
-def test_backends_subclass_the_contract():
-    assert issubclass(TSCodeanalyzer, TSAnalysisBackend)
-    assert issubclass(TSNeo4jBackend, TSAnalysisBackend)
+
+def test_typescript_contract_parameterises_the_generic_abc():
+    assert issubclass(TSAnalysisBackend, AnalysisBackend)
+    assert TSAnalysisBackend.P == "TS"
+    assert TSAnalysisBackend.N == "TS"
+
+
+def test_generic_methods_are_all_abstract_on_the_typescript_contract():
+    """Inheriting the generic ABC must not quietly satisfy any of its methods with a stub."""
+    assert set(GENERIC_METHODS) <= TSAnalysisBackend.__abstractmethods__
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_backends_subclass_the_contract(backend):
+    assert issubclass(backend, TSAnalysisBackend)
 
 
 def test_contract_is_abstract():
@@ -35,17 +51,26 @@ def test_contract_is_abstract():
         TSAnalysisBackend()
 
 
-@pytest.mark.parametrize("backend", [TSCodeanalyzer, TSNeo4jBackend])
+@pytest.mark.parametrize("backend", BACKENDS)
 def test_backends_fully_implement_the_contract(backend):
-    # No abstract methods left unimplemented ⇒ the class is concrete/instantiable.
+    # No abstract methods left unimplemented — generic and TypeScript-only alike.
     assert backend.__abstractmethods__ == frozenset()
 
 
-@pytest.mark.parametrize("backend", [TSCodeanalyzer, TSNeo4jBackend])
+@pytest.mark.parametrize("backend", BACKENDS)
+@pytest.mark.parametrize("name", GENERIC_METHODS)
+def test_backend_implements_every_generic_method(backend, name):
+    impl = getattr(backend, name, None)
+    assert impl is not None and not getattr(impl, "__isabstractmethod__", False), f"{backend.__name__}.{name} is not implemented"
+
+
+@pytest.mark.parametrize("backend", BACKENDS)
 def test_signatures_match_the_contract(backend):
-    """Every abstract method's signature is preserved by each backend (params + defaults)."""
+    """Every abstract method's parameters and defaults are preserved by each backend. Return
+    annotations are not compared: the generic ABC's are type variables (``Dict[str, TypeT]``) that
+    the TypeScript backends narrow to concrete models."""
     for name, base_method in inspect.getmembers(TSAnalysisBackend, predicate=inspect.isfunction):
         if getattr(base_method, "__isabstractmethod__", False):
-            base_sig = inspect.signature(base_method)
-            impl_sig = inspect.signature(getattr(backend, name))
+            base_sig = inspect.signature(base_method).replace(return_annotation=inspect.Signature.empty)
+            impl_sig = inspect.signature(getattr(backend, name)).replace(return_annotation=inspect.Signature.empty)
             assert impl_sig == base_sig, f"{backend.__name__}.{name} signature drifted: {impl_sig} != {base_sig}"

@@ -859,7 +859,7 @@ class PythonAnalysis:
         ``get_method``, falling back to ``get_callers``, falling back to scanning the symbol table
         by hand. Four outcomes stay distinguishable — see
         :class:`~cldk.analysis.commons.results.LocateResult`: inside a callable (``callable`` set,
-        plus ``node`` when a body node is that precise), at real module scope (``module_scope``
+        plus ``body`` when a body node is that precise), at real module scope (``module_scope``
         diagnostic), in the gap between two callables (also module scope, never snapped to the
         nearest callable), or in a file the graph has no module for (``file_not_in_graph``).
 
@@ -943,7 +943,7 @@ class PythonAnalysis:
         Generalises :meth:`get_method_bodies` below callable granularity: ``node_id`` is either a
         callable's signature, or the opaque body-node id
         :attr:`~cldk.analysis.commons.results.LocateResult.node_id` hands back alongside
-        :attr:`~cldk.analysis.commons.results.LocateResult.node`, so a statement or call site
+        :attr:`~cldk.analysis.commons.results.LocateResult.body`, so a statement or call site
         :meth:`locate` found can be re-fetched precisely, not just the callable enclosing it.
 
         Args:
