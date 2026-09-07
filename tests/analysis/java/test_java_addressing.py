@@ -129,17 +129,23 @@ def _ports_carry_dependence(application: JApplication) -> bool:
     """Whether any ``formal_in`` of this payload has an outgoing SDG edge — the fact
     :attr:`JNeo4jBackend._ports_carry_dependence` asks the graph, computed here from the fixture the
     fake graph stands for. Read from the analyzer's own lists rather than from the implementation,
-    so the offline suite's answer is a measurement and not a copy of what the code does."""
+    so the offline suite's answer is a measurement and not a copy of what the code does.
+
+    An edge counts only when **both** ends were emitted as body nodes, because that is what the
+    graph can see: its statement matches ``(b:JBodyNode)-[…]->(m:JBodyNode)``, and an edge naming an
+    endpoint the analyzer never emitted is not projected at all."""
     formal_in = set()
+    materialised = set()
     edges = set()
 
     def walk(t) -> None:
         for c in t.callables.values():
             for key, node in (c.body or {}).items():
+                materialised.add(java_body_node_id(c.id, key))
                 if node.kind == "formal_in":
                     formal_in.add(java_body_node_id(c.id, key))
             for rel in (c.ddg or [], c.cdg or [], c.summary or []):
-                edges.update(java_body_node_id(c.id, e.src) for e in rel)
+                edges.update((java_body_node_id(c.id, e.src), java_body_node_id(c.id, e.dst)) for e in rel)
             for local in c.types.values():
                 walk(local)
         for nested in t.types.values():
@@ -148,9 +154,9 @@ def _ports_carry_dependence(application: JApplication) -> bool:
     for unit in application.symbol_table.values():
         for t in unit.types.values():
             walk(t)
-    edges.update(e.src for e in application.param_in)
-    edges.update(e.src for e in application.param_out)
-    return bool(formal_in & edges)
+    edges.update((e.src, e.dst) for e in application.param_in)
+    edges.update((e.src, e.dst) for e in application.param_out)
+    return any(src in formal_in and dst in materialised for src, dst in edges)
 
 
 def _graph(payload: str) -> JNeo4jBackend:

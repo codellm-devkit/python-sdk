@@ -552,9 +552,16 @@ class JCodeanalyzer(JavaAnalysisBackend):
     @property
     def _ports_carry_dependence(self) -> bool:
         """See :meth:`JavaAnalysisBackend._ports_carry_dependence` — asked of the payload's own
-        ``formal_in`` vertices, which is free once :meth:`_sdg` is built."""
+        ``formal_in`` vertices, which is free once :meth:`_sdg` is built.
+
+        ``dst in nodes`` is the whole of the parity with the Neo4j spelling, which matches
+        ``(b:JBodyNode)-[…]->(m:JBodyNode)`` and so can only see an edge whose **target was emitted
+        as a node**. codeanalyzer-java 3.0.2 emitted 87 of daytrader8's 5,434 ddg edges naming an
+        endpoint it never emitted (codeanalyzer-java#228; fixed in 3.0.3), and without this clause
+        such an edge would count here and not there — one boolean, computed from two definitions,
+        deciding whether four accessors raise or answer."""
         adjacency, nodes = self._sdg()
-        return any(kind == "formal_in" and adjacency["forward"].get(ref) for ref, (kind, _) in nodes.items())
+        return any(kind == "formal_in" and any(dst in nodes for dst in adjacency["forward"].get(ref, ())) for ref, (kind, _) in nodes.items())
 
     # -----[ application / whole-program ]-----
     def get_application_view(self) -> JApplication:

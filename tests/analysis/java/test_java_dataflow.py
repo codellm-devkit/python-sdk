@@ -429,6 +429,27 @@ def test_the_port_lattice_carries_no_dependence_edge(ref):
     assert not ref._ports_carry_dependence
 
 
+@pytest.mark.parametrize("dangling, carries", [(True, False), (False, True)], ids=["target-never-emitted", "target-emitted"])
+def test_the_port_probe_counts_only_an_edge_whose_target_is_a_node(dangling, carries):
+    """One boolean, one definition. The Neo4j spelling matches
+    ``(b:JBodyNode)-[…]->(m:JBodyNode)``, so it can only see an edge whose **target was emitted as a
+    node**; the in-memory one counted any outgoing edge of a ``formal_in``, materialised target or
+    not. codeanalyzer-java 3.0.2 emitted 87 of daytrader8's 5,434 ddg edges naming an endpoint it
+    never emitted (#228, fixed in 3.0.3), which is exactly the shape that made the two disagree --
+    and this boolean decides whether four accessors raise or answer.
+
+    Driven off a seeded ``_sdg_cache`` rather than a payload, because the divergence needs an edge
+    the released analyzer no longer emits.
+    """
+    from cldk.analysis.java.codeanalyzer import JCodeanalyzer
+
+    port, target = "can://java/x/M.java/T/m()@formal_in:0", "can://java/x/M.java/T/m()@9:9"
+    nodes = {port: ("formal_in", 1)} if dangling else {port: ("formal_in", 1), target: ("statement", 9)}
+    backend = JCodeanalyzer.__new__(JCodeanalyzer)
+    backend._sdg_cache = ({"forward": {port: {target: [("J_DDG", None, ())]}}, "backward": {target: {port: [("J_DDG", None, ())]}}}, nodes)
+    assert backend._ports_carry_dependence is carries
+
+
 @pytest.mark.parametrize("accessor", sorted(GUARDED))
 def test_the_four_forward_value_accessors_refuse_rather_than_answer_a_constant(both, accessor):
     """D7 in its purest form: with no edge leaving a ``formal_in``, ``flows_to_call`` is ``False``
