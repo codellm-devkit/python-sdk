@@ -48,9 +48,10 @@ nothing else.
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import ClassVar, Dict, List, Tuple, Union
+from typing import ClassVar, Dict, Iterable, List, Sequence, Tuple, Union
 
 from cldk.analysis.commons.backend import AnalysisBackend
+from cldk.analysis.commons.resolve import CallableCandidate, resolve_callable_signature
 from cldk.analysis.commons.treesitter import TreesitterJava
 from cldk.analysis.commons.treesitter.models import Captures
 from cldk.models.java.models import (
@@ -128,6 +129,73 @@ class CallingLines:
         for lines in index.values():
             lines.sort()
         return index
+
+
+def java_module_dotted(package: str, types: Iterable[str] = ()) -> Tuple[str, ...]:
+    """The dotted spellings ``in_module=`` accepts for one compilation unit (J-2): its **declared
+    package**, and that package qualified by each type the unit declares.
+
+    Java is the language where :func:`~cldk.analysis.commons.keys.module_dotted` must not be
+    called. That helper derives the dotted name from the repo-relative path, which is right for
+    Python and TypeScript because their paths *are* their namespaces; a Java path is a build
+    layout, so ``src/main/java/com/ibm/…/TradeDirect.java`` derives to
+    ``src.main.java.com.ibm.…``, which names nothing — silently, since the derivation cannot fail.
+    The declared package is the answer, and it is on the unit (``JCompilationUnit.package``).
+
+    The type-qualified spellings are the second half of J-2's "a dotted package, optionally
+    ``.TypeName``", and they are not decoration: two files of one package (daytrader8's
+    ``beans.MarketSummaryDataBean`` and ``beans.RunStatsDataBean``, both declaring ``toString()``)
+    are indistinguishable by package alone, and ``package.TypeName`` is the dotted way to say which.
+
+    ``types`` is the unit's declared type names — ``JCompilationUnit.types`` locally, the
+    ``J_DECLARES`` names over Neo4j. A unit in the default package (no ``package`` statement) dots
+    to its type names only, and to nothing at all if it declares none.
+    """
+    return (package, *(f"{package}.{name}" for name in types)) if package else tuple(types)
+
+
+def java_callable_names(signature: str) -> Tuple[str, ...]:
+    """The spellings a Java callable answers to (J-3): its full name, and the same with the erased
+    parameter tail cut.
+
+    A Java callable is keyed by a signature carrying that tail —
+    ``…TradeDirect.cancelOrder(java.lang.Integer, boolean)`` — which is what makes two overloads
+    two callables, and what a caller writing ``"cancelOrder"`` has not typed. Matching both
+    spellings is the whole rule: a bare name finds the callable through the cut form, an ambiguity
+    lists the tail-carrying form (the only spelling that *resolves* an overload pair, since
+    ``in_class=`` cannot split one), and a caller who writes the tail matches exactly.
+
+    **The cut is at the last** ``(``, **not the first.** A local or anonymous class's qualified
+    name carries the signature of the callable that declares it (the J-1 erratum), so the name of
+    the ``run()`` inside one reads
+    ``…PingManagedThread.doGet(javax.servlet.http.HttpServletRequest, …).$anon$0.run()`` — cutting
+    at the first ``(`` would strip the declaring callable's tail and lose the class with it.
+    A signature's own tail holds erased type names, which contain no parentheses, so the last
+    ``(`` is always the one that opens it.
+    """
+    head = signature.rpartition("(")[0]
+    return (signature, head) if head else (signature,)
+
+
+def java_resolve_callable(name: str, candidates: Sequence[CallableCandidate], *, in_class: str | None = None, in_module: str | None = None) -> str:
+    """:func:`~cldk.analysis.commons.resolve.resolve_callable_signature` with Java's rules — the
+    one entry point both backends resolve a callable name through, so neither can drift on what
+    ``"cancelOrder"`` means.
+
+    Java's shapes reach the shared policy on the candidates themselves
+    (:attr:`~cldk.analysis.commons.resolve.CallableCandidate.match_names` from
+    :func:`java_callable_names`, ``module_names`` from :func:`java_module_dotted`); what this adds
+    is the advice an ambiguity gives. The shared default — "by naming more of the dotted path" —
+    is untrue here: two overloads share every dotted segment and differ only in the tail, so the
+    way out is spelling the full signature.
+    """
+    return resolve_callable_signature(name, candidates, in_class=in_class, in_module=in_module, by_full_name=_BY_FULL_SIGNATURE)
+
+
+#: What an ambiguous Java callable name tells the caller to do. Not a suggestion (E8 forbids
+#: those): every candidate the exception carries is spelled this way, so the instruction is
+#: literally "one of these strings".
+_BY_FULL_SIGNATURE = "by naming the full signature, erased parameter types included"
 
 
 def duplicate_type_name(qualified_name: str) -> str:
