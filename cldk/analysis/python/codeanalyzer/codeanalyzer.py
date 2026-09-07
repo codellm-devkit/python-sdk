@@ -60,6 +60,7 @@ from codeanalyzer.options import AnalysisOptions, EmitTarget
 from codeanalyzer.schema import Analysis, model_dump_json
 
 from cldk.analysis import AnalysisLevel
+from cldk.analysis.commons.levels import ANALYZER_LEVELS, LEVEL_NAMES, analyzer_level
 from cldk.analysis.commons.resolve import CallableCandidate, body_node_kind, resolve_callable_signature, resolve_value_name, resolve_within, value_candidate
 from cldk.analysis.commons.results import CallableRef, Diagnostic, EdgePage, EntrypointCoverage, FlowPaths, LocateResult, ModuleRef, Slice, SliceNode, TypeRef
 from cldk.utils.exceptions import CodeanalyzerUsageException
@@ -119,39 +120,15 @@ logger = logging.getLogger(__name__)
 #: table + Jedi call graph, 2 = + defuse-linker call graph, 3 = + intraprocedural dataflow
 #: (CFG/CDG/DDG), 4 = + interprocedural SDG (``formal_in``/``formal_out`` vertices, alias-aware
 #: DDG). The four SDK names line up with those four integers in order.
-_ANALYZER_LEVELS = {
-    AnalysisLevel.symbol_table: 1,
-    AnalysisLevel.call_graph: 2,
-    AnalysisLevel.program_dependency_graph: 3,
-    AnalysisLevel.system_dependency_graph: 4,
-}
-
-#: The inverse, by the member name a caller writes (``"call_graph"``, not ``"call graph"``) — so
-#: an error about the level in use names it the way it was asked for.
-_LEVEL_NAMES = {n: lvl.name for lvl, n in _ANALYZER_LEVELS.items()}
-
-
-def analyzer_level(level: "AnalysisLevel | str") -> int:
-    """The analyzer's integer level for one of the SDK's :class:`~cldk.analysis.AnalysisLevel`
-    names.
-
-    Accepts the enum, its value (``"call graph"``) and its member name (``"call_graph"``): the
-    facade's parameter is typed ``str``, and the underscore spelling is what a caller writing
-    ``analysis_level="system_dependency_graph"`` produces. An unrecognised name raises rather than
-    falling back to a default — a level that silently becomes 1 is the defect this function exists
-    to close.
-
-    ``AnalysisOptions``'s other two dataflow knobs are left at their defaults on purpose:
-    ``graphs="cfg,dfg,pdg,sdg"`` already selects every section the SDK can surface (``sdg`` is
-    inert below level 4, where it only widens a ``want_pdg`` that ``pdg`` already sets), and
-    ``graph_field_depth=3`` is the analyzer's own access-path k-limit, which the SDK exposes no
-    parameter for.
-    """
-    key = str(getattr(level, "value", level)).replace("_", " ")
-    try:
-        return _ANALYZER_LEVELS[AnalysisLevel(key)]
-    except ValueError:
-        raise ValueError(f"unknown analysis_level {level!r}; expected one of {[lvl.name for lvl in AnalysisLevel]}") from None
+#: The analyzer's ``-a`` integer for each SDK level and its inverse — lifted to
+#: :mod:`cldk.analysis.commons.levels` (TypeScript sends the same integers); re-bound here under
+#: the names this module and its tests always used. ``AnalysisOptions``'s other two dataflow knobs
+#: are left at their defaults on purpose: ``graphs="cfg,dfg,pdg,sdg"`` already selects every
+#: section the SDK can surface (``sdg`` is inert below level 4, where it only widens a
+#: ``want_pdg`` that ``pdg`` already sets), and ``graph_field_depth=3`` is the analyzer's own
+#: access-path k-limit, which the SDK exposes no parameter for.
+_ANALYZER_LEVELS = ANALYZER_LEVELS
+_LEVEL_NAMES = LEVEL_NAMES
 
 
 def body_node_id(callable_id: str, body_key: str) -> str:
@@ -1499,7 +1476,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         walks = self._shortest_walks(adjacency["forward"], a.ref, b.ref, depth, max_paths + 1)
         described = {ref: _local_slice_node(nodes[ref], ref) for walk in walks for ref, _ in walk if ref in nodes}
         described[a.ref] = a
-        paths = [flow_path([described[a.ref]] + [described[ref] for ref, _ in walk], [label for _, label in walk]) for walk in walks[:max_paths]]
+        paths = [flow_path([described[a.ref]] + [described[ref] for ref, _ in walk], [label for _, label in walk], via=VIA) for walk in walks[:max_paths]]
         return FlowPaths(paths=paths, complete=len(walks) <= max_paths)
 
     def paths_between(self, src: str, dst: str, *, src_within: str, dst_within: str, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
@@ -1537,7 +1514,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         externals = self.get_external_symbols()
         described = {sig: self._call_graph_node(sig, externals) for walk in walks for sig, _ in walk}
         described[a] = self._call_graph_node(a, externals)
-        paths = [flow_path([described[a]] + [described[sig] for sig, _ in walk], [label for _, label in walk]) for walk in walks[:max_paths]]
+        paths = [flow_path([described[a]] + [described[sig] for sig, _ in walk], [label for _, label in walk], via=VIA) for walk in walks[:max_paths]]
         return FlowPaths(paths=paths, complete=len(walks) <= max_paths)
 
     def _call_graph_node(self, signature: str, externals: Dict[str, PyExternalSymbol]) -> SliceNode:

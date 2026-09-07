@@ -34,14 +34,20 @@ from cldk import CLDK
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.backend_config import CodeAnalyzerConfig
 from cldk.analysis.typescript.neo4j import TSNeo4jBackend
+from cldk.analysis.typescript.neo4j.neo4j_backend import _scoped
+from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 from cldk.models.typescript import (
+    TSAnalysis,
     TSApplication,
+    TSBodyNode,
     TSCallable,
     TSCallableParameter,
     TSCallEdge,
     TSClass,
     TSModule,
     TSNamespace,
+    TSSpan,
+    TSSynthesizedNode,
 )
 
 # -----[ shared fixture data ]-----
@@ -53,15 +59,19 @@ from cldk.models.typescript import (
 #
 # call_graph: baz -> Foo.bar, NS.qux -> baz   (so both functions participate in a call edge)
 
+MOD = "can://typescript/t/src/mod.ts"
+SPAN = TSSpan(start=(1, 1), end=(1, 1), bytes=(0, 0))
+
 
 def _bar() -> TSCallable:
-    return TSCallable(name="bar", path="src/mod.ts", signature="src/mod.Foo.bar", kind="method")
+    return TSCallable(id=f"{MOD}/Foo/bar", span=SPAN, name="bar", signature="src/mod.Foo.bar", kind="method")
 
 
 def _baz() -> TSCallable:
     return TSCallable(
+        id=f"{MOD}/baz",
+        span=SPAN,
         name="baz",
-        path="src/mod.ts",
         signature="src/mod.baz",
         kind="function",
         parameters=[TSCallableParameter(name="x")],
@@ -69,26 +79,37 @@ def _baz() -> TSCallable:
 
 
 def _qux() -> TSCallable:
-    return TSCallable(name="qux", path="src/mod.ts", signature="src/mod.NS.qux", kind="function")
+    return TSCallable(id=f"{MOD}/NS/qux", span=SPAN, name="qux", signature="src/mod.NS.qux", kind="function")
 
 
 def _build_application() -> TSApplication:
-    foo = TSClass(name="Foo", signature="src/mod.Foo", methods={"bar": _bar()})
-    ns = TSNamespace(name="NS", signature="src/mod.NS", functions={"src/mod.NS.qux": _qux()})
+    foo = TSClass(id=f"{MOD}/Foo", span=SPAN, name="Foo", signature="src/mod.Foo", callables={"bar": _bar()})
+    ns = TSNamespace(id=f"{MOD}/NS", span=SPAN, name="NS", signature="src/mod.NS", functions={"qux": _qux()})
     module = TSModule(
-        file_path="src/mod.ts",
-        module_name="mod",
-        classes={"src/mod.Foo": foo},
-        functions={"src/mod.baz": _baz()},
-        namespaces={"src/mod.NS": ns},
+        id=MOD,
+        span=SPAN,
+        source="",
+        types={"Foo": foo, "NS": ns},
+        functions={"baz": _baz()},
     )
     return TSApplication(
+        id="can://typescript/t",
         symbol_table={"src/mod.ts": module},
         call_graph=[
-            TSCallEdge(source="src/mod.baz", target="src/mod.Foo.bar"),
-            TSCallEdge(source="src/mod.NS.qux", target="src/mod.baz"),
+            TSCallEdge(src=f"{MOD}/baz", dst=f"{MOD}/Foo/bar", prov=["tsc"]),
+            TSCallEdge(src=f"{MOD}/NS/qux", dst=f"{MOD}/baz", prov=["tsc"]),
         ],
     )
+
+
+def _build_analysis_json(application: TSApplication | None = None) -> str:
+    return TSAnalysis(
+        schema_version="2.0.0",
+        language="typescript",
+        max_level=2,
+        analyzer={"name": "codeanalyzer-typescript", "version": "1.2.0"},
+        application=application or _build_application(),
+    ).model_dump_json()
 
 
 # -----[ local (in-memory) backend ]-----
@@ -108,7 +129,7 @@ def _fake_run_writing_output(payload: str):
 @pytest.fixture
 def ts_analysis(typescript_application, tmp_path, monkeypatch):
     """A local-backend facade over the minimal module-function fixture above."""
-    payload = _build_application().model_dump_json()
+    payload = _build_analysis_json()
     monkeypatch.setenv("CODEANALYZER_TS_BIN", "codeanalyzer-typescript")
     with patch(
         "cldk.analysis.typescript.codeanalyzer.codeanalyzer.subprocess.run",
@@ -164,6 +185,79 @@ def test_local_module_function_participates_in_call_edge(ts_analysis):
     assert graph.has_edge("src/mod.baz", "src/mod.Foo.bar")
 
 
+# -----[ unhomed endpoints: a raw can:// id never becomes a key, and never reaches a return field ]-----
+
+
+def _analysis_over(application: TSApplication, typescript_application, tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEANALYZER_TS_BIN", "codeanalyzer-typescript")
+    with patch(
+        "cldk.analysis.typescript.codeanalyzer.codeanalyzer.subprocess.run",
+        side_effect=_fake_run_writing_output(_build_analysis_json(application)),
+    ):
+        return CLDK.typescript(
+            project_path=typescript_application,
+            eager=True,
+            analysis_level=AnalysisLevel.call_graph,
+            backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)),
+        )
+
+
+def test_call_node_with_unindexed_callee_raises_rather_than_leaking_the_id(typescript_application, tmp_path, monkeypatch):
+    app = _build_application()
+    baz = app.symbol_table["src/mod.ts"].functions["baz"]
+    baz.body["2:3"] = TSBodyNode(kind="call", callee=f"{MOD}/Ghost/nope", method_name="nope", span=SPAN)
+    analysis = _analysis_over(app, typescript_application, tmp_path, monkeypatch)
+    for query in (
+        lambda: analysis.get_call_sites("src/mod.baz"),
+        lambda: analysis.get_call_targets("src/mod.baz"),
+        lambda: analysis.get_calling_lines("src/mod.Foo.bar"),
+        lambda: analysis.get_callsites_for(["src/mod.baz"]),
+    ):
+        with pytest.raises(CodeanalyzerExecutionException, match="Ghost/nope"):
+            query()
+
+
+def test_call_node_with_null_callee_is_unresolved_not_an_error(typescript_application, tmp_path, monkeypatch):
+    app = _build_application()
+    app.symbol_table["src/mod.ts"].functions["baz"].body["2:3"] = TSBodyNode(kind="call", callee=None, method_name="dyn", span=SPAN)
+    analysis = _analysis_over(app, typescript_application, tmp_path, monkeypatch)
+    assert [cs.callee_signature for cs in analysis.get_call_sites("src/mod.baz")] == [None]
+    assert analysis.get_call_targets("src/mod.baz") == {"dyn"}
+
+
+def test_synthesized_entry_pointing_at_a_tree_callable_keys_on_its_signature(typescript_application, tmp_path, monkeypatch):
+    app = _build_application()
+    old = f"{MOD}/baz@9:9"
+    app.synthesized_callables = {old: TSSynthesizedNode(id=f"{MOD}/baz")}
+    app.call_graph.append(TSCallEdge(src=f"{MOD}/Foo/bar", dst=old, prov=["defuse"]))
+    graph = _analysis_over(app, typescript_application, tmp_path, monkeypatch).get_call_graph()
+    assert graph.has_edge("src/mod.Foo.bar", "src/mod.baz")
+    assert not any(n.startswith("can://") for n in graph.nodes)
+
+
+def test_named_residual_synthesized_node_keys_on_its_name(typescript_application, tmp_path, monkeypatch):
+    app = _build_application()
+    residual = "can://typescript/t/@synthetic/cb"
+    app.synthesized_callables = {residual: TSSynthesizedNode(id=residual, name="cb", path="src/mod.ts")}
+    app.call_graph.append(TSCallEdge(src=f"{MOD}/Foo/bar", dst=residual, prov=["defuse"]))
+    graph = _analysis_over(app, typescript_application, tmp_path, monkeypatch).get_call_graph()
+    assert graph.nodes["cb"] == {"id": residual, "kind": "callable"}
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        pytest.param({"can://typescript/t/@synthetic/cb": TSSynthesizedNode(id="can://typescript/t/@synthetic/cb")}, id="residual-without-name"),
+        pytest.param({f"{MOD}/baz@9:9": TSSynthesizedNode(id=f"{MOD}/nowhere/<anon@9:9>")}, id="non-residual-unindexed-id"),
+    ],
+)
+def test_unhomed_synthesized_entry_raises_at_load(entry, typescript_application, tmp_path, monkeypatch):
+    app = _build_application()
+    app.synthesized_callables = entry
+    with pytest.raises(CodeanalyzerExecutionException, match="unhomed endpoint"):
+        _analysis_over(app, typescript_application, tmp_path, monkeypatch)
+
+
 # -----[ Neo4j backend ]-----
 #
 # No live Neo4j is assumed to be reachable in every environment (see the skip-gate in
@@ -174,10 +268,12 @@ def test_local_module_function_participates_in_call_edge(ts_analysis):
 
 def _neo4j_backend_with_stubbed_run(rows_by_call: dict) -> TSNeo4jBackend:
     """A TSNeo4jBackend with __init__ (and its real driver connection) bypassed, ``_run`` stubbed
-    to return canned rows keyed by (query, frozenset(params.items()))."""
+    to return canned rows keyed by (query, frozenset(params.items())); anything else (the subtree
+    statement ``_fetch`` issues after a root is found) returns no rows."""
     backend = object.__new__(TSNeo4jBackend)
-    backend.application_name = "test-app"
+    backend.application_name = "t"
     backend._database = None
+    backend._module_ids = {"src/mod.ts": MOD}
     backend._modules = ["src/mod.ts"]
 
     def _normalize(value):
@@ -195,21 +291,12 @@ def _neo4j_backend_with_stubbed_run(rows_by_call: dict) -> TSNeo4jBackend:
 
 
 def _callable_props(c: TSCallable) -> dict:
-    """The flattened Neo4j node property shape ``reconstruct.callable_`` expects (see
-    ``codeanalyzer-ts/src/build/neo4j/project.ts``): JSON-encoded ``*_json`` scalars rather than
-    nested lists, matching what a real projection would have written."""
-    import json as _json
+    """The ``:TSCallable`` node property shape (codeanalyzer-typescript 1.2.0 ``schema.neo4j.json``):
+    flat scalars, no parameters -- the projection does not carry them."""
+    return {"id": c.id, "kind": c.kind, "signature": c.signature, "name": c.name, "return_type": c.return_type, "start_line": c.start_line, "end_line": c.end_line, "code": ""}
 
-    return {
-        "name": c.name,
-        "path": c.path,
-        "signature": c.signature,
-        "parameters_json": _json.dumps([p.model_dump() for p in c.parameters]),
-        "return_type": c.return_type,
-        "start_line": c.start_line,
-        "end_line": c.end_line,
-        "kind": c.kind,
-    }
+
+SCOPE = (("p1", "can://typescript/t/"), ("p2", "can://javascript/t/"))
 
 
 @pytest.fixture
@@ -218,35 +305,20 @@ def stub_neo4j_backend():
     baz_props = _callable_props(_baz())
     qux_props = _callable_props(_qux())
 
-    has_method_query = "MATCH (o:Symbol {signature: $sig})-[:HAS_METHOD]->(m:Callable {name: $name}) RETURN properties(m) AS p LIMIT 1"
+    has_method_query = f"MATCH (o:TSClass|TSInterface {{signature: $sig}}) WHERE {_scoped('o')} AND o.kind IN $kinds MATCH (o)-[:TS_HAS_METHOD]->(root:TSCallable {{name: $name}}) RETURN properties(root) AS p, labels(root) AS labels"
     exact_sig_query = (
-        "MATCH (parent)-[:DECLARES]->(c:Callable {signature: $sig}) "
-        "WHERE (parent:Module OR parent:Namespace) AND c._module IN $mods "
-        "RETURN properties(c) AS p LIMIT 1"
+        f"MATCH (p:TSModule|TSNamespace)-[:TS_DECLARES]->(root:TSCallable {{signature: $sig}}) WHERE {_scoped('root')} RETURN properties(root) AS p, labels(root) AS labels"
     )
-    short_name_query = (
-        "MATCH (parent)-[:DECLARES]->(c:Callable {name: $name}) "
-        "WHERE (parent:Module OR parent:Namespace) AND c._module IN $mods AND c.signature STARTS WITH $prefix "
-        "RETURN properties(c) AS p LIMIT 1"
-    )
+    short_name_query = f"MATCH (p:TSModule|TSNamespace)-[:TS_DECLARES]->(root:TSCallable {{name: $name}}) WHERE {_scoped('root')} AND root.signature STARTS WITH $sig_prefix RETURN properties(root) AS p, labels(root) AS labels"
 
     rows_by_call = {
         # class method lookup: hits
-        (has_method_query, (("sig", "src/mod.Foo"), ("name", "bar"))): [{"p": bar_props}],
-        # class method lookup: misses for module/namespace scopes
-        (has_method_query, (("sig", "src/mod"), ("name", "baz"))): [],
-        (has_method_query, (("sig", "whatever"), ("name", "src/mod.baz"))): [],
-        (has_method_query, (("sig", "src/mod"), ("name", "qux"))): [],
-        (has_method_query, (("sig", "src/mod"), ("name", "does_not_exist"))): [],
-        # exact-signature DECLARES fallback
-        (exact_sig_query, (("mods", ("src/mod.ts",)), ("sig", "src/mod.baz"))): [{"p": baz_props}],
-        (exact_sig_query, (("mods", ("src/mod.ts",)), ("sig", "baz"))): [],
-        (exact_sig_query, (("mods", ("src/mod.ts",)), ("sig", "does_not_exist"))): [],
-        (exact_sig_query, (("mods", ("src/mod.ts",)), ("sig", "qux"))): [],
-        # short-name DECLARES fallback, scoped under the given scope
-        (short_name_query, (("mods", ("src/mod.ts",)), ("name", "baz"), ("prefix", "src/mod."))): [{"p": baz_props}],
-        (short_name_query, (("mods", ("src/mod.ts",)), ("name", "qux"), ("prefix", "src/mod."))): [{"p": qux_props}],
-        (short_name_query, (("mods", ("src/mod.ts",)), ("name", "does_not_exist"), ("prefix", "src/mod."))): [],
+        (has_method_query, (("sig", "src/mod.Foo"), ("name", "bar"), ("kinds", ("class", "interface"))) + SCOPE): [{"p": bar_props, "labels": ["CanNode", "TSCallable"]}],
+        # exact-signature TS_DECLARES fallback
+        (exact_sig_query, (("sig", "src/mod.baz"),) + SCOPE): [{"p": baz_props, "labels": ["CanNode", "TSCallable"]}],
+        # short-name TS_DECLARES fallback, scoped under the given scope
+        (short_name_query, (("name", "baz"), ("sig_prefix", "src/mod.")) + SCOPE): [{"p": baz_props, "labels": ["CanNode", "TSCallable"]}],
+        (short_name_query, (("name", "qux"), ("sig_prefix", "src/mod.")) + SCOPE): [{"p": qux_props, "labels": ["CanNode", "TSCallable"]}],
     }
     return _neo4j_backend_with_stubbed_run(rows_by_call)
 
@@ -276,7 +348,12 @@ def test_neo4j_get_method_resolves_namespace_nested_function_by_short_name(stub_
 
 
 def test_neo4j_get_method_parameters_module_level_function(stub_neo4j_backend):
-    assert stub_neo4j_backend.get_method_parameters("src/mod", "baz") == ["x"]
+    # The 1.2.0 projection carries no parameters on :TSCallable, so a *found* function cannot be
+    # answered -- it raises naming the gap rather than returning an empty list that would read as
+    # "takes no parameters" (the local backend answers ["x"] for the same fixture).
+    assert stub_neo4j_backend.get_method("src/mod", "baz") is not None
+    with pytest.raises(CodeanalyzerExecutionException, match="no parameters for 'baz'"):
+        stub_neo4j_backend.get_method_parameters("src/mod", "baz")
 
 
 def test_neo4j_get_method_genuine_miss_returns_none(stub_neo4j_backend):
@@ -292,7 +369,10 @@ def test_backend_parity_module_level_function(ts_analysis, stub_neo4j_backend):
     remote = stub_neo4j_backend.get_method("src/mod", "baz")
     assert local.signature == remote.signature
     assert local.name == remote.name
-    assert ts_analysis.get_method_parameters("src/mod", "baz") == stub_neo4j_backend.get_method_parameters("src/mod", "baz")
+    # Parameters are the one documented divergence: analysis.json carries them, the graph does not.
+    assert ts_analysis.get_method_parameters("src/mod", "baz") == ["x"]
+    with pytest.raises(CodeanalyzerExecutionException):
+        stub_neo4j_backend.get_method_parameters("src/mod", "baz")
 
 
 def test_backend_parity_namespace_nested_function(ts_analysis, stub_neo4j_backend):

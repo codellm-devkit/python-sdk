@@ -25,7 +25,7 @@ import pytest
 
 from cldk import CLDK
 from cldk.analysis import AnalysisLevel
-from cldk.analysis.commons.backend_config import CodeAnalyzerConfig
+from cldk.analysis.commons.backend_config import CodeAnalyzerConfig, TSCodeAnalyzerConfig
 from cldk.utils.exceptions import CldkInitializationException
 
 
@@ -67,38 +67,55 @@ def ts_analysis(typescript_application, typescript_analysis_json, tmp_path, monk
 def test_symbol_table_is_not_empty(ts_analysis):
     symtab = ts_analysis.get_symbol_table()
     assert symtab is not None
-    assert len(symtab) == 6
+    assert len(symtab) == 5
     assert "src/models.ts" in symtab
 
 
-def test_call_graph_has_no_dangling_nodes(ts_analysis):
+def test_call_graph_nodes_are_accessor_keys(ts_analysis):
     graph = ts_analysis.get_call_graph()
     assert isinstance(graph, nx.DiGraph)
     assert graph.number_of_edges() > 0
-    # every edge endpoint is a node — internal callable OR phantom external symbol
-    nodes = set(graph.nodes)
-    for src, dst in graph.edges:
-        assert src in nodes
-        assert dst in nodes
+    # every node is a key an accessor returns — a module file key, a signature or an external's
+    # "<module>.<name>" — never a raw can:// id
+    known = (
+        set(ts_analysis.get_symbol_table()) | set(ts_analysis.get_classes()) | {c.signature for c in ts_analysis.get_callables_overview()} | set(ts_analysis.get_external_symbols())
+    )
+    assert set(graph.nodes) <= known, set(graph.nodes) - known
+    assert not any(n.startswith("can://") for n in graph.nodes)
 
 
 def test_phantom_external_nodes(ts_analysis):
-    # imported Node-builtin calls become phantom (external) nodes, not dropped edges
+    # builtin/library calls become phantom (external) nodes, not dropped edges; keyed as the graph
+    # keys them ("<module>.<name>"), with the wire id as a node attribute (TS-10)
     ext = ts_analysis.get_external_symbols()
-    assert "node:crypto.createHash" in ext
-    assert ext["node:crypto.createHash"].module == "node:crypto"
-    assert ext["node:crypto.createHash"].name == "createHash"
-    assert "node:path.extname" in ext
+    assert "(builtin).log" in ext
+    assert ext["(builtin).log"].module == "(builtin)"
+    assert ext["(builtin).log"].name == "log"
+    assert ext["(builtin).log"].id == "can://typescript/slim/@external/(builtin)/log"
 
     graph = ts_analysis.get_call_graph()
-    assert graph.has_edge("src/external.fingerprint", "node:crypto.createHash")
-    data = graph.get_edge_data("src/external.fingerprint", "node:crypto.createHash")
-    assert data["tags"].get("ts.external") == "true"
-    assert data["provenance"] == ["import"]
-    assert graph.nodes["node:crypto.createHash"]["external"] is True
+    assert graph.has_edge("src/index.main", "(builtin).log")
+    data = graph.get_edge_data("src/index.main", "(builtin).log")
+    assert data["type"] == "CALL_DEP"
+    assert data["provenance"] == ("import",)
+    assert graph.nodes["(builtin).log"] == {"id": "can://typescript/slim/@external/(builtin)/log", "kind": "external"}
+    assert graph.nodes["src/index.main"]["kind"] == "callable"
     # internal callers can be found via callees
-    callees = ts_analysis.get_callees("src/external.fingerprint")
-    assert "node:crypto.createHash" in {c["callee_signature"] for c in callees["callee_details"]}
+    callees = ts_analysis.get_callees("src/index.main")
+    assert "(builtin).log" in {c["callee_signature"] for c in callees["callee_details"]}
+
+
+def test_call_graph_keeps_module_callers_and_tags_kinds(ts_analysis):
+    """TS-11: top-level code is a caller (the module node), kept with ``kind="module"`` rather than
+    dropped by Python's rule; a one-line filter recovers Python's shape."""
+    graph = ts_analysis.get_call_graph()
+    assert graph.has_edge("src/index.ts", "src/index.main")
+    assert graph.nodes["src/index.ts"] == {"id": "can://typescript/slim/src/index.ts", "kind": "module"}
+    kinds = {attrs["kind"] for _, attrs in graph.nodes(data=True)}
+    assert kinds == {"module", "callable", "external"}
+    callable_only = graph.subgraph(n for n, a in graph.nodes(data=True) if a["kind"] == "callable")
+    assert callable_only.number_of_nodes() == 30
+    assert graph.number_of_nodes() == 40 and graph.number_of_edges() == 45
 
 
 def test_classes_interfaces_enums_type_aliases(ts_analysis):
@@ -146,9 +163,9 @@ def test_callers_and_callees(ts_analysis):
     assert callers["target_method"] == "src/services.UserService.create"
     caller_sigs = {c["caller_signature"] for c in callers["caller_details"]}
     assert "src/index.main" in caller_sigs
-    # the connecting edge carries provenance/tags
+    # the connecting edge carries the wire's provenance and weight
     main_edge = next(c["edge"] for c in callers["caller_details"] if c["caller_signature"] == "src/index.main")
-    assert "provenance" in main_edge and "tags" in main_edge
+    assert main_edge == {"type": "CALL_DEP", "weight": 1, "provenance": ("tsc",)}
 
 
 def test_get_method_resolves_module_level_function(ts_analysis):
@@ -174,7 +191,8 @@ def test_call_sites(ts_analysis):
     assert any(cs.callee_signature == "src/services.UserService.create" for cs in sites)
     create = next(cs for cs in sites if cs.callee_signature == "src/services.UserService.create")
     assert create.receiver_type == "UserService"
-    assert create.start_line > 0
+    assert create.method_name == "create"
+    assert (create.start_line, create.start_column) == (20, 18)
 
     # project-wide calling lines for a target
     lines = ts_analysis.get_calling_lines("src/services.UserService.create")
@@ -184,14 +202,6 @@ def test_call_sites(ts_analysis):
     # call targets derived from a callable's call sites
     targets = ts_analysis.get_call_targets("src/controllers.UserController.show")
     assert "src/services.UserService.create" in targets
-
-
-def test_entrypoints_not_implemented(ts_analysis):
-    # entrypoint detection is a stub placeholder in the analyzer; methods exist for parity but raise
-    with pytest.raises(NotImplementedError):
-        ts_analysis.get_entry_point_methods()
-    with pytest.raises(NotImplementedError):
-        ts_analysis.get_service_entry_point_methods()
 
 
 def test_enum_members_and_interface_properties(ts_analysis):
@@ -213,20 +223,18 @@ def test_exports_and_variables_are_parsed(typescript_application, typescript_ana
     """Behavioral: a real export + module-level const must be parsed and surfaced (the slim
     fixture carries none, so inject them into the analyzed JSON)."""
     data = json.loads(typescript_analysis_json)
-    models = data["symbol_table"]["src/models.ts"]
-    models["exports"].append(
-        {"name": "User", "module": None, "alias": None, "is_type_only": False, "export_kind": "named"}
-    )
-    models["variables"].append(
-        {
-            "name": "DEFAULT_ROLE",
-            "type": "Role",
-            "initializer": "Role.Member",
-            "scope": "module",
-            "declaration_kind": "const",
-            "is_exported": True,
-        }
-    )
+    models = data["application"]["symbol_table"]["src/models.ts"]
+    models["exports"].append({"name": "User", "module": None, "alias": None, "is_type_only": False, "export_kind": "named"})
+    models["fields"]["DEFAULT_ROLE"] = {
+        "id": "can://typescript/slim/src/models.ts/DEFAULT_ROLE",
+        "kind": "field",
+        "name": "DEFAULT_ROLE",
+        "type": "Role",
+        "initializer": "Role.Member",
+        "scope": "module",
+        "declaration_kind": "const",
+        "is_exported": True,
+    }
 
     monkeypatch.setenv("CODEANALYZER_TS_BIN", "codeanalyzer-typescript")
     with patch(
@@ -264,10 +272,10 @@ def test_rta_subtype_expansion(ts_analysis):
     graph = ts_analysis.get_call_graph()
     announce = "src/services.announce"
     targets = {dst: data for _, dst, data in graph.out_edges(announce, data=True)}
-    # declared-type edge to the interface method + RTA-expanded edges to the implementers
-    assert "src/models.Named.describe" in targets
-    assert targets["src/models.User.describe"]["tags"].get("ts.dispatch") == "rta"
-    assert targets["src/models.Robot.describe"]["tags"].get("ts.dispatch") == "rta"
+    # declared-type edge to the interface method + RTA-expanded edges to the implementers; the v2
+    # wire carries no dispatch tag, only the resolver that produced each edge
+    assert set(targets) == {"src/models.Named.describe", "src/models.User.describe", "src/models.Robot.describe"}
+    assert targets["src/models.User.describe"]["provenance"] == ("tsc",)
 
 
 def test_class_hierarchy_graph(ts_analysis):
@@ -355,7 +363,7 @@ def test_subprocess_args_output_dir(typescript_application, typescript_analysis_
     assert args[args.index("-a") + 1] == "1"  # symbol_table -> level 1
     assert args[args.index("-o") + 1] == str(cache / "typescript")
     # the disk read-back path produced a usable application
-    assert len(analysis.get_symbol_table()) == 6
+    assert len(analysis.get_symbol_table()) == 5
 
 
 def test_cached_analysis_json_skips_subprocess(typescript_application, typescript_analysis_json, tmp_path, monkeypatch):
@@ -375,4 +383,60 @@ def test_cached_analysis_json_skips_subprocess(typescript_application, typescrip
         )
 
     run_mock.assert_not_called()
-    assert len(analysis.get_symbol_table()) == 6
+    assert len(analysis.get_symbol_table()) == 5
+
+
+# -----[ the argv the backend builds for codeanalyzer-typescript 1.2.0 ]-----
+
+
+def _captured_argv(typescript_application, typescript_analysis_json, tmp_path, monkeypatch, level, **kw):
+    monkeypatch.setenv("CODEANALYZER_TS_BIN", "codeanalyzer-typescript")
+    seen = []
+    inner = _fake_run_writing_output(typescript_analysis_json)
+
+    def _run(cmd, *args, **kwargs):
+        seen.append(list(cmd))
+        return inner(cmd, *args, **kwargs)
+
+    with patch("cldk.analysis.typescript.codeanalyzer.codeanalyzer.subprocess.run", side_effect=_run):
+        CLDK.typescript(project_path=typescript_application, analysis_level=level, eager=True, backend=kw.pop("backend", CodeAnalyzerConfig(cache_dir=str(tmp_path))), **kw)
+    assert len(seen) == 1
+    return seen[0]
+
+
+@pytest.mark.parametrize("level,expected", [(lvl, n) for n, lvl in enumerate(AnalysisLevel, start=1)], ids=lambda x: getattr(x, "name", x))
+def test_argv_maps_every_level_to_an_integer_and_drops_tsc_only(typescript_application, typescript_analysis_json, tmp_path, monkeypatch, level, expected):
+    cmd = _captured_argv(typescript_application, typescript_analysis_json, tmp_path, monkeypatch, level)
+    assert cmd[0] == "codeanalyzer-typescript"
+    assert cmd[cmd.index("-a") + 1] == str(expected)
+    assert cmd[cmd.index("--app-name") + 1] == Path(typescript_application).name
+    assert cmd[cmd.index("-i") + 1] == str(typescript_application)
+    out = cmd[cmd.index("-o") + 1]
+    assert cmd[cmd.index("--cache-dir") + 1] == out and out.startswith(str(tmp_path))
+    assert "--skip-tests" in cmd and "--eager" in cmd
+    assert "--tsc-only" not in cmd
+
+
+def test_argv_member_name_spelling_is_accepted(typescript_application, typescript_analysis_json, tmp_path, monkeypatch):
+    cmd = _captured_argv(typescript_application, typescript_analysis_json, tmp_path, monkeypatch, "system_dependency_graph")
+    assert cmd[cmd.index("-a") + 1] == "4"
+
+
+def test_tsc_only_is_a_deprecated_no_op(typescript_application, typescript_analysis_json, tmp_path, monkeypatch):
+    with pytest.warns(DeprecationWarning, match="1.0.0"):
+        cmd = _captured_argv(
+            typescript_application,
+            typescript_analysis_json,
+            tmp_path,
+            monkeypatch,
+            AnalysisLevel.call_graph,
+            backend=TSCodeAnalyzerConfig(cache_dir=str(tmp_path), tsc_only=True),
+        )
+    assert "--tsc-only" not in cmd
+
+
+def test_backend_keeps_the_envelope(ts_analysis):
+    analysis = ts_analysis.backend.analysis
+    assert analysis.analyzer.version == "1.2.0"
+    assert analysis.max_level == 4
+    assert analysis.application is ts_analysis.get_application_view()

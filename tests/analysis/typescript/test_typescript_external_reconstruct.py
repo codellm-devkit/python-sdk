@@ -14,49 +14,51 @@
 # limitations under the License.
 ################################################################################
 
-"""Regression tests for #231: reconstructing External (phantom) nodes from Neo4j
-properties must conform to the slim TSExternalSymbol model (name + module only) —
-the graph node legitimately carries signature/kind properties, and the
-reconstructor must not forward them into an extra='forbid' model."""
+"""Reconstructing ``:TSExternal`` nodes from their graph properties (#231, on the 1.2.0 shape):
+the node carries ``id``/``kind``/``module``/``name`` and reconstructs into the id-keyed
+``TSExternalNode``; the backend keys the map ``"<module>.<name>"``, as the call graph does."""
 
 from unittest.mock import patch
 
 from cldk.analysis.typescript.neo4j import reconstruct as R
 from cldk.analysis.typescript.neo4j.neo4j_backend import TSNeo4jBackend
-from cldk.models.typescript import TSExternalSymbol
+from cldk.models.typescript import TSExternalNode, TSExternalSymbol
+
+APP_ID = "can://typescript/app"
 
 
 def test_external_reconstructs_from_full_graph_props():
-    """A real External node's property bag (signature, kind, _module included) reconstructs."""
-    sym = R.external(
-        {
-            "signature": "commander.parse",
-            "name": "parse",
-            "module": "commander",
-            "kind": "external",
-            "_module": "app",
-        }
-    )
-    assert isinstance(sym, TSExternalSymbol)
+    sym = R.external({"id": f"{APP_ID}/@external/commander/parse", "name": "parse", "module": "commander", "kind": "external"})
+    assert isinstance(sym, TSExternalNode) and TSExternalSymbol is TSExternalNode
     assert sym.name == "parse"
     assert sym.module == "commander"
+    assert sym.id == f"{APP_ID}/@external/commander/parse"
 
 
-def test_external_reconstructs_with_empty_signature():
-    """The reported repro: an empty-signature External node must not raise."""
-    sym = R.external({"signature": "", "name": "", "module": "", "kind": "unknown"})
-    assert isinstance(sym, TSExternalSymbol)
+def test_external_reconstructs_with_empty_name_and_module():
+    """The reported repro: an empty-named external must not raise."""
+    sym = R.external({"id": f"{APP_ID}/@external//", "name": "", "module": "", "kind": "unknown"})
+    assert isinstance(sym, TSExternalNode)
 
 
-def test_get_external_symbols_end_to_end_via_stubbed_run():
-    """Backend-level: get_external_symbols reconstructs every returned row, keyed by signature."""
+def test_get_external_symbols_keys_module_dot_name_and_scopes_by_the_external_prefix():
     rows = [
-        {"p": {"signature": "commander.parse", "name": "parse", "module": "commander", "kind": "external"}},
-        {"p": {"signature": "fs.readFileSync", "name": "readFileSync", "module": "fs", "kind": "external"}},
+        {"p": {"id": f"{APP_ID}/@external/commander/parse", "name": "parse", "module": "commander", "kind": "external"}},
+        {"p": {"id": f"{APP_ID}/@external/fs/readFileSync", "name": "readFileSync", "module": "fs", "kind": "external"}},
     ]
+    captured = {}
+
+    def _run(query, **params):
+        captured["query"] = query
+        captured.update(params)
+        return rows
+
     backend = TSNeo4jBackend.__new__(TSNeo4jBackend)
-    backend._modules = ["app"]
-    with patch.object(TSNeo4jBackend, "_run", return_value=rows):
+    backend.application_name = "app"
+    with patch.object(TSNeo4jBackend, "_run", side_effect=_run):
         out = backend.get_external_symbols()
     assert set(out) == {"commander.parse", "fs.readFileSync"}
     assert out["commander.parse"].module == "commander"
+    assert out["commander.parse"].id == f"{APP_ID}/@external/commander/parse"
+    assert "(e:TSExternal) WHERE e.id STARTS WITH $prefix" in captured["query"]
+    assert captured["prefix"] == f"{APP_ID}/@external/"

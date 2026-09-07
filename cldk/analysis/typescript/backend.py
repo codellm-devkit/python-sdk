@@ -24,23 +24,29 @@ interchangeable backends exist:
 * :class:`~cldk.analysis.typescript.neo4j.TSNeo4jBackend` — answers the *same* queries with
   Cypher over the graph ``codeanalyzer-typescript`` emits with ``--emit neo4j``.
 
-This ABC formalizes the surface those two share so the façade↔backend relationship is enforced by
-the type system (and at instantiation time) instead of matching only by convention. Both backends
-subclass it; the façade is typed against it. Backend-specific lifecycle (e.g. the Neo4j driver's
-``close()`` / context-manager support) is intentionally *not* part of the contract.
+The shape shared with every other language — application view, symbol table, call graph, the
+class/method/field lookups and the repository-artifact layer — is inherited from the generic
+:class:`~cldk.analysis.commons.backend.AnalysisBackend`; what is declared here is the
+TypeScript-native remainder (interfaces, type aliases, enums, namespaces, decorators, the
+1.x call-site accessors and the bulk projections). Both backends subclass it; the façade is typed
+against it. Backend-specific lifecycle (e.g. the Neo4j driver's ``close()`` / context-manager
+support) is intentionally *not* part of the contract.
 
-The vocabulary mirrors :class:`~cldk.analysis.java.codeanalyzer.JCodeanalyzer` /
-:class:`~cldk.analysis.python.codeanalyzer.PyCodeanalyzer`, but the node kinds are TypeScript-native
-(interfaces, type aliases, enums, namespaces, decorators, ...).
+The call graph both backends return keeps TypeScript's own endpoints (decision TS-11): cants emits
+a module as the caller of its top-level code and a class as the callee of ``new X()``, and both
+are kept, tagged with a ``kind`` node attribute (:data:`CALL_GRAPH_NODE_KINDS`) so a
+caller wanting Python's callable-only shape filters in one line rather than the SDK erasing every
+top-level call.
 """
 
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
-from typing import Dict, List, Set, Tuple
+from abc import abstractmethod
+from typing import ClassVar, Dict, List, Set, Tuple
 
 import networkx as nx
 
+from cldk.analysis.commons.backend import AnalysisBackend
 from cldk.models.typescript import (
     TSApplication,
     TSCallable,
@@ -53,45 +59,63 @@ from cldk.models.typescript import (
     TSEnumMember,
     TSExport,
     TSExternalSymbol,
+    TSField,
     TSImport,
     TSInterface,
     TSModule,
     TSSynthesizedCallable,
+    TSType,
     TSTypeAlias,
     TSVariableDeclaration,
 )
 
 
-class TSAnalysisBackend(ABC):
+#: The ``kind`` vocabulary of a call-graph node: what the id index holds — a module, any of the
+#: five type kinds (a class is the callee of ``new X()``; the others are indexed and would be kept
+#: if the analyzer ever emitted an edge to one), a callable, or an external.
+CALL_GRAPH_NODE_KINDS = frozenset({"module", "class", "interface", "enum", "type_alias", "namespace", "callable", "external"})
+
+
+class TSAnalysisBackend(AnalysisBackend[TSApplication, TSModule, TSType, TSCallable, TSField, str]):
     """Abstract base every TypeScript analysis backend implements.
 
     A backend owns *all* indexing and query logic for a TypeScript application; the
     :class:`TypeScriptAnalysis` façade is a one-line-delegation shim over it. Implementations must
     return the canonical ``cldk.models.typescript`` pydantic objects (or the documented
     NetworkX / dict / list shapes) so the two backends are behaviorally interchangeable.
+
+    Inherited abstract (see :class:`~cldk.analysis.commons.backend.AnalysisBackend`):
+    ``get_application_view``, ``get_symbol_table``, ``get_call_graph``, ``get_all_classes``,
+    ``get_class``, ``get_all_methods_in_class``, ``get_method``, ``get_all_fields``,
+    ``get_method_parameters``, ``get_artifacts``, ``get_dependencies``, ``get_config_keys``,
+    ``get_config_uses``, ``get_unresolved_config_reads``.
     """
 
+    P: ClassVar[str] = "TS"
+    N: ClassVar[str] = "TS"
+
     # -----[ application / whole-program ]-----
-    @abstractmethod
-    def get_application(self) -> TSApplication:
-        """The whole application view (symbol table + call graph + external symbols)."""
-
-    @abstractmethod
-    def get_symbol_table(self) -> Dict[str, TSModule]:
-        """The per-file symbol table, keyed by module file path."""
-
     @abstractmethod
     def get_modules(self) -> List[TSModule]:
         """All modules (compilation units)."""
 
     @abstractmethod
     def get_external_symbols(self) -> Dict[str, TSExternalSymbol]:
-        """Phantom (external) call targets — imported/required library members."""
+        """Phantom (external) call targets — imported/required library members and builtins —
+        keyed ``"<module>.<name>"``, the key the call graph uses for them; the wire's ``can://``
+        id is on the value."""
 
     @abstractmethod
     def get_synthesized_callables(self) -> Dict[str, TSSynthesizedCallable]:
-        """Anonymous-callback endpoints the symbol table never names (Jelly-resolved). Keyed by the
-        synthesized signature that ``call_graph`` edges reference. Empty for the ``tsc`` resolver."""
+        """The application's anonymous callables, each value carrying the ``can://`` tree id of
+        the callable it stands for. Empty below level 2.
+
+        **The key is backend-dependent**, and each backend's own docstring says which it uses: a
+        backend reading ``analysis.json`` passes the analyzer's compatibility index through as
+        emitted, so the key is the *older* anonymous id and the value's ``id`` is the tree id that
+        replaced it (key != ``id``); a backend reading the Neo4j projection has the tree nodes and
+        not the index, so it keys by the node's own id (key == ``id``). Do not key a cross-backend
+        lookup on this map -- ask for the value's ``id``."""
 
     @abstractmethod
     def get_typescript_file(self, qualified_name: str) -> str | None:
@@ -102,10 +126,6 @@ class TSAnalysisBackend(ABC):
         """The module for a file path."""
 
     # -----[ call graph ]-----
-    @abstractmethod
-    def get_call_graph(self) -> nx.DiGraph:
-        """NetworkX DiGraph of callable signatures (and phantom external symbols) + call edges."""
-
     @abstractmethod
     def get_call_graph_json(self) -> str:
         """The application serialized as JSON."""
@@ -129,7 +149,8 @@ class TSAnalysisBackend(ABC):
     # -----[ call sites ]-----
     @abstractmethod
     def get_call_sites(self, qualified_callable_name: str) -> List[TSCallsite]:
-        """The rich, syntactic call sites inside a callable."""
+        """The syntactic call sites inside a callable — its ``body`` nodes of ``kind == "call"``,
+        with the resolved callee mapped to its signature."""
 
     @abstractmethod
     def get_calling_lines(self, target_signature: str) -> List[int]:
@@ -139,15 +160,7 @@ class TSAnalysisBackend(ABC):
     def get_call_targets(self, source_signature: str) -> Set[str]:
         """The call targets invoked from a callable, derived from its call sites."""
 
-    # -----[ classes / interfaces / enums / type-aliases ]-----
-    @abstractmethod
-    def get_all_classes(self) -> Dict[str, TSClass]:
-        """Every class, keyed by signature."""
-
-    @abstractmethod
-    def get_class(self, qualified_class_name: str) -> TSClass | None:
-        """A single class by signature."""
-
+    # -----[ interfaces / enums / type-aliases ]-----
     @abstractmethod
     def get_all_interfaces(self) -> Dict[str, TSInterface]:
         """Every interface, keyed by signature."""
@@ -166,7 +179,9 @@ class TSAnalysisBackend(ABC):
 
     @abstractmethod
     def get_all_nested_classes(self, qualified_class_name: str) -> List[TSClass]:
-        """The classes declared inside a class."""
+        """The classes declared inside a class -- on schema v2 always ``[]``, on every backend: a
+        class holds only ``callables`` and ``fields``, so no class nests a type. A class declared
+        inside a *callable* survives as ``TSCallable.inner_classes``. Kept for the 1.x surface."""
 
     @abstractmethod
     def get_all_sub_classes(self, qualified_class_name: str) -> Dict[str, TSClass]:
@@ -186,31 +201,12 @@ class TSAnalysisBackend(ABC):
         """All methods grouped by their owning class/interface signature."""
 
     @abstractmethod
-    def get_all_methods_in_class(self, qualified_class_name: str) -> Dict[str, TSCallable]:
-        """The methods of a class/interface, keyed by short name."""
-
-    @abstractmethod
-    def get_method(self, qualified_class_name: str, qualified_method_name: str) -> TSCallable | None:
-        """A single method of a class/interface, or a module/namespace-level function.
-        ``qualified_class_name`` accepts either a class/interface signature (resolving to that
-        type's methods) or a module/namespace scope, in which case module-level functions are
-        resolved as a fallback; returns ``None`` if nothing resolves."""
-
-    @abstractmethod
-    def get_method_parameters(self, qualified_class_name: str, qualified_method_name: str) -> List[str]:
-        """The parameter names of a method."""
-
-    @abstractmethod
     def get_all_constructors(self, qualified_class_name: str) -> Dict[str, TSCallable]:
         """The constructors of a class."""
 
     @abstractmethod
     def get_all_functions(self) -> Dict[str, TSCallable]:
         """Top-level (module/namespace) functions, keyed by signature."""
-
-    @abstractmethod
-    def get_all_fields(self, qualified_class_name: str) -> List[TSClassAttribute]:
-        """The attributes/fields of a class."""
 
     @abstractmethod
     def get_interface_properties(self, qualified_interface_name: str) -> List[TSClassAttribute]:
@@ -263,9 +259,9 @@ class TSAnalysisBackend(ABC):
     @abstractmethod
     def get_method_bodies(self, signatures: List[str]) -> Dict[str, str]:
         """Source bodies for the given callable signatures, keyed by signature. Signatures with no
-        matching callable are omitted, as are callables whose ``code`` is ``None`` (e.g. implicit
-        constructors the analyzer synthesizes with no source text) — every returned value is a
-        real ``str``."""
+        matching callable are omitted, as are callables with no source text (an implicit
+        constructor the analyzer synthesizes has an empty span, so its ``code`` is ``""``; 1.x
+        carried ``None``) — every returned value is a real, non-empty ``str``."""
 
     @abstractmethod
     def get_decorated_callables(self, markers: List[str]) -> List[TSCallableOverview]:

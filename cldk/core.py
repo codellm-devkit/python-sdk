@@ -221,9 +221,9 @@ class CLDK:
             target_files: Restrict analysis to these files.
             eager: Force regeneration of cached analysis.
             backend: Backend configuration. Defaults to :class:`CodeAnalyzerConfig`; pass a
-                :class:`TSCodeAnalyzerConfig` to set TypeScript-only knobs such as ``tsc_only``
-                (passes ``--tsc-only``), or a :class:`Neo4jConnectionConfig` to use the read-only
-                Neo4j backend.
+                :class:`TSCodeAnalyzerConfig` (its ``tsc_only`` is a deprecated no-op —
+                codeanalyzer-typescript removed ``--tsc-only`` in 1.0.0), or a
+                :class:`Neo4jConnectionConfig` to use the read-only Neo4j backend.
         """
         return TypeScriptAnalysis(
             project_dir=_normalize_project_path(project_path),

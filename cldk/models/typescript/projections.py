@@ -87,6 +87,8 @@ class TSCallableOverview(BaseModel):
         c: TSCallable,
         owner_signature: Optional[str],
         owner_kind: Optional[str],
+        *,
+        path: str,
     ) -> TSCallableOverview:
         """Project a :class:`~cldk.models.typescript.TSCallable` into a
         :class:`TSCallableOverview`.
@@ -97,6 +99,8 @@ class TSCallableOverview(BaseModel):
                 module-level function, arrow, or namespace-owned function.
             owner_kind: The owner's node kind (``"class"`` or ``"interface"``), or ``None`` when
                 ``owner_signature`` is ``None``.
+            path: The declaring module's symbol-table key (repo-relative path). The v2 callable
+                does not carry it; the caller iterating ``symbol_table`` does.
 
         Returns:
             The projected overview.
@@ -107,7 +111,7 @@ class TSCallableOverview(BaseModel):
             owner_signature=owner_signature,
             owner_kind=owner_kind,
             kind=c.kind,
-            path=c.path,
+            path=path,
             start_line=c.start_line,
             end_line=c.end_line,
             decorators=[d.name for d in c.decorators],

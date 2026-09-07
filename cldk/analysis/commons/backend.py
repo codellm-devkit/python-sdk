@@ -52,12 +52,24 @@ when they implement this layer, not language-specific equivalents.
 
 from __future__ import annotations
 
+import re
 from abc import ABC, abstractmethod
-from typing import ClassVar, Dict, Generic, List, TypeVar
+from typing import Any, ClassVar, Dict, Generic, List, Tuple, TypeVar
 
 import networkx as nx
 
 from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
+
+
+def semver(raw: Any) -> Tuple[int, int, int] | None:
+    """``"1.4.1"`` (or ``"1.4.1.post0"``) as ``(1, 4, 1)``; ``None`` for anything that does not
+    start with three dotted integers, so an unparsable version is *unknown*, never silently zero.
+
+    The parser behind every Neo4j backend's analyzer-version floor: the schema probe compares its
+    result against the backend's ``_ANALYZER_FLOOR`` and refuses the graph below it."""
+    m = re.match(r"(\d+)\.(\d+)\.(\d+)", raw) if isinstance(raw, str) else None
+    return (int(m[1]), int(m[2]), int(m[3])) if m else None
+
 
 AppT = TypeVar("AppT")
 ModuleT = TypeVar("ModuleT")

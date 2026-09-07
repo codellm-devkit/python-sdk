@@ -25,17 +25,18 @@ these four queries identically over the *same* tracked sample app
 the rest of this package's (mocked-subprocess) tests, so the emit and the in-memory reference
 describe the exact same code.
 
-Reuses the live harness idiom of ``test_typescript_neo4j_backend.py`` verbatim: same env-var
-gating, same ``_populate_neo4j`` out-of-band loader (``codeanalyzer-typescript --emit neo4j`` over
-Bolt), same tracked sample app / app name. The whole module is skipped unless a Neo4j server is
-reachable. Point the tests at one with:
+Reuses the live harness idiom of ``test_typescript_neo4j_backend.py`` verbatim -- and therefore
+**WRITES the graph** exactly as that module does: the same ``_populate_neo4j`` out-of-band loader
+(``codeanalyzer-typescript --emit neo4j`` over Bolt), the same teardown scoped to the application's
+two id prefixes, and the same gate on ``CLDK_TEST_NEO4J_WRITE_URI`` / ``_WRITE_USER`` /
+``_WRITE_PASSWORD`` with no defaults (#324). It never runs against a graph someone else deployed:
 
-    CLDK_TEST_NEO4J_URI=bolt://localhost:7687 \
-    CLDK_TEST_NEO4J_USER=neo4j \
-    CLDK_TEST_NEO4J_PASSWORD=test \
+    CLDK_TEST_NEO4J_WRITE_URI=bolt://localhost:7691 \
+    CLDK_TEST_NEO4J_WRITE_USER=neo4j \
+    CLDK_TEST_NEO4J_WRITE_PASSWORD=test \
     pytest tests/analysis/typescript/test_typescript_bulk_parity_live.py
 
-(e.g. `podman run -d -p 7687:7687 -e NEO4J_AUTH=neo4j/test neo4j:5`).
+(e.g. `podman run -d -p 7691:7687 -e NEO4J_AUTH=neo4j/test neo4j:5`).
 """
 
 import logging
@@ -53,13 +54,18 @@ from .test_typescript_neo4j_backend import (
     NEO4J_USER,
     _neo4j_reachable,
     _populate_neo4j,
+    _teardown_application,
 )
 
 logging.getLogger("neo4j").setLevel(logging.ERROR)
 
 pytestmark = pytest.mark.skipif(
     not _neo4j_reachable(),
-    reason=f"no Neo4j reachable at {NEO4J_URI} (set CLDK_TEST_NEO4J_URI / _USER / _PASSWORD)",
+    reason=(
+        "this module WRITES the graph (it runs codeanalyzer-typescript --emit neo4j and deletes the "
+        "application afterwards); set CLDK_TEST_NEO4J_WRITE_URI / _WRITE_USER / _WRITE_PASSWORD to a "
+        "disposable server to run it -- there are no defaults"
+    ),
 )
 
 
@@ -117,6 +123,7 @@ def ts_dual(typescript_application, tmp_path_factory):
     )
     yield ref, neo
     neo.backend.close()
+    _teardown_application()
 
 
 def test_callables_overview_parity(ts_dual):

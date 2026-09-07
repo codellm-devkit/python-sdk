@@ -16,21 +16,22 @@
 
 """Integration tests for the read-only Neo4j-backed TypeScript analysis backend.
 
-These exercise the *real* pipeline: the test harness loads the sample app's graph into a live
-Neo4j out of band (``codeanalyzer-typescript --emit neo4j`` over Bolt — the same way a cloud
-deployment would), and every assertion is then answered, read-only, by Cypher in
-:class:`TSNeo4jBackend`. They mirror the in-memory backend's expectations from
-``test_typescript_analysis.py`` so the two backends are proven to agree.
+**This module WRITES to the Neo4j server it is pointed at.** Its harness loads the sample app's
+graph out of band (``codeanalyzer-typescript --emit neo4j`` over Bolt — the same way a cloud
+deployment would) before the read-only assertions run, and tears that application's subgraph down
+afterwards. It is therefore gated on its own ``CLDK_TEST_NEO4J_WRITE_*`` variables, never on the
+ordinary ``CLDK_TEST_NEO4J_*`` ones that point read-only suites at a graph someone else deployed,
+and it has **no defaults** (the leg-1.6 writer lesson, #324: a default of ``bolt://localhost:7687``
+is an ssh tunnel on at least one development machine):
 
-The whole module is skipped unless a Neo4j server is reachable. Point the tests at one with:
-
-    CLDK_TEST_NEO4J_URI=bolt://localhost:7687 \
-    CLDK_TEST_NEO4J_USER=neo4j \
-    CLDK_TEST_NEO4J_PASSWORD=test \
+    CLDK_TEST_NEO4J_WRITE_URI=bolt://localhost:7691 \
+    CLDK_TEST_NEO4J_WRITE_USER=neo4j \
+    CLDK_TEST_NEO4J_WRITE_PASSWORD=test \
     pytest tests/analysis/typescript/test_typescript_neo4j_backend.py
 
-(e.g. `docker run -p 7687:7687 -e NEO4J_AUTH=neo4j/test neo4j:5`). The binary is resolved the
-usual way: ``$CODEANALYZER_TS_BIN``, then the ``codeanalyzer-typescript`` wheel.
+(e.g. `docker run -p 7691:7687 -e NEO4J_AUTH=neo4j/test neo4j:5`). The binary is resolved the
+usual way: ``$CODEANALYZER_TS_BIN``, then the ``codeanalyzer-typescript`` wheel. Read-only live
+coverage of the backend lives in ``test_typescript_e2e_neo4j_live.py``.
 """
 
 import logging
@@ -48,13 +49,19 @@ from cldk.analysis.typescript.neo4j import Neo4jConnectionConfig
 
 logging.getLogger("neo4j").setLevel(logging.ERROR)
 
-NEO4J_URI = os.environ.get("CLDK_TEST_NEO4J_URI", "bolt://localhost:7687")
-NEO4J_USER = os.environ.get("CLDK_TEST_NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.environ.get("CLDK_TEST_NEO4J_PASSWORD", "neo4j")
+NEO4J_URI = os.environ.get("CLDK_TEST_NEO4J_WRITE_URI")
+NEO4J_USER = os.environ.get("CLDK_TEST_NEO4J_WRITE_USER")
+NEO4J_PASSWORD = os.environ.get("CLDK_TEST_NEO4J_WRITE_PASSWORD")
 APP_NAME = "application"
+#: Every node the emitter writes for APP_NAME lives under one of these two prefixes (TS-3); the
+#: teardown deletes exactly that, plus the application anchor, and nothing else on the server.
+APP_PREFIXES = (f"can://typescript/{APP_NAME}/", f"can://javascript/{APP_NAME}/")
+APP_ID = f"can://typescript/{APP_NAME}"
 
 
 def _neo4j_reachable() -> bool:
+    if not (NEO4J_URI and NEO4J_USER and NEO4J_PASSWORD):
+        return False
     try:
         from neo4j import GraphDatabase
     except ModuleNotFoundError:
@@ -70,8 +77,32 @@ def _neo4j_reachable() -> bool:
 
 pytestmark = pytest.mark.skipif(
     not _neo4j_reachable(),
-    reason=f"no Neo4j reachable at {NEO4J_URI} (set CLDK_TEST_NEO4J_URI / _USER / _PASSWORD)",
+    reason=(
+        "this module WRITES the graph (it runs codeanalyzer-typescript --emit neo4j and deletes the "
+        "application afterwards); set CLDK_TEST_NEO4J_WRITE_URI / _WRITE_USER / _WRITE_PASSWORD to a "
+        "disposable server to run it -- there are no defaults"
+    ),
 )
+
+
+def _teardown_application() -> None:
+    """Delete the application's own subgraph: every node under its two id prefixes and the
+    ``:Application`` anchor. The unprefixed nodes the emitter also MERGEs (``Artifact``, ``Package``,
+    ``ConfigKey``, ``TSDecorator``) are shared with any other application on the server and are
+    left in place."""
+    from neo4j import GraphDatabase
+
+    driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+    try:
+        with driver.session() as session:
+            session.run(
+                "MATCH (n) WHERE n.id STARTS WITH $p1 OR n.id STARTS WITH $p2 OR n.id = $app_id DETACH DELETE n",
+                p1=APP_PREFIXES[0],
+                p2=APP_PREFIXES[1],
+                app_id=APP_ID,
+            )
+    finally:
+        driver.close()
 
 
 def _codeanalyzer_ts_exec() -> list[str]:
@@ -127,6 +158,7 @@ def ts_neo4j(typescript_application):
     )
     yield analysis
     analysis.backend.close()
+    _teardown_application()
 
 
 def test_backend_is_neo4j(ts_neo4j):

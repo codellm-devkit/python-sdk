@@ -14,23 +14,33 @@
 # limitations under the License.
 ################################################################################
 
-"""Rebuild pydantic TypeScript models from Neo4j node/edge property maps.
+"""Rebuild the ``cldk.models.typescript`` (schema v2) models from codeanalyzer-typescript 1.2.0
+Neo4j node/edge property maps.
 
-These are *pure* functions: they take the flat property dictionaries that
-``codeanalyzer-typescript``'s Neo4j projection wrote (see
-``codeanalyzer-ts/src/build/neo4j/project.ts``) and re-hydrate the same
-``cldk.models.typescript`` pydantic objects the in-memory backend returns. The
-backend (:class:`TSNeo4jBackend`) fetches the related child rows (call sites,
-decorators, methods, ...) over Cypher and hands them in here for assembly.
+Pure functions: they take the flat property dictionaries the analyzer's Neo4j projection wrote
+(``schema.neo4j.json`` at the 1.2.0 tag is the authority for what each label carries) and return
+the same pydantic objects the in-memory backend returns. :class:`TSNeo4jBackend` fetches the rows
+and assembles the containment tree; the per-node shape lives here.
 
-Lossy fields (the projection flattens or drops them, so a perfect round-trip is
-impossible) are reconstructed best-effort and called out inline:
+What the projection does **not** carry, and therefore comes back at the model's empty default
+(verified against the schema and the live graph, not assumed):
 
-* ``comments`` collapse to a single synthetic docstring ``TSComment`` (only the
-  joined docstring text survives the projection).
-* ``type_parameters`` keep only their ``name`` (constraints/defaults dropped).
-* module-level ``imports`` / ``exports`` are aggregated per module-pair into the
-  ``IMPORTS`` / ``RE_EXPORTS`` edges, so individual bindings are synthesized.
+* ``TSModule.source`` -- the graph stores each node's own ``code`` text and its line span, never
+  the module text or byte offsets. A reconstructed node's ``span`` is therefore line-only
+  (columns ``0``) with ``bytes = (0, len(code))``, and its private ``_source`` is set to its own
+  ``code`` so the model's ``code`` property reads the text the graph projected for that node
+  (``None`` when the graph carries none). A module is assembled with ``model_construct`` so the
+  module-level source threading (which would overwrite that with ``""``) does not run.
+* ``TSCallable.parameters``, ``comments``, ``type_parameters``, ``overload_signatures``, ``body``,
+  ``cfg``/``cdg``/``ddg``/``summary`` -- ``:TSCallable`` projects none of them; the call view is
+  answered from ``:TSBodyNode {kind:'call'}`` by the backend's call-site accessors, not stored on
+  the callable. ``decorators`` **are** recoverable (``TS_DECORATED_BY``) and are.
+* ``TSField.value`` (enum member values), ``comments``, ``initializer``, ``scope``,
+  ``declaration_kind`` and the boolean facets -- ``:TSField`` projects ``name``/``type``/lines.
+* ``TSModule.imports`` / ``exports`` / ``comments`` -- no relationship type or property exists.
+* ``TSDecorator`` line/column -- the edge carries only the arguments.
+* A call site's ``method_name``/receiver/argument facets and columns -- a ``call`` body node
+  projects ``callee`` and its lines only.
 """
 
 from __future__ import annotations
@@ -41,186 +51,113 @@ from typing import Any, Dict, List, Mapping
 from cldk.models.typescript import (
     TSCallable,
     TSCallableOverview,
-    TSCallableParameter,
     TSCallsite,
     TSClass,
-    TSClassAttribute,
-    TSComment,
     TSDecorator,
     TSEnum,
-    TSEnumMember,
-    TSExternalSymbol,
+    TSExternalNode,
+    TSField,
     TSInterface,
     TSModule,
     TSNamespace,
-    TSSymbol,
-    TSSynthesizedCallable,
+    TSSpan,
+    TSSynthesizedNode,
     TSTypeAlias,
-    TSTypeParameter,
-    TSVariableDeclaration,
 )
 
 Props = Mapping[str, Any]
 
-
-# ----------------------------------------------------------------------------------------------
-# small helpers
-# ----------------------------------------------------------------------------------------------
-def _comments(props: Props) -> List[TSComment]:
-    """Re-hydrate the (lossy) docstring the projection stored as a flat ``docstring`` string."""
-    doc = props.get("docstring")
-    return [TSComment(content=doc, is_docstring=True)] if doc else []
+#: The ``kind`` values a ``TS_DECLARES`` child can carry that make it a type rather than a callable,
+#: the seven callable kinds, and the type label each type kind is projected under.
+TYPE_KINDS = frozenset({"class", "interface", "enum", "type_alias", "namespace"})
+CALLABLE_KINDS = frozenset({"function", "method", "constructor", "getter", "setter", "arrow", "function_expression"})
+TYPE_LABEL_KINDS = {"TSClass": "class", "TSInterface": "interface", "TSEnum": "enum", "TSTypeAlias": "type_alias", "TSNamespace": "namespace"}
 
 
-def _type_params(props: Props) -> List[TSTypeParameter]:
-    """The projection keeps only the parameter *names* (``type_parameter_names``)."""
-    return [TSTypeParameter(name=n) for n in props.get("type_parameter_names", []) or []]
+def _span(props: Props) -> TSSpan:
+    """Line-only span; ``bytes`` sized to the node's own ``code`` (see the module docstring)."""
+    return TSSpan(start=(props.get("start_line", -1), 0), end=(props.get("end_line", -1), 0), bytes=(0, len(props.get("code") or "")))
 
 
-def _json_list(props: Props, key: str) -> List[dict]:
-    """Decode a ``*_json`` property (``parameters_json`` / ``accessed_symbols_json``)."""
-    raw = props.get(key)
-    if not raw:
-        return []
-    try:
-        data = json.loads(raw)
-    except (TypeError, ValueError):
-        return []
-    return data if isinstance(data, list) else []
+def _with_code(node: Any, props: Props) -> Any:
+    node._source = props.get("code")
+    return node
 
 
-def _entrypoint(props: Props) -> Dict[str, Any]:
-    """Map the flattened entrypoint props back onto ``TSCallable``'s two entrypoint fields."""
-    if "framework" not in props:
-        return {}
-    return {"is_entrypoint": True, "entrypoint_framework": props.get("framework")}
+def child_key(parent_id: str, props: Props) -> str:
+    """The analyzer's container key for a child: the id segment under its parent, plus ``#get`` /
+    ``#set`` for an accessor (a getter/setter pair shares the id). A child id is minted under its
+    parent's by construction, so a mismatch is an emitter defect and is raised as such."""
+    node_id = props["id"]
+    if not node_id.startswith(parent_id + "/"):
+        raise ValueError(f"child id is not minted under its parent: {node_id!r} under {parent_id!r}")
+    key = node_id[len(parent_id) + 1 :]
+    accessor = props.get("accessor_kind")
+    return key + ("#get" if accessor == "getter" else "#set" if accessor == "setter" else "")
 
 
 # ----------------------------------------------------------------------------------------------
-# leaf nodes
+# leaves
 # ----------------------------------------------------------------------------------------------
-def callsite(props: Props) -> TSCallsite:
-    return TSCallsite(
-        method_name=props.get("method_name", ""),
-        receiver_expr=props.get("receiver_expr"),
-        receiver_type=props.get("receiver_type"),
-        argument_types=list(props.get("argument_types", []) or []),
-        type_arguments=list(props.get("type_arguments", []) or []),
-        return_type=props.get("return_type"),
-        callee_signature=props.get("callee_signature"),
-        is_constructor_call=props.get("is_constructor_call", False),
-        is_optional_chain=props.get("is_optional_chain", False),
-        start_line=props.get("start_line", -1),
-        start_column=props.get("start_column", -1),
-        end_line=props.get("end_line", -1),
-        end_column=props.get("end_column", -1),
-    )
-
-
 def decorator(node: Props, edge: Props | None = None) -> TSDecorator:
-    """A decorator from its canonical ``:Decorator`` node + the ``DECORATED_BY`` edge props."""
+    """A decorator from its ``:TSDecorator`` node (keyed by name) plus the ``TS_DECORATED_BY`` edge
+    properties (``positional_arguments``, ``keyword_arguments_json``)."""
     edge = edge or {}
-    kwargs_raw = edge.get("keyword_arguments_json")
-    keyword_arguments: Dict[str, str] = {}
-    if kwargs_raw:
-        try:
-            keyword_arguments = json.loads(kwargs_raw)
-        except (TypeError, ValueError):
-            keyword_arguments = {}
+    raw = edge.get("keyword_arguments_json")
+    try:
+        keyword_arguments = json.loads(raw) if raw else {}
+    except (TypeError, ValueError):
+        keyword_arguments = {}
     return TSDecorator(
-        name=node.get("name", ""),
-        qualified_name=node.get("qualified_name"),
-        positional_arguments=list(edge.get("positional_arguments", []) or []),
-        keyword_arguments=keyword_arguments,
-        start_line=edge.get("start_line", -1),
-        end_line=edge.get("end_line", -1),
+        name=node.get("name", ""), qualified_name=node.get("qualified_name"), positional_arguments=list(edge.get("positional_arguments") or []), keyword_arguments=keyword_arguments
     )
 
 
-def attribute(props: Props, decorators: List[TSDecorator] | None = None) -> TSClassAttribute:
-    return TSClassAttribute(
-        name=props.get("name", ""),
+def field(props: Props, decorators: List[TSDecorator] | None = None) -> TSField:
+    return TSField(
+        id=props["id"],
+        name=props["name"],
         type=props.get("type"),
-        comments=_comments(props),
         decorators=decorators or [],
-        initializer=props.get("initializer"),
-        accessibility=props.get("accessibility"),
-        is_static=props.get("is_static", False),
-        is_readonly=props.get("is_readonly", False),
-        is_optional=props.get("is_optional", False),
-        is_abstract=props.get("is_abstract", False),
-        start_line=props.get("start_line", -1),
-        end_line=props.get("end_line", -1),
+        span=(
+            TSSpan(start=(props["start_line"], 0), end=(props["end_line"], 0), bytes=(0, 0)) if props.get("start_line") is not None and props.get("end_line") is not None else None
+        ),
     )
 
 
-def variable(props: Props) -> TSVariableDeclaration:
-    return TSVariableDeclaration(
-        name=props.get("name", ""),
-        type=props.get("type"),
-        initializer=props.get("initializer"),
-        scope=props.get("scope", "module"),
-        declaration_kind=props.get("declaration_kind", "unknown"),
-        is_readonly=props.get("is_readonly", False),
-        is_exported=props.get("is_exported", False),
-        start_line=props.get("start_line", -1),
-        end_line=props.get("end_line", -1),
+def callsite(props: Props, callee: str | None) -> TSCallsite:
+    """The 1.x per-call record off a ``call`` body node: lines and the resolved callee (the graph
+    key the target maps to -- a signature, or ``"<module>.<name>"`` for an external), nothing
+    else -- the projection keeps no receiver/argument facets and no columns."""
+    return TSCallsite(method_name="", callee_signature=callee, start_line=props.get("start_line", -1), end_line=props.get("end_line", -1))
+
+
+def external(props: Props) -> TSExternalNode:
+    return TSExternalNode(id=props["id"], kind=props["kind"], module=props["module"], name=props["name"])
+
+
+def synthesized(props: Props) -> TSSynthesizedNode:
+    """A ``:TSAnonymousCallable`` node as a synthesized-callable entry. The graph holds the tree
+    node, not the compatibility index's older key, so the backend keys it by its own ``id``."""
+    span = (
+        TSSpan(start=(props["start_line"], props.get("start_column") or 0), end=(props["end_line"], 0), bytes=(0, 0))
+        if props.get("start_line") is not None and props.get("end_line") is not None
+        else None
     )
-
-
-def enum_member(name: str, value: str | None) -> TSEnumMember:
-    # The projection stores "" for a memberless value (Neo4j arrays cannot hold null).
-    return TSEnumMember(name=name, value=value if value else None)
-
-
-def external(props: Props) -> TSExternalSymbol:
-    # Slim by design (#231): the model carries name+module only. The graph node's
-    # ``signature`` is its merge key and becomes the ``external_symbols`` map key at the
-    # call site; ``kind`` does not exist in the analyzer's published Neo4j schema.
-    return TSExternalSymbol(
-        name=props.get("name", ""),
-        module=props.get("module", ""),
-    )
-
-
-def synthesized(props: Props) -> TSSynthesizedCallable:
-    return TSSynthesizedCallable(
-        name=props.get("name", "<anonymous>"),
-        path=props.get("path", ""),
-        start_line=props.get("start_line", -1),
-        start_column=props.get("start_column", -1),
-    )
+    return TSSynthesizedNode(id=props["id"], kind="callable", name=props.get("name"), path=props.get("path"), span=span)
 
 
 def overview(row: Props) -> TSCallableOverview:
-    """Build a :class:`TSCallableOverview` from a projected callable row (a flat ``RETURN``
-    projection, not a node's ``properties()``): ``signature``/``name``/``kind``/``path``/
-    ``start_line``/``end_line``/``is_exported``/``is_async``/``is_static``/``accessibility`` plus
-    ``owner_signature``/``owner_labels`` (the ``HAS_METHOD`` owner leg — absent, i.e. both null,
-    for module-level/namespace-owned/nested callables) and ``decorators`` (collected decorator
-    names).
-
-    ``owner_kind`` is derived from ``owner_labels`` rather than stored directly: ``"class"`` if the
-    owner node carries the ``Class`` label, ``"interface"`` if it carries ``Interface``, else
-    ``None`` — matching the closed two-value ``owner_kind`` set the in-memory backend produces.
-    """
-    owner_signature = row.get("owner_signature")
-    owner_labels = row.get("owner_labels") or []
-    if owner_signature is None:
-        owner_kind = None
-    elif "Class" in owner_labels:
-        owner_kind = "class"
-    elif "Interface" in owner_labels:
-        owner_kind = "interface"
-    else:
-        owner_kind = None
+    """A projected callable row (the backend's ``_OVERVIEW_PROJECTION`` plus a derived ``path``).
+    ``owner_kind`` is the owner node's own ``kind`` (``class``/``interface``), ``None`` when the
+    ``TS_HAS_METHOD`` owner leg did not match."""
     return TSCallableOverview(
         signature=row.get("signature", ""),
         name=row.get("name", ""),
-        owner_signature=owner_signature,
-        owner_kind=owner_kind,
+        owner_signature=row.get("owner_signature"),
+        owner_kind=row.get("owner_kind") if row.get("owner_signature") is not None else None,
         kind=row.get("kind", "function"),
-        path=row.get("path", ""),
+        path=row["path"],
         start_line=row.get("start_line", -1),
         end_line=row.get("end_line", -1),
         decorators=[d for d in (row.get("decorators") or []) if d is not None],
@@ -232,190 +169,86 @@ def overview(row: Props) -> TSCallableOverview:
 
 
 # ----------------------------------------------------------------------------------------------
-# declaration nodes (children supplied by the backend)
+# declarations (children supplied by the backend)
 # ----------------------------------------------------------------------------------------------
-def callable_(
-    props: Props,
-    *,
-    decorators: List[TSDecorator] | None = None,
-    call_sites: List[TSCallsite] | None = None,
-    inner_callables: Dict[str, TSCallable] | None = None,
-    inner_classes: Dict[str, TSClass] | None = None,
-) -> TSCallable:
-    def _params() -> List[TSCallableParameter]:
-        out: List[TSCallableParameter] = []
-        for p in _json_list(props, "parameters_json"):
-            try:
-                out.append(TSCallableParameter.model_validate(p))
-            except Exception:  # noqa: BLE001 - tolerate analyzer/SDK schema drift
-                out.append(TSCallableParameter(name=p.get("name", "")))
-        return out
+def _flags(props: Props, *names: str) -> Dict[str, bool]:
+    return {n: bool(props.get(n, False)) for n in names}
 
-    def _accessed() -> List[TSSymbol]:
-        out: List[TSSymbol] = []
-        for s in _json_list(props, "accessed_symbols_json"):
-            try:
-                out.append(TSSymbol.model_validate(s))
-            except Exception:  # noqa: BLE001
-                pass
-        return out
 
-    return TSCallable(
-        name=props.get("name", ""),
-        path=props.get("path", ""),
-        signature=props.get("signature", ""),
-        comments=_comments(props),
-        decorators=decorators or [],
-        parameters=_params(),
-        type_parameters=_type_params(props),
-        return_type=props.get("return_type"),
-        code=props.get("code"),
-        start_line=props.get("start_line", -1),
-        end_line=props.get("end_line", -1),
-        code_start_line=props.get("code_start_line", -1),
-        accessed_symbols=_accessed(),
-        call_sites=call_sites or [],
-        inner_callables=inner_callables or {},
-        inner_classes=inner_classes or {},
-        cyclomatic_complexity=props.get("cyclomatic_complexity", 0),
-        kind=props.get("kind", "function"),
-        accessibility=props.get("accessibility"),
-        accessor_kind=props.get("accessor_kind"),
-        is_static=props.get("is_static", False),
-        is_abstract=props.get("is_abstract", False),
-        is_async=props.get("is_async", False),
-        is_generator=props.get("is_generator", False),
-        is_optional=props.get("is_optional", False),
-        is_readonly=props.get("is_readonly", False),
-        is_exported=props.get("is_exported", False),
-        is_ambient=props.get("is_ambient", False),
-        is_implicit=props.get("is_implicit", False),
-        **_entrypoint(props),
+def callable_(props: Props, *, decorators: List[TSDecorator] | None = None, callables: Dict[str, TSCallable] | None = None, types: Dict[str, Any] | None = None) -> TSCallable:
+    return _with_code(
+        TSCallable(
+            id=props["id"],
+            span=_span(props),
+            kind=props["kind"],
+            name=props["name"],
+            signature=props["signature"],
+            decorators=decorators or [],
+            return_type=props.get("return_type"),
+            cyclomatic_complexity=props.get("cyclomatic_complexity", 0),
+            accessibility=props.get("accessibility"),
+            accessor_kind=props.get("accessor_kind"),
+            callables=callables or {},
+            types=types or {},
+            is_entrypoint=props.get("is_entrypoint"),
+            **_flags(props, "is_static", "is_abstract", "is_async", "is_generator", "is_exported", "is_ambient", "is_implicit"),
+        ),
+        props,
     )
 
 
-def class_(
-    props: Props,
-    *,
-    decorators: List[TSDecorator] | None = None,
-    methods: Dict[str, TSCallable] | None = None,
-    attributes: Dict[str, TSClassAttribute] | None = None,
-    inner_classes: Dict[str, TSClass] | None = None,
-) -> TSClass:
-    return TSClass(
-        name=props.get("name", ""),
-        signature=props.get("signature", ""),
-        comments=_comments(props),
-        code=props.get("code"),
-        decorators=decorators or [],
-        base_classes=list(props.get("base_classes", []) or []),
-        implements_types=list(props.get("implements_types", []) or []),
-        type_parameters=_type_params(props),
-        methods=methods or {},
-        attributes=attributes or {},
-        inner_classes=inner_classes or {},
-        is_abstract=props.get("is_abstract", False),
-        is_exported=props.get("is_exported", False),
-        is_ambient=props.get("is_ambient", False),
-        start_line=props.get("start_line", -1),
-        end_line=props.get("end_line", -1),
+def _type_kwargs(props: Props) -> Dict[str, Any]:
+    return {"id": props["id"], "span": _span(props), "name": props["name"], "signature": props["signature"], **_flags(props, "is_exported", "is_ambient")}
+
+
+def class_(props: Props, *, callables: Dict[str, TSCallable] | None = None, fields: Dict[str, TSField] | None = None, decorators: List[TSDecorator] | None = None) -> TSClass:
+    return _with_code(
+        TSClass(
+            **_type_kwargs(props),
+            callables=callables or {},
+            fields=fields or {},
+            decorators=decorators or [],
+            base_classes=list(props.get("base_classes") or []),
+            implements_types=list(props.get("implements_types") or []),
+            is_abstract=bool(props.get("is_abstract", False)),
+            is_entrypoint=props.get("is_entrypoint"),
+        ),
+        props,
     )
 
 
-def interface(
-    props: Props,
-    *,
-    methods: Dict[str, TSCallable] | None = None,
-    properties: Dict[str, TSClassAttribute] | None = None,
-) -> TSInterface:
-    return TSInterface(
-        name=props.get("name", ""),
-        signature=props.get("signature", ""),
-        comments=_comments(props),
-        code=props.get("code"),
-        base_classes=list(props.get("base_classes", []) or []),
-        type_parameters=_type_params(props),
-        methods=methods or {},
-        properties=properties or {},
-        call_signatures=list(props.get("call_signatures", []) or []),
-        index_signatures=list(props.get("index_signatures", []) or []),
-        is_exported=props.get("is_exported", False),
-        is_ambient=props.get("is_ambient", False),
-        start_line=props.get("start_line", -1),
-        end_line=props.get("end_line", -1),
-    )
+def interface(props: Props, *, callables: Dict[str, TSCallable] | None = None, fields: Dict[str, TSField] | None = None) -> TSInterface:
+    return _with_code(TSInterface(**_type_kwargs(props), callables=callables or {}, fields=fields or {}, base_classes=list(props.get("base_classes") or [])), props)
 
 
-def enum(props: Props) -> TSEnum:
-    names = props.get("member_names", []) or []
-    values = props.get("member_values", []) or []
-    members = [enum_member(n, values[i] if i < len(values) else None) for i, n in enumerate(names)]
-    return TSEnum(
-        name=props.get("name", ""),
-        signature=props.get("signature", ""),
-        comments=_comments(props),
-        code=props.get("code"),
-        members=members,
-        is_const=props.get("is_const", False),
-        is_exported=props.get("is_exported", False),
-        is_ambient=props.get("is_ambient", False),
-        start_line=props.get("start_line", -1),
-        end_line=props.get("end_line", -1),
-    )
+def enum(props: Props, *, fields: Dict[str, TSField] | None = None) -> TSEnum:
+    return _with_code(TSEnum(**_type_kwargs(props), fields=fields or {}, is_const=bool(props.get("is_const", False))), props)
 
 
 def type_alias(props: Props) -> TSTypeAlias:
-    return TSTypeAlias(
-        name=props.get("name", ""),
-        signature=props.get("signature", ""),
-        comments=_comments(props),
-        code=props.get("code"),
-        aliased_type=props.get("aliased_type", ""),
-        type_parameters=_type_params(props),
-        is_exported=props.get("is_exported", False),
-        is_ambient=props.get("is_ambient", False),
-        start_line=props.get("start_line", -1),
-        end_line=props.get("end_line", -1),
-    )
+    return _with_code(TSTypeAlias(**_type_kwargs(props), aliased_type=props.get("aliased_type", "")), props)
 
 
-def namespace(
-    props: Props,
-    *,
-    classes: Dict[str, TSClass] | None = None,
-    interfaces: Dict[str, TSInterface] | None = None,
-    enums: Dict[str, TSEnum] | None = None,
-    type_aliases: Dict[str, TSTypeAlias] | None = None,
-    functions: Dict[str, TSCallable] | None = None,
-    namespaces: Dict[str, TSNamespace] | None = None,
-    variables: List[TSVariableDeclaration] | None = None,
-) -> TSNamespace:
-    return TSNamespace(
-        name=props.get("name", ""),
-        signature=props.get("signature", ""),
-        comments=_comments(props),
-        classes=classes or {},
-        interfaces=interfaces or {},
-        enums=enums or {},
-        type_aliases=type_aliases or {},
+def namespace(props: Props, *, types: Dict[str, Any] | None = None, functions: Dict[str, TSCallable] | None = None, fields: Dict[str, TSField] | None = None) -> TSNamespace:
+    return _with_code(TSNamespace(**_type_kwargs(props), types=types or {}, functions=functions or {}, fields=fields or {}), props)
+
+
+def module(props: Props, *, types: Dict[str, Any] | None = None, functions: Dict[str, TSCallable] | None = None, fields: Dict[str, TSField] | None = None) -> TSModule:
+    """Assembled with ``model_construct``: the children are already-validated models, and the
+    module's after-validator would thread its (absent) ``source`` over every node, erasing the
+    per-node ``code`` the graph did project (see the module docstring)."""
+    return TSModule.model_construct(
+        id=props["id"],
+        kind="module",
+        span=_span(props),
+        source="",
+        imports=[],
+        exports=[],
+        comments=[],
+        types=types or {},
         functions=functions or {},
-        variables=variables or [],
-        namespaces=namespaces or {},
-        is_exported=props.get("is_exported", False),
-        is_ambient=props.get("is_ambient", False),
-        start_line=props.get("start_line", -1),
-        end_line=props.get("end_line", -1),
-    )
-
-
-def module(props: Props, **children: Any) -> TSModule:
-    return TSModule(
-        file_path=props.get("file_key", props.get("file_path", "")),
-        module_name=props.get("module_name", ""),
-        is_tsx=props.get("is_tsx", False),
-        is_declaration_file=props.get("is_declaration_file", False),
+        fields=fields or {},
+        is_tsx=bool(props.get("is_tsx", False)),
+        is_declaration_file=bool(props.get("is_declaration_file", False)),
         content_hash=props.get("content_hash"),
-        last_modified=props.get("last_modified"),
-        file_size=props.get("file_size"),
-        **children,
     )

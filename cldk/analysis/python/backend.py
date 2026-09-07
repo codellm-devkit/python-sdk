@@ -29,19 +29,48 @@ by convention. Backend-specific lifecycle (caches, drivers) is intentionally not
 
 from __future__ import annotations
 
-import base64
-import json
-import os
-import posixpath
 from abc import abstractmethod
-from bisect import bisect_right
-from typing import Callable, Dict, Iterable, List, NamedTuple, Sequence, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 import networkx as nx
 
 from cldk.analysis.commons.backend import AnalysisBackend
-from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, FlowPath, FlowPaths, LocateResult, PathHop, Slice, SliceNode
-from cldk.utils.exceptions import SelectorNotInGraph
+
+# The language-neutral rulings live in ``commons`` (leg 2.5a, G4) and are re-exported here under
+# the names this backend's callers and tests have always imported them by.
+from cldk.analysis.commons.bounds import (
+    DEFAULT_DEPTH,
+    DEFAULT_MAX_NODES,
+    DEFAULT_MAX_PATHS,
+    DEFAULT_PAGE_SIZE,
+    EdgeOrder,
+    check_depth,
+    check_distinct_endpoints,
+    check_max_nodes,
+    check_max_paths,
+    check_page_size,
+    check_selector,
+    cursor_params,
+    decode_cursor,
+    edge_page,
+    encode_cursor,
+    keyset_where,
+    reject_bare_string,
+)
+from cldk.analysis.commons.graphs import (
+    as_slice_node,
+    bounded_subgraph,
+    cone_sinks,
+    edge_sort_key,
+    flow_path,
+    hop_sort_key,
+    sdg_rel_pattern,
+    sdg_rels,
+    slice_resolved,
+    via_table,
+)
+from cldk.analysis.commons.keys import call_graph_scope, resolve_module_key, scope_paths
+from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, FlowPaths, LocateResult, Slice, SliceNode
 from cldk.models.python import (
     CdgEdge,
     CfgEdge,
@@ -56,27 +85,6 @@ from cldk.models.python import (
     PyExternalSymbol,
     PyModule,
 )
-
-
-def resolve_module_key(path: str, keys: Iterable[str]) -> str:
-    """The symbol-table / graph ``file_key`` naming ``path``, or ``path`` unchanged if none does.
-
-    A caller of :meth:`PythonAnalysisBackend.locate` hands over whatever its scanner printed —
-    ``./src/app.py``, ``src/../src/app.py``, or an absolute path from the machine the scan ran on —
-    while both backends are keyed by the project-relative path the analyzer saw. Exact key first,
-    then the normalised form, then the longest known key the normalised path *ends on a segment
-    boundary* of (which is what an absolute path is). Returning ``path`` unchanged when nothing
-    matches is deliberate: the caller then gets ``file_not_in_graph`` naming the path it asked
-    about, not a silently substituted neighbour.
-    """
-    keys = list(keys)
-    if path in keys:
-        return path
-    norm = posixpath.normpath(str(path).replace(os.sep, "/"))
-    if norm in keys:
-        return norm
-    suffix_matches = [k for k in keys if norm.endswith("/" + k)]
-    return max(suffix_matches, key=len) if suffix_matches else path
 
 
 def body_key_column(key: str) -> int:
@@ -97,246 +105,19 @@ def body_key_column(key: str) -> int:
     return int(col) if col.isdigit() else -1
 
 
-def reject_bare_string(kind: str, values: object) -> None:
-    """Refuse a single string where a sequence of names is required.
-
-    ``paths='pkg/mod.py'`` is not a type error to Python — a string *is* a sequence, of ten
-    characters — so it used to reach :func:`check_selector` as ten requested paths and come back as
-    ``10 of 10 paths not in graph: 'p', 'k', 'g', '/', …``. The mistake is the likely one because
-    the sibling keyword ``module=`` genuinely is single-valued, so both spellings look plausible.
-
-    Raises:
-        TypeError: ``values`` is a ``str``.
-    """
-    if isinstance(values, str):
-        raise TypeError(f"{kind}= takes a sequence of names, not a string; pass [{values!r}] to select just that one")
-
-
-def check_selector(kind: str, requested: Sequence[str], missing: Sequence[str]) -> None:
-    """The one place a scoping keyword's *selection* is judged, for both backends.
-
-    Every scoped accessor — ``get_symbol_table(paths=)``, ``get_classes(module=)``,
-    ``get_call_graph(roots=)`` — narrows a whole-application enumeration to what the caller named.
-    Two ways of naming nothing must not both come back as an empty result:
-
-    * **an empty sequence** (``paths=[]``, ``roots=[]``) selected nothing while missing nothing. It
-      is a caller bug — the argument to omit is the argument that means "everything" — and it
-      raises the same :class:`ValueError` ``depth=`` without ``roots=`` already does.
-    * **values that match nothing** are the ambiguous empty the parent spec's D7 calls a defect:
-      a mistyped path and a module that genuinely declares no classes were the same ``{}``. They
-      raise :class:`~cldk.utils.exceptions.SelectorNotInGraph`, which names them and stops. It
-      offers no near-miss candidates on purpose — leg 1.5's E8 puts typo-tolerant matching out of
-      scope "not in the resolver, not in the error path".
-
-    A **partial** miss raises too. Returning the values that did match would make a result whose
-    size the caller cannot check against what it asked for, which is the same silence one step
-    quieter.
-
-    Args:
-        kind: The keyword's name, as it appears in the caller's own call — ``"paths"``,
-            ``"module"`` or ``"roots"``.
-        requested: Everything the keyword named, in the caller's spelling.
-        missing: The subset of ``requested`` that matched nothing. Callers with no membership
-            information to bring (``call_graph_scope``, which has not seen the graph yet) pass an
-            empty sequence and get only the empty-selection check.
-
-    Raises:
-        ValueError: ``requested`` is empty.
-        SelectorNotInGraph: ``missing`` is non-empty.
-    """
-    if not requested:
-        raise ValueError(f"{kind}= selected nothing; omit it to enumerate the whole application")
-    if missing:
-        # ``roots=`` is an exact filter, unlike every name-taking accessor on this surface, so a
-        # correct short name and a typo miss the same way -- the message has to say which
-        # vocabulary it wanted (see the assessment on PythonAnalysisBackend.get_call_graph).
-        detail = (
-            "roots= takes full signatures (as get_callables_overview() reports them) or @external ids, not bare names; "
-            "to address a callable by name use resolve_callable(name).callable, or backward_cone / callers_of / call_paths_between"
-            if kind == "roots"
-            else None
-        )
-        raise SelectorNotInGraph(kind, list(missing), len(requested), detail=detail)
-
-
-def scope_paths(paths: Sequence[str] | None, keys: Iterable[str], kind: str = "paths") -> List[str] | None:
-    """Resolve requested module paths to symbol-table keys, or ``None`` for "the whole application".
-
-    Both backends route their ``paths=`` / ``module=`` keywords through here, so the lenient
-    resolution (:func:`resolve_module_key` — an absolute path or one with native separators finds
-    its module) and the strictness (:func:`check_selector` — a path naming no module raises) cannot
-    drift apart between them.
-
-    Args:
-        paths: What the caller named, or ``None`` for the unscoped call.
-        keys: The symbol-table keys that exist — ``symbol_table.keys()`` locally, the
-            application's module ``file_key``s over Neo4j.
-        kind: The keyword's name for the error message; ``"module"`` for ``get_classes``, whose
-            single-valued keyword routes through here as a one-element sequence.
-
-    **Resolution is many-to-one, and the result is de-duplicated.** Leniency is the whole point of
-    :func:`resolve_module_key` — ``"pkg/a.py"`` and ``"/abs/pkg/a.py"`` are two spellings a scanner
-    may plausibly hand over for the *same* module — so two requested paths legitimately collapse to
-    one key and the caller gets one entry back. Raising on the collapse would punish the very
-    caller the leniency exists for; de-duplicating explicitly is what keeps the returned list from
-    naming the same module twice and asking both backends to fetch it twice.
-
-    Raises:
-        TypeError: ``paths`` is a bare string (see :func:`reject_bare_string`).
-        ValueError: ``paths`` is an empty sequence.
-        SelectorNotInGraph: a path names no module in this application.
-    """
-    reject_bare_string(kind, paths)
-    if paths is None:
-        return None
-    known = list(keys)
-    resolved = [resolve_module_key(p, known) for p in paths]
-    check_selector(kind, list(paths), [p for p, r in zip(paths, resolved) if r not in known])
-    return list(dict.fromkeys(resolved))
-
-
-def call_graph_scope(roots: Sequence[str] | None, depth: int | None) -> List[str] | None:
-    """Normalise :meth:`PythonAnalysisBackend.get_call_graph`'s scoping keywords.
-
-    Returns the roots as a list, or ``None`` for "the whole application" — the unscoped call,
-    which must keep behaving exactly as it did before the keywords existed.
-
-    Both backends route through this so the two cannot drift apart on what a keyword combination
-    means (the failure mode Fix 1 of leg 1.5 had to go back and repair on the child-fetch paths).
-    Whether each root *exists* is checked later, by whichever backend has the graph in hand, but
-    through the same :func:`check_selector` — see :func:`bounded_subgraph`.
-
-    Raises:
-        TypeError: ``roots`` is a bare string (see :func:`reject_bare_string`).
-        ValueError: ``depth`` that is not a positive ``int``, ``depth`` without ``roots``, or an
-            empty ``roots``. A hop budget with no origin to count from has no meaning, and quietly
-            returning all 364,752 edges would be the worst of the available answers — the caller
-            asked for a bounded graph and would be handed an unbounded one with no signal.
-            ``depth`` is type-checked rather than merely range-checked because the two ways of
-            getting it wrong are silent otherwise: ``depth="2"`` raised ``TypeError`` from the
-            comparison, and ``depth=2.5`` was accepted and truncated to 2 by the Cypher/ego-graph
-            radius. ``bool`` is rejected for the same reason — ``depth=True`` is ``1`` by accident.
-    """
-    check_depth(depth)
-    reject_bare_string("roots", roots)
-    if roots is None:
-        if depth is not None:
-            raise ValueError("depth= requires roots=; a hop budget needs an origin to count from")
-        return None
-    check_selector("roots", list(roots), ())
-    return list(roots)
-
-
-def check_depth(depth: int | None) -> int | None:
-    """``depth`` is a hop budget: ``None`` for unbounded, otherwise an ``int`` of at least 1.
-
-    Type-checked and not merely range-checked, because the two ways of getting it wrong are silent
-    otherwise: ``depth="2"`` raised ``TypeError`` from somewhere further in, and ``depth=2.5`` was
-    accepted and truncated to 2 by the Cypher/ego-graph radius. ``bool`` is rejected for the same
-    reason — ``depth=True`` is ``1`` by accident.
-
-    One function, so ``get_call_graph``, the slices and the reachability accessors cannot come to
-    disagree about what a hop budget is.
-    """
-    if depth is not None and (not isinstance(depth, int) or isinstance(depth, bool) or depth < 1):
-        raise ValueError(f"depth must be an int >= 1, got {depth!r}")
-    return depth
-
-
-def bounded_subgraph(graph: nx.DiGraph, roots: List[str], depth: int | None, declared: Iterable[str]) -> nx.DiGraph:
-    """The sub-call-graph reachable from ``roots``, within ``depth`` hops when given.
-
-    **Induced**, not path-only: every edge between two reached nodes is kept, including one
-    pointing back towards a root. A path-only answer would let ``graph.predecessors(n)`` lie about
-    a node the caller can see, which is a worse defect than the extra edges are a cost. The Neo4j
-    backend's Cypher is written to produce the same induced shape rather than the cheaper
-    edges-along-the-path shape, for exactly this reason.
-
-    **The domain a root is judged against — stated here because both backends must judge against
-    the same one — is the callable inventory, not this graph.** ``graph`` is built from call
-    *edges* alone, so a callable that neither calls nor is called by anything is not a node in it:
-    444 of the live odoo application's 15,549 in-scope callables, 2.9%. Checking membership of
-    ``graph`` therefore raised for a callable that plainly exists, while the Neo4j backend — whose
-    Cypher matches a root by node *label*, not by edge participation — returned the one-node graph
-    it is. ``declared`` closes that gap: it carries every callable the application declares, and a
-    root is valid when it is **in the inventory or is a node of the graph**. The second disjunct is
-    not redundant — an ``@external`` ghost is a legitimate root, is a graph node, and is not a
-    declared callable — and the union is exactly what the Neo4j root match accepts (a
-    ``:PyCallable`` of this application, or a ``:PyExternal``).
-
-    A root outside that domain raises (:func:`check_selector`) rather than contributing nothing:
-    "no such callable" and "a callable that calls nothing" are different answers, and before this
-    they were the same empty graph.
-
-    The returned graph stays **edge-induced**. An isolated root is added back as a lone node —
-    which is the answer, and the one Neo4j gives — but nothing else the inventory knows about is
-    seeded into it. Seeding all declared callables would make the unbounded local graph disagree
-    with Neo4j's node-for-node, trading one parity defect for a larger one.
-    """
-    inventory = set(declared)
-    check_selector("roots", roots, [r for r in roots if r not in graph and r not in inventory])
-    nodes: set = set()
-    isolated: set = set()
-    for root in roots:
-        if root not in graph:
-            isolated.add(root)  # declared, but in no call edge: its own one-node graph
-        elif depth is None:
-            nodes |= nx.descendants(graph, root) | {root}
-        else:
-            nodes |= set(nx.ego_graph(graph, root, radius=depth).nodes)
-    sub = graph.subgraph(nodes).copy()
-    sub.add_nodes_from(isolated)
-    return sub
-
-
-# ----------------------------------------------------------------------------------------------
-# Paging the per-callable graphs (E5).
-#
-# THE CANONICAL ORDER, defined once here because it is the only thing that makes a page mean the
-# same thing on both backends. Neo4j returns rows in no order unless told to, and the local
-# backend returns the analyzer's emission order; without one stated sort, page two on Neo4j is a
-# different set of edges from page two locally. Each backend uses these functions -- the local one
-# sorts and slices with them directly, the Neo4j one writes the same components into its ORDER BY
-# and rebuilds the cursor from them -- so a change here moves both at once.
-#
-# The order is over the edge's OWN fields, in the order a reader would name them: source, then
-# target, then whatever else the edge carries. Nothing positional and nothing backend-specific
-# (no relationship element id, no row number), because a key one backend cannot compute is not a
-# shared order.
-#
-# TOTALITY. A keyset cursor resumes strictly *after* a key, so a repeated key would drop its twin.
-# The full field tuple is unique on real data: measured across odoo-slim-19's 5,134,655 PY_DDG,
-# 247,906 PY_CFG_NEXT and 139,065 PY_CDG edges, zero (src, dst, ...) tuples repeat -- and for CFG
-# the endpoints alone are *not* enough (13,310 node pairs carry two edges of different ``kind``),
-# which is why ``kind`` is in the key. On the graph side the emitter MERGEs these relationships on
-# exactly these properties, so uniqueness is structural there rather than incidental. Two edges
-# equal in every field would be equal as values -- the models carry nothing else -- so their
-# relative order is unobservable, and the page boundary is the same either way.
-#
-# ``or ""`` / ``or []`` is not cosmetic: ``DdgEdge.var`` is ``Optional[str]``, and a ``None`` in a
-# sort key raises in Python and silently drops the row in Cypher (``null > x`` is null). The
-# Cypher spells the same normalisation with ``coalesce``.
-
-
-#: Edges per page when the caller does not say. 10,000 is where the measured distribution
-#: splits: on odoo-slim-19, 15,520 of the 15,549 callables have fewer than 10,000 DDG edges, so
-#: this default answers 99.8% of callables completely in one page and no caller of a normal
-#: callable ever writes a loop -- while the 29 that are larger, up to 1,386,918 edges, are held to
-#: a response a caller can actually hold. CFG and CDG max out at 402 and 314 edges on the same
-#: application, so for them it is never reached.
-DEFAULT_PAGE_SIZE = 10_000
+_CFG_KEY, _CDG_KEY, _DDG_KEY = edge_sort_key("cfg"), edge_sort_key("cdg"), edge_sort_key("ddg")
 
 
 def cfg_sort_key(edge: CfgEdge) -> Tuple:
     """The canonical order for :meth:`PythonAnalysisBackend.get_cfg`: source, target, kind."""
-    return (edge.src, edge.dst, edge.kind or "")
+    return _CFG_KEY(edge)
 
 
 def cdg_sort_key(edge: CdgEdge) -> Tuple:
     """The canonical order for :meth:`PythonAnalysisBackend.get_cdg`: source, target. A control
     dependence carries nothing else to break a tie on, and needs nothing else: the pair is unique.
     """
-    return (edge.src, edge.dst)
+    return _CDG_KEY(edge)
 
 
 def ddg_sort_key(edge: DdgEdge) -> Tuple:
@@ -349,24 +130,7 @@ def ddg_sort_key(edge: DdgEdge) -> Tuple:
     Python and Cypher order lists the same way (element-wise, shorter first on a prefix), verified
     on the live graph rather than assumed: see ``test_neo4j_orders_a_page_exactly_as_python_would``.
     """
-    return (edge.src, edge.dst, edge.var or "", list(edge.prov or []))
-
-
-class EdgeOrder(NamedTuple):
-    """One edge kind's canonical order, in both spellings that have to agree.
-
-    The Python sort key and the Cypher expressions are the same components said twice, in two
-    languages, and the whole point of the order is that the two never disagree — so they are
-    written down once, together, and each backend takes the half it can run. ``len(exprs)`` is
-    also the order's arity, which is how a cursor from one accessor is refused by another
-    (:func:`decode_cursor`): the three arities are 3, 2 and 4.
-
-    ``coalesce`` in the expressions is ``or ""`` / ``or []`` in the key: ``DdgEdge.var`` is
-    optional, and a ``None`` in a sort key raises in Python and silently drops the row in Cypher.
-    """
-
-    key: Callable[[object], Tuple]
-    exprs: Tuple[str, ...]
+    return _DDG_KEY(edge)
 
 
 #: The three orders. ``src``/``dst``/``kind``/``var``/``prov`` are the aliases the backends'
@@ -375,335 +139,11 @@ CFG_ORDER = EdgeOrder(cfg_sort_key, ("src", "dst", "coalesce(kind,'')"))
 CDG_ORDER = EdgeOrder(cdg_sort_key, ("src", "dst"))
 DDG_ORDER = EdgeOrder(ddg_sort_key, ("src", "dst", "coalesce(var,'')", "coalesce(prov,[])"))
 
-
-def encode_cursor(scope: str, key: Tuple) -> str:
-    """An opaque, round-trippable spelling of a sort key, stamped with the callable it came from.
-
-    Opaque on purpose: the caller passes it back and never reads it, so the components of the
-    order stay an implementation detail rather than joining the caller's vocabulary. Base64 of
-    JSON, because the key holds strings and a list of strings, and both survive that unchanged.
-
-    ``scope`` is the resolved callable signature, carried so that :func:`decode_cursor` can refuse
-    a cursor minted for a different callable. Without it, an agent looping over callables and
-    reusing the wrong ``next_cursor`` would get a plausible page of the *right* callable's edges
-    resumed from a position in the *wrong* one — silently, since body-node ids sort by callable id
-    and the filter would simply skip everything or nothing.
-    """
-    return base64.urlsafe_b64encode(json.dumps([scope, list(key)]).encode("utf-8")).decode("ascii")
-
-
-def decode_cursor(cursor: str, scope: str, arity: int) -> Tuple:
-    """Inverse of :func:`encode_cursor`, checked against the caller it is being used for.
-
-    Three ways a cursor can be wrong, all of them raising rather than being read as "start from
-    the beginning" — which would silently hand back page one when page nine was asked for:
-    it does not decode; it was minted for another callable; or it has the wrong number of
-    components, which is what a cursor from a *different accessor* looks like (the three orders
-    have arities 3, 2 and 4, so no cursor is silently valid for the wrong graph).
-    """
-    try:
-        got_scope, key = json.loads(base64.urlsafe_b64decode(cursor.encode("ascii")).decode("utf-8"))
-    except Exception as exc:  # noqa: BLE001 -- any decode failure is the same caller error
-        raise ValueError(f"not a cursor from a previous page: {cursor!r}") from exc
-    if got_scope != scope:
-        raise ValueError(f"this cursor is from a page of {got_scope!r}, not {scope!r}")
-    if len(key) != arity:
-        raise ValueError(f"cursor has {len(key)} components, this accessor's order has {arity}: {cursor!r}")
-    return tuple(key)
-
-
-def check_page_size(page_size: int) -> int:
-    """``page_size`` must ask for at least one edge.
-
-    Zero is refused rather than treated as "no limit": a page of nothing whose ``next_cursor`` can
-    never advance is an infinite loop dressed as an empty answer.
-    """
-    if page_size < 1:
-        raise ValueError(f"page_size must be at least 1, got {page_size}")
-    return page_size
-
-
-def keyset_where(exprs: Sequence[str]) -> str:
-    """The Cypher for "strictly after the cursor", written out because Cypher has no tuple
-    comparison: ``(a, b) > ($c0, $c1)`` has to become
-    ``a > $c0 OR (a = $c0 AND (b > $c1))``.
-
-    Keyset rather than ``SKIP``: measured on ``Website.configurator_apply`` (1,386,918 DDG edges,
-    10,000 per page, query alone), ``SKIP`` costs 2.6s for the first page, 9.0s for the middle one
-    and 4.3s for the last -- it re-sorts a prefix that grows with the offset -- while this filter
-    is flat at 3.1s / 2.9s / 2.4s. The offset form is not wrong, it just gets worse the further in
-    the caller reads, which is the one direction pagination exists to make cheap.
-    """
-    clause = ""
-    for i in reversed(range(len(exprs))):
-        expr, param = exprs[i], f"$c{i}"
-        clause = f"{expr} > {param}" + (f" OR ({expr} = {param} AND ({clause}))" if clause else "")
-    return clause
-
-
-def cursor_params(cursor: str, scope: str, arity: int) -> Dict[str, object]:
-    """The ``$c0…$cN`` bindings :func:`keyset_where` reads, from an opaque cursor."""
-    return {f"c{i}": v for i, v in enumerate(decode_cursor(cursor, scope, arity))}
-
-
-def edge_page(model, scope: str, edges: List, order: EdgeOrder, page_size: int, cursor: str | None) -> EdgePage:
-    """One page of an edge set already held in memory.
-
-    The local backend has every edge in hand, so it sorts by ``key`` and slices. The cursor is
-    resolved by binary search over the sorted keys -- ``bisect_right``, i.e. the first edge
-    strictly after it -- so it means exactly what :func:`keyset_where` makes it mean on the graph,
-    rather than an independently-invented position that happens to line up.
-    """
-    check_page_size(page_size)
-    key = order.key
-    rows = sorted(edges, key=key)
-    start = bisect_right([key(e) for e in rows], decode_cursor(cursor, scope, len(order.exprs))) if cursor is not None else 0
-    window = rows[start : start + page_size]
-    more = start + len(window) < len(rows)
-    return EdgePage[model](edges=window, total=len(rows), next_cursor=encode_cursor(scope, key(window[-1])) if more and window else None)
-
-
-# ----------------------------------------------------------------------------------------------
-# Slicing and reachability (E2, E3, E5).
-#
-# THE FIVE RELATIONSHIP TYPES A SLICE FOLLOWS, verified against codeanalyzer's own
-# ``neo4j/schema.py`` REL_TYPES and against ``CALL db.relationshipTypes()`` on odoo-slim-19 rather
-# than copied from a plan -- the names in this leg's plan have been wrong before (PY_CFG_NEXT is
-# not PY_CFG). All five exist, with these edge counts on that application:
-#
-#   PY_DDG        5,134,655   data dependence, within a callable  (var, prov)
-#   PY_CDG          139,065   control dependence, within a callable
-#   PY_PARAM_IN     229,035   actual_in -> formal_in     : an argument entering a callee
-#   PY_PARAM_OUT    133,267   formal_out -> actual_out   : a value coming back to the caller
-#   PY_SUMMARY      453,398   actual_in -> actual_out    : a callee's pass-through, at the call site
-#
-# All five point WITH the flow -- verified on the live graph, where every PY_PARAM_IN runs
-# actual_in -> formal_in and every PY_PARAM_OUT runs formal_out -> actual_out, with no exceptions
-# in 362,302 edges. So a forward slice follows them and a backward slice follows them reversed;
-# there is no per-type direction table to keep straight, which is why they can share one match.
-#
-# PY_CFG_NEXT is deliberately NOT here. Control *flow* says what runs next; a slice is about what
-# a value or a decision depends on, and following successor edges would pull in every later
-# statement whether or not it depends on anything -- the "returns the whole callable" bug that a
-# non-emptiness assertion cannot catch.
-SDG_RELS = ("PY_DDG", "PY_CDG", "PY_PARAM_IN", "PY_PARAM_OUT", "PY_SUMMARY")
-
-#: The Cypher spelling of :data:`SDG_RELS` for a relationship-type disjunction.
-SDG_REL_PATTERN = "|".join(SDG_RELS)
-
-#: The caller's word for each relationship a path hop can be justified by (E6). The graph's own
-#: ``PY_DDG``/``PY_PARAM_IN`` spelling never leaves the backend; both backends translate through
-#: this one table so a hop cannot be labelled ``data`` over Neo4j and ``ddg`` locally.
-#:
-#: ``argument`` and ``return`` are the two interprocedural edges, and they are deliberately not
-#: both called "parameter": ``PY_PARAM_IN`` binds a caller's argument to a callee's formal, and
-#: ``PY_PARAM_OUT`` binds a callee's result back into the caller. A reader following a path needs
-#: to know which way it just crossed a call boundary.
-VIA = {
-    "PY_DDG": "data",
-    "PY_CDG": "control",
-    "PY_PARAM_IN": "argument",
-    "PY_PARAM_OUT": "return",
-    "PY_SUMMARY": "summary",
-    "PY_CALLS": "call",
-}
-
-#: Paths per query when the caller does not say. A path list is a set of *witnesses* for a flow,
-#: not the flow's extent, and ten worked examples is already more than a reader will follow; the
-#: extent question is ``slice_forward``, which reports a ``total``.
-DEFAULT_MAX_PATHS = 10
-
-
-def check_max_paths(max_paths: int) -> int:
-    """``max_paths`` must admit at least one path. Zero is refused for :func:`check_max_nodes`'s
-    reason: an empty list whose ``truncated`` says "there were more" answers nothing, and it is
-    indistinguishable at a glance from "there is no flow"."""
-    if max_paths < 1:
-        raise ValueError(f"max_paths must be at least 1, got {max_paths}")
-    return max_paths
-
-
-def check_distinct_endpoints(src: SliceNode, dst: SliceNode) -> None:
-    """A path query must have two different endpoints.
-
-    Neo4j's shortest-path search *refuses* a self-question outright ("the shortest path algorithm
-    does not work when the start and end nodes are the same"), which would otherwise surface as a
-    raw driver error from one backend and an empty list from the other. Both raise here instead,
-    and neither answers ``[]``: for a node that genuinely sits on a cycle, ``[]`` would be
-    indistinguishable from a proved absence of one, which is the ambiguous empty in another
-    costume. ``reaches(x, x)`` is the accessor that answers the existence question, and it does
-    terminate (measured: 0.03s, where the obvious ``EXISTS`` spelling never finished).
-
-    Takes the *resolved* endpoints rather than their refs so the message speaks the caller's
-    vocabulary (E6/E7): a value is named ``'kwargs' within '….configurator_apply'``, a callable
-    by its signature, and the advice is a call that actually runs -- ``reaches`` takes callable
-    names, so for a value the cycle question is asked of its enclosing callable.
-    """
-    if src.ref != dst.ref:
-        return
-    if src.kind == "callable":
-        raise ValueError(f"paths from {src.callable!r} to itself are not answered; ask reaches({src.callable!r}, {src.callable!r}) whether a cycle exists")
-    raise ValueError(
-        f"paths from {src.name!r} to itself (within {src.callable!r}) are not answered; a value reaches itself only through "
-        f"recursion, so ask reaches({src.callable!r}, {src.callable!r}) whether the callable is on a call cycle"
-    )
-
-
-def hop_sort_key(hops: Sequence[PathHop]) -> Tuple:
-    """The order two paths are compared in, in the caller's *own* vocabulary.
-
-    E2 makes a path a sequence, which only means something if the *list* of paths is stable too:
-    ``max_paths`` truncates, and a truncation of a non-deterministic order is not reproducible.
-    So paths are ordered shortest first, then hop by hop on ``(via, var, to.ref)`` — every term of
-    which the caller can see in the result it gets back.
-
-    Two hops that are indistinguishable in that vocabulary (parallel edges of the same kind, on
-    the same variable, between the same two nodes) are left to a backend-local tie-break: the
-    Neo4j backend appends the relationship's ``elementId``, the local backend keeps the order the
-    analyzer emitted them in. Either is stable for repeated calls against one graph; neither is
-    meaningful to a caller, which is why it is last and why nothing above depends on it.
-    """
-    return (len(hops), tuple((h.via, h.var or "", h.to.ref) for h in hops))
-
-
-def flow_path(nodes: Sequence[SliceNode], edges: Sequence[Tuple[str, "str | None", "Sequence[str] | None"]]) -> FlowPath:
-    """Join a walk's ``n`` nodes and its ``n - 1`` edges into a :class:`FlowPath`.
-
-    Both backends build paths through here, which is what makes the joining invariant
-    (``hops[i].to is hops[i + 1].frm``) a property of the construction rather than something each
-    backend has to be trusted to preserve. ``edges`` are the graph's own relationship types; they
-    are translated to the caller's word through :data:`VIA` exactly once, here.
-
-    Raises:
-        KeyError: A relationship type with no word in :data:`VIA` — a new edge kind from a future
-            analyzer generation, which must be named before it can be reported rather than passed
-            through in the graph's spelling.
-    """
-    return FlowPath(hops=[PathHop(frm=nodes[i], to=nodes[i + 1], via=VIA[rel], var=var, prov=list(prov or [])) for i, (rel, var, prov) in enumerate(edges)])
-
-
-def as_slice_node(node: object) -> SliceNode:
-    """The :class:`~cldk.analysis.commons.results.SliceNode` for anything carrying an address.
-
-    :meth:`PythonAnalysisBackend.describe` takes "anything with a ``ref``" — slice nodes, the
-    endpoints of a :class:`~cldk.analysis.commons.results.PathHop`, a
-    :class:`~cldk.analysis.commons.results.LocateResult` — because the addressing layer hands a
-    caller three shapes and asking them to convert between shapes to hydrate one is the kind of
-    friction that gets worked around with string surgery.
-
-    A ``SliceNode`` passes through untouched. A ``LocateResult`` is re-expressed as one, keeping
-    the vocabulary it already speaks: ``module.path`` is the file, ``callable.signature`` the
-    enclosing callable, ``node.kind`` the position's kind.
-
-    Raises:
-        TypeError: ``node`` carries neither a ``ref`` nor a ``node_id``, so there is nothing to
-            look up. Guessing an address from a file and a line is what ``locate`` is for.
-    """
-    if isinstance(node, SliceNode):
-        return node
-    ref = getattr(node, "node_id", None)
-    if ref is None:
-        raise TypeError(f"describe() needs something carrying a ref (a SliceNode, a path hop endpoint, a locate() result); got {type(node).__name__}")
-    module, callable_ref, body = node.module, node.callable, getattr(node, "node", None)
-    return SliceNode(
-        file=module.path,
-        line=node.span.start[0],
-        callable=callable_ref.signature if callable_ref else "",
-        kind=body.kind if body else "callable",
-        name=callable_ref.name if callable_ref else None,
-        source=node.source or None,
-        ref=ref,
-    )
-
-#: Nodes per slice when the caller does not say. The same 10,000 as :data:`DEFAULT_PAGE_SIZE`, and
-#: for a different reason: there, it is where 99.8% of callables fit in one page; here, nothing
-#: fits, because the measured distribution has no middle (see
-#: :class:`~cldk.analysis.commons.results.Slice`). 10,000 is the largest result that stays
-#: readable, and every slice above it is one a caller should be re-asking with ``depth=``.
-DEFAULT_MAX_NODES = 10_000
-
-#: Hops from the seed when the caller does not say. **Finite, and that is the whole point.**
-#:
-#: The measured distribution has no middle (see :class:`~cldk.analysis.commons.results.Slice`), so
-#: an unbounded default hands a connected seed 10,000 arbitrary nodes of a 195,819-node closure --
-#: an unprincipled 5%, honestly flagged ``truncated`` and useless either way. A finite default
-#: answers a *narrower* question *completely* instead, and ``depth=None`` is how a caller asks for
-#: the whole cone.
-#:
-#: 5 is the largest bound at which no measured slice needs ``max_nodes`` at all. Over 120 random
-#: ``formal_in`` seeds with callers on odoo-slim-19, node counts by depth:
-#:
-#: =========  =====  =======  =======  =======  ========
-#: direction  depth   median      p75      max  > 10,000
-#: =========  =====  =======  =======  =======  ========
-#: backward       3       14       70      846         0
-#: backward       5       33      188    1,539         0
-#: backward       6       56      324    2,818         0
-#: backward       8      464    2,044   16,028         1
-#: backward    None  195,786  195,787  198,306        79
-#: forward        3       12       34      440         0
-#: forward        5       24       63    1,053         0
-#: forward        6       35      166   14,260         1
-#: forward        8       48      402   37,326         2
-#: forward     None       71  440,269  440,645        52
-#: =========  =====  =======  =======  =======  ========
-#:
-#: 3 is informative but thin; 6 is where a forward slice first exceeds the cap and the default
-#: would start truncating again. 5 is the last depth that never does, in either direction.
-#:
-#: **Which accessors take it, and which deliberately do not.** The three *slices*
-#: (``slice_backward``, ``slice_forward``, ``backward_cone``) default to it: a bounded slice is a
-#: *complete* answer to a narrower question, and ``total`` says so. The two *predicates*
-#: (``reaches``, ``flows_to_call``, ``flows_to_argument``) and the two *path* queries
-#: (``paths_between``, ``call_paths_between``) default to ``None`` -- unbounded -- because a hop
-#: budget on a boolean or a path list is not a smaller answer but a **wrong** one: "no flow" and
-#: "no flow within five hops" collapse into the same ``False`` / ``[]`` with nothing in the result
-#: to tell them apart. Measured on odoo-slim-19: ``flows_to_call("kwargs", "Website.create",
-#: within="Website.configurator_apply")`` is ``False`` at five hops and ``True`` unbounded, and
-#: the matching ``paths_between`` is ``[]`` at five hops and ten paths at eight. ``depth=`` stays
-#: on all five as an explicit narrowing a caller can name; it is only the *default* that differs.
-DEFAULT_DEPTH = 5
-
-
-def check_max_nodes(max_nodes: int) -> int:
-    """``max_nodes`` must admit at least one node — the seed, if nothing else.
-
-    Zero is refused rather than read as "no limit": a slice of nothing whose ``total`` says
-    195,784 is a result no caller can act on, and "unbounded" is what ``max_nodes=None`` would
-    have to mean if it ever meant anything.
-    """
-    if max_nodes < 1:
-        raise ValueError(f"max_nodes must be at least 1, got {max_nodes}")
-    return max_nodes
-
-
-def cone_sinks(resolve: Callable[[str], SliceNode], sinks: Sequence[str]) -> List[SliceNode]:
-    """Resolve ``backward_cone``'s sinks, refusing the two ways of naming nothing.
-
-    The same discipline :func:`check_selector` applies to ``roots=`` and ``paths=``: a bare string
-    is ten one-character sinks and is refused as a type error, and an empty sequence is refused
-    because "everything" is the argument omitted, not the argument emptied — and there is no
-    "everything" here to fall back to. Each surviving name goes through ``resolve``, so an
-    ambiguous sink raises listing candidates instead of one of them being picked.
-
-    Duplicates are collapsed by resolved signature, not by the string the caller wrote: naming the
-    same callable twice, once bare and once qualified, is one sink.
-    """
-    reject_bare_string("sinks", sinks)
-    if not sinks:
-        raise ValueError("sinks= names nothing to walk back from; pass at least one callable")
-    resolved = {node.callable: node for node in (resolve(s) for s in sinks)}
-    return list(resolved.values())
-
-
-def slice_resolved(roots: List[SliceNode]) -> str:
-    """The audit line on a :class:`~cldk.analysis.commons.results.Slice`: what the caller's names
-    matched, in the caller's vocabulary.
-
-    Both backends build it here rather than each formatting its own, so a caller comparing two
-    results is comparing answers and not two spellings of one.
-    """
-    return ", ".join(f"{r.callable} {r.kind} {r.name!r}" if r.kind != "callable" else r.callable for r in roots)
+#: The five relationship types a slice follows and the caller's word for each, in this language's
+#: ``PY_`` spelling -- see :func:`~cldk.analysis.commons.graphs.sdg_rels` for what they are and why.
+SDG_RELS = sdg_rels("PY")
+SDG_REL_PATTERN = sdg_rel_pattern("PY")
+VIA = via_table("PY")
 
 
 class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, PyCallable, PyClassAttribute, str]):
