@@ -49,6 +49,7 @@ import pytest
 
 from cldk.analysis.java.neo4j import neo4j_backend
 from cldk.analysis.java.neo4j.neo4j_backend import JNeo4jBackend
+from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 
 from .conftest import FakeDriver
 
@@ -531,7 +532,13 @@ def test_the_artifact_layer_is_reached_only_through_the_application_anchor():
     assert backend.get_artifacts()["pom.xml"].source == "<alpha/>", "application B's pom.xml leaked"
     assert [d.name for d in backend.get_dependencies()] == ["alpha-core"]
     assert [ck.key for ck in backend.get_config_keys().values()] == ["alpha.key"]
-    assert backend.get_config_uses() == [] and backend.get_unresolved_config_reads() == []
+    # The code-to-config layer is codeanalyzer-java 3.1.0's, and this graph is a 3.0.1 one (see the
+    # module docstring), so it refuses here rather than answering the empty that would read as
+    # "application A reads no configuration". The other half of that ruling -- a 3.1.0-shaped
+    # analysis answering, empty or not -- is pinned in ``test_java_entrypoints.py``.
+    for call in (backend.get_config_uses, backend.get_unresolved_config_reads):
+        with pytest.raises(CodeanalyzerExecutionException, match="3.1.0"):
+            call()
 
 
 def test_the_addressing_surface_answers_from_this_application_only():
@@ -579,7 +586,8 @@ def test_the_task_three_surface_answers_from_this_application_only():
     assert backend.get_entrypoints() == [] and backend.get_entrypoint_classes() == []
     assert [d.code for d in backend.get_entrypoint_coverage().diagnostics] == ["entrypoint_report_unavailable"]
     assert backend.get_interfaces() == {} and backend.get_enums() == {} and backend.get_records() == {}
-    assert backend.get_config_readers("alpha.key") == []
+    with pytest.raises(CodeanalyzerExecutionException, match=APP_A):
+        backend.get_config_readers("alpha.key")
 
 
 def test_external_symbols_are_this_applications_ghosts_only():
@@ -664,6 +672,11 @@ _CONTAINMENT = frozenset(
         "J_HAS_BODY_NODE",
         "HAS_ARTIFACT",
         "DEFINES_CONFIG",
+        # codeanalyzer-java 3.1.0: runs from the application node to the ghost callee of a config
+        # read it could not resolve, minted under the same prefix. ``J_USES_CONFIG`` is deliberately
+        # **not** here -- its two endpoints live in the two different id spaces (code and artifact),
+        # so each carries its own scope and neither may be inferred from the other.
+        "J_READS_CONFIG_UNRESOLVED",
     }
 )
 

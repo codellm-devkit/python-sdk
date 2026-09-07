@@ -140,17 +140,21 @@ def test_the_entrypoint_types_agree_type_for_type(backends):
     assert sorted(ref.get_entrypoint_classes(), key=lambda c: c.qualified_name) == sorted(neo.get_entrypoint_classes(), key=lambda c: c.qualified_name)
 
 
-def test_get_entrypoint_coverage_reports_the_report_unavailable_on_a_real_graph(backends):
-    """The ``:JApplication`` anchor really does carry no entrypoint key -- asserted against the
-    server, not against a fixture, because that is the fact J-4's ruling rests on."""
+def test_get_entrypoint_coverage_reads_the_report_off_a_real_graph(backends):
+    """The ``:JApplication`` anchor really does carry the report -- asserted against the server, not
+    against a fixture, because that is the fact the accessor rests on. codeanalyzer-java 3.1.0
+    projects it as ``entrypoint_report_json``, the whole model as JSON, so the graph and the payload
+    are equal object for object rather than merely both non-empty."""
     ref, neo = backends
     props = neo._run("MATCH (a:JApplication {name: $app}) RETURN keys(a) AS k", app=JAVA_APP)[0]["k"]
-    assert sorted(props) == ["analyzer_name", "analyzer_version", "name", "schema_version"]
-    assert not any("entrypoint" in key for key in props)
+    assert sorted(props) == ["analyzer_name", "analyzer_version", "entrypoint_frameworks", "entrypoint_report_json", "name", "schema_version"]
     for backend in (ref, neo):
         coverage = backend.get_entrypoint_coverage()
         assert isinstance(coverage, EntrypointCoverage)
-        assert [d.code for d in coverage.diagnostics] == ["entrypoint_report_unavailable"]
+        assert coverage.diagnostics == []
+        assert coverage.frameworks_detected == ["jakarta", "jaxrs", "spring"]
+        assert coverage.rulesets == ["jakarta", "struts", "spring", "camel", "jaxrs"]
+        assert coverage.unresolved == {} and coverage.errors == []
     assert ref.get_entrypoint_coverage() == neo.get_entrypoint_coverage()
 
 
@@ -242,6 +246,22 @@ def test_the_artifact_layer_and_config_readers_agree(backends):
     assert [(d.name, d.ecosystem, d.direct) for d in ref.get_dependencies()] == [(d.name, d.ecosystem, d.direct) for d in neo.get_dependencies()]
     assert set(ref.get_config_keys()) == set(neo.get_config_keys())
     assert all("@key/" in k and not k.startswith("can://") for k in ref.get_config_keys())
+    # The code-to-config layer (codeanalyzer-java 3.1.0). The two sources agree on the resolved
+    # edges exactly and diverge on the unresolved reads for one stated reason:
+    # ``J_READS_CONFIG_UNRESOLVED`` is discriminated by ``(key, reason)`` and carries no site, so
+    # the payload's 16 per-site entries are 8 edges. Presence, not count, is the contract.
+    assert len(ref.get_config_uses()) == len(neo.get_config_uses()) == 13
+    assert {(u.src, u.dst, tuple(u.prov)) for u in ref.get_config_uses()} == {(u.src, u.dst, tuple(u.prov)) for u in neo.get_config_uses()}
+    assert {tuple(u.prov) for u in ref.get_config_uses()} == {("literal",)}, "every resolved use is a literal at the call site"
+    assert len(ref.get_unresolved_config_reads()) == 16 and len(neo.get_unresolved_config_reads()) == 8
+    assert {(r.callee, r.key, r.reason, tuple(r.prov)) for r in ref.get_unresolved_config_reads()} == {
+        (r.callee, r.key, r.reason, tuple(r.prov)) for r in neo.get_unresolved_config_reads()
+    }, "the graph collapses per-site duplicates and loses nothing else"
+    # ``--emit neo4j`` forces level 4, and the reference is read at level 4 too, so both ran the
+    # dataflow tier over the DDG -- and it still could not name these keys.
+    assert {tuple(r.prov) for r in ref.get_unresolved_config_reads()} == {("literal", "dataflow")}
+    assert all(r.site for r in ref.get_unresolved_config_reads()) and all(r.site == "" for r in neo.get_unresolved_config_reads())
     for backend in (ref, neo):
-        assert backend.get_config_uses() == [] and backend.get_unresolved_config_reads() == []
-        assert backend.get_config_readers(next(iter(backend.get_config_keys())).split("@key/")[1]) == []
+        readers = backend.get_config_readers("maxUsers")
+        assert [r.key for r in readers] == ["com.ibm.websphere.samples.daytrader.web.servlet.TradeWebContextListener.contextInitialized(javax.servlet.ServletContextEvent)"]
+        assert backend.get_config_readers("project.artifactId") == [], "a declared key nothing reads has no readers"

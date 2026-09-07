@@ -85,6 +85,7 @@ from cldk.analysis.commons.results import (
 )
 from cldk.analysis.commons.treesitter import TreesitterJava
 from cldk.analysis.commons.treesitter.models import Captures
+from cldk.models.python import PyConfigRead, PyConfigUseEdge
 from cldk.models.java.models import (
     JApplication,
     JBodyNode,
@@ -95,6 +96,8 @@ from cldk.models.java.models import (
     JCfgEdge,
     JComment,
     JCompilationUnit,
+    JConfigRead,
+    JConfigUse,
     JCRUDOperation,
     JDdgEdge,
     JEnumConstant,
@@ -113,15 +116,39 @@ CRUDRow = Dict[str, Union[JType, JCallable, List[JCRUDOperation]]]
 #: J-4: the CRUD accessors keep their names and raise this on schema v2, on both backends.
 CRUD_UNAVAILABLE = "CRUD operations are not emitted by codeanalyzer-java 3.0.1 or newer (schema v2); tracked upstream as codeanalyzer-java#187"
 
-#: J-4: what ``get_entrypoint_coverage`` says instead of counting booleans and calling it coverage.
-#: Java is the one of the three languages whose analyzer projects **no** entrypoint report --
-#: measured on the reference graph, where the ``:JApplication`` anchor carries four properties and
-#: none of them is a report -- so the accessor reports that, through the shared model's own
-#: ``entrypoint_report_unavailable`` vocabulary.
+#: J-4: what ``get_entrypoint_coverage`` says when this analysis carries no report, instead of
+#: counting booleans and calling it coverage. codeanalyzer-java 3.1.0 (codeanalyzer-java#235) emits
+#: one -- ``JApplication.entrypoint_report`` on the wire, ``:JApplication.entrypoint_report_json``
+#: on the graph -- and the accessor reads it. Before 3.1.0 there was none at all, and a 3.0.x
+#: payload or graph is still servable (the Neo4j floor is 3.0.1, and a cached ``analysis.json``
+#: computed at a sufficient ``max_level`` is reused whatever wrote it), so the refusal stays and is
+#: decided by :data:`the overlay probe <CONFIG_OVERLAY_UNAVAILABLE>`, never by a version string.
 ENTRYPOINT_REPORT_UNAVAILABLE = (
-    "codeanalyzer-java 3.0.1 emits no entrypoint report: analysis.json carries no such key and the :JApplication anchor carries only "
-    "name/schema_version/analyzer_name/analyzer_version, so the entrypoint pass's coverage (frameworks_detected/rulesets/unresolved/errors) "
-    "cannot be reported. get_entrypoints() and get_entrypoint_classes() still carry the analyzer's own per-declaration marks."
+    "this analysis carries no entrypoint report: codeanalyzer-java emits one only from 3.1.0 onwards, so the entrypoint pass's coverage "
+    "(frameworks_detected/rulesets/unresolved/errors) cannot be reported for an older payload or an older graph. Re-analyse, or re-emit "
+    "your Neo4j graph, with codeanalyzer-java 3.1.0 or newer. get_entrypoints() and get_entrypoint_classes() still carry the analyzer's "
+    "own per-declaration marks."
+)
+
+#: Why the three config-read accessors refuse, **when they do**. codeanalyzer-java 3.1.0 added the
+#: code-to-config layer (codeanalyzer-java#233 literal tier, #237 dataflow tier); 3.0.x has no
+#: detector at all, and answering ``[]`` off a 3.0.x analysis would say "this application reads no
+#: configuration" when the truth is "nothing looked" -- the ambiguous empty D7 forbids.
+#:
+#: **The probe cannot be the config layer's own absence**, and that is measured, not assumed: the
+#: analyzer writes ``config_uses``/``config_reads_unresolved`` only when non-empty (the committed
+#: ``v2/a4`` fixture is a level-4 3.1.0 run whose pruned tree reads no configuration, and it
+#: carries neither key), and the graph declares ``J_USES_CONFIG``/``J_READS_CONFIG_UNRESOLVED`` as
+#: relationship types only once an edge of that type exists. Both would refuse a clean 3.1.0
+#: analysis that genuinely reads nothing. The witness that *is* unconditional is the sibling
+#: overlay from the same release: 3.1.0 writes an entrypoint report on every run and 3.0.x writes
+#: none of the three, so all three overlays are probed as the one thing they are -- one analyzer
+#: generation's output -- and never as a version literal.
+CONFIG_OVERLAY_UNAVAILABLE = (
+    "the code-to-config layer cannot be answered for application {app!r}: this analysis carries none of codeanalyzer-java 3.1.0's "
+    "application-scope overlays (config_uses, config_reads_unresolved, entrypoint_report), so an empty answer here would say "
+    "'this application reads no configuration' where the truth is that nothing looked. Re-analyse, or re-emit your Neo4j graph, with "
+    "codeanalyzer-java 3.1.0 or newer. get_config_keys() is unaffected: the keys a config artifact declares are read at every generation."
 )
 
 #: What ``get_external_symbols`` raises on a payload whose run never homed out-of-project call
@@ -930,11 +957,13 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
     # ``:JExternal`` set, which :meth:`JNeo4jBackend._external_rows` now projects into
     # ``JApplication.external_symbols``.
     #
-    # THE ONE HONEST REFUSAL IS ``get_entrypoint_coverage``. Java projects no entrypoint report at
-    # all -- the ``:JApplication`` anchor carries only ``name``/``schema_version``/
-    # ``analyzer_name``/``analyzer_version``, and ``analysis.json`` has no such key, unlike
-    # codeanalyzer-python 1.4.1 and codeanalyzer-typescript 1.3.0 which both project one. A count of
-    # syntactically-marked callables is not a coverage report, so it is not dressed up as one (J-4).
+    # ``get_entrypoint_coverage`` READS THE REPORT FROM 3.1.0 ON, AND REFUSES BELOW IT. Java was
+    # the one of the three languages whose analyzer projected no entrypoint report; 3.1.0
+    # (codeanalyzer-java#235) projects one, on the wire as ``JApplication.entrypoint_report`` and on
+    # the graph as ``:JApplication.entrypoint_report_json``, so the accessor reads the same four
+    # fields codeanalyzer-python and codeanalyzer-typescript already carry. A 3.0.x analysis carries
+    # none, and a count of syntactically-marked callables is not a coverage report, so it is not
+    # dressed up as one (J-4): that case reports :data:`ENTRYPOINT_REPORT_UNAVAILABLE`.
     # =====================================================================================
     def get_callables_overview(self) -> List[JCallableOverview]:
         """A lightweight projection of every callable in the application, without the full
@@ -1015,22 +1044,33 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         return [JClassOverview.of(t, path=self._file_of[name], qualified_name=name) for name, t in self._types.items() if t.is_entrypoint_class]
 
     def get_entrypoint_coverage(self) -> EntrypointCoverage:
-        """**Reports that there is no report** (J-4), identically on both backends.
+        """The entrypoint pass's own coverage and failure record, identically on both backends.
 
-        codeanalyzer-java 3.0.1 emits the entrypoint *marks* and nothing about the pass that made
-        them: ``analysis.json`` carries no report key, and the ``:JApplication`` anchor carries only
-        ``name``/``schema_version``/``analyzer_name``/``analyzer_version`` — measured on the
-        reference graph, and unlike codeanalyzer-python 1.4.1 and codeanalyzer-typescript 1.3.0,
-        which both project one. So this answers with a ``diagnostics``-only
-        :class:`~cldk.analysis.commons.results.EntrypointCoverage`, the same "say so honestly"
-        shape a Python graph without the report uses.
+        codeanalyzer-java 3.1.0 (codeanalyzer-java#235) emits it — ``JApplication.entrypoint_report``
+        off ``analysis.json``, ``:JApplication.entrypoint_report_json`` off the graph, which
+        :class:`~cldk.analysis.java.neo4j.neo4j_backend.JNeo4jBackend` parses back into the same
+        model, so the two backends read one object and there is no lossiness between them. The four
+        fields are the ones codeanalyzer-python and codeanalyzer-typescript already carry
+        (``frameworks_detected``, ``rulesets``, ``unresolved``, ``errors``); on daytrader8 that is
+        three frameworks detected of five rulesets run, nothing unresolved and no errors.
 
-        It deliberately does **not** synthesise a report out of the ``is_entrypoint`` booleans: a
-        count of syntactically-marked callables is not a coverage record, and presenting one as if
-        it were is the ambiguous empty D7 forbids wearing a hat. The day the analyzer emits a
-        report, this reads it and the ``diagnostics`` go away.
+        A 3.0.x analysis carries no report at all, and both a cached ``analysis.json`` and an
+        attached 3.0.x graph are still servable, so that case answers with a ``diagnostics``-only
+        :class:`~cldk.analysis.commons.results.EntrypointCoverage`
+        (:data:`ENTRYPOINT_REPORT_UNAVAILABLE`) rather than fabricating empty-but-clean-looking
+        fields — the same "say so honestly" shape a Python graph without the report uses. It still
+        never synthesises a report out of the ``is_entrypoint`` booleans: a count of
+        syntactically-marked callables is not a coverage record (J-4).
         """
-        return EntrypointCoverage(diagnostics=[Diagnostic(code="entrypoint_report_unavailable", message=ENTRYPOINT_REPORT_UNAVAILABLE)])
+        report = self.get_application_view().entrypoint_report
+        if report is None:
+            return EntrypointCoverage(diagnostics=[Diagnostic(code="entrypoint_report_unavailable", message=ENTRYPOINT_REPORT_UNAVAILABLE)])
+        return EntrypointCoverage(
+            frameworks_detected=list(report.frameworks_detected),
+            rulesets=list(report.rulesets),
+            unresolved=dict(report.unresolved),
+            errors=list(report.errors),
+        )
 
     def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[JCallSite]]:
         """Call sites of the given callables, keyed by the key that named them.
@@ -1081,13 +1121,115 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
             raise CodeanalyzerExecutionException(EXTERNAL_SYMBOLS_UNAVAILABLE)
         return external
 
+    # -----[ the code-to-config layer (codeanalyzer-java 3.1.0) ]-----
+    #
+    # IMPLEMENTED HERE, NOT PER BACKEND, for this section's reason: :class:`JNeo4jBackend` rebuilds
+    # the canonical :class:`JApplication` from the graph -- these three overlays included -- so both
+    # backends read one object through one implementation, and the refusal below cannot come to
+    # differ between them.
+    #
+    # THE TWO TIERS ARE SURFACED, NOT FLATTENED. ``prov`` on every edge names how the key was
+    # reached: ``"literal"`` is a string literal at the call site (codeanalyzer-java#233),
+    # ``"dataflow"`` is a key closed over the L3 DDG / the L4 call graph (#237) -- weaker evidence,
+    # and it widens with the analysis level rather than replacing the literal tier. On a
+    # :class:`PyConfigRead` the list is every tier *attempted* before giving up, so
+    # ``["literal", "dataflow"]`` there means the dataflow tier ran too and still could not name the
+    # key. Measured on daytrader8 at level 4: 13 uses, all ``["literal"]``; 16 unresolved reads,
+    # all ``["literal", "dataflow"]`` (8 edges on the graph -- see :meth:`get_unresolved_config_reads`).
+    def _config_overlay(self) -> Tuple[List[JConfigUse], List[JConfigRead]]:
+        """This analysis's config-use and unresolved-read lists, or raise if it has neither pass.
+
+        Raises:
+            CodeanalyzerExecutionException: This analysis predates codeanalyzer-java 3.1.0
+                (:data:`CONFIG_OVERLAY_UNAVAILABLE`, which is also where the probe's choice of
+                witness is argued from measurement). Both backends raise the same type with the
+                same message, which names the application and no ``can://`` id (E6).
+        """
+        app = self.get_application_view()
+        if app.entrypoint_report is None:
+            raise CodeanalyzerExecutionException(CONFIG_OVERLAY_UNAVAILABLE.format(app=self._application_name))
+        return list(app.config_uses or []), list(app.config_reads_unresolved or [])
+
+    def _config_key_ids(self, key: str) -> Set[str]:
+        """The ids of every declared config key spelling ``key`` — a dotted key can be declared by
+        more than one artifact (a ``daytrader.properties`` and a ``web.xml`` naming the same one),
+        so this is a set and not a lookup. Compared on the id rather than on the dotted tail of the
+        edge's ``dst``, because the id is what the analyzer wrote on both sides of the edge."""
+        return {ck.id for a in self.get_application_view().artifacts.values() for ck in a.config_keys if ck.key == key}
+
+    def get_config_uses(self, key: str | None = None) -> List[PyConfigUseEdge]:
+        """Every code-to-config edge the analyzer resolved: a config read whose key closed on a
+        declared :class:`~cldk.models.java.models.JConfigKey`.
+
+        Args:
+            key: Restrict to one dotted key, matched exactly against the declared key's own
+                ``key`` (never fuzzily, E8). ``None`` returns every edge.
+
+        Returns:
+            The shared :class:`~cldk.models.python.PyConfigUseEdge`, as the generic ABC promises.
+            ``src`` is the reading call's body-node id, ``dst`` the matched key's id, and ``prov``
+            the tier that resolved it — see this section's note. Empty means the pass ran and
+            resolved nothing.
+
+        Raises:
+            CodeanalyzerExecutionException: See :meth:`_config_overlay`.
+        """
+        uses, _ = self._config_overlay()
+        wanted = None if key is None else self._config_key_ids(key)
+        return [PyConfigUseEdge(src=u.src, dst=u.dst, prov=list(u.prov)) for u in uses if wanted is None or u.dst in wanted]
+
+    def get_unresolved_config_reads(self) -> List[PyConfigRead]:
+        """Every config read whose key closed on no declared key — first class, so a read nobody can
+        trace stays as visible as one that resolves.
+
+        Returns:
+            The shared :class:`~cldk.models.python.PyConfigRead`. ``key`` is the literal text when it
+            *was* a literal matching no declared key (``reason="undefined-key"``) and ``None`` when
+            it never closed on one (``reason="non-literal"``); ``prov`` is every tier attempted.
+
+            **The graph is lossier than the payload here, in two named ways, and neither is a
+            presence/absence gap.** ``J_READS_CONFIG_UNRESOLVED`` runs application-to-ghost
+            (``:JApplication`` → ``:JExternal``) and never touches the body node that made the call,
+            so ``site`` comes back ``""`` off Neo4j; and the edge's discriminant is ``(key, reason)``
+            rather than the site, so several call sites reading one key collapse into one edge —
+            daytrader8's 16 wire entries are 8 edges. Any unresolved read still guarantees at least
+            one edge, so "no rows" never means a false negative. Same shape, and the same reason, as
+            codeanalyzer-python's ``PY_READS_CONFIG_UNRESOLVED``.
+
+        Raises:
+            CodeanalyzerExecutionException: See :meth:`_config_overlay`.
+        """
+        _, reads = self._config_overlay()
+        return [PyConfigRead(site=r.site, callee=r.callee, key=r.key, reason=r.reason, prov=list(r.prov)) for r in reads]
+
     def get_config_readers(self, key: str) -> List[JCallableOverview]:
-        """Always ``[]``, for the reason 3a's :meth:`get_config_uses` gives: codeanalyzer-java 3.0.1
-        emits no code-to-config edges (there is no ``config_uses`` on the Java wire), so there is no
-        edge to resolve to a reading callable and no callable to name. Not a fact of its own: it is
-        empty *because* :meth:`get_config_uses` is, and the day the analyzer emits those edges this
-        is where they get resolved to callables."""
-        return []
+        """Overviews of every callable that reads one config key — :meth:`get_config_uses` resolved
+        from body nodes back to the callables that own them.
+
+        Args:
+            key: The dotted key, matched exactly as in :meth:`get_config_uses`.
+
+        Returns:
+            One overview per distinct callable, in the addressing index's order; a callable reading
+            the key at several call sites appears once. Empty means nothing reads it.
+
+            A ``J_USES_CONFIG`` edge may also be rooted on a field, a type or a callable rather than
+            on a body node (the schema allows all four sources; every one of daytrader8's 13 is a
+            body node). A field- or type-rooted read has no reading *callable*, so it has no entry
+            here — it is still in :meth:`get_config_uses`, which is where the whole edge set lives.
+
+        Raises:
+            CodeanalyzerExecutionException: See :meth:`_config_overlay`.
+        """
+        wanted, found = self._config_key_ids(key), {}
+        for use in self.get_config_uses(key) if wanted else []:
+            # ``src`` is a body-node id (``<callable id>@<line>:<col>``) or, for the other three
+            # sources the schema allows, the declaration's own id. One lookup covers both: a
+            # callable id carries no ``@`` of its own.
+            row = self._addressing.by_id.get(use.src) or self._addressing.by_id.get(use.src.rpartition("@")[0])
+            if row is not None:
+                found[row.key] = row
+        return [JCallableOverview.of(r.key, r.type, r.callable, path=r.path) for r in found.values()]
 
     # -----[ the type-kind leaf accessors (J-7) ]-----
     def get_interfaces(self) -> Dict[str, JType]:

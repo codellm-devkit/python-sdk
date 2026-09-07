@@ -71,10 +71,13 @@ one label that is.
 **Strategy.** Unlike the Python and TypeScript Neo4j backends, which answer each accessor with its
 own statement, this one rebuilds the canonical :class:`JApplication` from the graph and then answers
 every query with the *same* logic the in-memory backend runs over the same models. The application
-is built on first use, not at attach, and cached — **nine round trips in all**: three at attach (the
-relationship-type fingerprint, the version probe, the module fetch) and six on first use (one
+is built on first use, not at attach, and cached — **fourteen round trips in all**: four at attach
+(the relationship-type fingerprint, the version probe, the resolution probe -- which reuses the
+fingerprint -- and the module fetch) and ten on first use (the anchor's properties, then one
 containment-subtree traversal instead of one query per parent, then call sites, imports, call edges,
-artifacts and dependencies).
+externals, artifacts, dependencies, and the two codeanalyzer-java 3.1.0 config-overlay statements).
+On a 3.0.x graph it is twelve: the anchor carries no entrypoint report, so the two config statements
+are not issued at all (:meth:`_overlay_rows`).
 
 **Lossiness** relative to the in-memory backend (the projection's, not this client's; see
 :mod:`reconstruct` for the per-node detail): a module carries no ``source`` and no span, so
@@ -132,14 +135,17 @@ from cldk.models.java.models import (
     JCfgEdge,
     JComment,
     JCompilationUnit,
+    JConfigRead,
+    JConfigUse,
     JDdgEdge,
     JDecorator,
+    JEntrypointReport,
     JExternalSymbol,
     JField,
     JMethodDetail,
     JType,
 )
-from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
+from cldk.models.python import PyArtifact, PyConfigKey, PyDependency
 from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException, GraphSchemaMismatch
 
 logger = logging.getLogger(__name__)
@@ -332,7 +338,7 @@ class JNeo4jBackend(JavaAnalysisBackend):
         return {r["k"]: r["p"] for r in rows}
 
     # =====================================================================================
-    # Reconstruction: eight statements, then the canonical JApplication.
+    # Reconstruction: ten statements (eight on a 3.0.x graph), then the canonical JApplication.
     # =====================================================================================
     #: The whole containment subtree beneath the application's modules, in one statement: the
     #: ``*0..`` walk reaches every module, type (nested and local), callable and field, and the last
@@ -406,6 +412,49 @@ class JNeo4jBackend(JavaAnalysisBackend):
             app=self.application_name,
         )
 
+    def _overlay_rows(self) -> Tuple[JEntrypointReport | None, List[JConfigUse], List[JConfigRead]]:
+        """The three application-scope overlays codeanalyzer-java 3.1.0 added, in two statements.
+
+        The report is the whole ``JEntrypointReport`` as sorted-key JSON on the anchor, exactly as
+        codeanalyzer-python projects ``PyApplication.entrypoint_report``, so it parses back into the
+        model with no lossiness. ``properties(a)`` rather than naming the key: a 3.0.x graph has no
+        such property at all, and naming one statically makes the server log a warning per call.
+
+        **The report is also the overlay probe** (see :data:`~cldk.analysis.java.backend.CONFIG_OVERLAY_UNAVAILABLE`):
+        a 3.1.0 graph carries it whatever the application reads, whereas ``J_USES_CONFIG`` and
+        ``J_READS_CONFIG_UNRESOLVED`` are declared as relationship types only once an edge of that
+        type exists. So the config lists are ``None`` — "nothing looked" — exactly when the report
+        is absent, and a real (possibly empty) list otherwise.
+
+        Both endpoints of ``J_USES_CONFIG`` carry the scope, and each carries a different one,
+        because the edge is the one place the two id spaces meet: the **key** is anchored through
+        the artifact layer (``can://artifact/<app>/…``, which no ``$prefix`` predicate matches) and
+        the **source** by the code prefix, since the schema roots that edge on a body node, a
+        callable, a field or a type — none of which the application anchor reaches in one hop.
+        ``J_READS_CONFIG_UNRESOLVED`` runs from the anchor itself and carries no ``site``, which is
+        the lossiness :meth:`~cldk.analysis.java.backend.JavaAnalysisBackend.get_unresolved_config_reads`
+        states.
+        """
+        rows = self._run("MATCH (a:JApplication {name: $app}) RETURN properties(a) AS p", app=self.application_name)
+        raw = rows[0]["p"].get("entrypoint_report_json") if rows else None
+        if raw is None:
+            return None, [], []
+        uses = self._run(
+            "MATCH (:JApplication {name: $app})-[:HAS_ARTIFACT]->(:Artifact)-[:DEFINES_CONFIG]->(ck:ConfigKey)<-[u:J_USES_CONFIG]-(src) "
+            f"WHERE {_scoped('src')} RETURN src.id AS src, ck.id AS dst, u.prov AS prov ORDER BY src.id, ck.id",
+            app=self.application_name,
+            prefix=self._scope_prefix,
+        )
+        reads = self._run(
+            "MATCH (:JApplication {name: $app})-[u:J_READS_CONFIG_UNRESOLVED]->(ghost) RETURN properties(u) AS p, ghost.id AS callee ORDER BY u.key, ghost.id",
+            app=self.application_name,
+        )
+        return (
+            JEntrypointReport.model_validate_json(raw),
+            [JConfigUse(src=r["src"], dst=r["dst"], prov=list(r["prov"] or [])) for r in uses],
+            [JConfigRead(site="", callee=r["callee"], key=r["p"].get("key"), reason=r["p"].get("reason", "non-literal"), prov=list(r["p"].get("prov") or [])) for r in reads],
+        )
+
     def _dependency_rows(self) -> List[Dict[str, Any]]:
         return self._run(
             "MATCH (:JApplication {name: $app})-[:HAS_ARTIFACT]->(a:Artifact)-[r:DECLARES_DEPENDENCY]->(p:Package) "
@@ -469,6 +518,7 @@ class JNeo4jBackend(JavaAnalysisBackend):
 
     def _reconstruct(self) -> JApplication:
         """The canonical :class:`JApplication` for this application, rebuilt from the graph."""
+        report, uses, reads = self._overlay_rows()
         children = self._subtree_rows()
         sites = self._call_site_rows()
         imports = self._import_rows()
@@ -504,6 +554,10 @@ class JNeo4jBackend(JavaAnalysisBackend):
                 )
             },
             dependencies=[R.dependency(r["rel"], r["pkg"], r["declared_in"]) for r in self._dependency_rows()],
+            entrypoint_report=report,
+            # ``None`` and ``[]`` are different answers here: see :meth:`_overlay_rows`.
+            config_uses=None if report is None else uses,
+            config_reads_unresolved=None if report is None else reads,
         )
 
     @staticmethod
@@ -1201,17 +1255,6 @@ class JNeo4jBackend(JavaAnalysisBackend):
         stay off the public surface (E6); the id is still on ``PyConfigKey.id``.
         """
         return {f"{path}@key/{ck.key}": PyConfigKey(**ck.model_dump()) for path, a in self.application.artifacts.items() for ck in a.config_keys}
-
-    def get_config_uses(self, key: str | None = None) -> List[PyConfigUseEdge]:
-        """Always empty, and not a projection gap: codeanalyzer-java 3.0.1 emits no code-to-config
-        edges at all (there is no such relationship type in the Java graph, and no ``config_uses``
-        on the Java wire), so the in-memory backend answers the same way."""
-        return []
-
-    def get_unresolved_config_reads(self) -> List[PyConfigRead]:
-        """Always empty, as on the in-memory backend: codeanalyzer-java 3.0.1 has no config-read
-        detector."""
-        return []
 
     # -----[ comments ]-----
     def get_comments_in_a_method(self, qualified_class_name: str, method_signature: str) -> List[JComment]:

@@ -73,7 +73,7 @@ from cldk.models.java.models import (
     JMethodDetail,
     JType,
 )
-from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
+from cldk.models.python import PyArtifact, PyConfigKey, PyDependency
 from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException, CodeanalyzerUsageException
 
 logger = logging.getLogger(__name__)
@@ -834,16 +834,6 @@ class JCodeanalyzer(JavaAnalysisBackend):
         stay off the public surface (E6); the id is still on ``PyConfigKey.id``.
         """
         return {f"{path}@key/{ck.key}": PyConfigKey(**ck.model_dump()) for path, a in self.application.artifacts.items() for ck in a.config_keys}
-
-    def get_config_uses(self, key: str | None = None) -> List[PyConfigUseEdge]:
-        """Always empty: codeanalyzer-java 3.0.1 emits no code-to-config edges (there is no
-        ``config_uses`` on the Java wire), so there is nothing to filter by ``key``."""
-        return []
-
-    def get_unresolved_config_reads(self) -> List[PyConfigRead]:
-        """Always empty: codeanalyzer-java 3.0.1 has no config-read detector (no ``config_reads``
-        on the Java wire)."""
-        return []
 
     # -----[ comments ]-----
     def get_comments_in_a_method(self, qualified_class_name: str, method_signature: str) -> List[JComment]:

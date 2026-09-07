@@ -47,6 +47,8 @@ from cldk.models.java.projections import JCallableOverview, JClassOverview
 from cldk.utils.exceptions import SelectorNotInGraph
 from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 
+from cldk.analysis.java.codeanalyzer.codeanalyzer import JCodeanalyzer
+
 from .test_java_addressing import _graph, _local
 
 DIRECT_PKG = "com.ibm.websphere.samples.daytrader.impl.direct"
@@ -115,18 +117,18 @@ def test_get_entrypoint_classes_is_the_class_level_sibling(both):
     assert all(c.path in both.get_symbol_table() for c in classes)
 
 
-def test_get_entrypoint_coverage_reports_the_report_unavailable(both):
-    """Java projects **no** entrypoint report -- the ``:JApplication`` anchor carries only
-    ``name``/``schema_version``/``analyzer_name``/``analyzer_version``, and ``analysis.json`` has no
-    such key -- so the coverage accessor says so through the shared model's own vocabulary rather
-    than counting the ``is_entrypoint`` booleans and calling that coverage (J-4, D7)."""
+def test_get_entrypoint_coverage_reads_the_report(both):
+    """codeanalyzer-java 3.1.0 (codeanalyzer-java#235) emits the entrypoint pass's own coverage
+    record, so the accessor reads it rather than saying there is none. Measured on a1: three of the
+    five shipped rulesets matched, nothing unresolved, no errors. It still never synthesises one
+    out of the ``is_entrypoint`` booleans (J-4, D7) -- the counts below are 66/133 and appear
+    nowhere in the report."""
     coverage = both.get_entrypoint_coverage()
     assert isinstance(coverage, EntrypointCoverage)
-    assert [d.code for d in coverage.diagnostics] == ["entrypoint_report_unavailable"]
-    assert coverage.frameworks_detected == [] and coverage.rulesets == [] and coverage.unresolved == {} and coverage.errors == []
-    message = coverage.diagnostics[0].message
-    assert "codeanalyzer-java" in message and "can://" not in message
-    assert coverage.diagnostics[0].suggestions == []
+    assert coverage.diagnostics == []
+    assert coverage.frameworks_detected == ["jakarta", "jaxrs", "spring"]
+    assert coverage.rulesets == ["jakarta", "struts", "spring", "camel", "jaxrs"]
+    assert coverage.unresolved == {} and coverage.errors == []
 
 
 def test_the_coverage_diagnostic_is_the_same_on_both_backends(analysis_json):
@@ -260,13 +262,107 @@ def test_get_enum_members_returns_the_constants_of_a_real_enum(both):
         del both._types["x.Color"]
 
 
-# ---- config readers ----------------------------------------------------------------------------
-def test_get_config_readers_has_no_edges_to_resolve(both):
-    """codeanalyzer-java 3.0.1 emits no code-to-config edges, so ``get_config_uses`` is empty and
-    there is no reading callable to name -- stated on the accessor, as 3a stated it on
-    ``get_config_uses`` itself."""
-    assert both.get_config_uses() == []
-    assert both.get_config_readers("project.artifactId") == []
+# ---- the code-to-config layer (codeanalyzer-java 3.1.0) ----------------------------------------
+def test_get_config_uses_carries_the_resolved_edges_and_their_tier(both):
+    """13 edges on a1, every one of them ``["literal"]`` -- a string literal at the call site
+    (codeanalyzer-java#233). ``prov`` is surfaced, not flattened: the dataflow tier (#237) is a
+    weaker answer and has to stay distinguishable from this one."""
+    uses = both.get_config_uses()
+    assert len(uses) == 13
+    assert {tuple(u.prov) for u in uses} == {("literal",)}
+    assert {u.dst.rpartition("@key/")[2] for u in uses} == {
+        "displayOrderAlerts",
+        "listQuotePriceChangeFrequency",
+        "longRun",
+        "marketSummaryInterval",
+        "maxQuotes",
+        "maxUsers",
+        "orderProcessingMode",
+        "primIterations",
+        "publishQuotePriceChange",
+        "runtimeMode",
+        "webInterface",
+    }
+    assert all(u.src.startswith(u.src.rpartition("@")[0] + "@") for u in uses), "src is a body-node id"
+
+
+def test_get_config_uses_filters_by_key_exactly(both):
+    """``key`` is matched against the declared key's own ``key``, never fuzzily (E8), and a key
+    nothing reads is an empty list rather than an unfiltered one."""
+    one = both.get_config_uses("maxUsers")
+    assert len(one) == 2 and all(u.dst.endswith("@key/maxUsers") for u in one), "two call sites read maxUsers"
+    assert both.get_config_uses("maxuser") == [] and both.get_config_uses("project.artifactId") == []
+
+
+def test_get_config_readers_resolves_the_edges_to_their_callables(both):
+    """All 13 of a1's reads are in one callable, so the 13 edges resolve to **one** overview: a
+    callable reading a key at several call sites appears once."""
+    readers = both.get_config_readers("maxUsers")
+    assert [r.key for r in readers] == ["com.ibm.websphere.samples.daytrader.web.servlet.TradeWebContextListener.contextInitialized(javax.servlet.ServletContextEvent)"]
+    assert all(isinstance(r, JCallableOverview) for r in readers)
+    assert both.get_config_readers("project.artifactId") == [], "a declared key nothing reads has no readers"
+    assert both.get_config_readers("no.such.key") == []
+
+
+def test_get_unresolved_config_reads_keeps_the_untraceable_ones_visible(both):
+    """16 reads on a1 whose key matched no declared key -- every one of them a decoded literal
+    (``reason="undefined-key"``, the environment variables ``System.getenv`` reads), so ``key``
+    carries the text. ``prov`` is every tier *attempted*: a1 is a level-1 analysis, where there is
+    no DDG for the dataflow tier to run over, so it is ``["literal"]`` alone -- on the level-4
+    reference graph the same reads carry ``["literal", "dataflow"]``."""
+    reads = both.get_unresolved_config_reads()
+    assert len(reads) == 16
+    assert {r.reason for r in reads} == {"undefined-key"}
+    assert {tuple(r.prov) for r in reads} == {("literal",)}
+    assert {r.key for r in reads} == {
+        "DISPLAY_ORDER_ALERTS",
+        "LIST_QUOTE_PRICE_CHANGE_FREQUENCY",
+        "MAX_QUOTES",
+        "MAX_USERS",
+        "ORDER_PROCESSING_MODE",
+        "PUBLISH_QUOTES",
+        "RUNTIME_MODE",
+        "WEB_INTERFACE",
+    }
+    assert all(r.site and r.callee.startswith("can://java/daytrader8/@external/") for r in reads)
+
+
+def test_a_clean_run_that_reads_nothing_is_an_empty_answer_and_not_a_refusal(both_l4):
+    """a4 is a level-4 3.1.0 analysis of a pruned tree that reads no configuration at all. It
+    carries the entrypoint report and **neither config key** -- the analyzer writes those two only
+    when non-empty -- which is exactly why the overlay probe cannot be the config layer's own
+    absence. The three accessors answer empty here; the next test is what refusing looks like."""
+    assert both_l4.get_config_uses() == []
+    assert both_l4.get_unresolved_config_reads() == []
+    assert both_l4.get_config_readers("maxUsers") == []
+    assert both_l4.get_entrypoint_coverage().frameworks_detected == ["jakarta"]
+
+
+def test_an_analysis_without_the_overlays_refuses_rather_than_answering_empty(analysis_json):
+    """The refusal, measured from the data and never from a version string (the same ruling as the
+    port probe). A 3.0.x payload and a 3.0.x graph carry none of the three overlays, and both are
+    still servable -- a cached ``analysis.json`` at a sufficient ``max_level`` is reused whatever
+    wrote it, and the Neo4j floor is 3.0.1 -- so answering ``[]`` would say "this application reads
+    no configuration" where the truth is that nothing looked."""
+    for backend in (_local(analysis_json), _graph(analysis_json)):
+        stripped = backend.get_application_view().model_copy(update={"entrypoint_report": None, "config_uses": None, "config_reads_unresolved": None})
+        # Each backend's own seam: the in-memory one holds the application on an attribute, the
+        # graph one behind the ``_application`` cache its ``application`` property reads.
+        backend.__dict__["application" if isinstance(backend, JCodeanalyzer) else "_application"] = stripped
+        for call in (backend.get_config_uses, backend.get_unresolved_config_reads, lambda: backend.get_config_readers("maxUsers")):
+            with pytest.raises(CodeanalyzerExecutionException) as excinfo:
+                call()
+            message = str(excinfo.value)
+            assert "daytrader8" in message and "3.1.0" in message and "can://" not in message
+        # The entrypoint report is the same absence, reported rather than raised -- the shared
+        # model's own vocabulary, as a Python graph without the report uses.
+        coverage = backend.get_entrypoint_coverage()
+        assert [d.code for d in coverage.diagnostics] == ["entrypoint_report_unavailable"]
+        assert coverage.frameworks_detected == [] and coverage.rulesets == [] and coverage.unresolved == {} and coverage.errors == []
+        assert coverage.diagnostics[0].suggestions == [] and "can://" not in coverage.diagnostics[0].message
+        # get_config_keys() is unaffected: what a config artifact declares is read at every
+        # generation, and only the code-to-config edges are the 3.1.0 addition.
+        assert len(backend.get_config_keys()) == 336
 
 
 # ---- the artifact layer reaches the facade ------------------------------------------------------
@@ -277,7 +373,7 @@ def test_the_artifact_five_are_the_backends_own_answers(both):
     assert both.get_dependencies(ecosystem="pypi") == [], "a filter that matches nothing is empty, not unfiltered"
     keys = both.get_config_keys()
     assert keys and all(k.startswith(tuple(artifacts)) and "@key/" in k for k in keys), "the key is artifact-relative (python-sdk#346 keeps it that way)"
-    assert both.get_unresolved_config_reads() == []
+    assert len(both.get_unresolved_config_reads()) == 16
 
 
 def test_the_l4_fixture_answers_the_same_shapes(both_l4):

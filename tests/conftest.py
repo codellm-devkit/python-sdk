@@ -68,7 +68,7 @@ def analysis_json(analysis_json_fixture) -> str:
 
 @pytest.fixture(scope="session")
 def analysis_json_a4(analysis_json_fixture) -> str:
-    """The codeanalyzer-java 3.0.3 ``-a 4`` fixture (``v2/a4``) as a JSON string."""
+    """The codeanalyzer-java 3.1.0 ``-a 4`` fixture (``v2/a4``) as a JSON string."""
     with gzip.open(analysis_json_fixture.parent / "a4" / "analysis.json.gz", "rt", encoding="utf-8") as json_data:
         return json.dumps(json.load(json_data))
 

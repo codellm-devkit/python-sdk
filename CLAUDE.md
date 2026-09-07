@@ -10,7 +10,7 @@ an optional read-only Neo4j backend — selected by the *type* of the `backend=`
 
 | Language | Entry point | Local backend | Neo4j backend | Models |
 |----------|-------------|---------------|---------------|--------|
-| Java | `CLDK.java(...)` (needs the `cldk[java]` extra) | `JCodeanalyzer` (the `codeanalyzer-java` 3.0.3 wheel's jar on its bundled JVM, subprocess, `-a 1..4` — no jar in this repo, no JDK download) | `JNeo4jBackend` (3.0.1 graph, probed at attach) | `cldk/models/java/` (schema v2 mirror) + `projections.py` |
+| Java | `CLDK.java(...)` (needs the `cldk[java]` extra) | `JCodeanalyzer` (the `codeanalyzer-java` 3.1.0 wheel's jar on its bundled JVM, subprocess, `-a 1..4` — no jar in this repo, no JDK download) | `JNeo4jBackend` (3.0.1 graph, probed at attach) | `cldk/models/java/` (schema v2 mirror) + `projections.py` |
 | Python | `CLDK.python(...)` | `PyCodeanalyzer` (in-process `codeanalyzer-python`) | `PyNeo4jBackend` | re-exported from `codeanalyzer-python` |
 | TypeScript (+ JavaScript modules) | `CLDK.typescript(...)` | `TSCodeanalyzer` (`codeanalyzer-typescript` 1.3.0 binary from the wheel, subprocess; `-a 1..4`, but `--emit neo4j` takes no `-a` and is always full depth) | `TSNeo4jBackend` (graphs emitted by ≥ 1.3.0; older refused at attach) | `cldk/models/typescript/` (schema v2 mirror) |
 
@@ -27,9 +27,11 @@ paths; the policy lives once on `JavaAnalysisBackend` because `JNeo4jBackend` re
 `JApplication` and answers from it. Four things Java says rather than answering, each measured:
 `slice_forward` / `paths_between` / `flows_to_call` / `flows_to_argument` raise (the analyzer's L4
 port lattice carries no dependence edge, codeanalyzer-java#227); `get_entrypoint_coverage` reports
-`entrypoint_report_unavailable` (Java projects no report, J-4); `get_external_symbols` raises off a
-local run (`--external-calls` is opt-in and `--emit neo4j` forces it); the CRUD accessors still
-raise. `docs/agent-api-reference.md` has the full lossiness list.
+`entrypoint_report_unavailable` and the three config-read accessors raise on an analysis older than
+codeanalyzer-java 3.1.0, which is the release that added both overlays (the probe is the entrypoint
+report's presence, measured from the data, never a version string); `get_external_symbols` raises
+off a local run (`--external-calls` is opt-in and `--emit neo4j` forces it); the CRUD accessors
+still raise. `docs/agent-api-reference.md` has the full lossiness list.
 
 The legacy `CLDK(language="<lang>").analysis(...)` entry still works as a compat shim. Adding a
 language means a new factory method + facade + backend ABC/impl(s) + models + tests — **update this

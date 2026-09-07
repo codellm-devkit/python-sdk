@@ -301,6 +301,7 @@ def callable_(
         types=types,
         is_implicit=implicit,
         is_entrypoint=bool(props.get("is_entrypoint", False)),
+        entrypoint_frameworks=list(props.get("entrypoint_frameworks") or []),
         span=span(props),
     )
 
@@ -329,6 +330,7 @@ def type_(
         callables=callables,
         types=types,
         is_entrypoint_class=bool(props.get("is_entrypoint", False)),
+        entrypoint_frameworks=list(props.get("entrypoint_frameworks") or []),
         # ``span`` is required on a type and the projection always carries its lines.
         span=span(props) or _unknown_span(),
     )
