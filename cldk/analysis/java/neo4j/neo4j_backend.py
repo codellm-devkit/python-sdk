@@ -57,7 +57,8 @@ the table in Task 3 of the leg-3a plan.
 **Which labels actually own an id constraint** (``SHOW CONSTRAINTS`` / ``SHOW INDEXES`` on 7691,
 read 2026-09-07 — it is not "each keyed label", which is what the leg-3a plan assumed before the
 graph existed). ``:JBodyNode`` owns a uniqueness constraint on ``id`` (``j_body_node_id``) and is
-the **only** anchor on this surface that owns one directly — its nodes carry no other keyed label.
+the **only** anchor on this surface that owns one directly — a ``:JBodyNode`` carries no
+``:JSymbol``, only the ``:JCanNode`` marker, whose id index is not a constraint.
 ``:JCallable``, ``:JType`` and ``:JExternal`` own **no id index at all**: ``:JCallable`` has a range
 index on ``name`` plus the ``code``/``docstring`` fulltext, ``:JType`` a range index on ``name``,
 ``:JExternal`` nothing. Their *nodes* also carry the merge label ``:JSymbol``, whose ``id``
