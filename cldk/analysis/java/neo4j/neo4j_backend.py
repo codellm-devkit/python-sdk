@@ -475,10 +475,13 @@ class JNeo4jBackend(JavaAnalysisBackend):
             id=f"can://java/{self.application_name}",
             symbol_table=symbol_table,
             call_graph=[JCallGraphEdge(src=r["src"], dst=r["dst"], prov=list(r["prov"] or []), weight=r["weight"] or 1) for r in self._call_edge_rows()],
-            # ``None`` when the graph homed none, so it reads as "this run was never asked" rather
-            # than "this project calls nothing outside itself" -- the distinction
-            # ``get_external_symbols`` refuses on (D7).
-            external_symbols={r["p"]["id"]: JExternalSymbol(**{k: v for k, v in r["p"].items() if k != "id"}) for r in self._external_rows()} or None,
+            # ``{}`` and never ``None``: ``--emit neo4j`` forces ``--external-calls``, so a graph
+            # this backend can attach to was *always* asked, and no rows therefore means "homed
+            # them, found none" -- a real answer about a project that calls nothing outside itself.
+            # ``None`` is the local payload's own value, for the run that was never asked, and it is
+            # the one ``get_external_symbols`` raises on (D7). Coercing an empty map to it here made
+            # the ``{}`` both that method and the facade document unreachable on either backend.
+            external_symbols={r["p"]["id"]: JExternalSymbol(**{k: v for k, v in r["p"].items() if k != "id"}) for r in self._external_rows()},
             artifacts={
                 a.path: a
                 for a in (

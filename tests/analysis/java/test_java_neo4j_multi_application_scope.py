@@ -591,6 +591,22 @@ def test_external_symbols_are_this_applications_ghosts_only():
     assert all(nid.startswith(f"can://java/{APP_A}/@external/") for nid in external)
 
 
+def test_a_graph_that_homed_no_external_answers_an_empty_map(monkeypatch):
+    """``{}`` is a real answer here and has to be reachable.
+
+    ``--emit neo4j`` forces ``--external-calls`` -- this file asserts that premise three times over
+    -- so a graph this backend can attach to was always *asked* about out-of-project targets, and
+    no ``:JExternal`` row therefore means "homed them, found none": a project whose call graph
+    leaves itself nowhere. Coercing that empty map to ``None`` made ``get_external_symbols`` raise
+    ``EXTERNAL_SYMBOLS_UNAVAILABLE``, whose own text says this backend answers, and made the ``{}``
+    the accessor and the facade both document unproducible on either backend.
+    """
+    backend = _backend()
+    monkeypatch.setattr(backend, "_external_rows", lambda: [])
+    assert backend.get_external_symbols() == {}
+    assert backend.get_application_view().external_symbols == {}, "the map is empty, not absent"
+
+
 def test_the_resolution_probe_is_scoped_to_this_application():
     """``J_RESOLVES_TO`` exists in the fake database for both applications; the probe must ask
     about A's, not the database's."""
