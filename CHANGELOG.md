@@ -84,6 +84,15 @@ surface** (3b). Design records: `docs/design/specs/2026-09-06-leg-2.5-typescript
   never predicated, could previously return the other application's node.
 - **`LocateResult.body` is a language-neutral `BodyRef`**, so `cldk/analysis/commons/` no longer imports a
   language package for it.
+- **An `AmbiguousName` now names only the ways out that are actually open — on all three languages.** The
+  `Narrow it with …` sentence offers `in_class=` / `in_module=` only when the caller has not already passed
+  that keyword *and* the listed matches disagree on it, so two overloads of one class, or two `__init__`s of
+  one class, are no longer told to narrow by a keyword that provably cannot split them. The last clause is
+  always offered and is language-specific: `more of the dotted path` on Python and TypeScript, and on Java
+  `the full signature, exactly as one of the listed matches spells it` (more of the dotted path cannot
+  separate two overloads). `AmbiguousName.candidates` is unchanged. Python's `resolve_callable`,
+  `callers_of`, `callees_of` and `resolve_within` therefore produce a different message for the same input
+  than in rc.2; assert on `.candidates`, not on the sentence.
 - Internal: the language-neutral query helpers moved from `cldk/analysis/python/` to `cldk/analysis/commons/`;
   Python re-imports every name unchanged.
 

@@ -247,7 +247,7 @@ def test_the_hint_does_not_repeat_a_keyword_the_caller_already_supplied():
 
     The three candidates live in three modules, because the *other* pruning rule now also applies:
     a keyword that cannot split these particular hits is dropped too (see
-    ``test_the_advice_drops_a_keyword_that_cannot_split_these_matches``), so three callables at one
+    ``test_the_hint_drops_a_keyword_that_cannot_split_these_matches``), so three callables at one
     path would have had ``in_module=`` removed for that reason instead and proved nothing about
     this one.
     """
