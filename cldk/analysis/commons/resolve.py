@@ -241,7 +241,7 @@ def resolve_callable_signature(
     in_class: Optional[str] = None,
     in_module: Optional[str] = None,
     dotted: Callable[[str], str] = module_dotted,
-    by_full_name: str = "by naming more of the dotted path",
+    by_full_name: str = "more of the dotted path",
 ) -> str:
     """The signature of the one callable ``name`` names, narrowed by ``in_class`` / ``in_module``.
 
@@ -292,8 +292,12 @@ def resolve_callable_signature(
             A candidate that carries its own ``module_names`` overrides this; the two compose,
             with the explicit names winning and this function used only to derive.
         by_full_name: The last clause of an ambiguity's "narrow it with …" advice — the way out
-            that needs no keyword. It is a parameter because it is language-specific and must be
-            *true*: naming more of the dotted path is what splits two Python callables, but it
+            that needs no keyword. **A noun phrase**, because the sentence around it reads
+            ``Narrow it with {narrow_with}.`` and the clauses either side of it are ``in_class=`` /
+            ``in_module=``; a verb phrase there produced "Narrow it with by naming …", which is now
+            the reading of *every* Java overload ambiguity since the keyword pruning leaves this as
+            the only clause. It is a parameter because it is language-specific and must be
+            *true*: more of the dotted path is what splits two Python callables, but it
             cannot split two Java overloads, which differ only in the parameter tail (J-3). An
             instruction that cannot work is the same confident-wrong-answer failure E8 keeps out
             of the error path — and so is one that *describes* a spelling the analyzer does not

@@ -367,7 +367,7 @@ def java_resolve_callable(name: str, candidates: Sequence[CallableCandidate], *,
     Java's shapes reach the shared policy on the candidates themselves
     (:attr:`~cldk.analysis.commons.resolve.CallableCandidate.match_names` from
     :func:`java_callable_names`, ``module_names`` from :func:`java_module_dotted`); what this adds
-    is the advice an ambiguity gives. The shared default — "by naming more of the dotted path" —
+    is the advice an ambiguity gives. The shared default — "more of the dotted path" —
     is untrue here: two overloads share every dotted segment and differ only in the parameter tail,
     so the way out is spelling the full signature — copied from the candidates the exception
     carries, since the analyzer normalises that tail no further (see :data:`_BY_FULL_SIGNATURE`).
@@ -377,7 +377,9 @@ def java_resolve_callable(name: str, candidates: Sequence[CallableCandidate], *,
 
 #: What an ambiguous Java callable name tells the caller to do. Not a suggestion (E8 forbids
 #: those): every candidate the exception carries is spelled this way, so the instruction is
-#: literally "one of these strings".
+#: literally "one of these strings". It is a **noun phrase** because the exception renders
+#: ``Narrow it with {narrow_with}.`` around it, and the keyword pruning above makes this the only
+#: clause for every Java overload ambiguity -- the most common one there is here.
 #:
 #: **It points at the listed matches rather than describing them**, because no description of the
 #: tail is true. The analyzer's signature keys are *not* normalised: the a4 fixture carries
@@ -389,7 +391,7 @@ def java_resolve_callable(name: str, candidates: Sequence[CallableCandidate], *,
 #: miss, and is exactly the confident-wrong-answer failure E8 keeps out of the error path. The
 #: candidates are already in the message, spelled the way the graph spells them, so the advice
 #: names *them* — a thing the caller can copy and check — and not a normalisation nothing performs.
-_BY_FULL_SIGNATURE = "by naming the full signature exactly as one of the listed matches spells it"
+_BY_FULL_SIGNATURE = "the full signature, exactly as one of the listed matches spells it"
 
 
 #: A parameter vertex's body key, ``formal_in:<n>`` -- the only body key this surface *composes*

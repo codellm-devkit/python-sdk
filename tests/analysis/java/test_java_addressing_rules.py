@@ -246,6 +246,23 @@ def test_the_ambiguity_advice_is_followable_because_it_names_the_listed_matches(
         assert java_resolve_callable(candidate, a4) == candidate, "the advice, followed literally"
 
 
+def test_the_advice_reads_as_a_sentence_in_both_the_pruned_and_the_unpruned_case(a4):
+    """``AmbiguousName`` renders ``Narrow it with {narrow_with}.``, so every clause that can appear
+    there has to be a **noun phrase**. Java's was "by naming the full signature ...", which read
+    "Narrow it with by naming the full signature" -- and the keyword pruning above makes that clause
+    the *only* one for every overload ambiguity, which is the commonest ambiguity there is here.
+    Asserted on both shapes: the pruned message, which is that clause alone, and the unpruned one,
+    where it follows the two keywords.
+    """
+    for name in ("cancelOrder", "toString"):  # pruned to the last clause; both keywords kept
+        with pytest.raises(AmbiguousName) as raised:
+            java_resolve_callable(name, a4)
+        message = raised.value.message
+        advice = message.split("Narrow it with ", 1)[1].split(". Matches:", 1)[0]
+        assert not advice.startswith(("by ", "naming ", "name ")), f"{name}: {advice!r} is not something you narrow *with*"
+        assert "with by " not in message, name
+
+
 def test_the_advice_drops_a_keyword_that_cannot_split_these_matches(a4):
     """``test_in_class_cannot_split_an_overload_pair`` proves ``in_class=`` is not a way out of an
     overload pair, so the message must not offer it; both overloads share one file, so
