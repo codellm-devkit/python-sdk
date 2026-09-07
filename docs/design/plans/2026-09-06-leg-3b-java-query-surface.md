@@ -52,7 +52,18 @@
 - Test: new `tests/analysis/java/test_java_addressing_rules.py` (offline, over the v2 fixtures)
 
 **Interfaces:**
-- Produces: `java_module_dotted(unit) -> str` and whatever the resolution rule needs, for T1 to consume. Nothing else in the leg may compute a dotted name.
+- Produces, in `cldk/analysis/java/backend.py`, for T1 to consume — **nothing else in the leg may compute a dotted name**:
+  - `java_module_dotted(package: str, types: Iterable[str] = ()) -> Tuple[str, ...]` — the *several* dotted
+    spellings a unit answers to (its declared package, and that package plus each declared type), not one
+    string, and taking the package and type names rather than a `JCompilationUnit`, so the Neo4j backend can
+    call it with a `J_DECLARES` collect. Both halves of the original line were wrong; T1 reads this one.
+  - `java_callable_names(signature: str) -> Tuple[str, ...]` — the signature and the signature with the
+    parameter tail cut at the **last** `(` (the J-1 erratum).
+  - `java_resolve_callable(name, candidates, *, in_class=None, in_module=None) -> str` — the one entry point
+    both backends resolve through.
+  - On `CallableCandidate`: `match_names` (default `()`, meaning "the signature is the name") and
+    `module_names` (default **`None`**, meaning "derive it from the path"; an empty tuple means the language
+    supplied none, and T1's `J_DECLARES` collect must pass one deliberately, never by accident).
 
 - [x] **Step 1: Failing tests for the two rules the spec fixes.** J-2: a Java module's dotted name is its **declared package** plus the type name, never derived from the path — `module_dotted("src/main/java/com/ibm/…/TradeDirect.java")` must not yield `src.main.java.com.ibm…`. The shared helper's path-derived behaviour is right for Python and TypeScript and wrong here, so Java passes its own. J-3: `resolve_callable("cancelOrder")` matches on the simple name with the parameter tail stripped; two overloads raise `AmbiguousName` listing the full signatures; spelling `cancelOrder(java.lang.Integer, boolean)` resolves exactly. daytrader8 has 15 overloaded names; use a real one. — **as done:** `tests/analysis/java/test_java_addressing_rules.py`, 15 tests over the committed a1/a4 fixtures. J-2 is asserted against the real miss (`module_dotted("src/main/java/…/TradeDirect.java", extensions=(".java",))` → `src.main.java.com.ibm…`) and the declared package `com.ibm.websphere.samples.daytrader.impl.direct`; J-3 against the spec's own pair, `cancelOrder(java.lang.Integer, boolean)` / `cancelOrder(java.sql.Connection, java.lang.Integer)` on `TradeDirect` (measured, not assumed: a4 has 11 same-class overloaded names, 9 of them on `TradeDirect`; a1 has 26 — the plan's "daytrader8 has 15" matches neither fixture).
 - [x] **Step 2: Run them; watch them fail.** — **as done:** collection error, `cannot import name 'java_callable_names' from 'cldk.analysis.java.backend'`.

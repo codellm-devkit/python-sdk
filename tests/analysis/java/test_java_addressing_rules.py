@@ -63,7 +63,7 @@ def _candidates(app: JApplication) -> List[CallableCandidate]:
             walk(nested, path, module_names)
 
     for path, unit in app.symbol_table.items():
-        module_names = java_module_dotted(unit.package, unit.types)
+        module_names = java_module_dotted(unit.package, unit.types.keys())
         for t in unit.types.values():
             walk(t, path, module_names)
     return out
@@ -179,8 +179,9 @@ def test_the_enclosing_type_plus_simple_name_spelling_names_nothing(a1):
 
 
 def test_the_bare_anonymous_name_is_ambiguous_across_declaring_callables(a1):
-    """`$anon$N` is numbered per declaring callable, so three of the fixture's four are `$anon$0`
-    and three of them declare a `run()`."""
+    """`$anon$N` is numbered per declaring callable, so all four of the fixture's anonymous
+    classes are `$anon$0` — and three of them declare a `run()`, which is what makes the bare
+    name ambiguous three ways rather than four."""
     with pytest.raises(AmbiguousName) as e:
         java_resolve_callable("run", a1, in_class="$anon$0")
     assert len(e.value.candidates) == 3
@@ -191,3 +192,71 @@ def test_a_callable_inside_an_anonymous_class_resolves_by_its_own_name(a1):
     assert java_resolve_callable("onResult", a1) == (
         "com.ibm.websphere.samples.daytrader.web.prims.PingWebSocketTextAsync.ping(java.lang.String).$anon$0.onResult(javax.websocket.SendResult)"
     )
+
+
+# ---- the three rules the review's should-fixes pin down -----------------------------------------
+
+
+def test_supplying_no_module_names_is_not_the_same_as_supplying_none(a4):
+    """``module_names=()`` means *this unit answers to no dotted module name* — a default-package
+    unit declaring no type, which :func:`java_module_dotted` really does return ``()`` for. It must
+    stay distinct from ``None``, which means "derive one from the path".
+
+    Conflating them is what a truthiness test does, and the fallback it reaches is the exact thing
+    J-2 forbids: :func:`module_dotted`'s default suffix list is ``(".py",)``, so a ``.java`` path
+    is not even stripped and derives to ``src.main.java.….TradeDirect.java`` — a spelling
+    ``in_module=`` would then *accept*, i.e. a path derivation presenting as a successful match.
+    Unreachable from a symbol table (a unit with no types contributes no candidates), reachable
+    from a Neo4j ``J_DECLARES`` collect that comes back missing or empty.
+    """
+    derived = "src.main.java.com.ibm.websphere.samples.daytrader.impl.direct.TradeDirect.java"
+    assert module_dotted(TRADE_DIRECT) == derived, "the .py default strips nothing from a .java path"
+    assert java_module_dotted("", ()) == ()
+
+    derive_it = CallableCandidate("p.C.m()", "p.C", TRADE_DIRECT, java_callable_names("p.C.m()"))
+    assert derive_it.module_names is None, "the default must mean 'derive', not 'none'"
+    assert java_resolve_callable("m", [derive_it], in_module=derived) == "p.C.m()"
+
+    supplied_none = derive_it._replace(module_names=())
+    with pytest.raises(SelectorNotInGraph) as e:
+        java_resolve_callable("m", [supplied_none], in_module=derived)
+    assert e.value.kind == "in_module"
+    assert java_resolve_callable("m", [supplied_none], in_module=TRADE_DIRECT) == "p.C.m()", "the path still addresses it"
+
+
+def test_the_ambiguity_advice_is_followable_because_it_names_the_listed_matches(a4):
+    """The analyzer normalises no parameter tail, so *no description* of one is true: a4 spells
+    ``setTopLosers(Collection<QuoteDataBean>)`` — generic argument kept, type name unqualified —
+    where a1 spells the same method ``setTopLosers(java.util.Collection)``. Advice to name "the
+    full signature, erased parameter types included" is a rule a caller can follow straight into a
+    ``SelectorNotInGraph``, which is the confident wrong answer E8 keeps out of the error path.
+
+    So the advice points at the candidates the message already carries, and this asserts the
+    property that makes it true: every candidate, copied verbatim, resolves.
+    """
+    top_losers = f"{BEANS_PKG}.MarketSummaryDataBean.setTopLosers(Collection<QuoteDataBean>)"
+    assert java_resolve_callable("setTopLosers", a4) == top_losers
+    with pytest.raises(SelectorNotInGraph):
+        java_resolve_callable("setTopLosers(java.util.Collection)", a4)  # what the old advice told a caller to write
+
+    with pytest.raises(AmbiguousName) as e:
+        java_resolve_callable("cancelOrder", a4)
+    assert "erased" not in e.value.message, "no claim about a normalisation the analyzer does not perform"
+    for candidate in e.value.candidates:
+        assert java_resolve_callable(candidate, a4) == candidate, "the advice, followed literally"
+
+
+def test_the_advice_drops_a_keyword_that_cannot_split_these_matches(a4):
+    """``test_in_class_cannot_split_an_overload_pair`` proves ``in_class=`` is not a way out of an
+    overload pair, so the message must not offer it; both overloads share one file, so
+    ``in_module=`` goes too, and what is left is the clause that works. A name ambiguous across two
+    types in two files keeps both keywords — the pruning is per ambiguity, not a blanket removal.
+    """
+    with pytest.raises(AmbiguousName) as overloads:
+        java_resolve_callable("cancelOrder", a4)
+    assert "in_class=" not in overloads.value.message and "in_module=" not in overloads.value.message
+    assert "full signature" in overloads.value.message
+
+    with pytest.raises(AmbiguousName) as two_beans:
+        java_resolve_callable("toString", a4)
+    assert "in_class=" in two_beans.value.message and "in_module=" in two_beans.value.message

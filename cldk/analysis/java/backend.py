@@ -155,23 +155,31 @@ def java_module_dotted(package: str, types: Iterable[str] = ()) -> Tuple[str, ..
 
 
 def java_callable_names(signature: str) -> Tuple[str, ...]:
-    """The spellings a Java callable answers to (J-3): its full name, and the same with the erased
+    """The spellings a Java callable answers to (J-3): its full name, and the same with the
     parameter tail cut.
 
     A Java callable is keyed by a signature carrying that tail —
     ``…TradeDirect.cancelOrder(java.lang.Integer, boolean)`` — which is what makes two overloads
-    two callables, and what a caller writing ``"cancelOrder"`` has not typed. Matching both
-    spellings is the whole rule: a bare name finds the callable through the cut form, an ambiguity
-    lists the tail-carrying form (the only spelling that *resolves* an overload pair, since
-    ``in_class=`` cannot split one), and a caller who writes the tail matches exactly.
+    two callables, and what a caller writing ``"cancelOrder"`` has not typed. The tail is the
+    analyzer's spelling verbatim, not a normal form: a1 writes
+    ``setTopLosers(java.util.Collection)`` and a4 writes ``setTopLosers(Collection<QuoteDataBean>)``
+    for the same method, so nothing here — least of all an error message — may describe that tail
+    as erased or qualified. Matching both spellings is the whole rule: a bare name finds the
+    callable through the cut form, an ambiguity lists the tail-carrying form (the only spelling
+    that *resolves* an overload pair, since ``in_class=`` cannot split one), and a caller who
+    writes the tail matches exactly.
 
     **The cut is at the last** ``(``, **not the first.** A local or anonymous class's qualified
     name carries the signature of the callable that declares it (the J-1 erratum), so the name of
     the ``run()`` inside one reads
     ``…PingManagedThread.doGet(javax.servlet.http.HttpServletRequest, …).$anon$0.run()`` — cutting
     at the first ``(`` would strip the declaring callable's tail and lose the class with it.
-    A signature's own tail holds erased type names, which contain no parentheses, so the last
-    ``(`` is always the one that opens it.
+    The last ``(`` is the one that opens the callable's own tail for **every signature in both
+    fixtures** — all 1,344 callables of a1 and a4, checked — because a parameter type there is a
+    type name and none of those carry parentheses. That is a measurement, not a theorem: the shape
+    that would break it is a *named local class* used as a parameter type of a sibling local class,
+    whose qualified name would carry a declaring callable's tail *inside* the outer tail. Neither
+    fixture contains one. If one ever appears, the cut has to become paren-balanced.
     """
     head = signature.rpartition("(")[0]
     return (signature, head) if head else (signature,)
@@ -186,8 +194,9 @@ def java_resolve_callable(name: str, candidates: Sequence[CallableCandidate], *,
     (:attr:`~cldk.analysis.commons.resolve.CallableCandidate.match_names` from
     :func:`java_callable_names`, ``module_names`` from :func:`java_module_dotted`); what this adds
     is the advice an ambiguity gives. The shared default — "by naming more of the dotted path" —
-    is untrue here: two overloads share every dotted segment and differ only in the tail, so the
-    way out is spelling the full signature.
+    is untrue here: two overloads share every dotted segment and differ only in the parameter tail,
+    so the way out is spelling the full signature — copied from the candidates the exception
+    carries, since the analyzer normalises that tail no further (see :data:`_BY_FULL_SIGNATURE`).
     """
     return resolve_callable_signature(name, candidates, in_class=in_class, in_module=in_module, by_full_name=_BY_FULL_SIGNATURE)
 
@@ -195,7 +204,18 @@ def java_resolve_callable(name: str, candidates: Sequence[CallableCandidate], *,
 #: What an ambiguous Java callable name tells the caller to do. Not a suggestion (E8 forbids
 #: those): every candidate the exception carries is spelled this way, so the instruction is
 #: literally "one of these strings".
-_BY_FULL_SIGNATURE = "by naming the full signature, erased parameter types included"
+#:
+#: **It points at the listed matches rather than describing them**, because no description of the
+#: tail is true. The analyzer's signature keys are *not* normalised: the a4 fixture carries
+#: ``setTopLosers(Collection<QuoteDataBean>)`` and ``<init>(Instance<TradeServices>)`` — generic
+#: arguments kept, type names unqualified — while a1 spells the same method
+#: ``setTopLosers(java.util.Collection)``. A caller told "erased parameter types included" would
+#: write ``setTopLosers(java.util.Collection)`` against an a4 graph and get
+#: :class:`~cldk.utils.exceptions.SelectorNotInGraph`: advice that reads as a rule, produces a
+#: miss, and is exactly the confident-wrong-answer failure E8 keeps out of the error path. The
+#: candidates are already in the message, spelled the way the graph spells them, so the advice
+#: names *them* — a thing the caller can copy and check — and not a normalisation nothing performs.
+_BY_FULL_SIGNATURE = "by naming the full signature exactly as one of the listed matches spells it"
 
 
 def duplicate_type_name(qualified_name: str) -> str:
