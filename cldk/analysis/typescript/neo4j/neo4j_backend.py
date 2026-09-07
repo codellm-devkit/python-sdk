@@ -15,13 +15,15 @@
 ################################################################################
 
 """Neo4j-backed TypeScript analysis backend (read-only Cypher client) on the codeanalyzer-typescript
-1.2.0 graph vocabulary.
+schema-v2 graph vocabulary -- 1.2.0's ``can://`` grammar, through the 1.4.0 pin.
 
 A drop-in alternative to :class:`TSCodeanalyzer`: the same query surface, every method answered by
 Cypher over a live graph that ``codeanalyzer-typescript --emit neo4j`` populated out of band. This
 class never writes and needs neither the analyzer binary nor the sources.
 
-**The graph it reads** (``schema.neo4j.json`` at the 1.2.0 tag; ``main`` renames nothing):
+**The graph it reads** (``schema.neo4j.json``; the vocabulary below dates to the 1.2.0 tag and
+1.4.0 renames nothing, only adding the binding layer :attr:`TSNeo4jBackend._carries_bindings` asks
+about):
 ``:Application {id: can://typescript/<app>}`` anchors the application and stamps
 ``analyzer_version``; every project node carries a ``can://`` ``id`` under the merge label
 ``CanNode`` -- ``TSModule`` (``name`` holds the file key), ``TSClass``/``TSInterface``/``TSEnum``/
@@ -55,11 +57,14 @@ bulk accessor pays one root fetch plus one subtree fetch however many modules, c
 callables it walks -- never one statement per parent.
 
 **Lossiness** relative to the in-memory backend (the projection's, not this client's; see
-:mod:`reconstruct` for the per-node detail): parameters, comments, type parameters, overloads,
-bodies and the L3/L4 graphs are not on ``:TSCallable``; enum member values, imports and exports
-are not projected at all; call sites keep lines and the resolved callee only; the anonymous-callable
-index is keyed by the tree node's own id rather than the analyzer's older compatibility key;
-``config_reads`` are not projected (see :meth:`get_unresolved_config_reads`); an unresolved
+:mod:`reconstruct` for the per-node detail): comments, type parameters, overloads, bodies and the
+L3/L4 graphs are not on ``:TSCallable``; enum member values are not projected at all; call sites
+keep lines and the resolved callee only; the anonymous-callable index is keyed by the tree node's
+own id rather than the analyzer's older compatibility key; import bindings survive only as the
+per-target aggregate ``TS_IMPORTS`` folds them into, so :meth:`get_imports` cannot pair a name
+with its alias, its ``import_kind`` or its span (parameters, exports and unresolved config reads
+are lossless -- ``parameters_json``, ``exports_json`` and the ``TS_READS_CONFIG_UNRESOLVED``
+edges, all four accessors gated on :attr:`~TSNeo4jBackend._carries_bindings`); an unresolved
 call site contributes ``""`` to :meth:`get_call_targets` where the in-memory backend contributes
 the call's ``method_name``; the extends/implements split is read off ``TS_EXTENDS``/``TS_IMPLEMENTS``
 rather than the never-written ``implements_types`` property, so it covers resolved in-repo bases
@@ -71,7 +76,7 @@ answers ``""`` plus a ``module_source_unavailable`` diagnostic and :meth:`get_so
 body-node id outright, where the local backend answers both.
 
 **And one that is a value divergence rather than an absence**, which is why it is stated loudly:
-codeanalyzer-typescript 1.3.0 projects ``:TSCallable.code`` **one line short of the callable's own
+codeanalyzer-typescript 1.3.0 and 1.4.0 project ``:TSCallable.code`` **one line short of the callable's own
 span** -- the graph text is the in-memory text minus its final ``"\\n}"`` (measured: 544 characters
 against 546 for the sample app's ``src/index.main``), while ``start_line``/``end_line`` on the same
 node are correct. Every accessor that hands a caller a callable's source over this backend is
@@ -205,6 +210,16 @@ def _vertex(var: str, *, escape: bool = False) -> str:
     open_, close = ("{{", "}}") if escape else ("{", "}")
     return f"{open_}kind: {var}.kind, signature: {var}.signature, name: {var}.name, ref: {var}.id, line: {var}.start_line, module: {var}.module{close}"
 
+
+#: What :meth:`TSNeo4jBackend._require_bindings` raises. Names the accessor, the application and
+#: the three carriers it looked for, so a reader can check the claim against the graph in one
+#: statement rather than take the SDK's word for it.
+BINDINGS_ABSENT = (
+    "The codeanalyzer-typescript Neo4j projection for application {app!r} carries no binding layer -- no TS_IMPORTS edge, "
+    "no :TSModule.exports_json and no :TSCallable.parameters_json -- so {accessor} cannot be answered from it. "
+    "codeanalyzer-typescript projects all of it from 1.4.0 on (cants#182); re-emit the graph with 1.4.0 or newer. "
+    "An empty answer here would be indistinguishable from a graph that carries the layer and has nothing to report."
+)
 
 #: The kinds a method owner may have -- alongside the label, so a declaration-merged node carrying
 #: ``TSClass``/``TSInterface`` with another declaration's kind is not an owner.
@@ -427,6 +442,36 @@ class TSNeo4jBackend(TSAnalysisBackend):
         rows = self._run("MATCH (:Application {id: $app_id})-[:TS_HAS_MODULE]->(m:TSModule) RETURN m.name AS k, m.id AS id", app_id=self._app_id)
         return {r["k"]: r["id"] for r in rows}
 
+    #: One statement, three carriers OR-ed, asked of **this application's own data** -- exactly as
+    #: leg 3 asks Java's SDG whether its ports carry dependence, and never of ``analyzer_version``:
+    #: the refusal below is a statement about what was emitted, so a graph re-emitted by a newer
+    #: analyzer must start answering with no change here. Three carriers because each is ``null``
+    #: when empty on its own node, and an emitter writes all of them or none: any application with
+    #: an import, an ``export`` statement or a parameter trips at least one.
+    _BINDINGS_PRESENT = (
+        f"RETURN EXISTS {{ MATCH (m:TSModule)-[:TS_IMPORTS]->() WHERE {_scoped('m')} }} "
+        f"OR EXISTS {{ MATCH (m:TSModule) WHERE {_scoped('m')} AND m.exports_json IS NOT NULL }} "
+        f"OR EXISTS {{ MATCH (c:TSCallable) WHERE {_scoped('c')} AND c.parameters_json IS NOT NULL }} AS ok"
+    )
+
+    @cached_property
+    def _carries_bindings(self) -> bool:
+        """Whether this application's projection carries the binding layer codeanalyzer-typescript
+        1.4.0 added (cants#182) -- ``TS_IMPORTS``, ``exports_json``, ``parameters_json`` and
+        ``TS_READS_CONFIG_UNRESOLVED``, which ship together.
+
+        Asked on first use rather than at attach: a caller who never asks a binding question never
+        pays for it, and a caller who does pays once. A 1.3.0 graph is still perfectly attachable
+        (:attr:`_ANALYZER_FLOOR`) -- it simply answers ``False`` here and the four accessors gated
+        on it refuse rather than answer an empty that would read as a fact.
+        """
+        rows = self._run(self._BINDINGS_PRESENT, **self._scope_params)
+        return bool(rows and rows[0]["ok"])
+
+    def _require_bindings(self, accessor: str) -> None:
+        if not self._carries_bindings:
+            raise CodeanalyzerExecutionException(BINDINGS_ABSENT.format(app=self.application_name, accessor=accessor))
+
     # =====================================================================================
     # Containment subtree: one statement for the roots, one for everything beneath them.
     # =====================================================================================
@@ -538,8 +583,9 @@ class TSNeo4jBackend(TSAnalysisBackend):
         * ``param_in``/``param_out`` -- the L4 dataflow overlay. Leg 2.5a reads **none** of it
           (no ``TS_PARAM_IN``/``TS_PARAM_OUT``/``TS_DDG``/``TS_SUMMARY`` statement exists on this
           class); the whole dataflow surface, this overlay with it, is leg 2.5b.
-        * ``config_reads`` -- not projected at all (see :meth:`get_unresolved_config_reads`, which
-          raises rather than answer ``[]`` here).
+        * ``config_reads`` -- projected since 1.4.0 and reachable through
+          :meth:`get_unresolved_config_reads`, but not folded into the view: the edge carries no
+          ``site``, so the entries would not be the ones the in-memory view holds.
         * ``unresolved_imports`` -- ``TS_UNRESOLVED_IMPORT`` is in the projection but no accessor
           on this surface reads it, so the view does not invent one.
         """
@@ -838,12 +884,19 @@ class TSNeo4jBackend(TSAnalysisBackend):
         return self._callable(roots[0], children) if roots else None
 
     def get_method_parameters(self, qualified_class_name: str, qualified_method_name: str) -> List[str]:
-        """``[]`` for a missing method, as in-memory. For a **found** one this graph cannot answer:
-        the 1.2.0 projection carries no parameters on ``:TSCallable`` (nor as nodes), and an empty
-        list would read as "takes no parameters", so it raises naming the gap."""
-        if self.get_method(qualified_class_name, qualified_method_name) is None:
+        """The found method's parameter names, ``[]`` for a missing method (as in-memory).
+
+        The names come off the callable's own ``parameters_json``, decoded by
+        :func:`~cldk.analysis.typescript.neo4j.reconstruct.parameters` on the way through
+        :meth:`get_method`, so this is the same list the in-memory backend answers. A graph
+        without the binding layer refuses instead (:attr:`_carries_bindings`): ``[]`` there would
+        read as "takes no parameters". The missing-method ``[]`` is decided first, and needs no
+        binding layer to be true."""
+        method = self.get_method(qualified_class_name, qualified_method_name)
+        if method is None:
             return []
-        raise CodeanalyzerExecutionException(f"The codeanalyzer-typescript Neo4j projection carries no parameters for {qualified_method_name!r}; they exist only in analysis.json.")
+        self._require_bindings("get_method_parameters")
+        return [p.name for p in method.parameters]
 
     def get_all_constructors(self, qualified_class_name: str) -> Dict[str, TSCallable]:
         return {name: m for name, m in self.get_all_methods_in_class(qualified_class_name).items() if m.kind == "constructor"}
@@ -864,18 +917,43 @@ class TSNeo4jBackend(TSAnalysisBackend):
     # imports / exports / variables
     # =====================================================================================
     def get_imports(self) -> Dict[str, List[TSImport]]:
-        """The 1.2.0 projection carries no import bindings (no relationship type, no property), so
-        this graph cannot say what a module imports; raises naming the gap rather than returning
-        empty lists that would read as "imports nothing"."""
-        raise CodeanalyzerExecutionException(
-            f"The codeanalyzer-typescript Neo4j projection carries no import bindings for application {self.application_name!r}; they exist only in analysis.json."
-        )
+        """Every module's import bindings, rebuilt from the aggregated ``TS_IMPORTS`` edges
+        (codeanalyzer-typescript 1.4.0, cants#182 D2). Every module key is present, so a module
+        that imports nothing answers ``[]`` rather than being absent.
+
+        **Narrower than the in-memory list, in two ways the emitter decides and one this rebuild
+        does.** The emitter drops a relative specifier that resolved to no emitted module (a
+        ``--skip-tests`` target, a broken path) -- those survive in ``analysis.json`` only -- and
+        folds every binding between a pair into one edge of sorted sets. The rebuild therefore
+        cannot pair a name with its alias, its ``import_kind`` or its span; see
+        :func:`~cldk.analysis.typescript.neo4j.reconstruct.import_edge` for exactly what each
+        entry does and does not carry. A graph without the binding layer refuses
+        (:attr:`_carries_bindings`) rather than answer lists that would read as "imports nothing".
+        """
+        self._require_bindings("get_imports")
+        out: Dict[str, List[TSImport]] = {key: [] for key in self._modules}
+        for r in self._run(
+            f"MATCH (m:TSModule)-[i:TS_IMPORTS]->() WHERE {_scoped('m')} RETURN m.name AS k, properties(i) AS p",
+            **self._scope_params,
+        ):
+            out.setdefault(r["k"], []).extend(R.import_edge(r["p"]))
+        return {k: sorted(v, key=lambda i: (i.module, i.name)) for k, v in out.items()}
 
     def get_all_exports(self) -> Dict[str, List[TSExport]]:
-        """As :meth:`get_imports`: the projection carries no export bindings."""
-        raise CodeanalyzerExecutionException(
-            f"The codeanalyzer-typescript Neo4j projection carries no export bindings for application {self.application_name!r}; they exist only in analysis.json."
-        )
+        """Every module's export bindings, decoded from ``:TSModule.exports_json`` (1.4.0,
+        cants#182 D3). Unlike :meth:`get_imports` this is **lossless** -- the property is the
+        in-memory list serialized verbatim, spans included.
+
+        The property is ``null`` on a module that exports nothing, which is why the refusal is
+        decided over the application (:attr:`_carries_bindings`) and not by this property being
+        absent on one module. ``TS_RE_EXPORTS``, the other half of D3, is what makes barrel chains
+        walkable in Cypher; it carries no binding this accessor needs, so nothing here reads it.
+        """
+        self._require_bindings("get_exports")
+        out: Dict[str, List[TSExport]] = {key: [] for key in self._modules}
+        for r in self._run(f"MATCH (m:TSModule) WHERE {_scoped('m')} AND m.exports_json IS NOT NULL RETURN m.name AS k, m.exports_json AS j", **self._scope_params):
+            out[r["k"]] = R.exports(r["j"])
+        return out
 
     def get_all_variables(self) -> Dict[str, List[TSVariableDeclaration]]:
         out: Dict[str, List[TSVariableDeclaration]] = {key: [] for key in self._modules}
@@ -942,12 +1020,18 @@ class TSNeo4jBackend(TSAnalysisBackend):
         return [PyConfigUseEdge(src=r["src"], dst=r["dst"], prov=list(r["prov"] or [])) for r in self._run(query, **params)]
 
     def get_unresolved_config_reads(self) -> List[PyConfigRead]:
-        """The 1.2.0 projection does not carry ``config_reads`` (no relationship type or property
-        in ``schema.neo4j.json``), so this graph cannot say whether a detector-matched read failed
-        to resolve. Raising keeps that distinct from "every read resolved"."""
-        raise CodeanalyzerExecutionException(
-            f"The codeanalyzer-typescript Neo4j projection carries no unresolved config reads for application {self.application_name!r}; they exist only in analysis.json."
-        )
+        """Detector-matched config reads that resolved to no declared key, from the
+        ``TS_READS_CONFIG_UNRESOLVED`` edges 1.4.0 projects (cants#182 D5).
+
+        The edge runs application-to-target, so ``site`` comes back ``""`` and sites sharing a
+        ``(callee, key, reason)`` triple collapse onto one edge -- a count gap against the
+        in-memory list, never a presence one, stated in full on
+        :func:`~cldk.analysis.typescript.neo4j.reconstruct.unresolved_config_read`. ``[]`` means
+        every matched read resolved; a graph that cannot say refuses instead
+        (:attr:`_carries_bindings`)."""
+        self._require_bindings("get_unresolved_config_reads")
+        rows = self._run("MATCH (:Application {id: $app_id})-[u:TS_READS_CONFIG_UNRESOLVED]->(t) RETURN properties(u) AS p, t.id AS callee", app_id=self._app_id)
+        return [R.unresolved_config_read(r["p"], callee=r["callee"]) for r in rows]
 
     # =====================================================================================
     # decorators

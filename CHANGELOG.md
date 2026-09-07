@@ -95,17 +95,27 @@ surface** (3b). Design records: `docs/design/specs/2026-09-06-leg-2.5-typescript
   `ddg` edges whose endpoint was never emitted as a body node (codeanalyzer-java#228), so `get_ddg()` over
   `analysis.json` and over Neo4j now report the same edges — 10,430 on daytrader8, set for set, against a
   5,434/5,347 split before.
-- **Pins:** `codeanalyzer-java` 2.4.1 → 3.0.3, `codeanalyzer-typescript` 0.4.3 → 1.3.0.
+- **Pins:** `codeanalyzer-java` 2.4.1 → 3.0.3, `codeanalyzer-typescript` 0.4.3 → 1.4.0.
 - **The Java analyzer ships as a wheel, not a jar in this repo.** The 35 MB checked-in jar, the Temurin download
   in `_jdk.py`, and the release workflow's jar injection are gone; no `JAVA_HOME` is read or set, and no JDK is
   downloaded. The published wheel drops from about 35 MB to 320 KB.
 - **Both languages' backends inherit the generic `AnalysisBackend`**, so each answers the shared artifact,
   dependency and configuration accessors.
 - **Where a backend cannot answer, it says so instead of returning an empty value.** On Neo4j: Java's file-keyed
-  comment accessors, and TypeScript's `get_imports`, `get_all_exports`, `get_unresolved_config_reads`,
-  `get_method_parameters` for a found method, and `get_extended_classes`/`get_implemented_interfaces` when the
-  relationship type is absent. The remaining documented gaps, and where the two backends legitimately differ,
+  comment accessors, and TypeScript's `get_extended_classes`/`get_implemented_interfaces` when the relationship
+  type is absent — and its `get_imports`, `get_exports`, `get_method_parameters` and
+  `get_unresolved_config_reads` on a graph emitted **before** codeanalyzer-typescript 1.4.0, which carries none
+  of the data they read (below). The remaining documented gaps, and where the two backends legitimately differ,
   are listed in `docs/agent-api-reference.md`.
+- **TypeScript's `get_imports`, `get_exports`, `get_method_parameters` and `get_unresolved_config_reads` answer
+  over Neo4j**, on a graph emitted by codeanalyzer-typescript 1.4.0 or newer: the projection gained
+  `TS_IMPORTS` / `TS_RE_EXPORTS` edges, `:TSModule.exports_json`, `:TSCallable.parameters_json` and
+  `TS_READS_CONFIG_UNRESOLVED` (codeanalyzer-typescript#182). Parameters also reach `TSCallable.parameters` and
+  exports reach `TSModule.exports` on a rebuilt node. A **1.3.0 graph is still attachable** and those four
+  still refuse there rather than answer an empty that would read as a fact; the decision is measured from the
+  application's own data — is any carrier present — never from the analyzer's version string, so a re-emitted
+  graph starts answering with no SDK change. `TSImport`/`TSExport` gained the analyzer's new
+  `resolved_module`. **Migration:** re-emit with `codeanalyzer-typescript>=1.4.0 --emit neo4j`.
 - **Every Cypher statement is scoped per bound variable, not per statement** — both endpoints of a call edge, a
   quantified path's far end, a slice's reached body nodes, and every *interior* node of a variable-length or
   shortest-path walk (`all(n IN nodes(p) …)` on the slice, path and reachability queries). A statement that
@@ -149,9 +159,14 @@ surface** (3b). Design records: `docs/design/specs/2026-09-06-leg-2.5-typescript
 - Java CRUD accessors raise: schema v2 does not carry CRUD yet (codeanalyzer-java#187).
 - The Java graph's `JCallable.code` is the declaration slice where the JSON's is the body block, and the graph
   cannot recover the body block (codeanalyzer-java#176).
+- **Import bindings read over the TypeScript Neo4j backend are narrower than in process.** `TS_IMPORTS` folds
+  every binding between a module pair into one edge of sorted sets, so an entry's alias, `import_kind` and span
+  are not recoverable, and the emitter drops a relative specifier that resolved to no emitted module. Exports,
+  parameters and unresolved config reads are lossless, except that the config-read edge carries no `site` and
+  collapses sites sharing a `(callee, key, reason)` triple.
 - **Source text read over the TypeScript Neo4j backend is truncated by one line.** codeanalyzer-typescript
-  1.3.0 projects `:TSCallable.code` as the callable's text minus its final `\n}` while the line numbers stay
-  correct, so `get_source`, `get_method_bodies`, `describe` and `locate(...).source` return short text over
+  1.3.0 and 1.4.0 project `:TSCallable.code` as the callable's text minus its final `\n}` while the line
+  numbers stay correct, so `get_source`, `get_method_bodies`, `describe` and `locate(...).source` return short text over
   Neo4j and complete text in process (codeanalyzer-typescript#179). Read the text in process, or re-slice the
   span, until the fix ships.
 - TypeScript's DDG has one provenance tier; Java's has two; Python's has three.

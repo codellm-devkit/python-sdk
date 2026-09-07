@@ -43,8 +43,9 @@ and the message names what it found and the floor. What attaching to each genera
 
 ## TypeScript
 
-Status: leg 2.5b (`codeanalyzer-typescript` 1.3.0 pinned; graphs emitted by 1.3.0 or newer
-served). What attaches today is the **1.x accessor surface** — symbol table, classes / interfaces /
+Status: leg 2.5b (`codeanalyzer-typescript` 1.4.0 pinned; graphs emitted by 1.3.0 or newer
+served, with four accessors gated on the 1.4.0 binding layer — see the floor below). What attaches
+today is the **1.x accessor surface** — symbol table, classes / interfaces /
 enums / type aliases / namespaces, methods, fields, call graph, call sites, decorators, externals,
 synthesized callables, the four bulk accessors and the repository-artifact layer — on both backends.
 Every accessor is **called** against the live superset-frontend graph (1,841 modules: 1,557
@@ -94,12 +95,24 @@ ts = CLDK.typescript(project_path="/path/to/project", backend=TSCodeAnalyzerConf
 | --- | --- |
 | emitted by 0.4.x (`:Symbol` / `CALLS` / `HAS_CALLSITE`), a Python graph, an empty database | refused (`GraphSchemaMismatch`), naming the relationship types found and missing |
 | `analyzer_version` below 1.3.0 (a 1.2.0 graph included), unparsable, or no `:Application` with that id | refused, naming what was found and the floor |
-| 1.3.0 and newer | served, silent |
+| 1.3.0 | served, silent — but `get_imports` / `get_exports` / `get_method_parameters` / `get_unresolved_config_reads` refuse (below) |
+| 1.4.0 and newer | served, silent; all four answer |
 
 A 1.2.0 graph carries none of the entrypoint marks and none of the per-callable graph vocabulary
 this surface reads, so it is refused rather than served with silent empties. **Migration:** re-emit
-with `codeanalyzer-typescript>=1.3.0 --emit neo4j` (which takes no `-a`: the emit is always full
+with `codeanalyzer-typescript>=1.4.0 --emit neo4j` (which takes no `-a`: the emit is always full
 depth).
+
+**The 1.4.0 binding layer, and how its absence is decided.** codeanalyzer-typescript 1.4.0
+([#182](https://github.com/codellm-devkit/codeanalyzer-typescript/issues/182)) added `TS_IMPORTS` /
+`TS_RE_EXPORTS` edges, `:TSModule.exports_json`, `:TSCallable.parameters_json` and
+`TS_READS_CONFIG_UNRESOLVED`, which is what makes `get_imports`, `get_exports`,
+`get_method_parameters` and `get_unresolved_config_reads` answer over Neo4j. A **1.3.0 graph is
+still attachable** and carries none of it, so those four raise there rather than return an empty
+that would read as "imports nothing" / "takes no parameters" / "every read resolved". The decision
+is **measured from the application's own data** — one statement asking whether any of the three
+carriers is present — never from `analyzer_version`, so a re-emitted graph starts answering with no
+SDK change. It costs one query, on first use of one of the four, cached for the backend's life.
 
 **JavaScript is in scope.** The analyzer ids `.js/.jsx/.mjs/.cjs` modules `can://javascript/<app>/…`
 beside `can://typescript/<app>/…`; every accessor reads both, and every Neo4j statement is scoped
@@ -110,24 +123,26 @@ by the two prefixes. Path values are repo-relative module keys with their real e
 class (`new X()`) a callee; nodes carry `kind` ∈ `module | class | interface | enum | type_alias |
 namespace | callable | external`. Filter on `kind == "callable"` for Python's shape.
 
-**What the 1.2.0 Neo4j projection does not carry.** The in-memory backend reads `analysis.json`
+**What the Neo4j projection does not carry.** The in-memory backend reads `analysis.json`
 and has everything below; the graph does not. Where an empty value would read as a fact, the Neo4j
 backend **raises** (`CodeanalyzerExecutionException`, naming the gap); otherwise the model's
 documented empty comes back.
 
 | accessor / field | on `TSNeo4jBackend` |
 | --- | --- |
-| `get_imports()`, `get_exports()` | **raises** — no import/export vocabulary in the graph |
-| `get_unresolved_config_reads()` | **raises** — `config_reads` not projected; `[]` would read as "every read resolved" |
-| `get_method_parameters(cls, m)` | **raises** for a found method (no parameters on `:TSCallable`); `[]` for a missing one |
+| `get_imports()` | answers from the aggregated `TS_IMPORTS` edges, and **narrower than in process**: the emitter folds every binding between a module pair into one edge of sorted sets and drops a relative specifier that resolved to no emitted module, so an entry carries `module` / `name` / `is_type_only` and leaves `alias`, `import_kind` and the span at their defaults. One entry per (spelling, name); an edge with no names (a side-effect `import "./x.css"`) contributes one naming the spelling |
+| `get_exports()` | answers from `:TSModule.exports_json`, **lossless** — the in-memory list serialized verbatim, spans included |
+| `get_unresolved_config_reads()` | answers from `TS_READS_CONFIG_UNRESOLVED`. `site` is always `""` and sites sharing a `(callee, key, reason)` triple collapse onto one edge, so the **count** can be lower than in process; presence/absence agrees |
+| `get_method_parameters(cls, m)` | answers from `:TSCallable.parameters_json`; `[]` for a missing method, as in process |
+| all four above, on a graph emitted **before 1.4.0** | **raise**, naming the application and the three carriers looked for. The binding layer is what they read; `[]` there would read as a fact |
 | `get_extended_classes(sig)`, `get_implemented_interfaces(sig)` | read off `TS_EXTENDS` / `TS_IMPLEMENTS`, so **resolved in-repo bases only** (a library base is in `base_classes` with no node to point at); each **raises** when its relationship type is absent from the database — as `TS_IMPLEMENTS` is on superset-frontend. The `implements_types` property the in-memory split uses is written by no node in the projection, so subtracting it would return the interfaces as extended classes |
 | `get_config_uses(key=None)` | `[]` also when the database declares no `TS_USES_CONFIG` at all (superset-frontend): indistinguishable from a corpus with no config reads. Not raised — a project that reads no configuration is a valid project, and refusing it at attach would be worse |
 | `get_nested_classes(sig)` | permanently `[]`, on **both** backends and not a projection gap: a schema-v2 class holds only `callables` and `fields`, so no class nests a class. `TSCallable.inner_classes` is the surviving case |
-| `get_application_view().param_in` / `.param_out` | empty — leg 2.5a reads **no** dataflow overlay (2.5b does). `.config_reads` and `.unresolved_imports` are empty for their own reasons: not projected, and no accessor reads `TS_UNRESOLVED_IMPORT`. `.artifacts` / `.dependencies` / `.config_uses` **are** populated, from the same rows the dedicated accessors return |
-| `TSCallable.parameters`, `comments`, `type_parameters`, `overload_signatures`, `body`, `cfg`/`cdg`/`ddg`/`summary` | empty |
-| `TSEnumMember.value`; `TSModule.source` / `imports` / `exports` / `comments`; decorator positions; a call site's `method_name`, receiver and argument facets | empty / `None` |
+| `get_application_view().param_in` / `.param_out` | empty — leg 2.5a reads **no** dataflow overlay (2.5b does). `.config_reads` and `.unresolved_imports` are empty for their own reasons: the config-read edge carries no `site`, so the view's entries would not be the ones in-process holds (`get_unresolved_config_reads()` is where they are reachable), and no accessor reads `TS_UNRESOLVED_IMPORT`. `.artifacts` / `.dependencies` / `.config_uses` **are** populated, from the same rows the dedicated accessors return |
+| `TSCallable.comments`, `type_parameters`, `overload_signatures`, `body`, `cfg`/`cdg`/`ddg`/`summary` | empty. `parameters` are populated from `parameters_json` on a 1.4.0 graph |
+| `TSEnumMember.value`; `TSModule.source` / `imports` / `comments`; decorator positions; a call site's `method_name`, receiver and argument facets | empty / `None`. `TSModule.exports` **is** populated from `exports_json`; `imports` stay empty on a rebuilt module — they live on edges the containment fetch does not walk, and `get_imports()` is what reads them |
 | `code` on any node | the text the graph projected for that node, on a line-only span (columns `0`) |
-| **any source text of a callable** — `get_source(sig)`, `get_method_bodies(...)`, `describe(...).source`, `locate(...).source`, `TSCallable.code` | **truncated by one line**: codeanalyzer-typescript 1.3.0 projects `:TSCallable.code` as the callable's text minus its final `\n}`, while `start_line`/`end_line` on the same node are correct. Measured: 544 characters against the 546 the in-memory backend returns for the same callable. Upstream: [codeanalyzer-typescript#179](https://github.com/codellm-devkit/codeanalyzer-typescript/issues/179). **If you feed graph source to a parser or a diff, expect the closing brace to be missing** — until the fix ships, read the text in-process or re-slice the span yourself |
+| **any source text of a callable** — `get_source(sig)`, `get_method_bodies(...)`, `describe(...).source`, `locate(...).source`, `TSCallable.code` | **truncated by one line**: codeanalyzer-typescript 1.3.0 and 1.4.0 project `:TSCallable.code` as the callable's text minus its final `\n}`, while `start_line`/`end_line` on the same node are correct. Measured: 544 characters against the 546 the in-memory backend returns for the same callable. Upstream: [codeanalyzer-typescript#179](https://github.com/codellm-devkit/codeanalyzer-typescript/issues/179). **If you feed graph source to a parser or a diff, expect the closing brace to be missing** — until the fix ships, read the text in-process or re-slice the span yourself |
 | `get_call_targets(sig)` | an unresolved call site contributes `""` (in-memory: the call's `method_name`) |
 | `get_synthesized_callables()` | keyed by the anonymous node's own id (the analyzer's older compatibility key is JSON-only) |
 | `locate(path, line)` at module scope | `source == ""` plus a second `module_source_unavailable` diagnostic — `:TSModule` carries no `source`. In-memory: the module's text |
@@ -135,7 +150,7 @@ documented empty comes back.
 | `LocateResult.span` columns and byte offsets | placeholders; lines are real on both backends |
 | `get_entrypoint_coverage()` | the anchor's `entrypoint_report_json` string, parsed — same report as in-memory, no lossiness. A graph without the property answers `entrypoint_report_unavailable` rather than empty-but-clean fields |
 
-Two more hold on **both** backends. `get_entrypoint_classes()` covers **classes only**: 1.3.0
+Two more hold on **both** backends. `get_entrypoint_classes()` covers **classes only**: the wire
 declares `is_entrypoint` on all five type kinds, but the Neo4j projection stamps it onto
 `:TSCallable` and `:TSClass` nodes alone, so widening it would make the backends disagree. And
 `get_config_keys()` is keyed by the config key's `can://` **id**, not by its artifact-relative
@@ -216,7 +231,7 @@ accessors** — `get_callables_overview`, `get_method_bodies`, `get_decorated_ca
 - **`get_entrypoint_coverage` reports that there is no report.** codeanalyzer-java emits the
   entrypoint *marks* and nothing about the pass that made them: `analysis.json` carries no report
   key and the `:JApplication` anchor carries only `name` / `schema_version` / `analyzer_name` /
-  `analyzer_version` — unlike codeanalyzer-python 1.4.1 and codeanalyzer-typescript 1.3.0, which
+  `analyzer_version` — unlike codeanalyzer-python 1.4.1 and codeanalyzer-typescript 1.4.0, which
   both project one. So it answers with `diagnostics=[entrypoint_report_unavailable]` and empty
   fields that are explicitly *not* coverage. It is not synthesised from the `is_entrypoint`
   booleans: a count of syntactically-marked callables is not a coverage record. The marks

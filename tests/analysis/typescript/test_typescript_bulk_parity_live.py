@@ -642,13 +642,29 @@ def test_config_uses_and_readers_parity(ts_dual):
         assert {_overview_tuple(o) for o in ref.get_config_readers(key)} == {_overview_tuple(o) for o in neo.get_config_readers(key)}, key
 
 
-def test_unresolved_config_reads_is_the_one_documented_divergence(ts_dual):
-    """Not a parity failure but a recorded gap: the Neo4j projection carries no ``config_reads`` at
-    all, so that backend raises naming the gap rather than answering ``[]``, which would read as
-    "every read resolved". Asserted here so the day the projection gains them, this test fails and
-    the divergence is closed rather than forgotten."""
+def test_unresolved_config_reads_parity(ts_dual):
+    """Was the one documented divergence -- the projection carried no ``config_reads`` and that
+    backend refused rather than answer ``[]``. codeanalyzer-typescript 1.4.0 projects them
+    (``TS_READS_CONFIG_UNRESOLVED``, #368), so this is parity. The sample app matches no config
+    read at all, which makes both sides ``[]``: presence/absence is what the edge guarantees, and
+    a count divergence would only appear on a corpus whose sites collapse onto one edge."""
     ref, neo = ts_dual
-    assert ref.get_unresolved_config_reads() == []
-    with pytest.raises(Exception) as e:
-        neo.get_unresolved_config_reads()
-    assert "unresolved config reads" in str(e.value)
+    assert ref.get_unresolved_config_reads() == neo.get_unresolved_config_reads() == []
+
+
+def test_import_export_and_parameter_bindings_parity(ts_dual):
+    """The other three #368 accessors, over the same sample app on both backends.
+
+    Imports are compared on the facets the aggregate edge can carry: a ``TS_IMPORTS`` edge folds
+    every binding between a pair into sorted sets, so an alias, an ``import_kind`` and a span
+    survive only in ``analysis.json`` (see ``reconstruct.import_edge``). Exports and parameters
+    ride JSON-encoded properties and are compared whole.
+    """
+    ref, neo = ts_dual
+    binding = lambda d: {k: sorted((i.module, i.name, i.is_type_only) for i in v) for k, v in d.items()}
+    assert binding(ref.get_imports()) == binding(neo.get_imports())
+    assert any(v for v in ref.get_imports().values()), "the sample app imports something; an all-empty parity is vacuous"
+    assert ref.get_exports() == neo.get_exports()
+    params = lambda d: {sig: [p.name for p in c.parameters] for sig, c in d.items()}
+    assert params(ref.get_functions()) == params(neo.get_functions())
+    assert ref.get_method_parameters("src/services.UserService", "create") == neo.get_method_parameters("src/services.UserService", "create") == ["name", "role"]

@@ -245,7 +245,7 @@ def test_declaration_merged_nodes_are_one_facet_each_and_never_a_namespace(analy
             assert type(facet) in (TSClass, TSInterface, TSEnum, TSTypeAlias) and "TS" + type(facet).__name__[2:] in labels, f"{sig} rebuilt as the facet TS_DECLARES + labels name"
 
 
-def test_class_method_and_code_round_trip(analysis, sample):
+def test_class_method_and_code_round_trip(analysis, sample, cypher):
     cls = analysis.get_class(sample["class_sig"])
     assert cls is not None and cls.id == sample["class_id"]
     methods = analysis.get_methods_in_class(sample["class_sig"])
@@ -253,9 +253,13 @@ def test_class_method_and_code_round_trip(analysis, sample):
     method = analysis.get_method(sample["class_sig"], sample["method_name"])
     assert method is not None and method.id == sample["method_id"]
     assert method.code == sample["code"], "the graph's own code text reaches the model's code property"
-    assert method.parameters == [], "documented lossiness: :TSCallable projects no parameters"
-    with pytest.raises(CodeanalyzerExecutionException, match="no parameters for"):
-        analysis.get_method_parameters(sample["class_sig"], sample["method_name"])
+    # #368: parameters_json on the node is the callable's own list, JSON-encoded verbatim, and it
+    # reaches both the rebuilt model and the accessor. Read back off the same node rather than
+    # named here, so this compares the SDK to the graph and not to a string in this file.
+    encoded = cypher("MATCH (c:CanNode:TSCallable {id: $id}) RETURN c.parameters_json AS j", id=sample["method_id"])[0]["j"]
+    expected = [p["name"] for p in json.loads(encoded)] if encoded else []
+    assert [p.name for p in method.parameters] == expected
+    assert analysis.get_method_parameters(sample["class_sig"], sample["method_name"]) == expected
     assert analysis.get_method_parameters(sample["class_sig"], "no_such_method_here") == []
     assert analysis.get_method_bodies([sample["method_sig"]]) == {sample["method_sig"]: sample["code"]}
 
@@ -275,11 +279,44 @@ def test_functions_and_methods_in_application_match_the_graph(analysis, count):
     assert sum(len(v) for v in grouped.values()) <= count(f"MATCH (x:TSClass|TSInterface)-[:TS_HAS_METHOD]->(m) WHERE {SCOPED} RETURN count(m) AS n")
 
 
-def test_imports_and_exports_name_the_projection_gap(analysis):
-    with pytest.raises(CodeanalyzerExecutionException, match="no import bindings"):
-        analysis.get_imports()
-    with pytest.raises(CodeanalyzerExecutionException, match="no export bindings"):
-        analysis.get_exports()
+def test_imports_are_every_binding_the_aggregate_edges_stand_for(analysis, cypher, count):
+    """#368: ``TS_IMPORTS`` answers ``get_imports`` where the 1.3.0 graph could only refuse.
+
+    The edge folds every binding between a pair into sorted sets, so the expected *count* is what
+    the aggregate implies -- one entry per (spelling, name), and one naming the spelling itself on
+    a side-effect edge that carries no names. Computed by the graph, so this is not the rebuild
+    checking its own arithmetic against a copy of itself."""
+    scoped_m = SCOPED.replace("x.", "m.")
+    assert count(f"MATCH (m:TSModule)-[i:TS_IMPORTS]->() WHERE {scoped_m} RETURN count(i) AS n") > 0, "the reference graph carries import bindings"
+    imports = analysis.get_imports()
+    assert set(imports) == set(analysis.get_symbol_table()), "every module key answers, importing or not"
+    implied = cypher(
+        f"MATCH (m:TSModule)-[i:TS_IMPORTS]->() WHERE {scoped_m} "
+        "RETURN sum(size(coalesce(i.spellings, [])) * CASE WHEN size(coalesce(i.imported_names, [])) = 0 THEN 1 ELSE size(i.imported_names) END) AS n",
+        **SCOPE,
+    )[0]["n"]
+    assert sum(len(v) for v in imports.values()) == implied
+    row = cypher(
+        f"MATCH (m:TSModule)-[i:TS_IMPORTS]->() WHERE {scoped_m} AND size(coalesce(i.type_only_names, [])) > 0 "
+        "RETURN m.name AS k, i.type_only_names AS names ORDER BY m.name, i.type_only_names LIMIT 1",
+        **SCOPE,
+    )
+    if row:  # a corpus with no `import type` anywhere would make this vacuous, not wrong
+        assert set(row[0]["names"]) <= {i.name for i in imports[row[0]["k"]] if i.is_type_only}
+
+
+def test_exports_are_the_modules_own_encoded_list(analysis, cypher):
+    """The other half of #368, and the lossless one: ``exports_json`` is the in-memory export list
+    serialized verbatim, ``null`` on a module that exports nothing."""
+    scoped_m = SCOPED.replace("x.", "m.")
+    carried = cypher(f"MATCH (m:TSModule) WHERE {scoped_m} AND m.exports_json IS NOT NULL RETURN m.name AS k, m.exports_json AS j ORDER BY m.name", **SCOPE)
+    assert carried, "the reference graph carries export bindings"
+    exports = analysis.get_exports()
+    assert set(exports) == set(analysis.get_symbol_table())
+    assert sum(len(v) for v in exports.values()) == sum(len(json.loads(r["j"])) for r in carried)
+    for r in carried[:20]:
+        assert [e.name for e in exports[r["k"]]] == [e["name"] for e in json.loads(r["j"])], r["k"]
+    assert all(not exports[k] for k in set(exports) - {r["k"] for r in carried}), "a module with no exports_json answers [], the honest empty"
 
 
 def test_extends_comes_from_the_relationship_and_implements_names_the_absent_type(analysis, cypher):
@@ -410,8 +447,12 @@ def test_artifact_layer_matches_the_graph(analysis, cypher):
     assert len(backend.get_dependencies(direct_only=True)) == sum(d.direct for d in deps)
     assert len(backend.get_config_keys()) == cypher("MATCH (:Application {id: $id})-[:HAS_ARTIFACT]->()-[:DEFINES_CONFIG]->(k) RETURN count(k) AS n", id=APP_ID)[0]["n"]
     assert len(backend.get_config_uses()) == cypher(f"MATCH (x:TSBodyNode)-[u:TS_USES_CONFIG]->() WHERE {SCOPED} RETURN count(u) AS n", **SCOPE)[0]["n"]
-    with pytest.raises(CodeanalyzerExecutionException, match="unresolved config reads"):
-        backend.get_unresolved_config_reads()
+    # #368: TS_READS_CONFIG_UNRESOLVED reaches the graph from 1.4.0 on, so this answers instead of
+    # refusing -- one entry per edge, however many sites collapsed onto it, and `site` always ""
+    # (the edge runs application-to-target and never touches the reading body node).
+    reads = backend.get_unresolved_config_reads()
+    assert len(reads) == cypher("MATCH (:Application {id: $id})-[u:TS_READS_CONFIG_UNRESOLVED]->() RETURN count(u) AS n", id=APP_ID)[0]["n"]
+    assert all(r.site == "" and r.callee for r in reads)
 
 
 # =====================================================================================

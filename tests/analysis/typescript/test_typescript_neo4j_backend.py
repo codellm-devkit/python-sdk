@@ -35,15 +35,16 @@ coverage of the backend lives in ``test_typescript_e2e_neo4j_live.py``.
 
 **The tolerances, each with its cause.** The graph is the analyzer's own projection and the
 projection is lossy (the full ledger is the "on ``TSNeo4jBackend``" table in
-``docs/agent-api-reference.md``). Three assertions below are therefore weaker than the parity they
-were originally written to prove; each says so where it stands, so a reader does not mistake them
-for parity:
+``docs/agent-api-reference.md``). Two assertions below are therefore weaker than the parity they
+were originally written to prove, and a third stopped being weak in #368; each says so where it
+stands, so a reader does not mistake one for the other:
 
-* ``get_method_parameters`` **raises** for a callable that exists — ``:TSCallable`` projects no
-  parameters and the projection mints no parameter nodes, and ``[]`` would read as "takes no
-  parameters" (``neo4j_backend.get_method_parameters``). The two tests that used to read a
-  parameter list off the graph now assert that refusal: it witnesses that the lookup *resolved*
-  the callable — a name it does not resolve returns ``[]`` — and nothing about its signature.
+* ``get_method_parameters`` answers again, and this suite is where the *answering* direction of
+  #368 is pinned: the graph this file emits is the one the pinned analyzer writes, so it carries
+  ``:TSCallable.parameters_json`` and the two tests below compare real parameter names against
+  the sources. The refusing direction — a graph emitted before 1.4.0, which carries no binding
+  layer and must not answer an ambiguous ``[]`` — is pinned over the fake driver in
+  ``test_typescript_get_method_functions.py``, whose ``FakeDriver`` writes none of it.
 * A call-graph edge carries ``type`` / ``weight`` / ``provenance`` and nothing else, on both
   TypeScript backends. There is no ``tags`` key to assert: ``tags`` was a schema-1.0.0 call-edge
   field, and schema v2's ``TSCallGraphEdge`` is ``{src, dst, prov, weight}``. So the edge shape is
@@ -67,7 +68,6 @@ import pytest
 from cldk import CLDK
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.typescript.neo4j import Neo4jConnectionConfig
-from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 
 logging.getLogger("neo4j").setLevel(logging.ERROR)
 
@@ -313,10 +313,23 @@ def test_methods_and_constructor(ts_neo4j):
 def test_fields_and_parameters(ts_neo4j):
     fields = {f.name for f in ts_neo4j.get_fields("src/models.User")}
     assert {"name", "role"} <= fields
-    # Fields are projected; parameters are not. This asserts a *refusal*, not parity: the graph
-    # carries no parameters on :TSCallable, and [] would read as "create takes none".
-    with pytest.raises(CodeanalyzerExecutionException, match="no parameters for 'create'"):
-        ts_neo4j.get_method_parameters("src/services.UserService", "create")
+    # Both are projected since codeanalyzer-typescript 1.4.0 (#368): parameters ride
+    # :TSCallable.parameters_json, so this is parity with the sources again, not a refusal.
+    # services.ts declares `create(name: string, role: Role = Role.Member)`.
+    assert ts_neo4j.get_method_parameters("src/services.UserService", "create") == ["name", "role"]
+
+
+def test_import_bindings_are_the_modules_own(ts_neo4j):
+    """The TS_IMPORTS half of #368, against a graph this suite emitted with the pinned analyzer."""
+    imports = ts_neo4j.get_imports()
+    assert set(imports) == set(ts_neo4j.get_symbol_table()), "every module key answers, importing or not"
+    assert {(i.module, i.name) for i in imports["src/services.ts"]} == {("./models", n) for n in ("Named", "Role", "User", "UserId")}
+    assert {i.name for i in imports["src/services.ts"] if i.is_type_only} == {"Named", "UserId"}, "`import type` survives the aggregate"
+    assert imports["src/models.ts"] == [], "a module that imports nothing is present and empty, never absent"
+    # The sample app writes no `export … from` / `export { … }` statement at all — every symbol is
+    # exported at its own declaration — so exports_json is null on every module. That is the
+    # answer, not a gap: get_exports refuses only when the whole binding layer is missing.
+    assert ts_neo4j.get_exports() == {key: [] for key in imports}
 
 
 def test_get_method_resolves_module_level_function(ts_neo4j):
@@ -329,13 +342,13 @@ def test_get_method_resolves_module_level_function(ts_neo4j):
 
 
 def test_get_method_parameters_module_level_function(ts_neo4j):
-    # Exercises the module-level fallback in get_method_parameters/get_method. The projection
-    # carries no parameters, so the two outcomes are the refusal (the fallback resolved the
-    # callable) and [] (it did not) — which makes the *raise* the thing that proves "src/index.main"
-    # was found. It proves nothing about main's parameter list, even though index.ts declares
-    # `function main(): void`; the graph cannot say so.
-    with pytest.raises(CodeanalyzerExecutionException, match="no parameters for 'main'"):
-        ts_neo4j.get_method_parameters("src/index", "main")
+    # Exercises the module-level fallback in get_method_parameters/get_method. index.ts declares
+    # `function main(): void`, so the honest answer is [] — the same [] an unresolvable name gets,
+    # which is why the resolution half is asserted through get_method rather than through the
+    # parameter list. That [] is a *fact* here only because the graph carries the binding layer;
+    # without it the accessor refuses instead (test_typescript_get_method_functions.py).
+    assert ts_neo4j.get_method("src/index", "main") is not None
+    assert ts_neo4j.get_method_parameters("src/index", "main") == []
     assert ts_neo4j.get_method_parameters("src/index", "no_such_function_here") == []
 
 

@@ -111,6 +111,10 @@ class TSImport(_Base):
     """A TypeScript import binding (one entry per imported name)."""
 
     module: str
+    #: 1.4.0 additive: the project-relative module key ``module`` resolves to under the importer's
+    #: own program, from the compiler's own resolver. ``None`` when the specifier is external, a
+    #: builtin, or unresolvable -- and it is what the Neo4j projection homes ``TS_IMPORTS`` on.
+    resolved_module: Optional[str] = None
     name: str
     alias: Optional[str] = None
     is_type_only: bool = False
@@ -125,6 +129,9 @@ class TSExport(_Base):
     """A TypeScript export / re-export binding."""
 
     module: Optional[str] = None
+    #: 1.4.0 additive, as on :class:`TSImport`; set on re-exports only (a local ``export { x }``
+    #: names no other module).
+    resolved_module: Optional[str] = None
     name: str
     alias: Optional[str] = None
     is_type_only: bool = False
