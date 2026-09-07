@@ -61,6 +61,7 @@ from codeanalyzer.options import AnalysisOptions, EmitTarget
 from codeanalyzer.schema import Analysis, model_dump_json
 
 from cldk.analysis import AnalysisLevel
+from cldk.analysis.commons.graphs import call_reaches
 from cldk.analysis.commons.levels import ANALYZER_LEVELS, LEVEL_NAMES, analyzer_level
 from cldk.analysis.commons.resolve import CallableCandidate, body_node_kind, resolve_callable_signature, resolve_value_name, resolve_within, value_candidate
 from cldk.analysis.commons.results import BodyRef, CallableRef, Diagnostic, EdgePage, EntrypointCoverage, FlowPaths, LocateResult, ModuleRef, Slice, SliceNode, TypeRef
@@ -1346,13 +1347,10 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         check_depth(depth)
         a = self.resolve_callable(src).callable
         b = self.resolve_callable(dst).callable
-        graph = self.get_call_graph()
-        if a not in graph or b not in graph:
-            return False
-        # ``nx.descendants`` is unbounded and ``ego_graph`` is the bounded form; both exclude the
-        # zero-hop case, which is what makes ``reaches(x, x)`` false unless a real cycle exists.
-        reachable = nx.descendants(graph, a) if depth is None else set(nx.ego_graph(graph, a, radius=depth).nodes) - {a}
-        return b in reachable
+        # ``call_reaches`` owns the zero-hop rule: no path is vacuous, and ``reaches(x, x)`` is the
+        # cycle question -- which a plain descendants set answers ``False`` to even for a self-loop,
+        # while ``_REACHES``'s ``{1,depth}`` pattern on the graph backend answers it correctly.
+        return call_reaches(self.get_call_graph(), a, b, depth)
 
     def backward_cone(self, sinks: Sequence[str], *, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
         """Everything that can reach these sinks (see :meth:`PythonAnalysisBackend.backward_cone`)."""

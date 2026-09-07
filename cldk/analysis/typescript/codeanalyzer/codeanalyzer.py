@@ -51,7 +51,7 @@ from cldk.analysis.commons.bounds import (
     check_page_size,
     edge_page,
 )
-from cldk.analysis.commons.graphs import cone_sinks, flow_path, shortest_walks, slice_resolved
+from cldk.analysis.commons.graphs import call_reaches, cone_sinks, flow_path, shortest_walks, slice_resolved
 from cldk.analysis.commons.keys import body_key_column, resolve_module_key
 from cldk.analysis.commons.levels import ANALYZER_LEVELS, LEVEL_NAMES, analyzer_level
 from cldk.analysis.commons.resolve import CallableCandidate, resolve_callable_signature, resolve_value_name, resolve_within
@@ -1276,13 +1276,9 @@ class TSCodeanalyzer(TSAnalysisBackend):
         check_depth(depth)
         a = self.resolve_callable(src).callable
         b = self.resolve_callable(dst).callable
-        graph = self._callable_call_graph
-        if a not in graph or b not in graph:
-            return False
-        # ``nx.descendants`` is unbounded and ``ego_graph`` the bounded form; both exclude the
-        # zero-hop case, which is what makes ``reaches(x, x)`` false unless a real cycle exists.
-        reachable = nx.descendants(graph, a) if depth is None else set(nx.ego_graph(graph, a, radius=depth).nodes) - {a}
-        return b in reachable
+        # See :func:`call_reaches`: the self-question is the cycle question, and the Neo4j backend's
+        # ``{1,depth}`` pattern has always answered it that way.
+        return call_reaches(self._callable_call_graph, a, b, depth)
 
     def backward_cone(self, sinks: Sequence[str], *, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
         """Everything that can reach these sinks (see :meth:`TSAnalysisBackend.backward_cone`).

@@ -297,6 +297,31 @@ def test_reaches_is_unbounded_by_default_and_a_cutting_depth_says_no(both):
     assert both.reaches(SELL, GET_STATEMENT, depth=1) is False
 
 
+def test_reaches_answers_the_cycle_question_the_self_path_refusal_points_at(ref):
+    """``call_paths_between(x, x)`` refuses and says "ask ``reaches(X, X)`` whether a cycle
+    exists". That advice has to work, and it did not: the in-memory rule asked a descendants set,
+    which excludes its own source, so ``reaches(x, x)`` was ``False`` even for direct recursion --
+    an E8 wrong answer reached *from the error path*, which is where a caller is least able to
+    check it.
+
+    daytrader8 has no recursive callable at all (0 self-loops, 0 cycles over a4's 100 call-graph
+    vertices), so the cycle is added to the cached graph the accessor reads and removed again. The
+    fixture is the reason the defect survived, not a reason to leave it untested.
+    """
+    graph = ref.get_call_graph()
+    assert ref.reaches(PRINT, PRINT) is False, "and it is not vacuously true either"
+    with pytest.raises(ValueError) as refusal:
+        ref.call_paths_between(PRINT, PRINT)
+    assert f"reaches({PRINT!r}, {PRINT!r})" in str(refusal.value)
+
+    graph.add_edge(PRINT, PRINT, type="CALL_DEP", weight=1, calling_lines=[])
+    try:
+        assert ref.reaches(PRINT, PRINT) is True, "the advice, followed literally"
+        assert ref.reaches(PRINT, PRINT, depth=1) is True
+    finally:
+        graph.remove_edge(PRINT, PRINT)
+
+
 def test_reaches_refuses_a_malformed_depth(both):
     for depth in ("2", 2.5, 0, True):
         with pytest.raises(ValueError, match="depth"):

@@ -248,6 +248,35 @@ def shortest_walks(edges: Mapping[str, Mapping[str, Sequence[tuple]]], src: str,
     return out
 
 
+def call_reaches(graph: "nx.DiGraph", a: str, b: str, depth: "int | None") -> bool:
+    """Whether a call path of **at least one hop** runs from ``a`` to ``b``, within ``depth`` hops.
+
+    One function for the three in-memory backends because ``reaches(x, x)`` is the case they all
+    got wrong in the same way, and because the advice that points at it is shared too
+    (:func:`~cldk.analysis.commons.bounds.refuse_self_path` tells a caller to "ask ``reaches(X, X)``
+    whether a cycle exists").
+
+    ``nx.descendants`` and ``ego_graph(...) - {a}`` both **exclude the source**, even when the
+    source has a self-loop or sits on a cycle — that is what "descendants" means — so asking them
+    ``b in reachable`` for ``b == a`` answered ``False`` for every input. Both Neo4j backends
+    already answer the cycle question, because their quantified pattern is ``{1,depth}`` and lands
+    back on the source like any other node, so this was also a backend divergence and not only a
+    wrong docstring.
+
+    The self-question is asked of the predecessors instead: ``a`` is on a cycle exactly when
+    something that reaches ``a`` is reachable *from* ``a`` — including ``a`` itself, which is the
+    direct self-loop. Bounded, the two halves have to add up to ``depth``, so the reachable half is
+    one hop shorter.
+    """
+    if a not in graph or b not in graph:
+        return False
+    reachable = nx.descendants(graph, a) if depth is None else set(nx.ego_graph(graph, a, radius=depth).nodes) - {a}
+    if a != b:
+        return b in reachable
+    inner = {a} | reachable if depth is None else set(nx.ego_graph(graph, a, radius=depth - 1).nodes)
+    return any(predecessor in inner for predecessor in graph.predecessors(a))
+
+
 def _no_body_node(found: LocateResult) -> str:
     """Why a :class:`~cldk.analysis.commons.results.LocateResult` has no ``node_id``, in the
     caller's own vocabulary.

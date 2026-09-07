@@ -66,7 +66,7 @@ from cldk.analysis.commons.bounds import (
     check_max_nodes,
     check_max_paths,
 )
-from cldk.analysis.commons.graphs import as_slice_node, cone_sinks, edge_sort_key, flow_path, sdg_rel_pattern, sdg_rels, shortest_walks, slice_resolved, via_table
+from cldk.analysis.commons.graphs import as_slice_node, call_reaches, cone_sinks, edge_sort_key, flow_path, sdg_rel_pattern, sdg_rels, shortest_walks, slice_resolved, via_table
 from cldk.analysis.commons.keys import body_key_column, resolve_module_key
 from cldk.analysis.commons.resolve import CallableCandidate, resolve_callable_signature, resolve_value_name, resolve_within
 from cldk.analysis.commons.results import (
@@ -1447,13 +1447,9 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         check_depth(depth)
         a = self.resolve_callable(src).callable
         b = self.resolve_callable(dst).callable
-        graph = self.get_call_graph()
-        if a not in graph or b not in graph:
-            return False
-        # ``nx.descendants`` is unbounded and ``ego_graph`` is the bounded form; both exclude the
-        # zero-hop case, which is what makes ``reaches(x, x)`` false unless a real cycle exists.
-        reachable = nx.descendants(graph, a) if depth is None else set(nx.ego_graph(graph, a, radius=depth).nodes) - {a}
-        return b in reachable
+        # See :func:`~cldk.analysis.commons.graphs.call_reaches`: the self-question is the cycle
+        # question, and both backends walk this same networkx graph, so there is one answer.
+        return call_reaches(self.get_call_graph(), a, b, depth)
 
     # -----[ paths and flow predicates ]-----
     def paths_between(self, src: str, dst: str, *, src_within: str, dst_within: str, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
