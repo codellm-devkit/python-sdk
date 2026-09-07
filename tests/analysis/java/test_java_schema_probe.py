@@ -153,15 +153,15 @@ def test_application_name_is_required(fake_driver):
 
 #: The one live case: a graph another analyzer emitted, read-only, skipped unless pointed at one.
 #: ``bolt://localhost:7689`` in the leg-3 environment (codeanalyzer-python, ``odoo-slim-19``).
-PYTHON_GRAPH_URI = os.environ.get("CLDK_TEST_PYTHON_NEO4J_URI")
-PYTHON_GRAPH_USER = os.environ.get("CLDK_TEST_PYTHON_NEO4J_USER", "neo4j")
-PYTHON_GRAPH_PASSWORD = os.environ.get("CLDK_TEST_PYTHON_NEO4J_PASSWORD")
-PYTHON_GRAPH_APP = os.environ.get("CLDK_TEST_PYTHON_NEO4J_APP", "odoo-slim-19")
+PYTHON_GRAPH_URI = os.environ.get("CLDK_TEST_NEO4J_PYTHON_URI")
+PYTHON_GRAPH_USER = os.environ.get("CLDK_TEST_NEO4J_PYTHON_USER", "neo4j")
+PYTHON_GRAPH_PASSWORD = os.environ.get("CLDK_TEST_NEO4J_PYTHON_PASSWORD")
+PYTHON_GRAPH_APP = os.environ.get("CLDK_TEST_NEO4J_PYTHON_APP", "odoo-slim-19")
 
 
 @pytest.mark.skipif(
     not (PYTHON_GRAPH_URI and PYTHON_GRAPH_PASSWORD),
-    reason="needs a live codeanalyzer-python graph to attach to (set CLDK_TEST_PYTHON_NEO4J_URI / _PASSWORD)",
+    reason="needs a live codeanalyzer-python graph to attach to (set CLDK_TEST_NEO4J_PYTHON_URI / _PASSWORD)",
 )
 @pytest.mark.parametrize("app", [PYTHON_GRAPH_APP, "daytrader8"], ids=["an-application-the-graph-holds", "one-it-does-not"])
 def test_a_python_graph_is_refused_live_naming_the_missing_java_types(app):

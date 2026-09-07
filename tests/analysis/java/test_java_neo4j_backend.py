@@ -27,7 +27,7 @@ Skipped unless pointed at an already-populated graph and a matching reference ca
     CLDK_TEST_NEO4J_URI=bolt://localhost:7691 \
     CLDK_TEST_NEO4J_USER=neo4j \
     CLDK_TEST_NEO4J_PASSWORD=... \
-    CLDK_TEST_NEO4J_JAVA_APP=daytrader8 \      # the --app-name the graph was emitted with
+    CLDK_TEST_NEO4J_APP=daytrader8 \      # the --app-name the graph was emitted with
     CLDK_TEST_JAVA_PROJECT=/path/to/project \  # the reference project dir
     CLDK_TEST_JAVA_CACHE=/path/to/dir \        # dir holding a level-4 reference analysis.json
     uv run pytest tests/analysis/java/test_java_neo4j_backend.py
@@ -80,7 +80,7 @@ logging.getLogger("neo4j").setLevel(logging.ERROR)
 NEO4J_URI = os.environ.get("CLDK_TEST_NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = os.environ.get("CLDK_TEST_NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.environ.get("CLDK_TEST_NEO4J_PASSWORD", "neo4j")
-JAVA_APP = os.environ.get("CLDK_TEST_NEO4J_JAVA_APP")
+JAVA_APP = os.environ.get("CLDK_TEST_NEO4J_APP")
 JAVA_PROJECT = os.environ.get("CLDK_TEST_JAVA_PROJECT")
 JAVA_CACHE = os.environ.get("CLDK_TEST_JAVA_CACHE")
 
