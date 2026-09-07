@@ -39,16 +39,30 @@ The committed files are gzip-compressed (`analysis.json.gz`, `gzip -9`) because 
 
 `a4` is a **pruned copy** of the project (schema v2 rejects `-t`, so a small level-4 fixture can only be made by
 deleting sources). Pruning makes most types unresolvable, and the analyzer then falls back to the spelling written
-in the source. Measured across the four types both fixtures share:
+in the source. Measured across the four types both fixtures share — 128 callables on each side, walked over the
+same **flattened** type index the SDK addresses on (`JCodeanalyzer._types`: nested, local and anonymous types
+included):
 
 | | `a1` (whole project) | `a4` (pruned) |
 |---|---|---|
 | parameter types | `com.ibm…AccountDataBean` | `AccountDataBean` |
 | generic arguments | erased — `java.util.Collection` | kept — `Collection<QuoteDataBean>` |
-| qualified interface names | 34 of 34 | 4 of 5 |
-| signatures containing `<` | 143 | 8 |
+| qualified interface names | 5 of 5 | 4 of 5 |
+| signatures with a generic in the **parameter tail** (`"<" in sig.partition("(")[2]`) | 0 of 128 | 4 of 128 |
+| signatures containing `<` anywhere, tail or name | 6 | 8 |
 
 So a callable's signature key is a function of **what the analyzer could resolve**, not of the analysis level.
+
+*Erratum (2026-09-07).* The first version of this table, and the message of commit `228a4c4`, published "143"
+signatures containing `<` and "34 of 34" qualified interface names for `a1`. Both came from a walk that visits only
+each compilation unit's top-level `type_declarations` — it skips nested, local and anonymous types, and the same
+walk yields 1,177 callables for `a1`, the figure the leg-3a J-8 erratum already retracted in favour of **1,216**.
+Over the whole of `a1`, walked completely, the numbers are **154** signatures containing `<` and **45 of 45**
+qualified interface names (149 types, 1,216 callables). The row was also mislabelled: all 154 of those `<`
+characters are in the callable's *name* (`<init>` / `<clinit>`) and **none** is a generic in the parameter tail, so
+"generic arguments" was never what that row counted. The conclusion is unchanged — `a4` keeps generics where `a1`
+erases them — only the evidence is. Reproduce with `JCodeanalyzer._types` (not `unit.type_declarations`) and
+`"<" in signature.partition("(")[2]`.
 
 **Use `a1` for anything that asserts a signature's spelling**, and `a4` only for what it exists to carry: the
 level-4 dataflow structure (`param_in`, `param_out`, `summary`, `points-to` provenance). A test that pins an `a4`

@@ -35,9 +35,13 @@
   Do not resolve this conflict mechanically in either direction.
 - **`a4`'s signature spellings are a pruning artifact; assert spellings against `a1`.** `a4` is a pruned copy,
   so most types are unresolvable and the analyzer falls back to the source spelling: `a1` has
-  `setTopGainers(java.util.Collection)` where `a4` has `setTopGainers(Collection<QuoteDataBean>)`, and 143
-  signatures contain `<` in `a1` against 8 in `a4`. A signature key is a function of what the analyzer could
-  resolve, not of the analysis level. Use `a4` for the level-4 dataflow structure it exists to carry, and `a1`
+  `setTopGainers(java.util.Collection)` where `a4` has `setTopGainers(Collection<QuoteDataBean>)`: across the
+  four types the two fixtures share, **4 of `a4`'s 128 signatures carry a generic in the parameter tail and 0 of
+  `a1`'s do**. A signature key is a function of what the analyzer could resolve, not of the analysis level.
+  *(Erratum: this bullet first said "143 signatures contain `<` in `a1` against 8". That count was taken with a
+  walk that skips nested, local and anonymous types — the same walk that yields the retracted 1,177 callables —
+  and it counted `<init>`/`<clinit>` in the callable's **name**, not generics. Complete walk, whole of `a1`: 154
+  signatures contain `<`, all 154 of them in the name and none in the parameter tail. See the fixture README.)* Use `a4` for the level-4 dataflow structure it exists to carry, and `a1`
   for anything that pins how a signature is spelled.
 - Run suites **sequentially**; only one pytest session per checkout (the Java conftest extracts a fixture into the tree and removes it on teardown, so concurrent sessions race). Stage by name.
 - **Baselines at this branch's base:** release gate **1069 passed / 224 skipped**, coverage 83.94%; Java offline **321 passed / 26 skipped**; live parity 19, scale 5, audit 34.
