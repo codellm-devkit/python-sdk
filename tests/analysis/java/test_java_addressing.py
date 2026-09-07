@@ -410,6 +410,31 @@ def test_a_body_node_hydrates_only_where_the_text_exists(analysis_json):
     assert "no recoverable source" in str(e.value)
 
 
+def test_describe_answers_a_ref_resolve_value_just_minted(both):
+    """``describe`` promises that ``source=None`` means "this position exists and the backend has
+    no text for it", and scopes its ``KeyError`` to a stale or foreign address. A ``formal_in`` ref
+    is neither: ``resolve_value`` composes it from the parameter list, which exists at every
+    analysis level, while the vertex that carries it exists only from level 3 -- so looking it up
+    among the body nodes made the round trip through this SDK's *own* two accessors raise.
+
+    a1 is the fixture that shows it: its body map holds the 4,006 ``call`` nodes and nothing else,
+    which is what ``CLDK.java(...)`` produces at its default ``analysis_level``.
+    """
+    node = both.resolve_value("orderID", within=f"{DIRECT_PKG}.TradeDirect.cancelOrder(java.lang.Integer, boolean)")
+    assert node.ref.endswith("@formal_in:0")
+    assert both.describe([node])[0].source is None, "present, with no text -- a parameter is not a region of the file"
+    with pytest.raises(KeyError):
+        both.get_source(node.ref)
+
+
+def test_describe_still_refuses_a_parameter_index_past_the_end(both):
+    """The exemption is the parameter list, not the spelling: an index the callable does not have
+    is a stale address and keeps raising, which is what ``describe``'s ``KeyError`` is for."""
+    node = both.resolve_value("orderID", within=f"{DIRECT_PKG}.TradeDirect.cancelOrder(java.lang.Integer, boolean)")
+    with pytest.raises(KeyError):
+        both.describe([node.model_copy(update={"ref": node.ref.replace("@formal_in:0", "@formal_in:9")})])
+
+
 def test_describe_raises_on_a_ref_naming_nothing(both):
     stale = SliceNode(file="a.java", line=1, callable="a.B.c()", kind="callable", name="c", ref="can://java/other/x")
     with pytest.raises(KeyError):

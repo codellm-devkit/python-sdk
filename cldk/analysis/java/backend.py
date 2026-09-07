@@ -47,6 +47,7 @@ nothing else.
 
 from __future__ import annotations
 
+import re
 from abc import abstractmethod
 from functools import cached_property
 from typing import ClassVar, Dict, Iterable, List, Mapping, NamedTuple, Optional, Sequence, Tuple, Union
@@ -389,6 +390,12 @@ def java_resolve_callable(name: str, candidates: Sequence[CallableCandidate], *,
 #: candidates are already in the message, spelled the way the graph spells them, so the advice
 #: names *them* — a thing the caller can copy and check — and not a normalisation nothing performs.
 _BY_FULL_SIGNATURE = "by naming the full signature exactly as one of the listed matches spells it"
+
+
+#: A parameter vertex's body key, ``formal_in:<n>`` -- the only body key this surface *composes*
+#: (:meth:`JavaAnalysisBackend.resolve_value`) rather than reads back off a node, and the reason it
+#: is the only one that can be answered without one.
+_FORMAL_IN = re.compile(r"^formal_in:(\d+)$")
 
 
 def java_body_node_id(callable_id: str, body_key: str) -> str:
@@ -809,16 +816,32 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         ref is split from its callable at the first ``@``, which is safe because a Java ``can://``
         id contains none (checked: 0 of daytrader8's 1,216 and ThingsBoard's 28,763 callables), and
         the node is then looked up by its **whole** id.
+
+        **A ``@formal_in:<n>`` ref is answered from the parameter list**, not from the body nodes,
+        for the same reason :meth:`resolve_value` mints it from there: a parameter exists at every
+        analysis level, and the vertex that carries it does not. The body map holds the ``call``
+        nodes only below level 3, so looking one up there made ``describe`` raise ``KeyError`` — "a
+        stale or foreign address" — on a ref ``resolve_value`` had just returned, at the default
+        level of ``CLDK.java(...)``. The answer that is true at every level on both backends is
+        *present, with no text*: a parameter is a dataflow position, not a region of a file, which
+        is why :meth:`describe`'s own contract calls ``source=None`` the only meaning of ``None``.
+        An index past the end of the parameter list is **not** answered this way — that is a stale
+        address, and it falls through to the body-node lookup that will not find it.
         """
         index = self._addressing
         found: Dict[str, "str | None"] = {}
         wanted: Dict[str, List[str]] = {}
         for ref in dict.fromkeys(refs):
             row = index.by_key.get(ref) or index.by_id.get(ref)
+            callable_id, _, body_key = ref.partition("@")
+            owner = index.by_id.get(callable_id)
+            formal_in = _FORMAL_IN.match(body_key)
             if row is not None:
                 found[ref] = row.callable.code or None
-            elif "@" in ref and ref.partition("@")[0] in index.by_id:
-                wanted.setdefault(ref.partition("@")[0], []).append(ref)
+            elif owner is not None and formal_in and int(formal_in.group(1)) < len(owner.callable.parameters):
+                found[ref] = None
+            elif owner is not None and body_key:
+                wanted.setdefault(callable_id, []).append(ref)
         for callable_id, nodes in self._body_nodes(list(wanted)).items():
             for ref in wanted[callable_id]:
                 if ref in nodes:
