@@ -162,6 +162,11 @@ class TSCodeanalyzer(TSAnalysisBackend):
             )
         self.analysis: TSAnalysis = self._init_codeanalyzer(analysis_level=analyzer_level(analysis_level))
         self.application: TSApplication = self.analysis.application
+        #: The ``--app-name`` the analyzer stamped into every id, read back off the application's
+        #: own ``can://typescript/<app>`` id. Spelled the same as :attr:`TSNeo4jBackend.application_name`
+        #: so a message naming the application reads identically whichever backend raised it -- and
+        #: so no message has to embed a ``can://`` id to name it (E6).
+        self.application_name: str = self.application.id.rsplit("/", 1)[-1]
         self._call_graph: nx.DiGraph | None = None
         self._index()
 
@@ -993,7 +998,7 @@ class TSCodeanalyzer(TSAnalysisBackend):
         """
         found = self._sources_for([node_id])
         if node_id not in found:
-            raise KeyError(f"no callable, body node or external symbol of application {self.application.id!r} is addressed by {node_id!r}")
+            raise KeyError(f"no callable, body node or external symbol of application {self.application_name!r} is addressed by {node_id!r}")
         code = found[node_id]
         if not code:
             raise KeyError(f"no recoverable source for {node_id!r} (it carries no span, or the analyzer emitted no text for it)")

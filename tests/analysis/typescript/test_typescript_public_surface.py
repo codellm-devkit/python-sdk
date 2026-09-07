@@ -165,11 +165,21 @@ def test_no_public_accessor_only_raises():
         assert "raise NotImplementedError" not in body, f"{name} only raises"
 
 
-#: Accessors both facades carry whose *parameters* differ, each a pre-existing 1.x-era gap rather
-#: than this leg's: TypeScript's ``get_call_graph``/``get_classes``/``get_symbol_table`` never
-#: gained Python's scoping keywords (leg 2.5b takes no ``roots=``, by Task 2's own ruling), and
-#: ``get_callers``/``get_callees`` keep TypeScript's optional method argument. Listed so the
-#: divergence is a recorded decision that has to be deleted from here to be closed, not a silence.
+#: Accessors both facades carry whose *parameters* differ. Two kinds, and the difference matters:
+#:
+#: * **Open scope, tracked as python-sdk#352** -- ``get_call_graph`` (no ``roots=``/``depth=``),
+#:   ``get_classes`` (no ``module=``) and ``get_symbol_table`` (no ``paths=``). 1.x-era in
+#:   *origin*, but they are open items against leg 2.5b's own definition of done: the shared
+#:   surface is meant to take the same arguments on both facades, and adding a keyword-only
+#:   optional with a default would not have moved an existing signature. On a large application the
+#:   unscoped call is the only call available and it is the expensive one, so this is a gap a
+#:   caller feels, not a cosmetic one.
+#: * **Benign** -- ``get_callers``/``get_callees`` keep TypeScript's *optional* method argument
+#:   where Python's is required. Nothing a Python caller writes stops working on TypeScript; only
+#:   the reverse, and TypeScript is the looser of the two.
+#:
+#: Listed so each is a recorded decision that has to be deleted from here to be closed, not a
+#: silence -- ``test_a_recorded_divergence_is_still_a_divergence`` below is what enforces that.
 KNOWN_ARGUMENT_DIVERGENCES = {"get_call_graph", "get_callees", "get_callers", "get_classes", "get_symbol_table"}
 
 

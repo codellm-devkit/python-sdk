@@ -30,25 +30,40 @@ plans `docs/design/plans/2026-09-06-leg-2.5a-typescript-schema-v2.md` and
   body-node ids the query surface reads. **Migration:** re-emit with
   `codeanalyzer-typescript>=1.3.0 --emit neo4j`, which no longer accepts `-a` (the emit is always
   full depth). No model changed: leg 2.5a had already declared 1.3.0's additive fields.
-- **`LocateResult.body` is a language-neutral `BodyRef`** (`{id, kind, span, callee}`), replacing
-  `LocateResult.node` and its `cldk.models.python.BodyNode`, so `cldk/analysis/commons/results.py`
-  no longer imports a language package (`commons/backend.py` still declares the shared artifact
-  getters on the `Py*` models, which is the contract). `Span` gains a commons twin that validates
-  from either analyzer's span; `cldk.models.python.Span` is unchanged and still the analyzer's own
-  class.
+- **BREAKING: `LocateResult.node` is now `LocateResult.body`, a language-neutral `BodyRef`**
+  (`{id, kind, span, callee}`) in place of `cldk.models.python.BodyNode`, so
+  `cldk/analysis/commons/results.py` no longer imports a language package (`commons/backend.py`
+  still declares the shared artifact getters on the `Py*` models, which is the contract).
+  **Migration:** rename `result.node` to `result.body`; `result.node_id` is unchanged and is still
+  the handle `get_source()` takes. `Span` gains a commons twin that validates from either
+  analyzer's span; `cldk.models.python.Span` is unchanged and still the analyzer's own class.
 - TypeScript's DDG has **one** provenance tier: every `TS_DDG` edge carries
   `prov == ["reaching-defs"]`, so `prov_rank` is constant there where Python ranks three ways. The
   field and helper are unchanged.
-- Every Cypher statement `TSNeo4jBackend` issues is now scoped **per bound variable**, not
-  per statement: both endpoints of a `TS_CALLS` edge, a quantified path's far end, and a slice's
-  reached body nodes each carry the two-prefix predicate. A statement that matched one endpoint by
-  a signature two applications can both declare could previously return the other application's
-  node.
+- Every Cypher statement `TSNeo4jBackend` issues is now scoped **per node it can reach**, not per
+  statement: both endpoints of a `TS_CALLS` edge, a quantified path's far end, a slice's reached
+  body nodes, and every *interior* node of a variable-length or shortest-path walk (`all(n IN
+  nodes(p) …)` on the slice, path and reachability queries) each carry the two-prefix predicate. A
+  statement that matched one endpoint by a signature two applications can both declare, or that
+  walked through an intermediate it never predicated, could previously return the other
+  application's node.
 
 ### Fixed
 - `docs/agent-api-reference.md` said `EntrypointCoverage.unresolved` was a `list[str]`; it is a
   `dict[str, int]` (near-miss selector → count), and `get_config_keys()` is keyed by the key's
   `can://` id rather than by its name (python-sdk#346 tracks changing that key).
+- `get_source()` on the in-process TypeScript backend named the application by its `can://` id
+  where the Neo4j backend named it plainly; both now name the application. `get_external_symbols()`
+  and `get_source()` over Neo4j scoped externals by the `can://typescript/` prefix alone, dropping
+  any external a JavaScript module owns; both now carry the two-prefix scope.
+
+### Known issues
+- **Source text read over the TypeScript Neo4j backend is truncated by one line.**
+  codeanalyzer-typescript 1.3.0 projects `:TSCallable.code` as the callable's text minus its final
+  `\n}` while the line numbers stay correct, so `get_source`, `get_method_bodies`, `describe` and
+  `locate(...).source` return short text over Neo4j and complete text in process. Upstream:
+  codellm-devkit/codeanalyzer-typescript#179. Read the text in process, or re-slice the span, until
+  the fix ships.
 
 ### Changed (leg 2.5a)
 - **Pinned `codeanalyzer-typescript` 0.4.3 → 1.2.0** (`pyproject.toml` `dependencies` and

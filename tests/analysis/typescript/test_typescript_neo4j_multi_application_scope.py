@@ -716,7 +716,7 @@ def test_has_resolution_edges_is_probed_against_this_applications_edges():
 # =====================================================================================
 # The audit: every statement, class-level and inline, carries the application scope
 # =====================================================================================
-_MATCHES_BY_PREFIX = re.compile(r"\w+\.id STARTS WITH \$p1 OR \w+\.id STARTS WITH \$p2|\.id STARTS WITH \$prefix\b")
+_MATCHES_BY_PREFIX = re.compile(r"\w+\.id STARTS WITH \$p1 OR \w+\.id STARTS WITH \$p2")
 _MATCHES_BY_SIGNATURE = re.compile(r"signature\s*[:=]\s*\$|\.signature IN \$")
 #: A ``can://`` id, or a **prefix of one**. ``$bp`` (leg 2.5b) is a resolved callable's own ``ref``
 #: plus ``@`` -- minted by ``resolve_callable``, which is itself two-prefix scoped -- so a body node
@@ -738,16 +738,23 @@ _TEMPLATE_ARGS = {"{rel}": "TS_DDG", "{rels}": SDG_REL_PATTERN, "{depth}": "5", 
 
 #: Every parameter a ``STARTS WITH`` may bind that is an **application-stamped** id prefix, so the
 #: variable carrying it cannot match another application's node. ``$p1``/``$p2`` are the two-prefix
-#: application scope (TS-3); ``$prefix``/``$ext_prefix`` are ``<app-id>/@external/``; ``$bp`` is a
-#: resolved callable's own ``ref`` plus ``@``, minted by ``resolve_callable``, which is itself
-#: two-prefix scoped; ``pos.module_prefix`` is one module's own id plus ``/``, bound only for a key
-#: this application declares. Each is narrower than the application scope, never wider.
-_SCOPED_VAR = re.compile(r"\b(\w+)\.id STARTS WITH (?:\$(?:p1|p2|prefix|ext_prefix|bp)|pos\.module_prefix)\b")
+#: application scope (TS-3); ``$bp`` is a resolved callable's own ``ref`` plus ``@``, minted by
+#: ``resolve_callable``, which is itself two-prefix scoped; ``pos.module_prefix`` is one module's
+#: own id plus ``/``, bound only for a key this application declares. Each is narrower than the
+#: application scope, never wider. A **single**-namespace prefix is deliberately not on this list:
+#: ``can://typescript/<app>/@external/`` is inside the application but drops every external a
+#: ``.js`` module owns, so it is a bug rather than a scope (leg 2.5b review, finding 9).
+_SCOPED_VAR = re.compile(r"\b(\w+)\.id STARTS WITH (?:\$(?:p1|p2|bp)|pos\.module_prefix)\b")
 
 #: A variable pinned to an id -- in the node pattern (``{id: $x}``) or in a ``WHERE``
 #: (``x.id = $y`` / ``x.id IN $ys``). A ``can://`` id embeds the application that minted it, so a
 #: node matched by one is inside that application by construction.
-_PINNED_BY_ID = re.compile(r"\((\w+):[\w:|]+ ?\{id ?: ?[^}]+\}\)|\b(\w+)\.id (?:=|IN) \$")
+#:
+#: The value must be a **parameter**. Accepting any expression (``{id: nid}``, a variable the
+#: statement itself projected) made the pin as trustworthy as whatever produced that variable, which
+#: the audit does not follow -- so a leak upstream of the pin read as a scope (leg 2.5b review,
+#: finding 8). A statement that hydrates by a projected id now scopes the node it walks in from.
+_PINNED_BY_ID = re.compile(r"\((\w+):[\w:|]+ ?\{id ?: ?\$\w+\}\)|\b(\w+)\.id (?:=|IN) \$")
 
 #: Relationship types a variable's scope survives, in **either** direction. Two reasons, both
 #: about how the emitter mints ids rather than about what this corpus happens to hold:
@@ -814,8 +821,50 @@ def _clauses(statement: str) -> List[str]:
     return [c for c in parts if c]
 
 
+#: A pattern comprehension's pattern -- the ``[`` and the node pattern that follows it, up to the
+#: ``|`` before its projection or the ``WHERE`` that filters it. Anchored on the ``(`` so a plain
+#: list comprehension (``[n IN nodes(p) | …]``) does not match.
+_PATTERN_COMPREHENSION = re.compile(r"\[\s*(\((?:[^\[\]|]|\[[^\[\]]*\])*?)\s*(?:WHERE\b|\|)")
+
+#: A relationship pattern that walks a **distance** -- ``[:R*1..5]`` -- and the shortest-path
+#: functions, which do the same without a ``*`` on the visible hop.
+_VARLENGTH_HOP = re.compile(r"-\[(\w*)(?::([\w|<>]+))?\*[\d.]*\]-")
+_SHORTEST_PATH = re.compile(r"\b(?:all)?[Ss]hortest[Pp]aths?\(")
+
+#: ``MATCH p = …``: the path variable an interior predicate needs to name (``all(n IN nodes(p) …)``).
+_PATH_VARIABLE = re.compile(r"^(\w+)\s*=\s*")
+
+
 def _match_clauses(statement: str) -> List[str]:
-    return [re.sub(r"^(?:OPTIONAL )?MATCH ", "", c) for c in _clauses(statement) if re.match(r"(?:OPTIONAL )?MATCH ", c)]
+    """Every clause that binds node variables: the ``MATCH`` clauses, plus the pattern
+    comprehensions anywhere else in the statement.
+
+    A pattern comprehension binds nodes as surely as a ``MATCH`` does -- ``_PATHS`` has two
+    (``head([(c:TSCallable)-[:TS_HAS_BODY_NODE]->(n) | c.signature])``) -- and reading only the
+    ``MATCH`` clauses made them invisible to the audit (leg 2.5b review, finding 8). They are
+    returned as clauses of their own so the chain scanner sees each pattern whole.
+    """
+    out = [re.sub(r"^(?:OPTIONAL )?MATCH ", "", c) for c in _clauses(statement) if re.match(r"(?:OPTIONAL )?MATCH ", c)]
+    return out + [m.group(1) for m in _PATTERN_COMPREHENSION.finditer(statement)]
+
+
+
+def _paths_with_scoped_interiors(rendered: str) -> Set[str]:
+    """Path variables every one of whose nodes the statement pins, via
+    ``all(<v> IN nodes(<p>) WHERE … <v> is scoped …)``.
+
+    The ``all()`` body is read to its balanced close rather than with a regex, so a scope predicate
+    that is itself parenthesised -- which :func:`_scoped` always is -- is inside the text searched.
+    """
+    found: Set[str] = set()
+    for m in re.finditer(r"all\((\w+) IN nodes\((\w+)\)\s+WHERE ", rendered):
+        var, path, depth, i = m.group(1), m.group(2), 1, m.end()
+        while i < len(rendered) and depth:
+            depth += (rendered[i] == "(") - (rendered[i] == ")")
+            i += 1
+        if var in _SCOPED_VAR.findall(rendered[m.end() : i - 1]):
+            found.add(path)
+    return found
 
 
 def _chain(clause: str) -> Tuple[List[Tuple[str, str | None, str | None]], List[Tuple[str, str, Set[str]]]]:
@@ -854,18 +903,35 @@ def _unscoped_variables(statement: str) -> List[str]:
     A variable is inside when it carries a scoped ``STARTS WITH`` (:data:`_SCOPED_VAR`), when it is
     pinned to an id (:data:`_PINNED_BY_ID`), when it *is* the ``(:Application {id: $app_id})``
     anchor, or when the pattern connects it to one of those over :data:`_KEEPS_SCOPE`. Anonymous
-    pattern nodes bind nothing and are skipped. Variable-length and quantified paths are judged by
-    the variables they bind, which for an unnamed interior is only their endpoints -- a limit of
-    what a bound variable *is*, stated rather than hidden.
+    pattern nodes bind nothing and are skipped.
+
+    A **quantified** path (``((x)-[:R]->(y) WHERE …){1,5}``) binds its interior, so its hops are
+    judged like any other variable. A **variable-length** hop (``[:R*1..5]``) and a shortest-path
+    function do not: their interior nodes have no name, and every relationship type this surface
+    walks a distance over is deliberately outside :data:`_KEEPS_SCOPE`, so an interior node is not
+    provably this application's on a graph the SDK did not emit. Such a walk is therefore judged by
+    the one predicate that can reach its interior -- ``all(<v> IN nodes(<p>) WHERE <v> is scoped)``
+    over a *named* path -- and reported as ``nodes(<p>)`` when it carries none. A walk whose types
+    are all in :data:`_KEEPS_SCOPE` needs no such predicate, for the reason that set exists. An
+    unnamed distance walk can carry no interior predicate at all, so it is always reported.
     """
     rendered = _render(statement)
     seeds = set(_SCOPED_VAR.findall(rendered)) | {v for m in _PINNED_BY_ID.finditer(rendered) for v in m.groups() if v}
+    scoped_paths = _paths_with_scoped_interiors(rendered)
     inside: Dict[str, bool] = {}
     links: List[Tuple[str, str, Set[str]]] = []
     bound: List[str] = []
     for clause in _match_clauses(rendered):
         nodes, clause_links = _chain(clause)
         links += clause_links
+        hops = _VARLENGTH_HOP.findall(clause)
+        if hops or _SHORTEST_PATH.search(clause):
+            rels = {r for _, types in hops for r in types.split("|") if r}
+            if not rels <= _KEEPS_SCOPE or not rels:
+                path = _PATH_VARIABLE.match(clause)
+                name = f"nodes({path.group(1)})" if path else "nodes(<unnamed path>)"
+                inside[name] = inside.get(name, False) or bool(path and path.group(1) in scoped_paths)
+                bound.append(name)
         for var, labels, props in nodes:
             anchor = labels == "Application" and (props or "").startswith("id: $app_id")
             inside[var] = inside.get(var, False) or var in seeds or anchor
@@ -908,7 +974,17 @@ def _inline_statements() -> Dict[str, str]:
     reassembled from the class's own source (see the Python twin for the rules). Two additions:
     a call to the scope helper inside an f-string is replaced by the predicate it spells, and the
     first argument of ``self._fetch(`` -- the anchor pattern a subtree statement starts from -- is
-    harvested as a statement in its own right."""
+    harvested as a statement in its own right.
+
+    **A statement assembled across branches is read as the union of its branches, in source
+    order.** ``get_config_uses`` appends ``AND ck.key = $key`` only when a key was given; the
+    harvester concatenates every ``+=`` regardless. Sorting by line number is what makes that union
+    the statement the ``key is not None`` branch issues rather than the garbled text it used to be
+    (``… RETURN … AND ck.key = $key``), and the other branch is a prefix of it. **The limit that
+    remains, stated:** a union can only ever *add* text, so a scope predicate present in one branch
+    and missing from another would read as scoped. Nothing on this surface builds a scope
+    conditionally -- every ``self._scope_params`` goes in unconditionally -- and this test is where
+    that would have to be re-checked if one ever did (leg 2.5b review, finding 8)."""
     class_strings = {name: value for name, value in vars(TSNeo4jBackend).items() if isinstance(value, str)}
     out: Dict[str, str] = {}
     for fn in ast.walk(ast.parse(inspect.getsource(TSNeo4jBackend))):
@@ -940,7 +1016,7 @@ def _inline_statements() -> Dict[str, str]:
             if isinstance(e, ast.Attribute) and isinstance(e.value, ast.Name) and e.value.id == "self" and e.attr in class_strings:
                 return class_strings[e.attr]
             if isinstance(e, ast.Name) and e.id in assigned:
-                return "".join(text(v, depth + 1) for v in assigned[e.id])
+                return "".join(text(v, depth + 1) for v in sorted(assigned[e.id], key=lambda v: v.lineno))
             if isinstance(e, ast.Name) and e.id in parameters:
                 return f"<{e.id}>"
             return "{…}"
@@ -1000,13 +1076,48 @@ def test_the_backend_reaches_the_server_only_through_the_harvested_surface(targe
         ("MATCH (:Application {id: $app_id})-[:TS_HAS_MODULE]->(m:TSModule) MATCH (x:TSClass) RETURN x.id", ["x"]),
         ("MATCH (c:TSCallable) RETURN c.id", ["c"]),
         ("MATCH (a) ((x:TSCallable)-[:TS_CALLS]->(y:TSCallable) WHERE (x.id STARTS WITH $p1 OR x.id STARTS WITH $p2)){1,5} (m:TSCallable) RETURN m.id", ["a", "m", "y"]),
+        # Leg 2.5b review, finding 1: the shape `_PATHS` shipped. Both ends are pinned by a
+        # `can://` id, the audit reported nothing -- and every node between them was another
+        # application's for the asking, over edge types `_KEEPS_SCOPE` deliberately excludes.
+        (
+            "MATCH (a:CanNode:TSBodyNode {id:$src}) MATCH (b:CanNode:TSBodyNode {id:$dst}) "
+            "MATCH p = allShortestPaths((a)-[:TS_DDG|TS_CFG_NEXT*1..5]->(b)) RETURN nodes(p) AS ns",
+            ["nodes(p)"],
+        ),
+        # The shape `_CALL_PATHS` shipped: the interior predicate was a *label* filter with no
+        # prefix conjunct, which is the leak the label hides.
+        (
+            "MATCH (a:TSCallable {signature:$src}) WHERE (a.id STARTS WITH $p1 OR a.id STARTS WITH $p2) "
+            "MATCH p = allShortestPaths((a)-[:TS_CALLS*1..5]->(b:TSCallable)) WHERE all(n IN nodes(p) WHERE n:TSCallable) RETURN nodes(p) AS ns",
+            ["b", "nodes(p)"],
+        ),
+        # An unnamed variable-length walk can carry no interior predicate at all, so naming the
+        # path is part of the fix, not a style preference.
+        ("MATCH (a:CanNode:TSBodyNode {id:$src})-[:TS_DDG*1..5]->(m:TSBodyNode) WHERE m.id IN $dsts RETURN m.id", ["nodes(<unnamed path>)"]),
+        # Finding 8: node variables bound by a pattern comprehension in `RETURN` -- invisible while
+        # the harvester read only the MATCH clauses.
+        ("MATCH (b:CanNode:TSBodyNode {id:$id}) RETURN head([(c:TSCallable)-[:TS_CALLS]->(x:TSCallable) | c.signature]) AS s", ["c", "x"]),
+        # Finding 8: `{id: <a variable the statement projected>}` is only as good as whatever
+        # produced the variable, which the audit does not follow.
+        ("UNWIND $ids AS nid MATCH (c:TSCallable)-[:TS_HAS_BODY_NODE]->(b:CanNode:TSBodyNode {id:nid}) RETURN b.id", ["b", "c"]),
     ],
-    ids=["one-endpoint-of-two", "a-second-unanchored-match", "no-scope-at-all", "a-quantified-paths-far-end"],
+    ids=[
+        "one-endpoint-of-two",
+        "a-second-unanchored-match",
+        "no-scope-at-all",
+        "a-quantified-paths-far-end",
+        "a-shortest-paths-unscoped-interior",
+        "a-shortest-paths-interior-filtered-by-label-only",
+        "an-unnamed-variable-length-interior",
+        "a-pattern-comprehension-in-the-return",
+        "pinned-by-a-projected-id-rather-than-a-parameter",
+    ],
 )
 def test_the_audit_rejects_a_statement_that_scopes_only_part_of_its_pattern(statement, leaks):
     """The net's own net. A presence check ("does the text contain a prefix predicate?") passes the
-    first and the last of these -- the first matches ``t`` by a signature two applications can both
-    declare, the last walks out of the application on every hop but the first."""
+    first and the fourth of these -- the first matches ``t`` by a signature two applications can
+    both declare, the fourth walks out of the application on every hop but the first. The last five
+    are leg 2.5b's review findings 1 and 8, each written as the statement that actually shipped."""
     assert _unscoped_variables(statement) == leaks
     assert _scope_kind(statement) is None
 
@@ -1019,8 +1130,22 @@ def test_the_audit_rejects_a_statement_that_scopes_only_part_of_its_pattern(stat
         "MATCH (o:TSClass)-[:TS_HAS_METHOD]->(c:TSCallable) WHERE (c.id STARTS WITH $p1 OR c.id STARTS WITH $p2) RETURN o.signature",
         "MATCH (c:CanNode:TSCallable {id: $id})-[:TS_DECORATED_BY]->(d:TSDecorator) RETURN d.name",
         "CALL db.relationshipTypes()",
+        # The fix for finding 1: the interior predicate reaches every node the walk touches.
+        "MATCH (a:CanNode:TSBodyNode {id:$src}) MATCH p = allShortestPaths((a)-[:TS_DDG*1..5]->(b:CanNode:TSBodyNode {id:$dst})) "
+        "WHERE all(n IN nodes(p) WHERE (n.id STARTS WITH $p1 OR n.id STARTS WITH $p2)) RETURN nodes(p) AS ns",
+        # A distance walked over containment needs no interior predicate: the child's id *is* the
+        # parent's id extended, which is the whole reason `_KEEPS_SCOPE` exists.
+        "MATCH (root:TSClass) WHERE (root.id STARTS WITH $p1 OR root.id STARTS WITH $p2) MATCH (root)-[:TS_DECLARES|TS_HAS_METHOD*0..]->(n) RETURN n.id",
     ],
-    ids=["both-endpoints-prefixed", "walked-from-the-anchor", "containment-read-backwards", "pinned-by-id-into-shared-vocabulary", "introspection"],
+    ids=[
+        "both-endpoints-prefixed",
+        "walked-from-the-anchor",
+        "containment-read-backwards",
+        "pinned-by-id-into-shared-vocabulary",
+        "introspection",
+        "a-shortest-paths-scoped-interior",
+        "a-variable-length-walk-over-containment",
+    ],
 )
 def test_the_audit_accepts_the_shapes_that_are_actually_scoped(statement):
     assert _unscoped_variables(statement) == []
@@ -1033,7 +1158,21 @@ def test_the_audit_reads_a_template_as_the_statement_it_becomes():
     nobody issues -- and would pass it for the wrong reason."""
     assert _render("MATCH (a:CanNode:TSBodyNode {{id:$src}})-[:{rels}*1..{depth}]->(m) RETURN m").startswith("MATCH (a:CanNode:TSBodyNode {id:$src})-[:TS_")
     assert "{0,5}" in _render("(x){{0,{depth}}} (m)")
-    assert _unscoped_variables("MATCH (a:CanNode:TSBodyNode {{id:$src}})-[:{rels}*1..{depth}]->(m:TSBodyNode) WHERE " + neo4j_backend._scoped("m") + " RETURN m.id") == []
+    template = "MATCH p = (a:CanNode:TSBodyNode {{id:$src}})-[:{rels}*1..{depth}]->(m:TSBodyNode) WHERE " + neo4j_backend._scoped("m")
+    assert _unscoped_variables(template + " AND all(n IN nodes(p) WHERE " + neo4j_backend._scoped("n") + ") RETURN m.id") == []
+    # ... and the same template without the interior predicate is a leak, not a pass.
+    assert _unscoped_variables(template + " RETURN m.id") == ["nodes(p)"]
+
+
+def test_the_audit_reads_a_statement_assembled_across_branches_in_source_order():
+    """``get_config_uses`` appends its key filter conditionally. The harvester concatenates every
+    ``+=``, so the ordering is what decides whether it judges Cypher or noise: unsorted it read
+    ``… RETURN bn.id AS src, ck.id AS dst, u.prov AS prov AND ck.key = $key`` (leg 2.5b review,
+    finding 8). The union of the branches is an over-approximation, stated in
+    :func:`_inline_statements`; being in source order is what makes it a *statement*."""
+    (harvested,) = [s for name, s in _inline_statements().items() if name.startswith("get_config_uses@")]
+    assert harvested.endswith("RETURN bn.id AS src, ck.id AS dst, u.prov AS prov"), harvested
+    assert "AND ck.key = $key RETURN" in harvested, harvested
 
 
 def test_the_audit_sees_every_inline_statement_too():

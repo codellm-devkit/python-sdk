@@ -134,6 +134,31 @@ def ts_dual(typescript_application, tmp_path_factory):
     _teardown_application()
 
 
+#: codeanalyzer-typescript 1.3.0 projects ``:TSCallable.code`` one line short of the callable's
+#: own span: the graph text is the local text minus its final ``"\n}"`` (measured -- 544
+#: characters against 546 for ``src/index.main``, and ``graph == local.rsplit("\n", 1)[0]``
+#: exactly), while ``start_line``/``end_line`` are right. Filed as
+#: codellm-devkit/codeanalyzer-typescript#179; a caller gets *silently truncated source*, which
+#: is why it is also a row in ``docs/agent-api-reference.md``'s lossiness table and a known
+#: issue in the changelog rather than a note in a plan file.
+#:
+#: ``strict=True`` is the point: the day the projection is fixed these must fail loudly as
+#: XPASS, not quietly start passing with the marks left behind.
+CODE_ONE_LINE_SHORT = pytest.mark.xfail(
+    strict=True,
+    reason="codeanalyzer-typescript#179: the Neo4j projection writes :TSCallable.code one line short of its span, so every source-text accessor truncates over Neo4j",
+)
+
+#: The same run's second projection gap, and a different one: the decorator call site
+#: ``@Param("id")`` reaches the graph carrying only its lines and its resolved callee
+#: (``method_name=''``, empty ``argument_types``, ``return_type=None``, columns ``-1``) -- the
+#: call-site lossiness ``TSNeo4jBackend``'s module docstring already records.
+CALLSITE_FACETS_ABSENT = pytest.mark.xfail(
+    strict=True,
+    reason="the Neo4j projection carries no call-site facets for a decorator call site (method_name, argument_types, return_type, columns); documented lossiness, not a regression",
+)
+
+
 def test_callables_overview_parity(ts_dual):
     ref, neo = ts_dual
     ref_rows = {_overview_tuple(o) for o in ref.get_callables_overview()}
@@ -142,6 +167,7 @@ def test_callables_overview_parity(ts_dual):
     assert ref_rows == neo_rows
 
 
+@CODE_ONE_LINE_SHORT
 def test_method_bodies_parity(ts_dual):
     ref, neo = ts_dual
     sigs = [o.signature for o in ref.get_callables_overview()]
@@ -186,6 +212,7 @@ def _callsite_tuple(cs):
     )
 
 
+@CALLSITE_FACETS_ABSENT
 def test_callsites_parity(ts_dual):
     ref, neo = ts_dual
     sigs = [o.signature for o in ref.get_callables_overview()]
@@ -223,13 +250,22 @@ def test_callsites_parity(ts_dual):
 # unless CLDK_TEST_NEO4J_WRITE_* names a disposable server; the read-only live suite on the
 # reference graph exercises the Neo4j half at scale, and the offline suite the local half.
 # =====================================================================================
-def _same_raise(ref_call, neo_call):
-    """Both backends refuse, with the same exception type and the same subject named."""
+def _same_raise(ref_call, neo_call, subject):
+    """Both backends refuse, with the same exception type **and** the same subject named.
+
+    ``subject`` is required and asserted (leg 2.5b review, finding 2). The docstring promised it
+    from the start and the body only ever checked the type, which is how ``get_source``'s two miss
+    messages came to name two different things -- ``'can://typescript/application'`` locally against
+    ``'application'`` over Neo4j -- with this harness green. What a caller reads is the message; a
+    parity harness that never reads one cannot see a message diverge.
+    """
     with pytest.raises(Exception) as r:
         ref_call()
     with pytest.raises(Exception) as n:
         neo_call()
     assert type(r.value) is type(n.value), f"{type(r.value).__name__} locally, {type(n.value).__name__} over Neo4j"
+    assert subject in str(r.value), f"the local message does not name {subject!r}: {str(r.value)!r}"
+    assert subject in str(n.value), f"the Neo4j message does not name {subject!r}: {str(n.value)!r}"
     return r.value, n.value
 
 
@@ -241,6 +277,7 @@ def _positions(ref):
     return out + [("src/definitely-not-here.ts", 3)]
 
 
+@CODE_ONE_LINE_SHORT
 def test_locate_many_parity_over_every_callable_and_every_module(ts_dual):
     ref, neo = ts_dual
     positions = _positions(ref)
@@ -277,13 +314,13 @@ def test_resolve_callable_parity_over_every_callable(ts_dual):
 
 def test_resolve_callable_miss_paths_agree(ts_dual):
     ref, neo = ts_dual
-    a, b = _same_raise(lambda: ref.resolve_callable("noSuchCallable"), lambda: neo.resolve_callable("noSuchCallable"))
-    assert "noSuchCallable" in str(a) and "noSuchCallable" in str(b)
-    a, b = _same_raise(lambda: ref.resolve_callable("describe"), lambda: neo.resolve_callable("describe"))
+    _same_raise(lambda: ref.resolve_callable("noSuchCallable"), lambda: neo.resolve_callable("noSuchCallable"), "noSuchCallable")
+    a, b = _same_raise(lambda: ref.resolve_callable("describe"), lambda: neo.resolve_callable("describe"), "describe")
     assert a.candidates == b.candidates, "the two backends resolved over different candidate sets"
     a, b = _same_raise(
         lambda: ref.resolve_callable("describe", in_module="no/such/module.ts"),
         lambda: neo.resolve_callable("describe", in_module="no/such/module.ts"),
+        "no/such/module.ts",
     )
     assert "in_module" in str(a) and "in_module" in str(b)
 
@@ -315,21 +352,21 @@ def test_resolve_value_parity_over_every_callable(ts_dual):
             a, b = ref.resolve_value(value, within=o.signature), neo.resolve_value(value, within=o.signature)
             assert (a.kind, a.name, a.defined_in, a.callable, a.ref) == (b.kind, b.name, b.defined_in, b.callable, b.ref)
             seen += 1
-        _same_raise(lambda: ref.resolve_value("noSuchValue", within=o.signature), lambda: neo.resolve_value("noSuchValue", within=o.signature))
+        _same_raise(lambda: ref.resolve_value("noSuchValue", within=o.signature), lambda: neo.resolve_value("noSuchValue", within=o.signature), "noSuchValue")
     assert seen, "the level-4 reference carried no formal_in vertex at all; this test proved nothing"
 
 
+@CODE_ONE_LINE_SHORT
 def test_get_source_parity_and_the_one_documented_divergence(ts_dual):
     ref, neo = ts_dual
     for o in ref.get_callables_overview():
         try:
             expected = ref.get_source(o.signature)
         except KeyError:
-            _same_raise(lambda: ref.get_source(o.signature), lambda: neo.get_source(o.signature))
+            _same_raise(lambda: ref.get_source(o.signature), lambda: neo.get_source(o.signature), o.signature)
             continue
         assert neo.get_source(o.signature) == expected
         assert neo.get_source(ref.resolve_callable(o.signature).ref) == expected
-    _same_raise(lambda: ref.get_source("no.such.node"), lambda: neo.get_source("no.such.node"))
     # Below callable granularity the two differ, deliberately and loudly: the local backend slices
     # the module text, the graph has none to slice and says so with a distinct exception type.
     body = next((r.node_id for r in ref.locate_many(_positions(ref)) if r.node_id), None)
@@ -339,6 +376,7 @@ def test_get_source_parity_and_the_one_documented_divergence(ts_dual):
         neo.get_source(body)
 
 
+@CODE_ONE_LINE_SHORT
 def test_describe_parity(ts_dual):
     ref, neo = ts_dual
     names = [o.signature for o in ref.get_callables_overview()]
@@ -347,8 +385,25 @@ def test_describe_parity(ts_dual):
     assert [n.ref for n in ref_nodes] == [n.ref for n in neo_nodes]
     assert [n.source for n in ref.describe(ref_nodes)] == [n.source for n in neo.describe(neo_nodes)]
     assert ref.describe([]) == neo.describe([]) == []
+
+
+
+def test_the_addressing_miss_paths_name_the_same_subject_on_both_backends(ts_dual):
+    """The miss halves of ``get_source`` and ``describe``, deliberately *outside* the ``xfail`` that
+    covers the truncation those two accessors' success paths hit.
+
+    An ``xfail(strict=True)`` swallows every assertion in the test it marks, so a miss-path
+    divergence inside one would be invisible for exactly as long as codeanalyzer-typescript#179
+    stays open. This is where finding 2's fix is verified: the local backend used to name the
+    subject ``'can://typescript/application'`` where the graph named ``'application'``.
+    """
+    ref, neo = ts_dual
+    a, b = _same_raise(lambda: ref.get_source("no.such.node"), lambda: neo.get_source("no.such.node"), "no.such.node")
+    assert str(a) == str(b), "the two backends name different subjects for the same miss"
     stale = SliceNode(file="x.ts", line=1, callable="x", kind="callable", name="x", ref="can://typescript/nope/x")
-    _same_raise(lambda: ref.describe([stale]), lambda: neo.describe([stale]))
+    # The subject is the readable position, never ``stale.ref`` -- a ``describe`` miss names the
+    # node the caller can see (``x (x.ts:1)``) and keeps the ``can://`` id out of the message (E6).
+    _same_raise(lambda: ref.describe([stale]), lambda: neo.describe([stale]), "x (x.ts:1)")
 
 
 def test_has_resolution_edges_agrees(ts_dual):
@@ -515,22 +570,23 @@ def test_the_flow_predicates_agree_including_where_a_bound_cuts(ref_l4, ts_dual)
 def test_the_dataflow_miss_paths_raise_the_same_way(ref_l4, ts_dual):
     _, neo = ts_dual
     sig = _signatures(ref_l4)[0]
-    for pair in (
-        (lambda b: b.get_cfg("noSuchCallable"), None),
-        (lambda b: b.get_ddg(sig, page_size=0), None),
-        (lambda b: b.get_ddg(sig, cursor="not-a-cursor"), None),
-        (lambda b: b.slice_forward("noSuchValue", within=sig), None),
-        (lambda b: b.slice_forward("x", within=sig, depth=0), None),
-        (lambda b: b.backward_cone([]), None),
-        (lambda b: b.backward_cone("notAList"), None),
-        (lambda b: b.reaches("noSuchCallable", sig), None),
-        (lambda b: b.callers_of("noSuchCallable"), None),
-        (lambda b: b.call_paths_between(sig, sig), None),
-        (lambda b: b.flows_to_call("noSuchValue", sig, within=sig), None),
+    # The second element is the subject both messages must name -- the whole point of a miss path
+    # is that the caller is told *what* missed. It used to be an unused ``None`` beside an
+    # assertion that ``or type(a) is type(b)`` made vacuously true (leg 2.5b review, finding 2).
+    for call, subject in (
+        (lambda b: b.get_cfg("noSuchCallable"), "noSuchCallable"),
+        (lambda b: b.get_ddg(sig, page_size=0), "page_size"),
+        (lambda b: b.get_ddg(sig, cursor="not-a-cursor"), "not-a-cursor"),
+        (lambda b: b.slice_forward("noSuchValue", within=sig), "noSuchValue"),
+        (lambda b: b.slice_forward("x", within=sig, depth=0), "depth"),
+        (lambda b: b.backward_cone([]), "sinks"),
+        (lambda b: b.backward_cone("notAList"), "sinks"),
+        (lambda b: b.reaches("noSuchCallable", sig), "noSuchCallable"),
+        (lambda b: b.callers_of("noSuchCallable"), "noSuchCallable"),
+        (lambda b: b.call_paths_between(sig, sig), sig),
+        (lambda b: b.flows_to_call("noSuchValue", sig, within=sig), "noSuchValue"),
     ):
-        call = pair[0]
-        a, b = _same_raise(lambda: call(ref_l4), lambda: call(neo))
-        assert str(a).split(";")[0] == str(b).split(";")[0] or type(a) is type(b)
+        _same_raise(lambda: call(ref_l4), lambda: call(neo), subject)
 
 
 # =====================================================================================

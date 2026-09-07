@@ -68,9 +68,23 @@ only and raises when the relationship type is absent (:meth:`_heritage`); and
 reads no dataflow at all (2.5b's Task 2 does). One more arrived with the addressing surface:
 ``:TSModule`` carries no ``source`` and ``:TSBodyNode`` no text, so :meth:`locate` at module scope
 answers ``""`` plus a ``module_source_unavailable`` diagnostic and :meth:`get_source` refuses a
-body-node id outright, where the local backend answers both. One thing is *less* lossy here than in
-the Python twin: a TypeScript ``call`` body node carries ``callee`` as a property, so
-``LocateResult.body.callee`` is populated over Neo4j too. One more is the emitter's: two declarations of one name (TypeScript
+body-node id outright, where the local backend answers both.
+
+**And one that is a value divergence rather than an absence**, which is why it is stated loudly:
+codeanalyzer-typescript 1.3.0 projects ``:TSCallable.code`` **one line short of the callable's own
+span** -- the graph text is the in-memory text minus its final ``"\\n}"`` (measured: 544 characters
+against 546 for the sample app's ``src/index.main``), while ``start_line``/``end_line`` on the same
+node are correct. Every accessor that hands a caller a callable's source over this backend is
+affected: :meth:`get_source`, :meth:`get_method_bodies`, :meth:`describe`, :meth:`locate` /
+:meth:`locate_many` and ``TSCallable.code`` on a rebuilt node. Filed upstream as
+codellm-devkit/codeanalyzer-typescript#179; four ``xfail(strict=True)`` marks in
+``tests/analysis/typescript/test_typescript_bulk_parity_live.py`` are pinned to it, so they fail
+loudly the day it is fixed rather than passing quietly.
+
+One thing is *less* lossy here than in the Python twin: a TypeScript ``call`` body node carries
+``callee`` as a property, so ``LocateResult.body.callee`` is populated over Neo4j too.
+
+One more is the emitter's: two declarations of one name (TypeScript
 declaration merging -- ``const X = …`` + ``interface X``, ``const X = …`` + ``type X``, ``type X`` +
 a field ``X``) share one id, so ``MERGE`` collapses them onto one node carrying both labels and the
 ``kind`` of whichever was written last. Such a node is rebuilt as the facet the containment edge
@@ -566,11 +580,15 @@ class TSNeo4jBackend(TSAnalysisBackend):
     def get_external_symbols(self) -> Dict[str, TSExternalSymbol]:
         """The application's external *symbols* -- ``<app-id>/@external/<module>/<name>``, what
         ``analysis.json``'s ``external_symbols`` holds -- keyed ``"<module>.<name>"``. An external is
-        homed on the application under the typescript namespace whichever module called it, so that
-        prefix is the scope. The graph also holds one nameless ``:TSExternal`` per *package*
-        (``@external/<module>``, the target of ``TS_PROVIDES`` / ``TS_UNRESOLVED_IMPORT``); those are
-        not symbols and are not returned here."""
-        rows = self._run("MATCH (e:TSExternal) WHERE e.id STARTS WITH $prefix AND e.name IS NOT NULL RETURN properties(e) AS p", prefix=f"{self._app_id}/@external/")
+        homed on the application whichever module called it, so the application scope plus the
+        ``@external`` segment is the scope. The scope is the **two** prefixes (TS-3), not the
+        typescript one alone: superset-frontend homes all 3,171 of its externals under
+        ``can://typescript/``, but nothing in the id grammar stops a ``.js`` caller's external
+        landing under ``can://javascript/``, and a single-prefix reading would drop it silently.
+        The graph also holds one nameless ``:TSExternal`` per *package* (``@external/<module>``, the
+        target of ``TS_PROVIDES`` / ``TS_UNRESOLVED_IMPORT``); those are not symbols and are not
+        returned here."""
+        rows = self._run(f"MATCH (e:TSExternal) WHERE {_scoped('e')} AND e.id CONTAINS '/@external/' AND e.name IS NOT NULL RETURN properties(e) AS p", **self._scope_params)
         return {f"{r['p']['module']}.{r['p']['name']}": R.external(r["p"]) for r in rows}
 
     def get_synthesized_callables(self) -> Dict[str, TSSynthesizedCallable]:
@@ -1348,7 +1366,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
         f"MATCH (c:TSCallable) WHERE {_scoped('c')} AND (c.id IN $refs OR c.signature IN $refs) AND c.kind IN $callable_kinds "
         "RETURN c.id AS id, c.signature AS sig, c.code AS code "
         f"UNION MATCH (b:TSBodyNode) WHERE {_scoped('b')} AND b.id IN $refs RETURN b.id AS id, null AS sig, null AS code "
-        "UNION MATCH (e:TSExternal) WHERE e.id STARTS WITH $ext_prefix AND e.id IN $refs RETURN e.id AS id, null AS sig, null AS code"
+        f"UNION MATCH (e:TSExternal) WHERE {_scoped('e')} AND e.id IN $refs RETURN e.id AS id, null AS sig, null AS code"
     )
 
     def _sources_for(self, refs: Sequence[str]) -> Dict[str, "str | None"]:
@@ -1359,6 +1377,12 @@ class TSNeo4jBackend(TSAnalysisBackend):
         ``None`` here where the local backend fills it in. ``""`` maps to ``None`` too -- the 27
         callables the emitter writes no ``code`` for are the implicit constructors, which the local
         backend also has no text for.
+
+        **The text this returns is one line short of the callable's span** on
+        codeanalyzer-typescript 1.3.0 -- the graph's ``code`` is the source minus its final
+        ``"\\n}"`` (codellm-devkit/codeanalyzer-typescript#179). Every caller of this seam --
+        :meth:`get_source` and :meth:`describe` -- inherits it, as do :meth:`get_method_bodies` and
+        :meth:`locate`, which read ``c.code`` by their own statements. See the module docstring.
         """
         wanted = set(refs)
         found: Dict[str, "str | None"] = {}
@@ -1366,7 +1390,6 @@ class TSNeo4jBackend(TSAnalysisBackend):
             self._SOURCES,
             refs=list(wanted),
             callable_kinds=sorted(CALLABLE_KINDS),
-            ext_prefix=f"{self._app_id}/@external/",
             **self._scope_params,
         )
         for row in rows:
@@ -1536,18 +1559,20 @@ class TSNeo4jBackend(TSAnalysisBackend):
     #: callables for hydration -- collecting the *nodes* rather than their ids would put the whole
     #: closure in the transaction.
     #:
-    #: **Not scoped by the application prefix**, unlike the per-callable accessors: a body-node id is
-    #: stamped with its application and the emitter only ever links nodes from its own run, so the
-    #: traversal cannot leave the application it started in. The seed is app-scoped by
-    #: :meth:`resolve_value`, which resolves through :meth:`resolve_callable`.
+    #: **Every node on the walk carries the two-prefix predicate, not just its far end.** An SDG
+    #: edge runs between two application-owned nodes -- which is exactly why the SDG types are
+    #: absent from the audit's ``_KEEPS_SCOPE`` -- so an *interior* body node is no more provably
+    #: this application's than a far endpoint is, on a graph this SDK did not emit. The path is
+    #: named so ``all(n IN nodes(p) …)`` can reach the interior; the explicit predicate on ``m`` is
+    #: kept because it filters before the path is built.
     _SLICE = (
-        "MATCH (r:CanNode:TSBodyNode {{id:$id}}){left}[:{rels}*0..{depth}]{right}(m:TSBodyNode) "
-        "WHERE " + _scoped("m") + " "
+        "MATCH p = (r:CanNode:TSBodyNode {{id:$id}}){left}[:{rels}*0..{depth}]{right}(m:TSBodyNode) "
+        "WHERE " + _scoped("m") + " AND all(n IN nodes(p) WHERE " + _scoped("n") + ") "
         "WITH DISTINCT m.id AS nid ORDER BY nid "
         "WITH collect(nid) AS ids "
         "WITH size(ids) AS total, ids[0..$cap] AS page "
         "UNWIND page AS nid "
-        "MATCH (c:TSCallable)-[:TS_HAS_BODY_NODE]->(b:CanNode:TSBodyNode {{id:nid}}) "
+        "MATCH (c:TSCallable)-[:TS_HAS_BODY_NODE]->(b:CanNode:TSBodyNode {{id:nid}}) WHERE " + _scoped("c") + " "
         "RETURN total, b.id AS ref, b.kind AS kind, b.of AS of, b.start_line AS line, "
         "c.signature AS callable, c.start_line AS c_line"
     )
@@ -1714,9 +1739,13 @@ class TSNeo4jBackend(TSAnalysisBackend):
     #: enumerates *trails*, which does not terminate on a real dependence graph, while
     #: ``allShortestPaths`` is a bidirectional BFS. ``$cap`` is ``max_paths + 1`` so one extra row
     #: reports the truncation, rather than a second traversal for a number the caller cannot act on.
+    #:
+    #: ``all(n IN nodes(p) …)`` puts the two-prefix predicate on **every** node of the path, not
+    #: only on the two the ids pin: the SDG types are deliberately outside the audit's
+    #: ``_KEEPS_SCOPE``, so an interior node reached over one is not provably this application's.
     _PATHS = (
         "MATCH (a:CanNode:TSBodyNode {{id:$src}}) MATCH (b:CanNode:TSBodyNode {{id:$dst}}) "
-        "MATCH p = allShortestPaths((a)-[:{rels}*1..{depth}]->(b)) "
+        "MATCH p = allShortestPaths((a)-[:{rels}*1..{depth}]->(b)) WHERE all(n IN nodes(p) WHERE " + _scoped("n") + ") "
         "WITH p, " + _PATH_ORDER + " AS key ORDER BY length(p), key LIMIT $cap "
         "RETURN [n IN nodes(p) | {{ref: n.id, kind: n.kind, of: n.of, line: n.start_line, "
         "callable: head([(c:TSCallable)-[:TS_HAS_BODY_NODE]->(n) | c.signature]), "
@@ -1724,14 +1753,17 @@ class TSNeo4jBackend(TSAnalysisBackend):
         "[r IN relationships(p) | {{via: type(r), var: r.var, prov: r.prov}}] AS rs"
     )
 
-    #: The same query over the call graph. ``all(n IN nodes(p) WHERE n:TSCallable)`` keeps a module
-    #: or a ghost off the *interior* of a path -- the same edge set :attr:`_REACHES` walks, so the
-    #: paths cannot disagree with the boolean that summarises them. Neo4j inlines an ``all()`` node
-    #: predicate into the shortest-path search itself.
+    #: The same query over the call graph. The ``all()`` predicate carries **both** halves of what
+    #: :attr:`_REACHES` puts on each of its hops: ``n:TSCallable`` keeps a module or a ghost off the
+    #: *interior* of a path, and the two-prefix predicate keeps another application's callable off
+    #: it -- ``TS_CALLS`` runs between two application-owned nodes, so the label alone lets a walk
+    #: leave the application on any hop but the first and the last. Same edge set as
+    #: :attr:`_REACHES`, so the paths cannot disagree with the boolean that summarises them; Neo4j
+    #: inlines an ``all()`` node predicate into the shortest-path search itself.
     _CALL_PATHS = (
         "MATCH (a:TSCallable {{signature:$src}}) WHERE " + _scoped("a") + " "
         "MATCH (b:TSCallable {{signature:$dst}}) WHERE " + _scoped("b") + " "
-        "MATCH p = allShortestPaths((a)-[:TS_CALLS*1..{depth}]->(b)) WHERE all(n IN nodes(p) WHERE n:TSCallable) "
+        "MATCH p = allShortestPaths((a)-[:TS_CALLS*1..{depth}]->(b)) WHERE all(n IN nodes(p) WHERE n:TSCallable AND " + _scoped("n") + ") "
         "WITH p, " + _PATH_ORDER + " AS key ORDER BY length(p), key LIMIT $cap "
         "RETURN [n IN nodes(p) | " + _vertex("n", escape=True) + "] AS ns, "
         "[r IN relationships(p) | {{via: type(r), var: null, prov: null}}] AS rs"
@@ -1769,8 +1801,16 @@ class TSNeo4jBackend(TSAnalysisBackend):
         return self._paths(query, self._call_vertex, a, b, src=a.callable, dst=b.callable, max_paths=max_paths)
 
     #: ``WITH DISTINCT m`` before the membership test is what makes this a pruning BFS instead of a
-    #: trail enumeration. Not scoped by the application prefix, for :meth:`_slice`'s reason.
-    _VALUE_REACHES = "MATCH (a:CanNode:TSBodyNode {{id:$src}})-[:{rels}*1..{depth}]->(m:TSBodyNode) WITH DISTINCT m WHERE m.id IN $dsts RETURN count(m) > 0 AS ok"
+    #: trail enumeration. Both **endpoints** are pinned by an application-stamped id -- ``$src`` is
+    #: a ``ref`` minted by :meth:`resolve_value` and ``$dsts`` are ids collected by the two-prefix
+    #: scoped :attr:`_CALLEE_VALUES` -- so the ``all(n IN nodes(p) …)`` is what the endpoints do not
+    #: give: the same interior predicate :attr:`_SLICE` and :attr:`_PATHS` carry, for the same
+    #: reason (an SDG edge joins two application-owned nodes).
+    _VALUE_REACHES = (
+        "MATCH p = (a:CanNode:TSBodyNode {{id:$src}})-[:{rels}*1..{depth}]->(m:TSBodyNode) "
+        "WHERE all(n IN nodes(p) WHERE " + _scoped("n") + ") "
+        "WITH DISTINCT m WHERE m.id IN $dsts RETURN count(m) > 0 AS ok"
+    )
 
     #: Every value that *enters* ``$sig`` -- in TypeScript, its parameters. Scoped, because a
     #: signature is not application-stamped the way an id is.
@@ -1783,7 +1823,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
         if not dsts:
             return False
         query = self._VALUE_REACHES.format(rels=SDG_REL_PATTERN, depth="" if depth is None else depth)
-        return bool(self._run(query, src=src, dsts=dsts)[0]["ok"])
+        return bool(self._run(query, src=src, dsts=dsts, **self._scope_params)[0]["ok"])
 
     def flows_to_call(self, src: str, callee: str, *, within: str, depth: int | None = None) -> bool:
         """Does this value reach any argument of a call to ``callee``

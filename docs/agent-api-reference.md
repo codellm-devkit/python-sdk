@@ -19,7 +19,7 @@ from cldk.analysis.commons.backend_config import Neo4jConnectionConfig, PyCodeAn
 
 # Against a deployed graph (read-only; the SDK never builds it)
 py = CLDK.python(project_path=".", backend=Neo4jConnectionConfig(
-    uri="bolt://localhost:7690", username="neo4j", password="…",
+    uri="bolt://localhost:7687", username="neo4j", password="…",
     application_name="my-app"))
 
 # Or analyse a checkout in-process
@@ -80,7 +80,7 @@ Three TypeScript-specific facts about that surface:
 
 ```python
 ts = CLDK.typescript(project_path=None, backend=Neo4jConnectionConfig(
-    uri="bolt://localhost:7687", username="neo4j", password="…",
+    uri="bolt://localhost:7690", username="neo4j", password="…",
     application_name="my-app"))          # the --app-name the graph was emitted with
 
 ts = CLDK.typescript(project_path="/path/to/project", backend=TSCodeAnalyzerConfig())
@@ -127,6 +127,7 @@ documented empty comes back.
 | `TSCallable.parameters`, `comments`, `type_parameters`, `overload_signatures`, `body`, `cfg`/`cdg`/`ddg`/`summary` | empty |
 | `TSEnumMember.value`; `TSModule.source` / `imports` / `exports` / `comments`; decorator positions; a call site's `method_name`, receiver and argument facets | empty / `None` |
 | `code` on any node | the text the graph projected for that node, on a line-only span (columns `0`) |
+| **any source text of a callable** — `get_source(sig)`, `get_method_bodies(...)`, `describe(...).source`, `locate(...).source`, `TSCallable.code` | **truncated by one line**: codeanalyzer-typescript 1.3.0 projects `:TSCallable.code` as the callable's text minus its final `\n}`, while `start_line`/`end_line` on the same node are correct. Measured: 544 characters against the 546 the in-memory backend returns for the same callable. Upstream: [codeanalyzer-typescript#179](https://github.com/codellm-devkit/codeanalyzer-typescript/issues/179). **If you feed graph source to a parser or a diff, expect the closing brace to be missing** — until the fix ships, read the text in-process or re-slice the span yourself |
 | `get_call_targets(sig)` | an unresolved call site contributes `""` (in-memory: the call's `method_name`) |
 | `get_synthesized_callables()` | keyed by the anonymous node's own id (the analyzer's older compatibility key is JSON-only) |
 | `locate(path, line)` at module scope | `source == ""` plus a second `module_source_unavailable` diagnostic — `:TSModule` carries no `source`. In-memory: the module's text |
@@ -173,8 +174,8 @@ Most questions decompose into these. Start here, then use the tables below.
 
 ```python
 class LocateResult:
-    node: BodyNode | None      # innermost body node at that position
-    node_id: str | None        # handle for get_source()
+    body: BodyRef | None       # innermost body node at that position: {id, kind, span, callee}
+    node_id: str | None        # handle for get_source() — the same value as body.id
     callable: CallableRef | None
     type: TypeRef | None
     module: ModuleRef
