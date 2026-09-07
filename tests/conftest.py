@@ -177,3 +177,27 @@ def java_code() -> str:
     javafile = Path(test_data_path).absolute() / ("WeatherServlet.java")
     with open(javafile) as f:
         return f.read()
+
+
+#: The variable that gates every module which *writes* to a Neo4j server. Such a module skips
+#: itself when the variable is unset (deliberately: #324 -- there is no default URI, because a
+#: default of bolt://localhost:7687 is an ssh tunnel on at least one development machine), and a
+#: skipped module is indistinguishable from a passing one in pytest's summary line. Hence the hook
+#: below. It keys on the variable name in the skip reason, so a new write-gated module is named
+#: without editing anything here.
+WRITE_GATE_VAR = "CLDK_TEST_NEO4J_WRITE_URI"
+
+
+def pytest_terminal_summary(terminalreporter):
+    """Name the write-gated modules that did not run, and what would run them.
+
+    Reporting only: it prints and never changes the exit status. An unset gate is a valid way to
+    run the suite, not a failure -- the point is that it stops being a silent one.
+    """
+    modules = sorted({report.nodeid.split("::")[0] for report in terminalreporter.stats.get("skipped", []) if WRITE_GATE_VAR in str(report.longrepr)})
+    if not modules:
+        return
+    terminalreporter.section("write-gated modules NOT run", sep="-")
+    for module in modules:
+        terminalreporter.line(f"  {module}")
+    terminalreporter.line(f"  set {WRITE_GATE_VAR} / _WRITE_USER / _WRITE_PASSWORD to a disposable Neo4j server to run them (there are no defaults)")
