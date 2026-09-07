@@ -163,7 +163,14 @@ def test_symbol_table_parity(backends):
 def test_application_view_parity(backends):
     ref, neo = backends
     assert neo.application.id == ref.application.id
-    assert neo.application.external_symbols == ref.application.external_symbols
+    # 3a asserted these were equal, because both were ``None``. Since 3b projects ``:JExternal``
+    # they differ, and the difference is what each source was **asked**, not what it found:
+    # ``--emit neo4j`` forces ``--external-calls``, which the SDK's own local run does not pass. The
+    # accessor over them says so rather than answering ``{}`` (see ``get_external_symbols``); here
+    # the two views are pinned as they really are, so a change in either is deliberate.
+    assert ref.application.external_symbols is None, "a plain -a run homes no out-of-project call target"
+    assert len(neo.application.external_symbols) == 1195
+    assert all(key.startswith(f"can://java/{JAVA_APP}/@external/") for key in neo.application.external_symbols)
     wire = lambda app: sorted((e.src, e.dst, tuple(e.prov), e.weight) for e in app.call_graph)
     assert wire(neo.application) == wire(ref.application), "the wire call graph is not byte-equal"
     assert len(neo.application.artifacts) == len(ref.application.artifacts)

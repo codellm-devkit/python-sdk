@@ -177,11 +177,62 @@ apply to it, and each is a decision rather than an accident:
   class's qualified name carries the callable that declares it
   (`p.PingManagedThread.doGet(…).$anon$0`), because `$anon$N` is numbered per declaring callable.
 
-**Still arriving in leg 3b** (python-sdk#311): `get_cfg` / `get_cdg` / `get_ddg`, `slice_backward` /
-`slice_forward`, `reaches`, `paths_between`, `flows_to_call` / `flows_to_argument`, the entrypoint
-trio, the scoping keywords (`paths=` / `module=` / `roots=` / `depth=`) and the leaf accessors.
-Calling those names on a `JavaAnalysis` today either does not exist or raises
-`NotImplementedError`; nothing silently answers half a question.
+**Landed for Java: the dataflow surface** — `get_cfg` / `get_cdg` / `get_ddg`, `slice_backward` /
+`slice_forward`, `backward_cone`, `reaches`, `callers_of` / `callees_of`, `paths_between` /
+`call_paths_between`, `flows_to_call` / `flows_to_argument`. Python's signatures, keyword-for-keyword
+and default-for-default, with Java's edge models (`JCfgEdge` / `JCdgEdge` / `JDdgEdge`); the same
+bounds rule (slices bounded by default, predicates and path queries unbounded, because a bounded
+predicate returns a *wrong* answer rather than a small one) and the same `complete` protocol.
+Java-specific facts:
+
+- **Four of them refuse rather than return a false empty.** `slice_forward`, `paths_between`,
+  `flows_to_call` and `flows_to_argument` raise, naming the gap, because codeanalyzer-java 3.0.1
+  emits the L4 port lattice disconnected from the statement dependence graph — see the lossiness
+  list below. `slice_backward` is deliberately not guarded: it follows `J_PARAM_IN` reversed and
+  really does reach the argument vertex at every call site that passes one.
+- **The DDG has two provenance tiers**, `ssa` (133,608 edges) and `points-to` (1,134), against
+  Python's three and TypeScript's one. `points-to` ranks least certain.
+- **Self-loops are real edges and are returned.** The graph carries 978 `J_DDG` edges from a body
+  node to itself (11 of `Log.printCollection`'s 20); the per-callable page is anchored on the
+  callable's id prefix rather than on a doubled containment hop, which is what silently drops them
+  (python-sdk#349, a bug Java has never shipped).
+
+**Landed for Java: entrypoints, the bulk projections, the artifact layer and the type-kind leaf
+accessors** — `get_callables_overview`, `get_method_bodies`, `get_decorated_callables`,
+`get_callsites_for`, `get_external_symbols`, `get_entrypoints` / `get_entrypoint_classes` /
+`get_entrypoint_coverage`, `get_artifacts` / `get_dependencies` / `get_config_keys` /
+`get_config_uses` / `get_unresolved_config_reads` / `get_config_readers`, and `get_interfaces` /
+`get_enums` / `get_enum_members` / `get_records`. Four rules:
+
+- **`get_entrypoint_coverage` reports that there is no report.** codeanalyzer-java emits the
+  entrypoint *marks* and nothing about the pass that made them: `analysis.json` carries no report
+  key and the `:JApplication` anchor carries only `name` / `schema_version` / `analyzer_name` /
+  `analyzer_version` — unlike codeanalyzer-python 1.4.1 and codeanalyzer-typescript 1.3.0, which
+  both project one. So it answers with `diagnostics=[entrypoint_report_unavailable]` and empty
+  fields that are explicitly *not* coverage. It is not synthesised from the `is_entrypoint`
+  booleans: a count of syntactically-marked callables is not a coverage record. The marks
+  themselves are real and unambiguous — 133 callables and 66 types of daytrader8's 1,216 and 149,
+  1,501 callables and 904 types of ThingsBoard's — and `get_entrypoints` /
+  `get_entrypoint_classes` return those.
+- **A marker matches an annotation by simple name.** `get_decorated_callables(["Test"])`,
+  `["@Test"]` and `["org.junit.Test"]` are the same query: the Java wire carries an annotation's
+  simple name, so both sides are compared on the segment after the last `.` with a leading `@`
+  dropped. Package ambiguity is accepted here because this is a filter, not an address. Nothing is
+  matched fuzzily. It is the **callable-level** projection: daytrader8's 16 `@Trace` uses are all on
+  *types*, so `["Trace"]` is empty and `["Override"]` is 328.
+- **`get_method_bodies` and `get_callsites_for` are keyed by `JCallableOverview.key`** — the J-1
+  `"<type fqn>.<signature>"` name, matched exactly. A bare Java signature is unique only within its
+  declaring type, so it is not an address; `key` is what the overview hands you and what
+  `resolve_callable` returns. A key with no callable is **omitted** rather than mapped to `None`,
+  and so is a callable with no source text (the 99 implicit constructors and the two
+  `<clinit>$N()` initializers).
+- **`get_config_keys` is keyed `"<artifact path>@key/<dotted key>"`,** artifact-relative rather than
+  by the raw `can://artifact/<app>/…` id. Python and TypeScript still key by the id; aligning the
+  three is python-sdk#346 and is deliberately not done piecemeal.
+
+**Still absent for Java**: the scoping keywords (`get_symbol_table(paths=)`,
+`get_classes(module=)`, `get_call_graph(roots=, depth=)`). Calling those keywords raises
+`TypeError`; nothing silently answers half a question.
 
 ```python
 from cldk import CLDK
@@ -224,7 +275,8 @@ docstring accessors, and — new in 3a, from the generic backend ABC — `get_ar
 `get_imports`, `get_variables`, `get_class_hierarchy`, `get_methods_with_annotations`,
 `get_calling_lines`, `get_call_targets`, `get_service_entry_point_classes` /
 `get_service_entry_point_methods`, and `remove_all_comments` (which only ever worked in the removed
-single-file mode). Six things will mislead you if you don't know them:
+single-file mode). These will mislead you if you don't know them — each is measured, and each names
+its upstream issue where there is one:
 
 - **Call-graph nodes are strings** — `"<type fqn>.<signature>"` — not `(signature, klass)` tuples.
   Read the parts off `cg.nodes[key]["method_detail"]` rather than parsing the key. A local or
@@ -264,6 +316,46 @@ single-file mode). Six things will mislead you if you don't know them:
   returns the comment above `class Foo` and `get_comments_in_a_method` the one above the
   declaration (at most one) — never the comments inside the body. Comments inside a body reach the
   SDK only through `get_comment_in_file`, which is `analysis.json`-only (it raises on Neo4j).
+- **The L4 port lattice is disconnected from the statement dependence graph**
+  (`codeanalyzer-java#227`). Measured on the reference graph and on `analysis.json` alike: **zero**
+  of the 134,742 `J_DDG` edges and zero of the 46,936 `J_CDG` edges have a
+  `formal_in`/`actual_in`/`formal_out`/`actual_out` vertex at either end. The lattice's only edges
+  are `J_PARAM_IN` (`actual_in` → `formal_in`), `J_PARAM_OUT` (`formal_out` → `actual_out`) and
+  `J_SUMMARY` (`actual_in` → `actual_out`), so a `formal_in` — the only thing `resolve_value` ever
+  returns — has **out-degree zero**. `slice_forward` would therefore be the seed alone,
+  `paths_between` `[]`, and `flows_to_call`/`flows_to_argument` `False`, *for every input, whatever
+  the program does*. All four raise instead, through one guard over one measured fact, so the day
+  the analyzer connects the layers they answer with no code change. codeanalyzer-python and
+  codeanalyzer-typescript have both already fixed the same gap (129,883 `PY_DDG` edges leave a
+  `formal_in` on the Python reference graph).
+- **87 of daytrader8's 5,434 `ddg` edges name an endpoint the analyzer never emitted as a body
+  node** (`codeanalyzer-java#228`), so the graph reports **5,347** and `analysis.json` reports
+  5,434. This is the one place the two Java backends disagree on an edge count. All 87 are
+  `points-to` edges over 38 distinct keys, every one of the shape `<line>:0`; `cfg` (6,984) and
+  `cdg` (4,416) are identical on both sides, and there is nothing in the other direction. The Neo4j
+  emitter materialises body nodes from `body{}`, so an edge with no node cannot be projected —
+  neither backend hides its own source's answer, and the live suite measures the difference exactly.
+  It is invisible on the committed fixtures (a4 has no dangling endpoint), so it is a
+  whole-application fact only.
+- **The graph carries a twelfth body-node kind, `switch`**, which is outside `SliceNode.KINDS` (3
+  vertices in daytrader8 and 385 in ThingsBoard, carrying 71 and 3,561 `J_CDG` edges, at most 154
+  out of any one). That list is codeanalyzer-python's vocabulary and Python has no switch statement. Dropping or renaming
+  the kind would hide a real branch, so it is reported as the analyzer spells it — the same way
+  TypeScript reports its own out-of-list vertices. Match on the string, don't assume the frozenset
+  is exhaustive across languages.
+- **`get_external_symbols` answers over Neo4j and raises locally**, and that is a difference of what
+  each source was *asked*, not of policy. codeanalyzer-java emits `external_symbols` only under
+  `--external-calls`, which is off by default and which `--emit neo4j` forces on — so the graph
+  carries them (1,195 `:JExternal` nodes on daytrader8, 2,570 on ThingsBoard) and a payload from a
+  plain `-a` run carries none. `JApplication.external_symbols` is `None` in that case, and the
+  accessor raises naming the flag rather than returning `{}`, which would read as "this project
+  calls nothing outside itself".
+- **`get_callsites_for`'s order within one source line is not part of the contract.** The graph
+  writes `start_line`/`end_line` and no column, so two calls on one line cannot be put back in
+  source order there. The set of call sites and their lines agree exactly — all 4,006 of
+  daytrader8's — and the sequence within a line does not. Likewise `JCallableOverview.decorators`
+  is **sorted** rather than in source order, for the same reason: the graph's containment walk
+  orders a declaration's children by `(start_line, name)`.
 
 ---
 

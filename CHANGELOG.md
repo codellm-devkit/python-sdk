@@ -7,9 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Three legs of the 2.0 line: **TypeScript on schema v2** (2.5a) and **its query surface** (2.5b), and
-**Java on schema v2** (3a, with the analyzer wheel and honest degradation reporting). Design records:
-`docs/design/specs/2026-09-06-leg-2.5-typescript.md` and `docs/design/specs/2026-09-06-leg-3-java.md`.
+Four legs of the 2.0 line: **TypeScript on schema v2** (2.5a) and **its query surface** (2.5b), and
+**Java on schema v2** (3a, with the analyzer wheel and honest degradation reporting) and **its query
+surface** (3b). Design records: `docs/design/specs/2026-09-06-leg-2.5-typescript.md` and
+`docs/design/specs/2026-09-06-leg-3-java.md`.
 
 ### Breaking
 
@@ -39,6 +40,18 @@ Three legs of the 2.0 line: **TypeScript on schema v2** (2.5a) and **its query s
   `paths_between`/`call_paths_between`, `flows_to_call`/`flows_to_argument`); entrypoints
   (`get_entrypoints`, `get_entrypoint_classes`, `get_entrypoint_coverage`, `get_config_readers`); and the five
   repository-artifact getters. Both backends answer identically, including on the miss paths.
+- **The agent-facing query surface on `JavaAnalysis` — 38 accessors, each with `PythonAnalysis`'s signature and
+  semantics.** Addressing (`locate`, `locate_many`, `resolve_callable`, `resolve_value`, `get_source`,
+  `describe`, `has_resolution_edges`); per-callable graphs and dataflow (`get_cfg`/`get_cdg`/`get_ddg`,
+  `slice_backward`/`slice_forward`/`backward_cone`, `reaches`, `callers_of`/`callees_of`,
+  `paths_between`/`call_paths_between`, `flows_to_call`/`flows_to_argument`); entrypoints and the bulk
+  projections (`get_entrypoints`, `get_entrypoint_classes`, `get_entrypoint_coverage`,
+  `get_callables_overview`, `get_method_bodies`, `get_decorated_callables`, `get_callsites_for`,
+  `get_external_symbols`); the six repository-artifact getters; and the type-kind leaf accessors
+  `get_interfaces`/`get_enums`/`get_enum_members`/`get_records`. Both backends answer identically,
+  including on the miss paths.
+- `cldk.models.java.JCallableOverview` and `JClassOverview`, the projections those bulk accessors
+  return. They carry the addressable `"<type fqn>.<signature>"` key, never a `can://` id.
 - **Java reaches analysis levels 3 and 4** — control flow, control and data dependence, and the interprocedural
   graph. The level now reaches the analyzer, which it never did before.
 - **A `java` install extra.** `pip install "cldk[java]"` brings the analyzer and its bundled JVM;
@@ -102,6 +115,18 @@ Three legs of the 2.0 line: **TypeScript on schema v2** (2.5a) and **its query s
   (codeanalyzer-typescript#177); such a node resolves to the facet its kind names, or not at all.
 - `get_config_keys()` is still keyed by a `can://` id on Python and TypeScript, where Java now uses the
   artifact-relative key (#346).
+- **Java's `slice_forward`, `paths_between`, `flows_to_call` and `flows_to_argument` raise instead of
+  answering.** codeanalyzer-java 3.0.1 emits the level-4 port lattice disconnected from the statement
+  dependence graph, so every forward answer would be empty whatever the program does
+  (codeanalyzer-java#227). They answer unchanged once the analyzer connects the two.
+- **Java's two backends disagree on 87 of daytrader8's 5,434 `ddg` edges.** The analyzer names endpoints it
+  never emitted as body nodes, so the graph cannot project them and reports 5,347 (codeanalyzer-java#228).
+- **Java has no entrypoint report**, so `get_entrypoint_coverage()` returns `entrypoint_report_unavailable`
+  rather than fabricated coverage. `get_entrypoints()` and `get_entrypoint_classes()` carry the real marks.
+- **Java's `get_external_symbols()` answers over Neo4j and raises locally**: the analyzer homes out-of-project
+  call targets only under `--external-calls`, which `--emit neo4j` forces and a local run does not.
+- The Java graph carries a `switch` body-node kind, which is outside `SliceNode.KINDS` (that vocabulary is
+  codeanalyzer-python's, and Python has no switch statement). It is reported as the analyzer spells it.
 
 ## [v2.0.0-rc.2] - 2026-09-06
 Python legs 1, 1.5 and 1.6 of the CLDK 2.0 agent-facing query facade (see

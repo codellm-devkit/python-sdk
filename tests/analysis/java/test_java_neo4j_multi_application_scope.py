@@ -541,6 +541,38 @@ def test_the_addressing_surface_answers_from_this_application_only():
     assert backend.describe([found])[0].source is None
 
 
+def test_the_task_three_surface_answers_from_this_application_only():
+    """Entrypoints, the bulk projections and the leaf accessors (leg 3b, Task 3). Both applications
+    declare ``shared.Widget.render(java.lang.String)`` at the same path with the same signature, and
+    every value in the fixture is tagged ``alpha``/``beta``, so a leak reads as a wrong *name*
+    rather than as a larger count."""
+    backend = _backend()
+    keys = {o.key for o in backend.get_callables_overview()}
+    assert keys == {
+        f"{CLASS_FQN}.{METHOD_SIG}",
+        f"{CLASS_FQN}.<init>()",
+        "shared.Widget.Inner.ping()",
+        "shared.Helper.help()",
+    }, "the projection is the addressing domain of *this* application"
+    assert backend.get_method_bodies(list(keys))[f"{CLASS_FQN}.{METHOD_SIG}"].endswith("return helper(); }")
+    assert "beta" not in "".join(backend.get_method_bodies(list(keys)).values())
+    assert [s.method_name for s in backend.get_callsites_for([f"{CLASS_FQN}.{METHOD_SIG}"])[f"{CLASS_FQN}.{METHOD_SIG}"]] == ["help"]
+    assert [o.key for o in backend.get_decorated_callables(["Named"])] == [], "the annotation is on the type, not the callable"
+    assert backend.get_entrypoints() == [] and backend.get_entrypoint_classes() == []
+    assert [d.code for d in backend.get_entrypoint_coverage().diagnostics] == ["entrypoint_report_unavailable"]
+    assert backend.get_interfaces() == {} and backend.get_enums() == {} and backend.get_records() == {}
+    assert backend.get_config_readers("alpha.key") == []
+
+
+def test_external_symbols_are_this_applications_ghosts_only():
+    """``:JExternal`` hangs off no containment edge, so its own id prefix is the whole scope. Each
+    application's fixture ghost is named for itself, so B's leaking in is visible by name."""
+    backend = _backend()
+    external = backend.get_external_symbols()
+    assert [s.signature for s in external.values()] == ["printlnA(java.lang.String)"], "application B's external target leaked"
+    assert all(nid.startswith(f"can://java/{APP_A}/@external/") for nid in external)
+
+
 def test_the_resolution_probe_is_scoped_to_this_application():
     """``J_RESOLVES_TO`` exists in the fake database for both applications; the probe must ask
     about A's, not the database's."""
@@ -829,7 +861,7 @@ def test_the_audit_sees_every_inline_statement_too():
     inline = _inline_statements()
     assert len(inline) == source.count("self._run("), "a statement site the harvester did not see"
     assert [name for name, s in inline.items() if "{…}" in s] == [], "a statement the harvester could not reassemble"
-    for expected in ("_probe_schema", "_load_modules", "_subtree_rows", "_call_site_rows", "_import_rows", "_call_edge_rows", "_artifact_rows", "_dependency_rows"):
+    for expected in ("_probe_schema", "_load_modules", "_subtree_rows", "_call_site_rows", "_import_rows", "_call_edge_rows", "_external_rows", "_artifact_rows", "_dependency_rows"):
         assert any(name.startswith(expected + "@") for name in inline), f"{expected}'s statement is not harvested"
 
 

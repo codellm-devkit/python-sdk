@@ -25,7 +25,15 @@ change and must be deliberate; the query surface (3b) extends it.
 Leg 3b Task 2 adds the thirteen dataflow accessors; Task 1 added the six addressing **methods** below, plus the ``has_resolution_edges``
 **property** — which is why :data:`SURFACE` is checked against the functions and the property is
 pinned separately: ``inspect.isfunction`` does not see a property, and spelling it as a method to
-make it visible here would be a different public API from Python's.
+make it visible here would be a different public API from Python's. Task 3 adds eighteen more: the
+entrypoint trio, the four bulk projections, ``get_external_symbols``, the artifact six and the four
+J-7 leaf accessors.
+
+**Nothing pre-existing moved.** In particular the eight 1.x ``NotImplementedError`` raisers listed
+in :data:`RAISING` are all still here and still raising: §4 of the spec proposes retiring them (and
+deleting ``get_service_entry_point_*``), but no task of the 3b plan carries that work, and the
+plan's own Global Constraints say this list "grows by exactly what it adds and changes no existing
+entry". Retiring them is therefore a separate, deliberate change.
 """
 
 import inspect
@@ -74,6 +82,29 @@ SURFACE = {
     "call_paths_between": "(self, src: 'str', dst: 'str', *, depth: 'int | None' = None, max_paths: 'int' = 10) -> 'FlowPaths'",
     "flows_to_call": "(self, src: 'str', callee: 'str', *, within: 'str', depth: 'int | None' = None) -> 'bool'",
     "flows_to_argument": "(self, src: 'str', callee: 'str', arg: 'str', *, within: 'str', depth: 'int | None' = None) -> 'bool'",
+    # -- entrypoints, the bulk projections, the artifact layer and the type-kind leaf accessors
+    # (leg 3b, Task 3). Python's signatures, keyword-for-keyword, with Java's models -- except the
+    # artifact layer, which is the one part of the graph every codeanalyzer projects identically and
+    # so keeps the shared ``Py*`` models. ``get_entrypoint_coverage`` reports the report
+    # *unavailable* on both backends (J-4): Java projects none.
+    "get_callables_overview": "(self) -> 'List[JCallableOverview]'",
+    "get_method_bodies": "(self, signatures: 'List[str]') -> 'Dict[str, str]'",
+    "get_decorated_callables": "(self, markers: 'List[str]') -> 'List[JCallableOverview]'",
+    "get_entrypoints": "(self) -> 'List[JCallableOverview]'",
+    "get_entrypoint_classes": "(self) -> 'List[JClassOverview]'",
+    "get_entrypoint_coverage": "(self) -> 'EntrypointCoverage'",
+    "get_callsites_for": "(self, signatures: 'List[str]') -> 'Dict[str, List[JCallSite]]'",
+    "get_external_symbols": "(self) -> 'Dict[str, JExternalSymbol]'",
+    "get_artifacts": "(self) -> 'Dict[str, PyArtifact]'",
+    "get_dependencies": "(self, *, direct_only: 'bool' = False, ecosystem: 'str | None' = None, declared_in: 'str | None' = None) -> 'List[PyDependency]'",
+    "get_config_keys": "(self) -> 'Dict[str, PyConfigKey]'",
+    "get_config_uses": "(self, key: 'str | None' = None) -> 'List[PyConfigUseEdge]'",
+    "get_unresolved_config_reads": "(self) -> 'List[PyConfigRead]'",
+    "get_config_readers": "(self, key: 'str') -> 'List[JCallableOverview]'",
+    "get_interfaces": "(self) -> 'Dict[str, JType]'",
+    "get_enums": "(self) -> 'Dict[str, JType]'",
+    "get_enum_members": "(self, qualified_enum_name: 'str') -> 'List[JEnumConstant]'",
+    "get_records": "(self) -> 'Dict[str, JType]'",
     # -- the addressing surface (leg 3b, Task 1); Python's signatures, keyword-for-keyword.
     "describe": "(self, nodes: 'Sequence[object]') -> 'List[SliceNode]'",
     "get_source": "(self, node_id: 'str') -> 'str'",

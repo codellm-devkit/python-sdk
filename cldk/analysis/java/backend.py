@@ -68,7 +68,20 @@ from cldk.analysis.commons.bounds import (
 from cldk.analysis.commons.graphs import as_slice_node, cone_sinks, edge_sort_key, flow_path, sdg_rel_pattern, sdg_rels, shortest_walks, slice_resolved, via_table
 from cldk.analysis.commons.keys import body_key_column, resolve_module_key
 from cldk.analysis.commons.resolve import CallableCandidate, resolve_callable_signature, resolve_value_name, resolve_within
-from cldk.analysis.commons.results import BodyRef, CallableRef, Diagnostic, EdgePage, FlowPaths, LocateResult, ModuleRef, Slice, SliceNode, Span, TypeRef
+from cldk.analysis.commons.results import (
+    BodyRef,
+    CallableRef,
+    Diagnostic,
+    EdgePage,
+    EntrypointCoverage,
+    FlowPaths,
+    LocateResult,
+    ModuleRef,
+    Slice,
+    SliceNode,
+    Span,
+    TypeRef,
+)
 from cldk.analysis.commons.treesitter import TreesitterJava
 from cldk.analysis.commons.treesitter.models import Captures
 from cldk.models.java.models import (
@@ -76,23 +89,45 @@ from cldk.models.java.models import (
     JBodyNode,
     JCallable,
     JCallableParameter,
+    JCallSite,
     JCdgEdge,
     JCfgEdge,
     JComment,
     JCompilationUnit,
     JCRUDOperation,
     JDdgEdge,
+    JEnumConstant,
+    JExternalSymbol,
     JField,
     JMethodDetail,
     JType,
 )
-from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
+from cldk.models.java.projections import JCallableOverview, JClassOverview
+from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException, SelectorNotInGraph
 
 # A CRUD query row: the owning type + callable and the operations found within it.
 CRUDRow = Dict[str, Union[JType, JCallable, List[JCRUDOperation]]]
 
 #: J-4: the CRUD accessors keep their names and raise this on schema v2, on both backends.
 CRUD_UNAVAILABLE = "CRUD operations are not emitted by codeanalyzer-java 3.0.1 or newer (schema v2); tracked upstream as codeanalyzer-java#187"
+
+#: J-4: what ``get_entrypoint_coverage`` says instead of counting booleans and calling it coverage.
+#: Java is the one of the three languages whose analyzer projects **no** entrypoint report --
+#: measured on the reference graph, where the ``:JApplication`` anchor carries four properties and
+#: none of them is a report -- so the accessor reports that, through the shared model's own
+#: ``entrypoint_report_unavailable`` vocabulary.
+ENTRYPOINT_REPORT_UNAVAILABLE = (
+    "codeanalyzer-java 3.0.1 emits no entrypoint report: analysis.json carries no such key and the :JApplication anchor carries only "
+    "name/schema_version/analyzer_name/analyzer_version, so the entrypoint pass's coverage (frameworks_detected/rulesets/unresolved/errors) "
+    "cannot be reported. get_entrypoints() and get_entrypoint_classes() still carry the analyzer's own per-declaration marks."
+)
+
+#: What ``get_external_symbols`` raises on a payload whose run never homed out-of-project call
+#: targets -- which is not the same fact as a project that calls nothing outside itself (D7).
+EXTERNAL_SYMBOLS_UNAVAILABLE = (
+    "this analysis did not home out-of-project call targets: codeanalyzer-java emits external_symbols only under --external-calls, which is off "
+    "by default and which --emit neo4j forces on, so the Neo4j backend answers this and a payload from a plain -a run has nothing to answer with"
+)
 
 # ----------------------------------------------------------------------------------------------
 # The dataflow surface's shared vocabulary (leg 3b, Task 2). Each of these is the language-neutral
@@ -155,9 +190,11 @@ def java_body_node_kind(node_id: str, kind: str, parameters: Sequence[JCallableP
     Every other kind passes through in the analyzer's already-English spelling. **One of them,
     ``switch``, is outside** :attr:`~cldk.analysis.commons.results.SliceNode.KINDS` — that list was
     derived from codeanalyzer-python's vocabulary, which has no ``switch`` because Python has no
-    switch statement (3 such vertices in daytrader8, 1,498 ``J_CDG`` edges out of one on
-    ThingsBoard). Dropping or renaming it would hide a real branch kind; it is reported as the
-    analyzer spells it, as TypeScript reports its own out-of-list ``module`` vertices.
+    switch statement. Re-measured for Task 3, because Task 2 recorded the fan-out wrongly as "1,498
+    ``J_CDG`` edges out of one": there are **3 such vertices in daytrader8 and 385 in ThingsBoard**,
+    carrying 71 and 3,561 ``J_CDG`` edges between them, at most **154** out of any one. Dropping or
+    renaming the kind would hide a real branch; it is reported as the analyzer spells it, as
+    TypeScript reports its own out-of-list ``module`` vertices.
     """
     if kind == "formal_in":
         index = node_id.rpartition(":")[2]
@@ -825,6 +862,211 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         time; ``--emit neo4j`` always runs at full depth, so ``False`` there means a graph built
         some other way, not a gap in the documented pipeline.
         """
+
+    # =====================================================================================
+    # Entrypoints, the bulk projections and the type-kind leaf accessors (leg 3b, Task 3).
+    # Python's signatures, keyword-for-keyword, with Java's models.
+    #
+    # IMPLEMENTED HERE, NOT PER BACKEND, for Task 1's reason: leg 3a made :class:`JNeo4jBackend`
+    # rebuild the canonical :class:`JApplication` from the graph -- decorators and all, since
+    # ``J_ANNOTATED_BY`` is one of the relationships its containment walk collects -- and answer
+    # from it. So these read the same index both backends already build and issue **no Cypher of
+    # their own**; the one thing the graph carries and the reconstruction did not is the
+    # ``:JExternal`` set, which :meth:`JNeo4jBackend._external_rows` now projects into
+    # ``JApplication.external_symbols``.
+    #
+    # THE ONE HONEST REFUSAL IS ``get_entrypoint_coverage``. Java projects no entrypoint report at
+    # all -- the ``:JApplication`` anchor carries only ``name``/``schema_version``/
+    # ``analyzer_name``/``analyzer_version``, and ``analysis.json`` has no such key, unlike
+    # codeanalyzer-python 1.4.1 and codeanalyzer-typescript 1.3.0 which both project one. A count of
+    # syntactically-marked callables is not a coverage report, so it is not dressed up as one (J-4).
+    # =====================================================================================
+    def get_callables_overview(self) -> List[JCallableOverview]:
+        """A lightweight projection of every callable in the application, without the full
+        :class:`~cldk.models.java.models.JCallable` reconstruction.
+
+        The domain is the addressing domain exactly (J-6): initializers, the implicit constructors
+        the analyzer synthesises, and the callables of local and anonymous classes are all in it,
+        because all of them are addressable and a projection that quietly omits one is a name that
+        resolves to nothing for a reason the caller cannot see.
+        """
+        return [JCallableOverview.of(row.key, row.type, row.callable, path=row.path) for row in self._addressing.by_key.values()]
+
+    def get_method_bodies(self, signatures: List[str]) -> Dict[str, str]:
+        """Source bodies for the given callables, keyed by the key that named them.
+
+        Args:
+            signatures: The J-1 keys :meth:`get_callables_overview` hands back
+                (``JCallableOverview.key``) — matched exactly, never resolved and never fuzzily
+                (E8). Java's own ``signature`` is unique only within its declaring type, so it is
+                not an address.
+
+        Returns:
+            A dict mapping each key to its source text. A key with no matching callable is
+            **omitted**, as is a callable with no source text of its own — the 99 implicit
+            constructors and the two ``<clinit>$N()`` initializers of daytrader8 — so every value
+            is a real, non-empty ``str`` rather than a ``None`` a caller has to re-check.
+        """
+        found = ((key, self._addressing.by_key.get(key)) for key in signatures)
+        # ``code`` slices (and on a non-ASCII unit decodes) the module source, so it is read once
+        # per callable rather than once in the filter and once in the value.
+        return {key: code for key, code in ((key, row.callable.code) for key, row in found if row is not None) if code}
+
+    def get_decorated_callables(self, markers: List[str]) -> List[JCallableOverview]:
+        """Overviews of every callable carrying at least one of ``markers`` as an annotation.
+
+        Args:
+            markers: Annotation names. Each matches by **simple name** (``Test``), with a leading
+                ``@`` ignored (``@Test``), or by fully-qualified name (``org.junit.Test``) — J-5.
+                The three collapse to one rule: both sides are compared on the segment after the
+                last ``.``, with a leading ``@`` stripped. Java's wire carries the annotation's
+                simple name, so a qualified marker cannot be matched any more precisely than that;
+                J-5 accepts the package ambiguity because this is a filter, not an address. There
+                is no fuzzy matching on either side (E8).
+        """
+        wanted = {m.lstrip("@").rpartition(".")[2] for m in markers}
+        return [o for o in self.get_callables_overview() if wanted.intersection(d.rpartition(".")[2] for d in o.decorators)]
+
+    def get_entrypoints(self) -> List[JCallableOverview]:
+        """Overviews of every *callable* the analyzer marked ``is_entrypoint`` — a servlet method, a
+        JAX-RS resource method, an MDB listener, or whatever else its detection pass recognised.
+
+        Empty means the pass found no entrypoint callables, which for Java is unambiguous at the
+        property level: ``is_entrypoint`` is a real boolean on every callable of ``analysis.json``
+        and a real property on every ``:JCallable`` of the graph (133 true of daytrader8's 1,216,
+        1,501 of ThingsBoard's 28,763). What it cannot tell you is whether the *pass* had gaps —
+        and unlike Python and TypeScript, Java has no report to answer that with; see
+        :meth:`get_entrypoint_coverage`.
+
+        Class-level marks are not folded in: a :class:`~cldk.models.java.models.JType` is not a
+        callable, and calling one would misrepresent what a
+        :class:`~cldk.models.java.projections.JCallableOverview` means. Use
+        :meth:`get_entrypoint_classes`.
+        """
+        return [o for o in self.get_callables_overview() if o.is_entrypoint]
+
+    def get_entrypoint_classes(self) -> List[JClassOverview]:
+        """Overviews of every *type* the analyzer marked ``is_entrypoint_class`` in its own right —
+        the type-level sibling of :meth:`get_entrypoints`, which walks callables only and so never
+        sees a type marked at the declaration with no individually-marked method.
+
+        The projected form of :meth:`get_all_entry_point_classes`, which keeps its 1.x
+        ``Dict[str, JType]`` shape (J-4); the two never disagree about which types are marked,
+        because both read the one flattened index.
+        """
+        return [JClassOverview.of(t, path=self._file_of[name], qualified_name=name) for name, t in self._types.items() if t.is_entrypoint_class]
+
+    def get_entrypoint_coverage(self) -> EntrypointCoverage:
+        """**Reports that there is no report** (J-4), identically on both backends.
+
+        codeanalyzer-java 3.0.1 emits the entrypoint *marks* and nothing about the pass that made
+        them: ``analysis.json`` carries no report key, and the ``:JApplication`` anchor carries only
+        ``name``/``schema_version``/``analyzer_name``/``analyzer_version`` — measured on the
+        reference graph, and unlike codeanalyzer-python 1.4.1 and codeanalyzer-typescript 1.3.0,
+        which both project one. So this answers with a ``diagnostics``-only
+        :class:`~cldk.analysis.commons.results.EntrypointCoverage`, the same "say so honestly"
+        shape a Python graph without the report uses.
+
+        It deliberately does **not** synthesise a report out of the ``is_entrypoint`` booleans: a
+        count of syntactically-marked callables is not a coverage record, and presenting one as if
+        it were is the ambiguous empty D7 forbids wearing a hat. The day the analyzer emits a
+        report, this reads it and the ``diagnostics`` go away.
+        """
+        return EntrypointCoverage(diagnostics=[Diagnostic(code="entrypoint_report_unavailable", message=ENTRYPOINT_REPORT_UNAVAILABLE)])
+
+    def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[JCallSite]]:
+        """Call sites of the given callables, keyed by the key that named them.
+
+        Args:
+            signatures: The J-1 keys :meth:`get_callables_overview` hands back, matched exactly —
+                see :meth:`get_method_bodies`.
+
+        Returns:
+            A dict mapping each **existing** key to its list of
+            :class:`~cldk.models.java.models.JCallSite` (an empty list when the callable makes no
+            calls); a key matching no callable is omitted. Complete on both backends: the Neo4j
+            projection carries the ``call`` body nodes in full even though it carries no other kind
+            (the reason :attr:`JCallable.body` is otherwise thinner there).
+
+            **The order within one source line is not part of the cross-backend contract.** The
+            graph writes ``start_line``/``end_line`` and no column, so two calls on one line cannot
+            be put back in source order there; the set of sites and their lines agree exactly (all
+            4,006 of daytrader8's), the sequence within a line does not.
+
+        See Also:
+            :attr:`has_resolution_edges`: distinguishes a genuinely unresolved
+            ``callee_signature`` from a graph that carries no resolution at all.
+        """
+        found = ((key, self._addressing.by_key.get(key)) for key in signatures)
+        return {key: row.callable.call_sites for key, row in found if row is not None}
+
+    def get_external_symbols(self) -> Dict[str, JExternalSymbol]:
+        """Every call-graph endpoint outside the analysed project, keyed by its ``@external`` id.
+
+        Returns:
+            The analyzer's own ``external_symbols`` map. An empty dict means the run homed them and
+            this project's call graph makes no calls outside itself.
+
+        Raises:
+            CodeanalyzerExecutionException: The run did not home them at all, which is **not** the
+                same fact and must not read as one (D7). codeanalyzer-java emits
+                ``external_symbols`` only under ``--external-calls`` — off by default, "matching
+                v1's application-only call graph" in its own words. ``--emit neo4j`` forces the flag
+                on, so the graph backend answers (1,195 ``:JExternal`` nodes on daytrader8, 2,570 on
+                ThingsBoard); the SDK's own local run does not pass it, so the in-memory backend
+                raises this until it does. The policy is one; what differs is what each source was
+                asked for, and it is recorded in the lossiness table of
+                ``docs/agent-api-reference.md``.
+        """
+        external = self.get_application_view().external_symbols
+        if external is None:
+            raise CodeanalyzerExecutionException(EXTERNAL_SYMBOLS_UNAVAILABLE)
+        return external
+
+    def get_config_readers(self, key: str) -> List[JCallableOverview]:
+        """Always ``[]``, for the reason 3a's :meth:`get_config_uses` gives: codeanalyzer-java 3.0.1
+        emits no code-to-config edges (there is no ``config_uses`` on the Java wire), so there is no
+        edge to resolve to a reading callable and no callable to name. Not a fact of its own: it is
+        empty *because* :meth:`get_config_uses` is, and the day the analyzer emits those edges this
+        is where they get resolved to callables."""
+        return []
+
+    # -----[ the type-kind leaf accessors (J-7) ]-----
+    def get_interfaces(self) -> Dict[str, JType]:
+        """Every interface, keyed by qualified name — the subset of :meth:`get_all_classes` whose
+        ``kind`` is ``interface`` (3 in daytrader8, 594 in ThingsBoard). Names shared with
+        TypeScript for the same concept (G3)."""
+        return self._of_kind("interface")
+
+    def get_enums(self) -> Dict[str, JType]:
+        """Every enum, keyed by qualified name (none in daytrader8, 192 in ThingsBoard)."""
+        return self._of_kind("enum")
+
+    def get_records(self) -> Dict[str, JType]:
+        """Every record, keyed by qualified name — the one Java-only kind (none in daytrader8, 35 in
+        ThingsBoard). Annotation types have no leaf accessor of their own; they stay reachable
+        through :meth:`get_all_classes` (J-7)."""
+        return self._of_kind("record")
+
+    def get_enum_members(self, qualified_enum_name: str) -> List[JEnumConstant]:
+        """The constants declared by one enum.
+
+        Args:
+            qualified_enum_name: The enum's qualified name, as :meth:`get_enums` keys it.
+
+        Raises:
+            SelectorNotInGraph: The name is not an enum of this application — either no type at
+                all, or a type of another kind. Raising keeps that apart from an enum that
+                genuinely declares no constant, which is what an empty list means here (D7).
+                It names the value the caller wrote and nothing else (E8).
+        """
+        found = self._types.get(qualified_enum_name)
+        if found is None or found.kind != "enum":
+            raise SelectorNotInGraph(kind="enum", missing=[qualified_enum_name], requested=1)
+        return list(found.enum_constants)
+
+    def _of_kind(self, kind: str) -> Dict[str, JType]:
+        return {name: t for name, t in self._types.items() if t.kind == kind}
 
     # =====================================================================================
     # The dataflow surface (leg 3b, Task 2): per-callable graphs, slices, reachability, paths and

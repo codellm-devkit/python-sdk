@@ -120,6 +120,7 @@ from cldk.models.java.models import (
     JCompilationUnit,
     JDdgEdge,
     JDecorator,
+    JExternalSymbol,
     JField,
     JMethodDetail,
     JType,
@@ -372,6 +373,17 @@ class JNeo4jBackend(JavaAnalysisBackend):
             prefix=self._scope_prefix,
         )
 
+    def _external_rows(self) -> List[Dict[str, Any]]:
+        """Every out-of-project call target this application homed (leg 3b, Task 3).
+
+        Prefix-scoped rather than anchored: an ``:JExternal`` hangs off no containment edge from the
+        application -- it is reached only by the ``J_CALLS`` edges that name it -- so its own id is
+        the whole scope. 1,195 rows on daytrader8, 2,570 on ThingsBoard, both emitted because
+        ``--emit neo4j`` forces ``--external-calls``; a payload from a plain ``-a`` run has none and
+        :meth:`JavaAnalysisBackend.get_external_symbols` says so rather than answering ``{}``.
+        """
+        return self._run(f"MATCH (e:JExternal) WHERE {_scoped('e')} RETURN properties(e) AS p ORDER BY e.id", prefix=self._scope_prefix)
+
     def _artifact_rows(self) -> List[Dict[str, Any]]:
         return self._run(
             "MATCH (:JApplication {name: $app})-[:HAS_ARTIFACT]->(a:Artifact) "
@@ -463,6 +475,10 @@ class JNeo4jBackend(JavaAnalysisBackend):
             id=f"can://java/{self.application_name}",
             symbol_table=symbol_table,
             call_graph=[JCallGraphEdge(src=r["src"], dst=r["dst"], prov=list(r["prov"] or []), weight=r["weight"] or 1) for r in self._call_edge_rows()],
+            # ``None`` when the graph homed none, so it reads as "this run was never asked" rather
+            # than "this project calls nothing outside itself" -- the distinction
+            # ``get_external_symbols`` refuses on (D7).
+            external_symbols={r["p"]["id"]: JExternalSymbol(**{k: v for k, v in r["p"].items() if k != "id"}) for r in self._external_rows()} or None,
             artifacts={
                 a.path: a
                 for a in (

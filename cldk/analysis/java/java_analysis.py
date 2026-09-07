@@ -54,11 +54,27 @@ from tree_sitter import Tree
 
 from cldk.analysis.commons.backend_config import CodeAnalyzerConfig, JavaBackend, Neo4jConnectionConfig, cache_subdir
 from cldk.analysis.commons.bounds import DEFAULT_DEPTH, DEFAULT_MAX_NODES, DEFAULT_MAX_PATHS, DEFAULT_PAGE_SIZE
-from cldk.analysis.commons.results import EdgePage, FlowPaths, LocateResult, Slice, SliceNode
+from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, FlowPaths, LocateResult, Slice, SliceNode
 from cldk.analysis.commons.treesitter import TreesitterJava
 from cldk.models.java import JCallable
 from cldk.models.java import JApplication
-from cldk.models.java.models import JCallableParameter, JCdgEdge, JCfgEdge, JCRUDOperation, JComment, JCompilationUnit, JDdgEdge, JMethodDetail, JType, JField
+from cldk.models.java.models import (
+    JCallableParameter,
+    JCallSite,
+    JCdgEdge,
+    JCfgEdge,
+    JCRUDOperation,
+    JComment,
+    JCompilationUnit,
+    JDdgEdge,
+    JEnumConstant,
+    JExternalSymbol,
+    JField,
+    JMethodDetail,
+    JType,
+)
+from cldk.models.java.projections import JCallableOverview, JClassOverview
+from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
 from cldk.analysis.java.codeanalyzer import JCodeanalyzer
 from cldk.analysis.java.neo4j import JNeo4jBackend
 from cldk.analysis.java.backend import JavaAnalysisBackend
@@ -1636,3 +1652,254 @@ class JavaAnalysis:
         codeanalyzer-java resolves callees at every analysis level.
         """
         return self.backend.has_resolution_edges
+
+    # =====================================================================================
+    # Entrypoints, the bulk projections, the artifact layer and the type-kind leaf accessors
+    # (leg 3b, Task 3). The facade delegates; the policy lives once on
+    # :class:`~cldk.analysis.java.backend.JavaAnalysisBackend`, which both backends inherit.
+    # =====================================================================================
+    def get_callables_overview(self) -> List[JCallableOverview]:
+        """Return a lightweight overview of every callable in the project, in one bulk read.
+
+        A field-projected alternative to :meth:`get_methods` for enumeration: each
+        :class:`~cldk.models.java.projections.JCallableOverview` carries the callable's addressable
+        key, declaring type, kind, location, modifiers and annotation names — but not the full
+        reconstruction (body nodes, call sites, local classes). Body-inspect the few you need
+        afterwards via :meth:`get_method` or :meth:`get_method_bodies`.
+
+        Returns:
+            A flat list, one entry per callable the analyzer emitted — initializers, implicit
+            constructors and the callables of local and anonymous classes included (J-6).
+
+        See Also:
+            :meth:`get_decorated_callables`: The same projection filtered by annotation.
+            :meth:`get_method_bodies`: Bulk source fetch for chosen keys.
+        """
+        return self.backend.get_callables_overview()
+
+    def get_method_bodies(self, signatures: List[str]) -> Dict[str, str]:
+        """Return source text for the given callables, in one bulk read.
+
+        Args:
+            signatures: The keys :meth:`get_callables_overview` hands back
+                (``JCallableOverview.key``, the J-1 ``"<type fqn>.<signature>"`` name) — matched
+                exactly. A bare Java signature is unique only within its declaring type, so it is
+                not an address here.
+
+        Returns:
+            A dict mapping each key to its source text. Keys with no matching callable are omitted,
+            as are callables with no source text of their own (the implicit constructors and the
+            ``<clinit>$N()`` initializers) — every value is a real, non-empty ``str``.
+
+        Note:
+            The text differs by backend exactly as :meth:`get_source` does: the body block off
+            ``analysis.json``, the whole declaration off the Neo4j projection
+            (codeanalyzer-java#176).
+        """
+        return self.backend.get_method_bodies(signatures)
+
+    def get_decorated_callables(self, markers: List[str]) -> List[JCallableOverview]:
+        """Return overviews of callables annotated with any of the given markers, in one bulk read.
+
+        Args:
+            markers: Annotation names. Each matches by simple name (``Test``), with a leading ``@``
+                ignored (``@Test``), or by fully-qualified name (``org.junit.Test``) — J-5. Nothing
+                is matched fuzzily (E8).
+
+        Returns:
+            A list of :class:`~cldk.models.java.projections.JCallableOverview`, one per matching
+            callable.
+
+        See Also:
+            :meth:`get_callables_overview`: The unfiltered projection.
+        """
+        return self.backend.get_decorated_callables(markers)
+
+    def get_entrypoints(self) -> List[JCallableOverview]:
+        """Return overviews of every callable the analyzer marked as an entrypoint, in one bulk read.
+
+        codeanalyzer-java's own detection pass already finds servlet methods, JAX-RS resource
+        methods, MDB listeners and the rest; this surfaces that mark instead of making a caller
+        rediscover it. 133 of daytrader8's 1,216 callables carry it.
+
+        Returns:
+            A list of :class:`~cldk.models.java.projections.JCallableOverview`. Empty means the pass
+            found no entrypoint *callables* — the mark itself is never missing, on either backend.
+
+        See Also:
+            :meth:`get_entrypoint_classes`: The type-level sibling this walk never sees.
+            :meth:`get_entrypoint_coverage`: Whether the pass itself had gaps — which Java, alone
+                of the three languages, cannot say.
+        """
+        return self.backend.get_entrypoints()
+
+    def get_entrypoint_classes(self) -> List[JClassOverview]:
+        """Return overviews of every type the analyzer marked as an entrypoint in its own right.
+
+        :meth:`get_entrypoints` walks callables only, so a type marked at the declaration with no
+        individually-marked method is invisible to it. This is that sibling — the projected form of
+        :meth:`get_entry_point_classes`, which keeps its 1.x ``Dict[str, JType]`` shape.
+        """
+        return self.backend.get_entrypoint_classes()
+
+    def get_entrypoint_coverage(self) -> EntrypointCoverage:
+        """Report the entrypoint pass's coverage — which for Java is that **there is no report**.
+
+        codeanalyzer-java 3.0.1 emits the entrypoint marks and nothing about the pass that made
+        them: ``analysis.json`` has no report key and the ``:JApplication`` anchor carries only
+        ``name``/``schema_version``/``analyzer_name``/``analyzer_version``. So this returns an
+        :class:`~cldk.analysis.commons.results.EntrypointCoverage` whose ``diagnostics`` carry
+        ``entrypoint_report_unavailable`` and whose other fields are therefore not coverage
+        information — the same "say so honestly" shape as
+        :attr:`~cldk.analysis.commons.results.LocateResult.diagnostics`'s
+        ``module_source_unavailable``, and identical on both backends (J-4).
+
+        It is deliberately **not** synthesised from the ``is_entrypoint`` booleans: a count of
+        syntactically-marked callables is not a coverage record.
+        """
+        return self.backend.get_entrypoint_coverage()
+
+    def get_callsites_for(self, signatures: List[str]) -> Dict[str, List[JCallSite]]:
+        """Return the call sites of the given callables, keyed by the key that named them.
+
+        Avoids the per-callable reconstruction fan-out when call sites are wanted for a specific
+        frontier.
+
+        Args:
+            signatures: The keys :meth:`get_callables_overview` hands back, matched exactly.
+
+        Returns:
+            A dict mapping each existing key to its list of
+            :class:`~cldk.models.java.models.JCallSite` (empty when the callable makes no calls);
+            keys with no matching callable are omitted.
+
+        See Also:
+            :attr:`has_resolution_edges`: Distinguishes a genuinely unresolved callee from a graph
+                carrying no resolution at all.
+        """
+        return self.backend.get_callsites_for(signatures)
+
+    def get_external_symbols(self) -> Dict[str, JExternalSymbol]:
+        """Return every call-graph endpoint outside the analysed project, keyed by its
+        ``@external`` id.
+
+        Returns:
+            The analyzer's own ``external_symbols`` map. Empty means the run homed them and this
+            project's call graph makes no calls outside itself.
+
+        Raises:
+            CodeanalyzerExecutionException: The run never homed them, which is a different fact.
+                codeanalyzer-java emits ``external_symbols`` only under ``--external-calls``, which
+                ``--emit neo4j`` forces and a local ``-a`` run does not — so the Neo4j backend
+                answers and the local one refuses rather than returning an empty dict that would
+                read as "nothing outside".
+        """
+        return self.backend.get_external_symbols()
+
+    # -----[ repository artifacts ]-----
+    def get_artifacts(self) -> Dict[str, PyArtifact]:
+        """Return every non-code project artifact (``pom.xml``, properties files, descriptors, …),
+        keyed by repo-relative path.
+
+        This layer (``Artifact``/``ConfigKey``/``Package`` nodes) is the one part of the graph every
+        ``codeanalyzer-<lang>`` projects identically and unprefixed, so it is carried in the shared
+        ``Py*`` models rather than in Java-specific ones. ``JArtifact.text_truncated`` has no home
+        on the shared model; read it off ``JApplication.artifacts`` when it matters.
+
+        See Also:
+            :meth:`get_dependencies`, :meth:`get_config_keys`, :meth:`get_config_uses`.
+        """
+        return self.backend.get_artifacts()
+
+    def get_dependencies(self, *, direct_only: bool = False, ecosystem: str | None = None, declared_in: str | None = None) -> List[PyDependency]:
+        """Return every declared dependency, one entry per declaring manifest, optionally filtered.
+
+        All three filters default to "don't filter". The Maven ``group`` coordinate has no home on
+        the shared model; read it off ``JApplication.dependencies`` when ``name`` alone is
+        ambiguous.
+
+        Args:
+            direct_only: When ``True``, excludes lockfile-only transitive pins.
+            ecosystem: When given, only dependencies from this package ecosystem (``"maven"``).
+            declared_in: When given, only dependencies declared by this artifact id.
+        """
+        return self.backend.get_dependencies(direct_only=direct_only, ecosystem=ecosystem, declared_in=declared_in)
+
+    def get_config_keys(self) -> Dict[str, PyConfigKey]:
+        """Return every configuration key flattened out of a config-bearing artifact, keyed
+        ``"<artifact repo-relative path>@key/<dotted key>"`` (``pom.xml@key/project.artifactId``).
+
+        That is the analyzer's own id with its ``can://artifact/<app>/`` prefix dropped: the
+        application name belongs to the run, not to the key, and ``can://`` ids stay off the public
+        surface (E6). The full id is still on ``PyConfigKey.id``. Python and TypeScript key this by
+        the raw id today; aligning the three is tracked as python-sdk#346 and is deliberately not
+        done piecemeal here.
+        """
+        return self.backend.get_config_keys()
+
+    def get_config_uses(self, key: str | None = None) -> List[PyConfigUseEdge]:
+        """Return resolved code-to-config edges: which body node reads which config key.
+
+        Always ``[]`` on codeanalyzer-java 3.0.1, which has no code-to-config detector (there is no
+        ``config_uses`` on the Java wire) — so there is nothing for ``key`` to filter.
+
+        Args:
+            key: When given, only edges whose target key has this bare ``key``.
+
+        See Also:
+            :meth:`get_config_readers`: The same edges, resolved to their reading callables.
+            :meth:`get_unresolved_config_reads`: The reads this cannot show.
+        """
+        return self.backend.get_config_uses(key)
+
+    def get_unresolved_config_reads(self) -> List[PyConfigRead]:
+        """Return every detector-matched config read that never closed on exactly one declared key.
+
+        Always ``[]`` on codeanalyzer-java 3.0.1: there is no config-read detector, so there is
+        nothing to have failed to resolve.
+        """
+        return self.backend.get_unresolved_config_reads()
+
+    def get_config_readers(self, key: str) -> List[JCallableOverview]:
+        """Return overviews of every callable reading configuration key ``key``.
+
+        Always ``[]`` for the same reason :meth:`get_config_uses` is: with no code-to-config edges
+        on the Java wire there is no edge to resolve to a reading callable.
+
+        Args:
+            key: The bare configuration key, matched as :meth:`get_config_uses` matches it.
+        """
+        return self.backend.get_config_readers(key)
+
+    # -----[ the type-kind leaf accessors (J-7) ]-----
+    def get_interfaces(self) -> Dict[str, JType]:
+        """Return every interface in the project, keyed by qualified name.
+
+        The ``kind``-filtered siblings of :meth:`get_classes`, sharing TypeScript's names for the
+        same concepts (G3). Measured: 3 interfaces in daytrader8, 594 in ThingsBoard.
+        """
+        return self.backend.get_interfaces()
+
+    def get_enums(self) -> Dict[str, JType]:
+        """Return every enum in the project, keyed by qualified name (192 in ThingsBoard; daytrader8
+        declares none)."""
+        return self.backend.get_enums()
+
+    def get_enum_members(self, qualified_enum_name: str) -> List[JEnumConstant]:
+        """Return the constants declared by one enum.
+
+        Args:
+            qualified_enum_name: The enum's qualified name, as :meth:`get_enums` keys it.
+
+        Raises:
+            SelectorNotInGraph: The name is not an enum of this application — no type at all, or a
+                type of another kind. An empty list means an enum that declares no constant, which
+                is a different answer (D7).
+        """
+        return self.backend.get_enum_members(qualified_enum_name)
+
+    def get_records(self) -> Dict[str, JType]:
+        """Return every record in the project, keyed by qualified name — the one Java-only type kind
+        (35 in ThingsBoard; daytrader8 declares none). Annotation types have no leaf accessor of
+        their own and stay reachable through :meth:`get_classes` (J-7)."""
+        return self.backend.get_records()

@@ -31,6 +31,8 @@ from .models import (
     JType,
 )
 
+from .projections import JCallableOverview, JClassOverview
+
 from .enums import CRUDOperationType, CRUDQueryType
 
 __all__ = [
@@ -44,6 +46,8 @@ __all__ = [
     "JGraphEdges",
     "JImport",
     "JType",
+    "JCallableOverview",
+    "JClassOverview",
     "CRUDOperationType",
     "CRUDQueryType",
 ]
