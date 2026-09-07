@@ -253,8 +253,8 @@ def call_reaches(graph: "nx.DiGraph", a: str, b: str, depth: "int | None") -> bo
 
     One function for the three in-memory backends because ``reaches(x, x)`` is the case they all
     got wrong in the same way, and because the advice that points at it is shared too
-    (:func:`~cldk.analysis.commons.bounds.refuse_self_path` tells a caller to "ask ``reaches(X, X)``
-    whether a cycle exists").
+    (:func:`~cldk.analysis.commons.bounds.check_distinct_endpoints` tells a caller to "ask
+    ``reaches(X, X)`` whether a cycle exists").
 
     ``nx.descendants`` and ``ego_graph(...) - {a}`` both **exclude the source**, even when the
     source has a self-loop or sits on a cycle — that is what "descendants" means — so asking them

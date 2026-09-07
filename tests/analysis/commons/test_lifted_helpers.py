@@ -152,8 +152,8 @@ def test_call_reaches_answers_the_self_question_as_the_cycle_question():
     every input, including a directly recursive callable.
 
     That made the advice on the self-path refusal wrong too --
-    :func:`~cldk.analysis.commons.bounds.refuse_self_path` says "ask ``reaches(X, X)`` whether a
-    cycle exists", and it could not answer yes.
+    :func:`~cldk.analysis.commons.bounds.check_distinct_endpoints` says "ask ``reaches(X, X)``
+    whether a cycle exists", and it could not answer yes.
     """
     from cldk.analysis.commons.graphs import call_reaches
 

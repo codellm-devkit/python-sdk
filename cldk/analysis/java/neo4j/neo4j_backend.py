@@ -587,7 +587,7 @@ class JNeo4jBackend(JavaAnalysisBackend):
     #: ``OPTIONAL MATCH`` and not a second statement: a ``call`` node's ``J_RESOLVES_TO`` target is
     #: what :attr:`~cldk.analysis.commons.results.BodyRef.callee` *is*, and reading it here keeps
     #: :meth:`locate` at one round trip. ``OPTIONAL`` because most body nodes are not calls (4,006
-    #: of daytrader8's 12,236 are) and an unresolved call is a real outcome; at most one edge leaves
+    #: of daytrader8's 13,436 are) and an unresolved call is a real outcome; at most one edge leaves
     #: any body node (checked: 0 nodes with two, on both applications), so no row is duplicated.
     #: Measured cost of adding it (PROFILE, median of 5 with the first discarded, ThingsBoard, 8
     #: callables / 2,579 body nodes): 70.65 ms against 57.91 without, 22,401 db hits against 10,324
