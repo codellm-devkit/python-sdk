@@ -66,7 +66,20 @@ surface** (3b). Design records: `docs/design/specs/2026-09-06-leg-2.5-typescript
 
 ### Changed
 
-- **Pins:** `codeanalyzer-java` 2.4.1 → 3.0.2, `codeanalyzer-typescript` 0.4.3 → 1.3.0.
+- **Java's four interprocedural value accessors now answer.** `slice_forward`, `paths_between`,
+  `flows_to_call` and `flows_to_argument` refused on Java because codeanalyzer-java emitted the level-4 port
+  lattice disconnected from the statement dependence graph — a `formal_in` had out-degree zero, so every
+  forward answer was empty whatever the program did. codeanalyzer-java 3.0.3 joins the two layers
+  (codeanalyzer-java#227), and the SDK's guard reads the data rather than a version, so all four answer: a
+  value can be followed out of a parameter, across call boundaries and into a callee's parameter, with each
+  hop labelled `data` / `argument` / `return` / `control`. Measured on the whole of daytrader8: 5,083 `ddg`
+  edges cross between the port lattice and the statement graph in all four directions, where there were none.
+  **To get this, re-analyse (or re-emit your Neo4j graph) with codeanalyzer-java 3.0.3**; an older graph stays
+  attachable and keeps refusing, as does any analysis run under `--l3-engine wala`. The same release drops
+  `ddg` edges whose endpoint was never emitted as a body node (codeanalyzer-java#228), so `get_ddg()` over
+  `analysis.json` and over Neo4j now report the same edges — 10,430 on daytrader8, set for set, against a
+  5,434/5,347 split before.
+- **Pins:** `codeanalyzer-java` 2.4.1 → 3.0.3, `codeanalyzer-typescript` 0.4.3 → 1.3.0.
 - **The Java analyzer ships as a wheel, not a jar in this repo.** The 35 MB checked-in jar, the Temurin download
   in `_jdk.py`, and the release workflow's jar injection are gone; no `JAVA_HOME` is read or set, and no JDK is
   downloaded. The published wheel drops from about 35 MB to 320 KB.
@@ -124,12 +137,14 @@ surface** (3b). Design records: `docs/design/specs/2026-09-06-leg-2.5-typescript
   (codeanalyzer-typescript#177); such a node resolves to the facet its kind names, or not at all.
 - `get_config_keys()` is still keyed by a `can://` id on Python and TypeScript, where Java now uses the
   artifact-relative key (#346).
-- **Java's `slice_forward`, `paths_between`, `flows_to_call` and `flows_to_argument` raise instead of
-  answering.** codeanalyzer-java 3.0.1 emits the level-4 port lattice disconnected from the statement
-  dependence graph, so every forward answer would be empty whatever the program does
-  (codeanalyzer-java#227). They answer unchanged once the analyzer connects the two.
-- **Java's two backends disagree on 87 of daytrader8's 5,434 `ddg` edges.** The analyzer names endpoints it
-  never emitted as body nodes, so the graph cannot project them and reports 5,347 (codeanalyzer-java#228).
+- **Java's `slice_forward`, `paths_between`, `flows_to_call` and `flows_to_argument` still raise on an
+  analysis emitted before codeanalyzer-java 3.0.3, or by any version under `--l3-engine wala`**: no dependence
+  edge leaves a `formal_in` there, so every forward answer would be empty whatever the program does. A Neo4j
+  graph emitted by 3.0.1 or 3.0.2 is still attachable (the floor is 3.0.1) and still refuses — re-emit it.
+- **Java's `flows_to_argument` is not per-argument precise.** codeanalyzer-java feeds every actual of a call
+  site from the one statement containing it, not from the reaching definition of that argument, so on a
+  reached call site every argument answers `True` together. Paths are complete; per-argument precision is not
+  what the analyzer promises.
 - **Java has no entrypoint report**, so `get_entrypoint_coverage()` returns `entrypoint_report_unavailable`
   rather than fabricated coverage. `get_entrypoints()` and `get_entrypoint_classes()` carry the real marks.
 - **Java's `get_external_symbols()` answers over Neo4j and raises locally**: the analyzer homes out-of-project

@@ -33,6 +33,9 @@ from urllib.request import urlretrieve
 
 # third part imports
 import toml
+import re
+from typing import Dict
+
 import pytest
 
 
@@ -65,7 +68,7 @@ def analysis_json(analysis_json_fixture) -> str:
 
 @pytest.fixture(scope="session")
 def analysis_json_a4(analysis_json_fixture) -> str:
-    """The codeanalyzer-java 3.0.2 ``-a 4`` fixture (``v2/a4``) as a JSON string."""
+    """The codeanalyzer-java 3.0.3 ``-a 4`` fixture (``v2/a4``) as a JSON string."""
     with gzip.open(analysis_json_fixture.parent / "a4" / "analysis.json.gz", "rt", encoding="utf-8") as json_data:
         return json.dumps(json.load(json_data))
 
@@ -195,6 +198,27 @@ def java_code() -> str:
 #: without editing anything here.
 WRITE_GATE_VAR = "CLDK_TEST_NEO4J_WRITE_URI"
 
+#: A spelling that was retired, mapped to the one that replaced it. Setting a retired name
+#: used to be silent: the suite read the new name, found nothing, and skipped -- so a stale
+#: shell export made a run end green having verified nothing (python-sdk#362). Erroring is
+#: the whole point; a warning would be just as easy to miss as the skip was.
+RETIRED_VARS = {
+    "CLDK_TEST_NEO4J_JAVA_APP": "CLDK_TEST_NEO4J_APP",
+    "CLDK_TEST_NEO4J_JAVA_SCALE_APP": "CLDK_TEST_NEO4J_SCALE_APP",
+    "CLDK_TEST_PYTHON_NEO4J_URI": "CLDK_TEST_NEO4J_PYTHON_URI",
+    "CLDK_TEST_PYTHON_NEO4J_USER": "CLDK_TEST_NEO4J_PYTHON_USER",
+    "CLDK_TEST_PYTHON_NEO4J_PASSWORD": "CLDK_TEST_NEO4J_PYTHON_PASSWORD",
+    "CLDK_TEST_PYTHON_NEO4J_APP": "CLDK_TEST_NEO4J_PYTHON_APP",
+}
+
+
+def pytest_configure(config):
+    """Refuse to run when a retired variable is set, naming what replaced it."""
+    import os
+    stale = sorted(f"{old} is now {new}" for old, new in RETIRED_VARS.items() if os.environ.get(old))
+    if stale:
+        raise pytest.UsageError("retired test variables are set, and the suite no longer reads them: " + "; ".join(stale))
+
 
 def pytest_terminal_summary(terminalreporter):
     """Name the write-gated modules that did not run, and what would run them.
@@ -202,10 +226,15 @@ def pytest_terminal_summary(terminalreporter):
     Reporting only: it prints and never changes the exit status. An unset gate is a valid way to
     run the suite, not a failure -- the point is that it stops being a silent one.
     """
-    modules = sorted({report.nodeid.split("::")[0] for report in terminalreporter.stats.get("skipped", []) if WRITE_GATE_VAR in str(report.longrepr)})
-    if not modules:
+    gated: Dict[str, set] = {}
+    for report in terminalreporter.stats.get("skipped", []):
+        for var in sorted(set(re.findall(r"CLDK_TEST_[A-Z0-9_]+", str(report.longrepr)))):
+            gated.setdefault(var, set()).add(report.nodeid.split("::")[0])
+    if not gated:
         return
-    terminalreporter.section("write-gated modules NOT run", sep="-")
-    for module in modules:
-        terminalreporter.line(f"  {module}")
+    terminalreporter.section("modules NOT run, and the variable that would run them", sep="-")
+    for var, modules in sorted(gated.items()):
+        terminalreporter.line(f"  {var}")
+        for module in sorted(modules):
+            terminalreporter.line(f"    {module}")
     terminalreporter.line(f"  set {WRITE_GATE_VAR} / _WRITE_USER / _WRITE_PASSWORD to a disposable Neo4j server to run them (there are no defaults)")

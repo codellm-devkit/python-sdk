@@ -14,7 +14,7 @@
 # limitations under the License.
 ################################################################################
 
-"""Schema-level tests for the Java v2 models: the codeanalyzer-java 3.0.2 envelope parses at
+"""Schema-level tests for the Java v2 models: the codeanalyzer-java 3.0.3 envelope parses at
 L1 and L4, round-trips losslessly, and rejects anything the wire does not carry."""
 
 import json
@@ -46,7 +46,7 @@ def test_envelope_at_both_levels(a1: JAnalysis, a4: JAnalysis):
         assert a.max_level == level
         assert a.k_limit is None  # never emitted by 3.0.x
         assert a.analyzer.name == "codeanalyzer-java"
-        assert a.analyzer.version == "3.0.2"
+        assert a.analyzer.version == "3.0.3"
         assert a.application.id == "can://java/daytrader8"
         assert a.application.kind == "application"
 

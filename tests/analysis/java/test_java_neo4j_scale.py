@@ -32,7 +32,7 @@ Skipped unless pointed at a graph that holds the application::
     uv run pytest tests/analysis/java/test_java_neo4j_scale.py
 
 The application name defaults to ``thingsboard`` and can be overridden with
-``CLDK_TEST_NEO4J_JAVA_SCALE_APP``. Read-only, like every other Neo4j suite here.
+``CLDK_TEST_NEO4J_SCALE_APP``. Read-only, like every other Neo4j suite here.
 """
 
 import logging
@@ -48,7 +48,7 @@ logging.getLogger("neo4j").setLevel(logging.ERROR)
 NEO4J_URI = os.environ.get("CLDK_TEST_NEO4J_URI")
 NEO4J_USER = os.environ.get("CLDK_TEST_NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.environ.get("CLDK_TEST_NEO4J_PASSWORD")
-SCALE_APP = os.environ.get("CLDK_TEST_NEO4J_JAVA_SCALE_APP", "thingsboard")
+SCALE_APP = os.environ.get("CLDK_TEST_NEO4J_SCALE_APP", "thingsboard")
 
 #: A local class's qualified name ends with the declaring callable's signature, then the class's
 #: own simple name -- ``$anon$N`` for an anonymous one, a real name for a named local class.

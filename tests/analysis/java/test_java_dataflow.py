@@ -35,6 +35,8 @@ are in this fixture, so ``get_ddg`` is asserted to contain them: the shape canno
 """
 
 import inspect
+import json
+from collections import Counter
 
 import pytest
 
@@ -151,9 +153,11 @@ def test_get_cdg_returns_the_analyzers_own_edges(ref):
 
 def test_get_ddg_carries_the_variable_and_the_two_provenance_tiers(ref):
     """Java's DDG has exactly **two** tiers -- ``ssa`` and ``points-to`` -- where Python has three
-    and TypeScript one. Measured across the whole fixture: 1,171 ``ssa`` and 320 ``points-to``."""
+    and TypeScript one. Measured across the whole fixture: 2,038 ``ssa`` and 320 ``points-to``.
+    codeanalyzer-java 3.0.3's port crossings are all ``ssa`` (1,171 before, +867), which is why only
+    that tier moved."""
     page = ref.get_ddg(TO_JSON)
-    assert page.total == 48 and all(isinstance(e, JDdgEdge) for e in page)
+    assert page.total == 49 and all(isinstance(e, JDdgEdge) for e in page)
     tiers = {tuple(e.prov) for c in _every_callable(ref) for e in (c.ddg or [])}
     assert tiers == {("ssa",), ("points-to",)}
 
@@ -174,13 +178,13 @@ def test_the_endpoints_are_global_body_node_ids_that_get_source_accepts(ref):
 
 def test_get_ddg_contains_the_self_loops(ref):
     """**The python-sdk#349 regression guard.** ``MarketSummaryDataBean.toJSON()`` has four
-    ``J_DDG`` edges from a body node to itself, of 48. A page built the way ``PyNeo4jBackend``
-    builds one -- binding the containment relationship twice -- would report 44 and call itself
+    ``J_DDG`` edges from a body node to itself, of 49. A page built the way ``PyNeo4jBackend``
+    builds one -- binding the containment relationship twice -- would report 45 and call itself
     complete; this asserts the four are there and that ``total`` counts them."""
     page = ref.get_ddg(TO_JSON)
     loops = [e for e in page if e.src == e.dst]
     assert len(loops) == 4, [(e.src, e.dst) for e in page]
-    assert page.total == len(page.edges) == 48 and page.complete
+    assert page.total == len(page.edges) == 49 and page.complete
 
 
 def test_the_whole_fixture_carries_twenty_self_loops(ref):
@@ -225,7 +229,7 @@ def test_a_page_is_ordered_and_a_cursor_resumes_after_it(ref):
     keys = [(e.src, e.dst, e.var or "", list(e.prov)) for e in whole]
     assert keys == sorted(keys), "the page is not in the canonical order"
     first = ref.get_ddg(TO_JSON, page_size=10)
-    assert len(first.edges) == 10 and first.total == 48 and not first.complete and first.next_cursor
+    assert len(first.edges) == 10 and first.total == 49 and not first.complete and first.next_cursor
     second = ref.get_ddg(TO_JSON, page_size=10, cursor=first.next_cursor)
     assert list(second.edges) == whole[10:20]
 
@@ -391,21 +395,25 @@ def test_call_paths_between_refuses_a_self_question(both):
 
 
 # ---- slice_backward ----------------------------------------------------------------------------
-def test_slice_backward_from_a_parameter_reaches_the_arguments_that_feed_it(ref):
-    """``J_PARAM_IN`` runs ``actual_in -> formal_in``, so a backward slice from a parameter is the
-    seed plus the argument vertex at every call site that passes one: 34 for ``getStatement``'s
-    ``conn``, one for ``cancelOrder``'s ``orderID``."""
+def test_slice_backward_from_a_parameter_reaches_the_statements_behind_its_arguments(ref):
+    """``J_PARAM_IN`` runs ``actual_in -> formal_in``, so a backward slice from a parameter reaches
+    the argument vertex at every call site that passes one -- and, since codeanalyzer-java 3.0.3
+    joins the port lattice to the statement graph, on through the statement that computed each
+    argument and into its caller's own parameters. ``getStatement``'s ``conn`` was 35 nodes of two
+    kinds on 3.0.2 (the seed plus 34 arguments); it is 465 nodes across 44 callables now, and the
+    thing that changed is the analyzer's output, not this walk."""
     found = ref.slice_backward("conn", within=GET_STATEMENT, depth=None)
-    assert found.total == 35 and found.complete
-    assert {n.kind for n in found.nodes} == {"parameter", "argument"}
+    assert found.total == 465 and found.complete
+    assert {n.kind for n in found.nodes} == {"parameter", "argument", "statement", "call", "return", "branch", "loop", "entry"}
+    assert len({n.callable for n in found.nodes}) == 44
     assert [n.ref for n in found.nodes] == sorted(n.ref for n in found.nodes)
     assert found.roots[0].name == "conn" and found.resolved.endswith("parameter 'conn'")
-    assert ref.slice_backward("orderID", within=CANCEL, depth=None).total == 2
+    assert ref.slice_backward("orderID", within=CANCEL, depth=None).total == 15
 
 
 def test_a_slice_reports_a_cap_rather_than_returning_less_in_silence(ref):
     capped = ref.slice_backward("conn", within=GET_STATEMENT, depth=None, max_nodes=5)
-    assert len(capped.nodes) == 5 and capped.total == 35 and not capped.complete
+    assert len(capped.nodes) == 5 and capped.total == 465 and not capped.complete
 
 
 def test_a_slice_node_names_the_parameter_without_an_ordinal(ref):
@@ -427,31 +435,91 @@ def test_slice_backward_resolves_its_value_and_its_scope(ref):
         ref.slice_backward("conn", within=GET_STATEMENT, depth=0)
 
 
-# ---- the port-lattice gap ----------------------------------------------------------------------
-#: The four accessors whose answer cannot vary while codeanalyzer-java emits no dependence edge out
-#: of a ``formal_in`` vertex, with a call that is otherwise valid.
+# ---- the port lattice --------------------------------------------------------------------------
+#: The four accessors that refuse while no dependence edge leaves a ``formal_in`` vertex, with a
+#: call that is otherwise valid. codeanalyzer-java 3.0.3 joins the two layers, so on this fixture
+#: they answer -- and the refusal below is asserted against a payload with the crossings taken back
+#: out, because the graph floor is 3.0.1 and an older emitter's output is still attachable.
+#: All four are asked about the *same* flow -- ``cancelOrder``'s ``orderID`` reaching
+#: ``getStatement``'s ``sql`` -- so the pair of tests below is one question answered twice: refused
+#: on the disconnected payload, answered on the committed one.
 GUARDED = {
-    "slice_forward": lambda b: b.slice_forward("conn", within=GET_STATEMENT),
-    "paths_between": lambda b: b.paths_between("conn", "orderID", src_within=GET_STATEMENT, dst_within=CANCEL),
-    "flows_to_call": lambda b: b.flows_to_call("conn", COMPLETE, within=GET_STATEMENT),
-    "flows_to_argument": lambda b: b.flows_to_argument("conn", COMPLETE, "conn", within=GET_STATEMENT),
+    "slice_forward": lambda b: b.slice_forward("orderID", within=CANCEL),
+    "paths_between": lambda b: b.paths_between("orderID", "sql", src_within=CANCEL, dst_within=GET_STATEMENT),
+    "flows_to_call": lambda b: b.flows_to_call("orderID", GET_STATEMENT, within=CANCEL),
+    "flows_to_argument": lambda b: b.flows_to_argument("orderID", GET_STATEMENT, "sql", within=CANCEL),
 }
 
+#: The four synthetic vertices of the L4 port lattice, in the analyzer's spelling.
+PORTS = {"formal_in", "actual_in", "formal_out", "actual_out"}
 
-def test_the_port_lattice_carries_no_dependence_edge(ref):
-    """The measurement the four refusals rest on, asserted rather than assumed: not one of the
-    fixture's 225 ``formal_in`` vertices has an outgoing ``ddg``/``cdg``/``summary``/param edge, and
-    no ``ddg`` or ``cdg`` edge touches a port vertex at either end. codeanalyzer-java 3.0.1 emits
-    the L4 port lattice disconnected from the statement dependence graph; codeanalyzer-python does
-    not (129,883 ``PY_DDG`` edges leave a ``formal_in`` on the reference graph)."""
-    ports = {"formal_in", "actual_in", "formal_out", "actual_out"}
-    touching = 0
+
+def _without_port_crossings(payload: str) -> str:
+    """The same fixture with every ``ddg`` edge that touches a port vertex removed.
+
+    Which is exactly what codeanalyzer-java emitted before 3.0.3: the 3.0.2 copy of this fixture
+    and this payload agree edge for edge (1,491 ``ddg`` edges; the 867 that 3.0.3 added are all
+    crossings and all ``ssa``). Built by subtraction from the real thing rather than hand-written,
+    so the refused shape is a shape the analyzer really emitted, and asserted on rather than
+    assumed -- the count below fails if a regeneration ever changes what is being subtracted.
+
+    ``cdg`` and ``summary`` are left alone: no ``cdg`` edge touches a port in either release, and
+    every ``summary`` edge does in both (``actual_in -> actual_out``, which leaves no ``formal_in``
+    and so was never what the probe measured).
+    """
+    payload_json = json.loads(payload)
+
+    def walk(type_declaration):
+        yield type_declaration
+        for nested in (type_declaration.get("types") or {}).values():
+            yield from walk(nested)
+
+    kept = 0
+    for unit in payload_json["application"]["symbol_table"].values():
+        for top in (unit.get("types") or {}).values():
+            for declaration in walk(top):
+                for c in (declaration.get("callables") or {}).values():
+                    kinds = {key: node.get("kind") for key, node in (c.get("body") or {}).items()}
+                    c["ddg"] = [e for e in (c.get("ddg") or []) if kinds.get(e["src"]) not in PORTS and kinds.get(e["dst"]) not in PORTS]
+                    kept += len(c["ddg"])
+    assert kept == 1491, f"the pre-3.0.3 shape is {kept} ddg edges, not 1,491"
+    return json.dumps(payload_json)
+
+
+@pytest.fixture(scope="module", params=["local", "graph"])
+def disconnected(request, analysis_json_a4):
+    """Both backends over a payload whose port lattice carries no dependence edge."""
+    return (_local if request.param == "local" else _graph)(_without_port_crossings(analysis_json_a4))
+
+
+def test_the_port_lattice_carries_dependence_edges_in_both_directions(ref):
+    """The measurement the four accessors rest on, asserted rather than assumed. codeanalyzer-java
+    3.0.3 (codeanalyzer-java#227) emits ``@formal_in:k -> use``, ``return -> @formal_out``,
+    ``statement -> <call>/actual_in:i`` and ``<call>/actual_out -> statement``, so the port layer is
+    joined to the statement graph both ways: 867 of the fixture's 2,358 ``ddg`` edges touch a port,
+    where 3.0.2 had none. ``cdg`` still touches none, in either release."""
+    crossing, cdg_touching = Counter(), 0
     for c in _every_callable(ref):
         kinds = {k: n.kind for k, n in c.body.items()}
-        for e in (c.ddg or []) + (c.cdg or []):
-            touching += kinds.get(e.src) in ports or kinds.get(e.dst) in ports
-    assert touching == 0
-    assert not ref._ports_carry_dependence
+        for e in c.ddg or []:
+            if kinds.get(e.src) in PORTS or kinds.get(e.dst) in PORTS:
+                crossing[kinds.get(e.src), kinds.get(e.dst)] += 1
+        cdg_touching += sum(1 for e in c.cdg or [] if kinds.get(e.src) in PORTS or kinds.get(e.dst) in PORTS)
+    assert sum(crossing.values()) == 867 and cdg_touching == 0
+    assert crossing["formal_in", "call"] == 272 and crossing["statement", "actual_in"] == 129
+    assert crossing["return", "formal_out"] == 77 and crossing["actual_out", "statement"] == 76
+    assert ref._ports_carry_dependence
+
+
+def test_every_ddg_endpoint_is_a_body_node(ref):
+    """codeanalyzer-java 3.0.2 emitted 87 of daytrader8's 5,434 ``ddg`` edges naming an endpoint it
+    never emitted as a body node -- the only measured disagreement between ``analysis.json`` and
+    the Neo4j projection, which materialises nodes from ``body{}``. 3.0.3 drops them
+    (codeanalyzer-java#228). It was 0 on this fixture in both releases -- the defect was
+    whole-project only -- so this is not a regression *fix* here but the guard that would fail if
+    dangling endpoints came back, on the fixture the offline suite can afford to walk."""
+    dangling = [(c.id, e.src, e.dst) for c in _every_callable(ref) for e in (c.ddg or []) + (c.cdg or []) + (c.cfg or []) if e.src not in c.body or e.dst not in c.body]
+    assert dangling == []
 
 
 @pytest.mark.parametrize("dangling, carries", [(True, False), (False, True)], ids=["target-never-emitted", "target-emitted"])
@@ -461,7 +529,9 @@ def test_the_port_probe_counts_only_an_edge_whose_target_is_a_node(dangling, car
     node**; the in-memory one counted any outgoing edge of a ``formal_in``, materialised target or
     not. codeanalyzer-java 3.0.2 emitted 87 of daytrader8's 5,434 ddg edges naming an endpoint it
     never emitted (#228, fixed in 3.0.3), which is exactly the shape that made the two disagree --
-    and this boolean decides whether four accessors raise or answer.
+    and this boolean decides whether four accessors raise or answer. The clause stays with the
+    analyzer fixed, because the graph floor is 3.0.1 and an older emitter's output is still
+    attachable.
 
     Driven off a seeded ``_sdg_cache`` rather than a payload, because the divergence needs an edge
     the released analyzer no longer emits.
@@ -476,35 +546,86 @@ def test_the_port_probe_counts_only_an_edge_whose_target_is_a_node(dangling, car
 
 
 @pytest.mark.parametrize("accessor", sorted(GUARDED))
-def test_the_four_forward_value_accessors_refuse_rather_than_answer_a_constant(both, accessor):
-    """D7 in its purest form: with no edge leaving a ``formal_in``, ``flows_to_call`` is ``False``
-    for every input, ``paths_between`` empty for every input and ``slice_forward`` the seed alone --
-    each indistinguishable from a proved absence of flow. Both backends raise the same type with
-    the same message."""
+def test_the_four_forward_value_accessors_answer_once_the_ports_carry_dependence(ref, accessor):
+    """The lift, on the committed fixture and with no SDK change: what refused on 3.0.2 now returns
+    a real answer that varies with the program. Asserted as a shape, not a constant -- a
+    ``slice_forward`` that reached only its seed, or an empty path list, would be the ambiguous
+    empty the refusal existed to prevent."""
+    answered = GUARDED[accessor](ref)
+    assert {
+        "slice_forward": lambda r: r.total > 1 and len({n.callable for n in r.nodes}) > 1,
+        "paths_between": lambda r: bool(r.paths),
+        "flows_to_call": lambda r: r is True,
+        "flows_to_argument": lambda r: r is True,
+    }[accessor](answered), answered
+
+
+@pytest.mark.parametrize("accessor", sorted(GUARDED))
+def test_the_four_refuse_on_a_payload_whose_ports_carry_nothing(disconnected, accessor):
+    """D7 in its purest form, pinned in the direction that still matters: with no edge leaving a
+    ``formal_in``, ``flows_to_call`` is ``False`` for every input, ``paths_between`` empty for every
+    input and ``slice_forward`` the seed alone -- each indistinguishable from a proved absence of
+    flow. The graph floor is 3.0.1, so a graph emitted by 3.0.1 or 3.0.2 is still attachable and
+    still needs this, and ``--l3-engine wala`` leaves ``formal_in`` unattached even on 3.0.3. Both
+    backends raise the same type with the same message, and the decision reads the data -- there is
+    no analyzer version anywhere in it."""
+    assert not disconnected._ports_carry_dependence
     with pytest.raises(CodeanalyzerExecutionException) as e:
-        GUARDED[accessor](both)
+        GUARDED[accessor](disconnected)
     assert "formal_in" in str(e.value) and accessor in str(e.value)
     assert "can://" not in str(e.value)
 
 
 @pytest.mark.parametrize("accessor", sorted(GUARDED))
-def test_the_refusal_comes_after_the_arguments_and_the_names_are_judged(both, accessor):
+def test_the_refusal_comes_after_the_arguments_and_the_names_are_judged(disconnected, accessor):
     """A malformed argument is a ``ValueError`` and a name that misses is
     ``SelectorNotInGraph`` -- the gap does not swallow a caller's own error."""
+    both = disconnected
     with pytest.raises(ValueError, match="depth"):
         {
-            "slice_forward": lambda: both.slice_forward("conn", within=GET_STATEMENT, depth=0),
-            "paths_between": lambda: both.paths_between("conn", "orderID", src_within=GET_STATEMENT, dst_within=CANCEL, depth=0),
-            "flows_to_call": lambda: both.flows_to_call("conn", COMPLETE, within=GET_STATEMENT, depth=0),
-            "flows_to_argument": lambda: both.flows_to_argument("conn", COMPLETE, "conn", within=GET_STATEMENT, depth=0),
+            "slice_forward": lambda: both.slice_forward("orderID", within=CANCEL, depth=0),
+            "paths_between": lambda: both.paths_between("orderID", "sql", src_within=CANCEL, dst_within=GET_STATEMENT, depth=0),
+            "flows_to_call": lambda: both.flows_to_call("orderID", GET_STATEMENT, within=CANCEL, depth=0),
+            "flows_to_argument": lambda: both.flows_to_argument("orderID", GET_STATEMENT, "sql", within=CANCEL, depth=0),
         }[accessor]()
     with pytest.raises(SelectorNotInGraph):
         {
-            "slice_forward": lambda: both.slice_forward("nope", within=GET_STATEMENT),
-            "paths_between": lambda: both.paths_between("nope", "orderID", src_within=GET_STATEMENT, dst_within=CANCEL),
-            "flows_to_call": lambda: both.flows_to_call("nope", COMPLETE, within=GET_STATEMENT),
-            "flows_to_argument": lambda: both.flows_to_argument("conn", COMPLETE, "nope", within=GET_STATEMENT),
+            "slice_forward": lambda: both.slice_forward("nope", within=CANCEL),
+            "paths_between": lambda: both.paths_between("nope", "sql", src_within=CANCEL, dst_within=GET_STATEMENT),
+            "flows_to_call": lambda: both.flows_to_call("nope", GET_STATEMENT, within=CANCEL),
+            "flows_to_argument": lambda: both.flows_to_argument("orderID", GET_STATEMENT, "nope", within=CANCEL),
         }[accessor]()
+
+
+def test_a_parameter_reaches_a_callees_parameter_three_frames_down(ref):
+    """The witness python-sdk#354 asks for, and the one thing that could not be written before it:
+    ``cancelOrder(Integer, boolean)``'s ``orderID`` reaches ``getStatement``'s ``sql`` across
+    **three** call boundaries -- through ``cancelOrder(Connection, Integer)`` and
+    ``updateOrderStatus`` -- and the path says how, hop by hop, in the caller's vocabulary rather
+    than as a boolean.
+
+    The shape is asserted, not just the answer: nine hops alternating ``data`` inside a frame and
+    ``argument`` across one, every ``data`` hop carrying a variable and ``ssa`` provenance, every
+    ``argument`` hop landing on the next callable's parameter, and consecutive hops joining up.
+    ``flows_to_call`` and ``flows_to_argument`` agree with it, which is what makes them a
+    statement about the same walk.
+    """
+    paths = ref.paths_between("orderID", "sql", src_within=CANCEL, dst_within=GET_STATEMENT, depth=None)
+    assert paths.complete and len(paths.paths) == 2
+    shortest = min(paths.paths, key=lambda p: len(p.hops))
+    assert [h.via for h in shortest.hops] == ["data", "data", "argument"] * 3
+    frames = [h.frm.callable for h in shortest.hops] + [shortest.hops[-1].to.callable]
+    assert frames[0] == CANCEL and frames[-1] == GET_STATEMENT
+    assert len(dict.fromkeys(frames)) == 4, frames
+    assert all(shortest.hops[i].to.ref == shortest.hops[i + 1].frm.ref for i in range(len(shortest.hops) - 1))
+    for hop in shortest.hops:
+        if hop.via == "data":
+            assert hop.var and hop.prov == ["ssa"]
+        else:
+            assert hop.to.kind == "parameter" and hop.var is None and hop.prov == []
+    assert shortest.weakest.prov == ["ssa"]
+    assert ref.flows_to_call("orderID", GET_STATEMENT, within=CANCEL)
+    assert ref.flows_to_argument("orderID", GET_STATEMENT, "sql", within=CANCEL)
 
 
 def test_the_slice_and_the_call_graph_accessors_are_not_guarded(both, ref):

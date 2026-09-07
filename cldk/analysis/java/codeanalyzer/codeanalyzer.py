@@ -557,9 +557,12 @@ class JCodeanalyzer(JavaAnalysisBackend):
         ``dst in nodes`` is the whole of the parity with the Neo4j spelling, which matches
         ``(b:JBodyNode)-[…]->(m:JBodyNode)`` and so can only see an edge whose **target was emitted
         as a node**. codeanalyzer-java 3.0.2 emitted 87 of daytrader8's 5,434 ddg edges naming an
-        endpoint it never emitted (codeanalyzer-java#228; fixed in 3.0.3), and without this clause
-        such an edge would count here and not there — one boolean, computed from two definitions,
-        deciding whether four accessors raise or answer."""
+        endpoint it never emitted, and without this clause such an edge would count here and not
+        there — one boolean, computed from two definitions, deciding whether four accessors raise
+        or answer. 3.0.3 drops those edges (codeanalyzer-java#228; measured: 0 dangling endpoints
+        on the whole of daytrader8, and 0 on the committed fixtures in both releases), so the
+        clause has nothing to exclude today. It stays because the Neo4j floor is 3.0.1 and an
+        older emitter's output is still attachable."""
         adjacency, nodes = self._sdg()
         return any(kind == "formal_in" and any(dst in nodes for dst in adjacency["forward"].get(ref, ())) for ref, (kind, _) in nodes.items())
 

@@ -27,7 +27,7 @@ Same environment as ``test_java_neo4j_backend.py``::
     CLDK_TEST_NEO4J_URI=bolt://localhost:7691 \
     CLDK_TEST_NEO4J_USER=neo4j \
     CLDK_TEST_NEO4J_PASSWORD=... \
-    CLDK_TEST_NEO4J_JAVA_APP=daytrader8 \
+    CLDK_TEST_NEO4J_APP=daytrader8 \
     CLDK_TEST_JAVA_PROJECT=/path/to/project \
     CLDK_TEST_JAVA_CACHE=/path/to/dir \        # a level-4 reference analysis.json
     uv run pytest tests/analysis/java/test_java_addressing_live.py
@@ -60,10 +60,10 @@ logging.getLogger("neo4j").setLevel(logging.ERROR)
 NEO4J_URI = os.environ.get("CLDK_TEST_NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = os.environ.get("CLDK_TEST_NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.environ.get("CLDK_TEST_NEO4J_PASSWORD", "neo4j")
-JAVA_APP = os.environ.get("CLDK_TEST_NEO4J_JAVA_APP")
+JAVA_APP = os.environ.get("CLDK_TEST_NEO4J_APP")
 JAVA_PROJECT = os.environ.get("CLDK_TEST_JAVA_PROJECT")
 JAVA_CACHE = os.environ.get("CLDK_TEST_JAVA_CACHE")
-SCALE_APP = os.environ.get("CLDK_TEST_NEO4J_JAVA_SCALE_APP", "thingsboard")
+SCALE_APP = os.environ.get("CLDK_TEST_NEO4J_SCALE_APP", "thingsboard")
 
 REFERENCE_LEVEL = "system_dependency_graph"
 

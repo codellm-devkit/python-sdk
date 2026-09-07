@@ -110,7 +110,7 @@ def test_probe_refuses_when_the_version_cannot_be_read(fake_driver, raw, found):
     assert found in str(e.value)
 
 
-@pytest.mark.parametrize("raw", ["3.0.1", "3.0.2", "3.1.0", "4.0.0"])
+@pytest.mark.parametrize("raw", ["3.0.1", "3.0.2", "3.0.3", "3.1.0", "4.0.0"])
 def test_probe_serves_every_generation_from_the_floor_up_silently(fake_driver, caplog, raw):
     fake_driver.analyzer_version = raw
     with caplog.at_level(logging.INFO, logger="cldk.analysis.java.neo4j.neo4j_backend"):
@@ -153,15 +153,15 @@ def test_application_name_is_required(fake_driver):
 
 #: The one live case: a graph another analyzer emitted, read-only, skipped unless pointed at one.
 #: ``bolt://localhost:7689`` in the leg-3 environment (codeanalyzer-python, ``odoo-slim-19``).
-PYTHON_GRAPH_URI = os.environ.get("CLDK_TEST_PYTHON_NEO4J_URI")
-PYTHON_GRAPH_USER = os.environ.get("CLDK_TEST_PYTHON_NEO4J_USER", "neo4j")
-PYTHON_GRAPH_PASSWORD = os.environ.get("CLDK_TEST_PYTHON_NEO4J_PASSWORD")
-PYTHON_GRAPH_APP = os.environ.get("CLDK_TEST_PYTHON_NEO4J_APP", "odoo-slim-19")
+PYTHON_GRAPH_URI = os.environ.get("CLDK_TEST_NEO4J_PYTHON_URI")
+PYTHON_GRAPH_USER = os.environ.get("CLDK_TEST_NEO4J_PYTHON_USER", "neo4j")
+PYTHON_GRAPH_PASSWORD = os.environ.get("CLDK_TEST_NEO4J_PYTHON_PASSWORD")
+PYTHON_GRAPH_APP = os.environ.get("CLDK_TEST_NEO4J_PYTHON_APP", "odoo-slim-19")
 
 
 @pytest.mark.skipif(
     not (PYTHON_GRAPH_URI and PYTHON_GRAPH_PASSWORD),
-    reason="needs a live codeanalyzer-python graph to attach to (set CLDK_TEST_PYTHON_NEO4J_URI / _PASSWORD)",
+    reason="needs a live codeanalyzer-python graph to attach to (set CLDK_TEST_NEO4J_PYTHON_URI / _PASSWORD)",
 )
 @pytest.mark.parametrize("app", [PYTHON_GRAPH_APP, "daytrader8"], ids=["an-application-the-graph-holds", "one-it-does-not"])
 def test_a_python_graph_is_refused_live_naming_the_missing_java_types(app):

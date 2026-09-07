@@ -22,16 +22,22 @@ can: that the Cypher the graph backend issues returns the edges the analyzer wro
 up as a larger answer rather than as nothing.
 
 **The self-loop test is the point of this file** (python-sdk#349). ``Log.printCollection`` carries
-20 ``J_DDG`` edges, 11 of them from a body node to itself. The doubled-containment spelling Python's
-backend uses returns **9** and calls itself complete; this suite runs both and asserts the
+25 ``J_DDG`` edges, 11 of them from a body node to itself. The doubled-containment spelling Python's
+backend uses returns **14** and calls itself complete; this suite runs both and asserts the
 difference, so the shape cannot arrive here by a later refactor.
+
+Since codeanalyzer-java 3.0.3 the port lattice is joined to the statement graph, so the four
+forward value accessors answer here rather than refusing (python-sdk#354): the witness is
+``cancelOrder``'s ``orderID`` reaching ``getStatement``'s ``sql`` across three call boundaries, run
+over both backends and compared path for path. The refusal itself is pinned offline, against a
+payload with the crossings subtracted.
 
 Same environment as ``test_java_addressing_live.py``::
 
     CLDK_TEST_NEO4J_URI=bolt://localhost:7691 \
     CLDK_TEST_NEO4J_USER=neo4j \
     CLDK_TEST_NEO4J_PASSWORD=... \
-    CLDK_TEST_NEO4J_JAVA_APP=daytrader8 \
+    CLDK_TEST_NEO4J_APP=daytrader8 \
     CLDK_TEST_JAVA_PROJECT=/path/to/project \
     CLDK_TEST_JAVA_CACHE=/path/to/dir \        # a level-4 reference analysis.json
     uv run pytest tests/analysis/java/test_java_dataflow_live.py
@@ -53,23 +59,22 @@ import pytest
 
 from cldk.analysis.commons.results import SliceNode
 from cldk.utils.exceptions import SelectorNotInGraph
-from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 
 logging.getLogger("neo4j").setLevel(logging.ERROR)
 
 NEO4J_URI = os.environ.get("CLDK_TEST_NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = os.environ.get("CLDK_TEST_NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.environ.get("CLDK_TEST_NEO4J_PASSWORD", "neo4j")
-JAVA_APP = os.environ.get("CLDK_TEST_NEO4J_JAVA_APP")
+JAVA_APP = os.environ.get("CLDK_TEST_NEO4J_APP")
 JAVA_PROJECT = os.environ.get("CLDK_TEST_JAVA_PROJECT")
 JAVA_CACHE = os.environ.get("CLDK_TEST_JAVA_CACHE")
-SCALE_APP = os.environ.get("CLDK_TEST_NEO4J_JAVA_SCALE_APP", "thingsboard")
+SCALE_APP = os.environ.get("CLDK_TEST_NEO4J_SCALE_APP", "thingsboard")
 
 REFERENCE_LEVEL = "system_dependency_graph"
 
 UTIL = "com.ibm.websphere.samples.daytrader.util"
 DIRECT = "com.ibm.websphere.samples.daytrader.impl.direct"
-#: The regression witness: 20 ``J_DDG`` edges, 11 of them self-loops (measured on the graph).
+#: The regression witness: 25 ``J_DDG`` edges, 11 of them self-loops (measured on the graph).
 PRINT_COLLECTION = f"{UTIL}.Log.printCollection(java.util.Collection)"
 GET_STATEMENT = f"{DIRECT}.TradeDirect.getStatement(java.sql.Connection, java.lang.String)"
 SELL = f"{DIRECT}.TradeDirect.sell(java.lang.String, java.lang.Integer, int)"
@@ -143,7 +148,7 @@ def _with_bodies(ref, limit):
 def _dangling(ref):
     """The ``analysis.json`` ddg edges whose endpoint is **not** a body node of their own callable
     — the analyzer defect the next two tests measure. See
-    :func:`test_the_ddg_edges_the_two_backends_disagree_on_are_exactly_the_dangling_ones`."""
+    :func:`test_the_two_backends_report_the_same_ddg_edge_for_edge`."""
     out = []
     for key, row in ref._addressing.by_key.items():
         c = row.callable
@@ -157,8 +162,10 @@ def test_the_three_graphs_agree_edge_for_edge_on_the_busiest_callables(backends)
     """Not counts: the whole page, in the canonical order, on both backends.
 
     ``get_ddg`` is compared on the edges whose endpoints the analyzer actually emitted as body
-    nodes; the remainder is the analyzer defect measured in the next test, and comparing it here
-    would only re-measure that in a place it cannot be read.
+    nodes. That filter was load-bearing up to codeanalyzer-java 3.0.2, which emitted edges naming
+    endpoints it never emitted as nodes; on 3.0.3 it removes nothing (the next test asserts the two
+    sides are equal as *sets*), and it stays because it is what makes this comparison a statement
+    about the projection rather than about the analyzer.
     """
     ref, neo = backends
     keys = _with_bodies(ref, 40)
@@ -176,17 +183,19 @@ def test_the_three_graphs_agree_edge_for_edge_on_the_busiest_callables(backends)
     assert seen > 1000, f"the comparison covered only {seen} edges"
 
 
-def test_the_ddg_edges_the_two_backends_disagree_on_are_exactly_the_dangling_ones(backends):
-    """**A codeanalyzer-java defect, measured rather than tolerated.**
+def test_the_two_backends_report_the_same_ddg_edge_for_edge(backends):
+    """**The one place the two Java backends used to disagree, and it was the analyzer's.**
 
-    Over the whole application the in-memory backend reports 5,434 ddg edges and the graph 5,347.
-    Every one of the 87 it has and the graph does not is an edge whose endpoint is a body key the
-    analyzer **did not emit as a body node** — 38 distinct keys, all of the shape ``<line>:0``, all
-    on ``points-to`` edges. The Neo4j emitter materialises nodes from the ``body{}`` map, so an edge
-    with no node to hang on is not projected; the difference is the analyzer's dangling endpoints,
-    not a lossy projection or a scope leak. Nothing is dropped in the other direction (0 edges), and
-    ``cfg`` and ``cdg`` have no dangling endpoint at all — this is the ddg's ``points-to`` tier
-    alone. Neither backend hides its own source's answer, which is why they differ here at all.
+    codeanalyzer-java up to 3.0.2 emitted ddg edges naming an endpoint it never emitted as a body
+    node — 87 of daytrader8's 5,434, over 38 distinct keys all of the shape ``<line>:0``, all on
+    ``points-to`` edges — and the Neo4j emitter materialises nodes from the ``body{}`` map, so those
+    edges could not be projected and the graph reported 5,347. 3.0.3 drops them
+    (codeanalyzer-java#228).
+
+    So this asserts the equality rather than the difference: **10,430 ddg edges on both sides, set
+    for set**, with 0 dangling endpoints in the payload. The subtraction stays in both directions —
+    a dangling endpoint coming back fails here, and it fails naming what it is rather than as an
+    off-by-87 in an edge count.
     """
     ref, neo = backends
     from cldk.analysis.java.backend import java_body_node_id
@@ -197,12 +206,10 @@ def test_the_ddg_edges_the_two_backends_disagree_on_are_exactly_the_dangling_one
         prefix=neo._scope_prefix,
     )
     graph = {(r["s"], r["d"], r["v"], tuple(r["p"] or ())) for r in rows}
-    assert (len(local), len(graph)) == (5434, 5347)
+    assert (len(local), len(graph)) == (10430, 10430)
     assert graph - local == set(), "the graph carries a ddg edge the analyzer's own payload does not"
-    dangling = _dangling(ref)
-    assert len(local - graph) == len(dangling) == 87
-    assert {tuple(e.prov) for _, e in dangling} == {("points-to",)}
-    assert len({k for _, e in dangling for k in (e.src, e.dst) if ":0" in k}) == 38
+    assert local - graph == set(), "the analyzer emitted a ddg edge the graph could not project"
+    assert _dangling(ref) == [], "codeanalyzer-java#228 is back: a ddg endpoint that is not a body node"
 
 
 def test_every_emitted_endpoint_names_a_body_node_the_graph_holds(backends):
@@ -225,22 +232,23 @@ def test_every_emitted_endpoint_names_a_body_node_the_graph_holds(backends):
 def test_the_page_contains_the_self_loops_and_the_349_shape_would_not(backends):
     """**The python-sdk#349 regression guard, on the graph that could carry the bug.**
 
-    ``Log.printCollection`` has 20 ``J_DDG`` edges and 11 of them run from a body node to itself.
-    The doubled-containment spelling binds ``J_HAS_BODY_NODE`` twice, which Cypher's
-    relationship-uniqueness rule forbids from matching one relationship twice, so it drops every
-    self-loop *and* would compute ``total`` from the same MATCH — reporting 9 of 9, complete. Both
-    numbers are asserted, so the difference is a fact of this test and not of a comment.
+    ``Log.printCollection`` has 25 ``J_DDG`` edges on codeanalyzer-java 3.0.3 (20 on 3.0.1, before
+    the port crossings) and 11 of them run from a body node to itself. The doubled-containment
+    spelling binds ``J_HAS_BODY_NODE`` twice, which Cypher's relationship-uniqueness rule forbids
+    from matching one relationship twice, so it drops every self-loop *and* would compute ``total``
+    from the same MATCH — reporting 14 of 14, complete. Both numbers are asserted, so the
+    difference is a fact of this test and not of a comment.
     """
     ref, neo = backends
     page = neo.get_ddg(PRINT_COLLECTION)
     loops = [e for e in page if e.src == e.dst]
-    assert (page.total, len(page.edges), len(loops)) == (20, 20, 11) and page.complete
+    assert (page.total, len(page.edges), len(loops)) == (25, 25, 11) and page.complete
     assert list(ref.get_ddg(PRINT_COLLECTION).edges) == list(page.edges)
 
     callable_id = neo.resolve_callable(PRINT_COLLECTION).ref
     doubled = "MATCH (c:JCallable {id:$c})-[:J_HAS_BODY_NODE]->(s:JBodyNode)-[r:J_DDG]->(d:JBodyNode)<-[:J_HAS_BODY_NODE]-(c) RETURN count(r) AS n"
     dropped = neo._run(doubled, c=callable_id)[0]["n"]
-    assert dropped == 9, "the doubled-containment spelling no longer loses the self-loops; re-derive the guard"
+    assert dropped == 14, "the doubled-containment spelling no longer loses the self-loops; re-derive the guard"
 
 
 def test_the_whole_application_carries_its_self_loops(backends):
@@ -261,12 +269,12 @@ def test_paging_agrees_across_backends(backends):
 
 
 def test_the_two_provenance_tiers_are_the_only_ones(backends):
-    """Java's DDG has ``ssa`` and ``points-to`` and nothing else — 133,608 and 1,134 edges across
+    """Java's DDG has ``ssa`` and ``points-to`` and nothing else — 324,959 and 1,134 edges across
     the whole database. Neither backend may invent a third or collapse the two."""
     _, neo = backends
     rows = neo._run("MATCH ()-[r:J_DDG]->() RETURN r.prov AS prov, count(*) AS n ORDER BY n DESC")
     assert {tuple(r["prov"]) for r in rows} == {("ssa",), ("points-to",)}
-    assert dict((tuple(r["prov"]), r["n"]) for r in rows) == {("ssa",): 133608, ("points-to",): 1134}
+    assert dict((tuple(r["prov"]), r["n"]) for r in rows) == {("ssa",): 324959, ("points-to",): 1134}
 
 
 def test_the_body_node_kind_vocabulary_is_what_the_graph_holds(backends):
@@ -351,38 +359,85 @@ def test_a_cap_is_reported_not_silent(backends):
         assert len(capped.nodes) == 5 and capped.total == whole.total and not capped.complete
 
 
-# ---- the port-lattice gap ----------------------------------------------------------------------
-def test_the_graph_carries_no_dependence_edge_on_a_port_vertex(backends):
-    """The measurement the four refusals rest on, on the live graph and for **both** applications:
-    no ``J_DDG`` or ``J_CDG`` edge has a port vertex at either end, and no ``formal_in`` has an
-    outgoing SDG edge of any type. codeanalyzer-python's graph does (129,883 ``PY_DDG`` edges leave
-    a ``formal_in`` on the leg-1.6 reference), so this is codeanalyzer-java's gap, not the SDK's."""
+# ---- the port lattice, joined to the statement graph --------------------------------------------
+def test_the_graph_carries_dependence_edges_on_its_port_vertices(backends):
+    """The measurement the four accessors rest on, on the live graph and for **both** applications.
+    codeanalyzer-java 3.0.3 (codeanalyzer-java#227) joins the port lattice to the statement graph,
+    so this is the inverse of what leg 3b could assert: 5,083 of daytrader8's 10,430 ``J_DDG`` edges
+    have a port vertex at an end, in all four directions, where 3.0.1 had zero.
+
+    **Not "every port is attached"** — 139 of daytrader8's 1,166 ``formal_in`` vertices still have
+    out-degree zero, and they are parameters nothing in the callable depends on. A probe demanding
+    all of them would fail on correct output.
+    """
     _, neo = backends
     ports = ["formal_in", "actual_in", "formal_out", "actual_out"]
-    rows = neo._run("MATCH (a:JBodyNode)-[r:J_DDG|J_CDG]->(b:JBodyNode) WHERE a.kind IN $ports OR b.kind IN $ports RETURN count(r) AS n", ports=ports)
-    assert rows[0]["n"] == 0
-    rows = neo._run("MATCH (b:JBodyNode {kind:'formal_in'})-[r:J_DDG|J_CDG|J_PARAM_IN|J_PARAM_OUT|J_SUMMARY]->() RETURN count(r) AS n")
-    assert rows[0]["n"] == 0
-    assert neo._ports_carry_dependence is False
+    scoped = "WHERE a.id STARTS WITH $prefix AND b.id STARTS WITH $prefix"
+    rows = neo._run(f"MATCH (a:JBodyNode)-[r:J_DDG]->(b:JBodyNode) {scoped} AND (a.kind IN $ports OR b.kind IN $ports) RETURN count(r) AS n", ports=ports, prefix=neo._scope_prefix)
+    assert rows[0]["n"] == 5083
+    directions = neo._run(
+        f"MATCH (a:JBodyNode)-[r:J_DDG]->(b:JBodyNode) {scoped} AND (a.kind IN $ports OR b.kind IN $ports) RETURN a.kind AS s, b.kind AS d, count(r) AS n",
+        ports=ports,
+        prefix=neo._scope_prefix,
+    )
+    seen = {(r["s"], r["d"]): r["n"] for r in directions}
+    assert seen[("formal_in", "call")] == 897 and seen[("call", "actual_in")] == 866
+    assert seen[("return", "formal_out")] == 528 and seen[("actual_out", "statement")] == 537
+    total, unattached = (
+        neo._run("MATCH (b:JBodyNode {kind:'formal_in'}) WHERE b.id STARTS WITH $prefix RETURN count(b) AS n", prefix=neo._scope_prefix)[0]["n"],
+        neo._run(
+            "MATCH (b:JBodyNode {kind:'formal_in'}) WHERE b.id STARTS WITH $prefix AND NOT (b)-[:J_DDG|J_CDG|J_PARAM_IN|J_PARAM_OUT|J_SUMMARY]->() RETURN count(b) AS n",
+            prefix=neo._scope_prefix,
+        )[0]["n"],
+    )
+    assert (total, unattached) == (1166, 139)
+    assert neo._ports_carry_dependence is True
 
 
-@pytest.mark.parametrize("accessor", ["slice_forward", "paths_between", "flows_to_call", "flows_to_argument"])
-def test_the_four_forward_value_accessors_refuse_identically_on_both_backends(backends, accessor):
-    """Same exception type, same message, naming the accessor and the application and no ``can://``."""
+#: The witness python-sdk#354 asks for, live: ``cancelOrder(Integer, boolean)``'s ``orderID``
+#: reaching ``getStatement``'s ``sql`` across three call boundaries.
+VALUE, VALUE_WITHIN, SINK, SINK_ARG = "orderID", f"{DIRECT}.TradeDirect.cancelOrder(java.lang.Integer, boolean)", GET_STATEMENT, "sql"
+
+
+def test_a_value_crosses_three_call_boundaries_on_both_backends(backends):
+    """The four accessors answer over the graph, and they answer what the payload answers.
+
+    Nine hops, ``['data', 'data', 'argument'] * 3``, four frames — the caller's vocabulary, not the
+    graph's ``J_DDG``/``J_PARAM_IN`` spelling — and the graph's paths equal the in-memory backend's
+    node for node and label for label. That equality is the point: the Cypher walk and the Python
+    walk are separate implementations of the same question.
+    """
     ref, neo = backends
-    calls = {
-        "slice_forward": lambda b: b.slice_forward("conn", within=GET_STATEMENT),
-        "paths_between": lambda b: b.paths_between("conn", "orderID", src_within=GET_STATEMENT, dst_within=f"{DIRECT}.TradeDirect.cancelOrder(java.lang.Integer, boolean)"),
-        "flows_to_call": lambda b: b.flows_to_call("conn", SELL, within=GET_STATEMENT),
-        "flows_to_argument": lambda b: b.flows_to_argument("conn", GET_STATEMENT, "sql", within=GET_STATEMENT),
-    }
-    messages = []
     for backend in (ref, neo):
-        with pytest.raises(CodeanalyzerExecutionException) as e:
-            calls[accessor](backend)
-        messages.append(str(e.value))
-    assert messages[0] == messages[1]
-    assert accessor in messages[0] and JAVA_APP in messages[0] and "can://" not in messages[0]
+        assert backend.flows_to_call(VALUE, SINK, within=VALUE_WITHIN)
+        assert backend.flows_to_argument(VALUE, SINK, SINK_ARG, within=VALUE_WITHIN)
+        paths = backend.paths_between(VALUE, SINK_ARG, src_within=VALUE_WITHIN, dst_within=SINK, depth=None)
+        assert paths.complete and len(paths.paths) == 2
+        shortest = min(paths.paths, key=lambda p: len(p.hops))
+        assert [h.via for h in shortest.hops] == ["data", "data", "argument"] * 3
+        frames = [h.frm.callable for h in shortest.hops] + [shortest.hops[-1].to.callable]
+        assert frames[0] == VALUE_WITHIN and frames[-1] == SINK and len(dict.fromkeys(frames)) == 4
+        assert backend.slice_forward(VALUE, within=VALUE_WITHIN).total == 45
+    a = ref.paths_between(VALUE, SINK_ARG, src_within=VALUE_WITHIN, dst_within=SINK, depth=None)
+    b = neo.paths_between(VALUE, SINK_ARG, src_within=VALUE_WITHIN, dst_within=SINK, depth=None)
+    assert a.paths == b.paths and a.complete == b.complete
+
+
+def test_a_forward_slice_agrees_node_for_node_on_both_backends(backends):
+    """``slice_forward`` was refused on Java until codeanalyzer-java 3.0.3, so this is the direction
+    leg 3b could only assert backwards: the two walks over the joined lattice return the same
+    nodes, the same ``total`` and the same ``resolved``."""
+    ref, neo = backends
+    checked = 0
+    for key in _with_bodies(ref, 15):
+        for parameter in ref._addressing.by_key[key].callable.parameters:
+            if not parameter.name:
+                continue
+            a = ref.slice_forward(parameter.name, within=key, depth=None)
+            b = neo.slice_forward(parameter.name, within=key, depth=None)
+            assert a.nodes == b.nodes and a.total == b.total and a.resolved == b.resolved, f"{key} {parameter.name}"
+            checked += 1
+    assert checked > 15, f"only {checked} parameters compared"
 
 
 # ---- miss paths --------------------------------------------------------------------------------
