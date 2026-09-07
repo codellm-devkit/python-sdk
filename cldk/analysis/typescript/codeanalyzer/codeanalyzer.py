@@ -55,7 +55,20 @@ from cldk.analysis.commons.graphs import cone_sinks, flow_path, shortest_walks, 
 from cldk.analysis.commons.keys import body_key_column, resolve_module_key
 from cldk.analysis.commons.levels import ANALYZER_LEVELS, LEVEL_NAMES, analyzer_level
 from cldk.analysis.commons.resolve import CallableCandidate, resolve_callable_signature, resolve_value_name, resolve_within
-from cldk.analysis.commons.results import BodyRef, CallableRef, Diagnostic, EdgePage, FlowPaths, LocateResult, ModuleRef, Slice, SliceNode, Span, TypeRef
+from cldk.analysis.commons.results import (
+    BodyRef,
+    CallableRef,
+    Diagnostic,
+    EdgePage,
+    EntrypointCoverage,
+    FlowPaths,
+    LocateResult,
+    ModuleRef,
+    Slice,
+    SliceNode,
+    Span,
+    TypeRef,
+)
 from cldk.analysis.typescript.backend import CDG_ORDER, CFG_ORDER, DDG_ORDER, VIA, TSAnalysisBackend, ts_body_node_kind, ts_module_dotted
 from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
 from cldk.models.typescript import (
@@ -70,6 +83,7 @@ from cldk.models.typescript import (
     TSCallsite,
     TSClass,
     TSClassAttribute,
+    TSClassOverview,
     TSConfigKey,
     TSDecorator,
     TSEnum,
@@ -732,6 +746,63 @@ class TSCodeanalyzer(TSAnalysisBackend):
             if c is not None:
                 result[sig] = [self._callsite(k, n) for k, n in self._call_nodes(c)]
         return result
+
+    # ----------------------------------------------------------- entrypoints / config readers
+    def get_entrypoints(self) -> List[TSCallableOverview]:
+        """Return overviews of every callable marked ``is_entrypoint`` (see
+        :meth:`TSAnalysisBackend.get_entrypoints`). ``is_entrypoint`` is ``Optional[bool]``, so
+        the test is truthiness, not ``is True``: below 1.3.0 it is ``None``, which is not a mark."""
+        return [
+            TSCallableOverview.from_callable(c, owner_sig, owner_kind, path=self._file_of[c.signature]) for c, owner_sig, owner_kind in self._iter_callables() if c.is_entrypoint
+        ]
+
+    def get_entrypoint_classes(self) -> List[TSClassOverview]:
+        """Return overviews of every class marked ``is_entrypoint`` (see
+        :meth:`TSAnalysisBackend.get_entrypoint_classes`)."""
+        return [TSClassOverview.from_class(cl, path=self._file_of[sig]) for sig, cl in self._classes.items() if cl.is_entrypoint]
+
+    def get_entrypoint_coverage(self) -> EntrypointCoverage:
+        """Return the entrypoint pass's coverage record (see
+        :meth:`TSAnalysisBackend.get_entrypoint_coverage`) -- a passthrough of
+        ``TSApplication.entrypoint_report``, which this backend has in full.
+
+        The field is optional on the model (TS-1 kept it so, because the graph-backed application
+        view carries the report as a string property on the anchor rather than as a structured
+        field), so its absence is reported rather than fabricated."""
+        report = self.application.entrypoint_report
+        if report is None:
+            return EntrypointCoverage(
+                diagnostics=[
+                    Diagnostic(
+                        code="entrypoint_report_unavailable",
+                        message="This analysis.json carries no TSApplication.entrypoint_report, so the entrypoint pass's coverage cannot be reported. "
+                        "codeanalyzer-typescript 1.3.0 and newer always emit it.",
+                    )
+                ]
+            )
+        return EntrypointCoverage(
+            frameworks_detected=list(report.frameworks_detected),
+            rulesets=list(report.rulesets),
+            unresolved=dict(report.unresolved),
+            errors=list(report.errors),
+        )
+
+    def get_config_readers(self, key: str) -> List[TSCallableOverview]:
+        """Return overviews of every callable reading configuration key ``key`` (see
+        :meth:`TSAnalysisBackend.get_config_readers`).
+
+        ``PyConfigUseEdge.src`` is the reading call's own body-node id. It is matched against each
+        callable's ``body`` map rather than split on ``@`` back to an owner: an anonymous
+        callable's id contains an ``@`` of its own (``…/<anon@22:52>``), so the split the Python
+        twin can afford is not sound here."""
+        reading = {e.src for e in self.get_config_uses(key)}
+        if not reading:
+            return []
+        return [
+            TSCallableOverview.from_callable(c, owner_sig, owner_kind, path=self._file_of[c.signature])
+            for c, owner_sig, owner_kind in self._iter_callables()
+            if not reading.isdisjoint(node.id for node in (c.body or {}).values())
+        ]
 
     # =====================================================================================
     # The addressing surface (leg 2.5b, TS-2) -- over the in-memory tree.

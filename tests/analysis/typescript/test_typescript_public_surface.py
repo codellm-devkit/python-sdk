@@ -25,7 +25,11 @@ Leg 2.5b Task 1 adds the seven addressing accessors, six of them methods and one
 frozen separately in :data:`PROPERTIES`. Task 2 adds the fourteen dataflow accessors, every one of
 them signature-for-signature ``PythonAnalysis``'s — the defaults included, which is where the
 asymmetry lives: the three slices carry a finite ``depth`` and the five predicate/path accessors
-carry ``depth: int | None = None``.
+carry ``depth: int | None = None``. Task 3 adds the last nine: the three entrypoint accessors,
+``get_config_readers``, and the five repository-artifact getters, which have been on both backends
+since leg 2.5a and reach the caller here. All nine are ``PythonAnalysis``'s signatures with only
+the projection types renamed (``TSCallableOverview``/``TSClassOverview`` for the ``Py*`` pair);
+the artifact five keep the shared ``Py*`` models, which is the contract, not an oversight.
 """
 
 import ast
@@ -34,6 +38,7 @@ import textwrap
 
 import pytest
 
+from cldk.analysis.python.python_analysis import PythonAnalysis
 from cldk.analysis.typescript.typescript_analysis import TypeScriptAnalysis
 
 SURFACE = {
@@ -102,6 +107,15 @@ SURFACE = {
     "reaches": "(self, src: 'str', dst: 'str', *, depth: 'int | None' = None) -> 'bool'",
     "slice_backward": "(self, src: 'str', *, within: 'str', depth: 'int | None' = 5, max_nodes: 'int' = 10000) -> 'Slice'",
     "slice_forward": "(self, src: 'str', *, within: 'str', depth: 'int | None' = 5, max_nodes: 'int' = 10000) -> 'Slice'",
+    "get_entrypoints": "(self) -> 'List[TSCallableOverview]'",
+    "get_entrypoint_classes": "(self) -> 'List[TSClassOverview]'",
+    "get_entrypoint_coverage": "(self) -> 'EntrypointCoverage'",
+    "get_artifacts": "(self) -> 'Dict[str, PyArtifact]'",
+    "get_dependencies": "(self, *, direct_only: 'bool' = False, ecosystem: 'str | None' = None, declared_in: 'str | None' = None) -> 'List[PyDependency]'",
+    "get_config_keys": "(self) -> 'Dict[str, PyConfigKey]'",
+    "get_config_uses": "(self, key: 'str | None' = None) -> 'List[PyConfigUseEdge]'",
+    "get_unresolved_config_reads": "(self) -> 'List[PyConfigRead]'",
+    "get_config_readers": "(self, key: 'str') -> 'List[TSCallableOverview]'",
 }
 
 #: Public *properties* — frozen the same way, since ``inspect.isfunction`` does not see them.
@@ -149,3 +163,36 @@ def test_no_public_accessor_only_raises():
         statements = node.body[1:] if ast.get_docstring(node) else node.body
         body = "\n".join(ast.unparse(s) for s in statements)
         assert "raise NotImplementedError" not in body, f"{name} only raises"
+
+
+#: Accessors both facades carry whose *parameters* differ, each a pre-existing 1.x-era gap rather
+#: than this leg's: TypeScript's ``get_call_graph``/``get_classes``/``get_symbol_table`` never
+#: gained Python's scoping keywords (leg 2.5b takes no ``roots=``, by Task 2's own ruling), and
+#: ``get_callers``/``get_callees`` keep TypeScript's optional method argument. Listed so the
+#: divergence is a recorded decision that has to be deleted from here to be closed, not a silence.
+KNOWN_ARGUMENT_DIVERGENCES = {"get_call_graph", "get_callees", "get_callers", "get_classes", "get_symbol_table"}
+
+
+def _parameters(cls, name):
+    return str(inspect.signature(getattr(cls, name)).replace(return_annotation=inspect.Signature.empty))
+
+
+def test_every_accessor_both_facades_carry_takes_the_same_arguments():
+    """Leg 2.5b's contract in one line: where ``TypeScriptAnalysis`` and ``PythonAnalysis`` both
+    declare an accessor, its *parameters* are identical — names, order, keyword-only-ness and
+    defaults. Return types are excluded because they are where the two legitimately differ (a
+    ``TSCallableOverview`` for a ``PyCallableOverview``); everything a caller passes is not.
+    """
+    shared = set(_public()) & {n for n, _ in inspect.getmembers(PythonAnalysis, inspect.isfunction) if not n.startswith("_")}
+    assert len(shared) >= 50, f"only {len(shared)} accessors are shared; did a facade lose its mirror?"
+    mismatched = {
+        n: (_parameters(TypeScriptAnalysis, n), _parameters(PythonAnalysis, n)) for n in sorted(shared) if _parameters(TypeScriptAnalysis, n) != _parameters(PythonAnalysis, n)
+    }
+    assert set(mismatched) == KNOWN_ARGUMENT_DIVERGENCES, f"the mirror moved: {mismatched}"
+
+
+@pytest.mark.parametrize("name", sorted(KNOWN_ARGUMENT_DIVERGENCES))
+def test_a_recorded_divergence_is_still_a_divergence(name):
+    """The list above is a ledger, not a mute button: an entry that has been closed must be deleted
+    from it rather than left behind."""
+    assert _parameters(TypeScriptAnalysis, name) != _parameters(PythonAnalysis, name), f"{name} now matches PythonAnalysis; drop it from KNOWN_ARGUMENT_DIVERGENCES"

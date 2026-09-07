@@ -40,12 +40,14 @@ from __future__ import annotations
 
 import ast
 import inspect
+import json
 import re
 from collections import defaultdict
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, List, Sequence, Set, Tuple
 
 import pytest
 
+from cldk.analysis.typescript.backend import SDG_REL_PATTERN
 from cldk.analysis.typescript.neo4j import neo4j_backend
 from cldk.analysis.typescript.neo4j.neo4j_backend import TSNeo4jBackend
 from cldk.utils.exceptions import SelectorNotInGraph
@@ -81,15 +83,32 @@ class _Graph:
 def _build() -> _Graph:
     g = _Graph()
     for app, lang_mod, fn_name in ((APP_A, "a", "alpha"), (APP_B, "b", "beta")):
-        app_id = g.node(f"can://typescript/{app}", ["Application", "TSApplication"], analyzer_version="1.2.0")
+        app_id = g.node(
+            f"can://typescript/{app}",
+            ["Application", "TSApplication"],
+            analyzer_version="1.2.0",
+            entrypoint_frameworks=[f"{fn_name}-framework"],
+            entrypoint_report_json=json.dumps({"frameworks_detected": [f"{fn_name}-framework"], "rulesets": ["shipped"], "unresolved": {f"{fn_name}.miss": 2}, "errors": []}),
+        )
         mod = g.node(f"can://typescript/{app}/{lang_mod}/mod.ts", ["TSModule"], kind="module", name=f"{lang_mod}/mod.ts", start_line=1, end_line=20)
         g.edge(app_id, "TS_HAS_MODULE", mod)
         cls = g.node(
-            f"{mod}/Widget", ["TSClass"], kind="class", signature=CLASS_SIG, name="Widget", base_classes=["shared.Base"], start_line=1, end_line=10, code="class Widget {}"
+            f"{mod}/Widget",
+            ["TSClass"],
+            kind="class",
+            signature=CLASS_SIG,
+            name="Widget",
+            base_classes=["shared.Base"],
+            start_line=1,
+            end_line=10,
+            code="class Widget {}",
+            is_entrypoint=True,
         )
         g.edge(mod, "TS_DECLARES", cls)
         g.edge(cls, "TS_DECORATED_BY", "Deco", positional_arguments=[f'"{fn_name}"'])
-        method = g.node(f"{cls}/render", ["TSCallable"], kind="method", signature=METHOD_SIG, name=f"{fn_name}_method", start_line=2, end_line=6, code=f"{fn_name} code")
+        method = g.node(
+            f"{cls}/render", ["TSCallable"], kind="method", signature=METHOD_SIG, name=f"{fn_name}_method", start_line=2, end_line=6, code=f"{fn_name} code", is_entrypoint=True
+        )
         g.edge(cls, "TS_HAS_METHOD", method)
         attr = g.node(f"{cls}/{fn_name}_attr", ["TSField"], kind="field", name=f"{fn_name}_attr", start_line=2, end_line=2)
         g.edge(cls, "TS_HAS_FIELD", attr)
@@ -144,9 +163,13 @@ GRAPH = _build()
 # =====================================================================================
 _NODE = re.compile(r"\((\w*)(?::([\w|:]+))?(?: \{([^}]*)\})?\)")
 _HOP = re.compile(r"(<)?-\[(\w*)(?::([\w|]+))?(\*0\.\.)?\]-(>)?")
-_COND = re.compile(r"(\w+)\.(\w+) (STARTS WITH|ENDS WITH|IN|=|<>) (\$\w+|'[^']*'|\w+\.\w+)|(\$\w+) IN (\w+)\.(\w+)|(\w+)\.(\w+) IS NOT NULL")
+_COND = re.compile(r"(\w+)\.(\w+) (STARTS WITH|ENDS WITH|IN|=|<>) (\$\w+|'[^']*'|true|false|\w+\.\w+)|(\$\w+) IN (\w+)\.(\w+)|(\w+)\.(\w+) IS NOT NULL")
 #: ``a.x <= b.y`` / ``b.y <= a.x`` -- the line-containment comparisons ``_LOCATE_QUERY`` is built on.
 _ORDER = re.compile(r"(\w+\.\w+) (<=|>=|<|>) (\w+\.\w+)")
+#: A node **or** a hop, in one alternation, so the audit can walk a pattern token by token and see
+#: what separates two tokens. Groups 1-3 are the node's (var, labels, props); group 6 is the hop's
+#: relationship types.
+_TOKEN = re.compile(r"\((\w*)(?::([\w|:<>]+))?(?: ?\{([^}]*)\})?\)|(<)?-\[(\w*)(?::([\w|<>]+))?(\*[\d.]*[\w]*)?\]-(>)?")
 
 
 def _value(token: str, params: Dict[str, Any], row: Dict[str, Any] | None = None) -> Any:
@@ -155,6 +178,8 @@ def _value(token: str, params: Dict[str, Any], row: Dict[str, Any] | None = None
     against."""
     if token.startswith("$"):
         return params[token[1:]]
+    if token in ("true", "false"):  # a Cypher boolean literal, e.g. ``c.is_entrypoint = true``
+        return token == "true"
     if "." in token and row is not None:
         var, _, prop = token.partition(".")
         if isinstance(row.get(var), dict):
@@ -656,6 +681,34 @@ def test_describe_hydrates_a_callable_and_leaves_a_body_node_textless():
     assert out[1].source is None  # the graph carries no text below callable granularity
 
 
+def test_get_entrypoints_sees_only_this_applications_marked_callable():
+    """Both applications mark ``shared.Widget.render``; the names differ, so a leak shows up as a
+    name rather than as a count."""
+    (entrypoint,) = _backend().get_entrypoints()
+    assert entrypoint.name == "alpha_method" and entrypoint.signature == METHOD_SIG
+    assert entrypoint.owner_signature == CLASS_SIG and entrypoint.owner_kind == "class"
+    assert entrypoint.path == "a/mod.ts"
+
+
+def test_get_entrypoint_classes_sees_only_this_applications_marked_class():
+    (klass,) = _backend().get_entrypoint_classes()
+    assert klass.signature == CLASS_SIG and klass.name == "Widget" and klass.path == "a/mod.ts"
+    assert klass.decorators == ["Deco"] and (klass.start_line, klass.end_line) == (1, 10)
+
+
+def test_get_entrypoint_coverage_reads_this_applications_anchor():
+    coverage = _backend().get_entrypoint_coverage()
+    assert coverage.frameworks_detected == ["alpha-framework"], "the other application's report was read"
+    assert coverage.unresolved == {"alpha.miss": 2}
+    assert coverage.rulesets == ["shipped"] and coverage.errors == [] and coverage.diagnostics == []
+
+
+def test_get_config_readers_of_a_key_no_body_node_names_is_empty():
+    """The fixture graph declares no ``TS_USES_CONFIG`` edge, so this is the empty that means
+    "nothing reads it" -- the same answer the superset reference graph gives."""
+    assert _backend().get_config_readers("some.key") == []
+
+
 def test_has_resolution_edges_is_probed_against_this_applications_edges():
     assert _backend().has_resolution_edges is True
 
@@ -676,6 +729,158 @@ _ANCHORED_ON_THE_APPLICATION = re.compile(r"\(\w*:Application \{id: \$app_id\}\)
 _FRAGMENTS = {"_OVERVIEW_PROJECTION", "_SUBTREE"}
 
 
+#: The ``.format()`` placeholders the templated statements carry, resolved to one representative
+#: rendering so the audit reads real Cypher rather than a template: ``{{`` collapses to ``{``, a
+#: quantifier's ``{{0,{depth}}}`` to ``{0,5}``, ``{left}``/``{right}`` to the forward direction.
+#: Without this a template's ``{{id:$src}}`` does not read as an id lookup and its quantified
+#: pattern does not tokenise at all -- the audit would judge a statement nobody issues.
+_TEMPLATE_ARGS = {"{rel}": "TS_DDG", "{rels}": SDG_REL_PATTERN, "{depth}": "5", "{left}": "-", "{right}": "->"}
+
+#: Every parameter a ``STARTS WITH`` may bind that is an **application-stamped** id prefix, so the
+#: variable carrying it cannot match another application's node. ``$p1``/``$p2`` are the two-prefix
+#: application scope (TS-3); ``$prefix``/``$ext_prefix`` are ``<app-id>/@external/``; ``$bp`` is a
+#: resolved callable's own ``ref`` plus ``@``, minted by ``resolve_callable``, which is itself
+#: two-prefix scoped; ``pos.module_prefix`` is one module's own id plus ``/``, bound only for a key
+#: this application declares. Each is narrower than the application scope, never wider.
+_SCOPED_VAR = re.compile(r"\b(\w+)\.id STARTS WITH (?:\$(?:p1|p2|prefix|ext_prefix|bp)|pos\.module_prefix)\b")
+
+#: A variable pinned to an id -- in the node pattern (``{id: $x}``) or in a ``WHERE``
+#: (``x.id = $y`` / ``x.id IN $ys``). A ``can://`` id embeds the application that minted it, so a
+#: node matched by one is inside that application by construction.
+_PINNED_BY_ID = re.compile(r"\((\w+):[\w:|]+ ?\{id ?: ?[^}]+\}\)|\b(\w+)\.id (?:=|IN) \$")
+
+#: Relationship types a variable's scope survives, in **either** direction. Two reasons, both
+#: about how the emitter mints ids rather than about what this corpus happens to hold:
+#:
+#: * *containment* -- the child's id **is** the parent's id extended, so a containment neighbour of
+#:   an in-scope node carries the same application prefix by construction. Walking one backwards is
+#:   as safe as walking it forwards, which is why this is bidirectional where Java's twin is not:
+#:   ``(o:TSClass)-[:TS_HAS_METHOD]->(c)`` scopes ``c`` and reads ``o`` off it.
+#: * *shared vocabulary* -- the far endpoint is a node no application owns: a ``:TSDecorator`` keyed
+#:   by name, a ``:Package`` coordinate, a ``:ConfigKey``, or a ``TS_RESOLVES_TO`` callee that may
+#:   be an external. There is no per-application node to reach, so there is nothing to scope.
+#:
+#: **``TS_CALLS`` and the SDG edges are deliberately absent.** Both endpoints are
+#: application-owned, so a graph someone else deployed may well carry an edge between two of them
+#: -- and this SDK attaches to graphs it did not emit. Both ends must carry the predicate.
+_KEEPS_SCOPE = frozenset(
+    {
+        "TS_HAS_MODULE",
+        "TS_DECLARES",
+        "TS_HAS_METHOD",
+        "TS_HAS_FIELD",
+        "TS_HAS_BODY_NODE",
+        "HAS_ARTIFACT",
+        "DEFINES_CONFIG",
+        "TS_DECORATED_BY",
+        "DECLARES_DEPENDENCY",
+        "TS_RESOLVES_TO",
+        "TS_USES_CONFIG",
+    }
+)
+
+_CLAUSE_KEYWORDS = ("OPTIONAL MATCH ", "MATCH ", "WHERE ", "WITH ", "RETURN ", "UNWIND ", "UNION ")
+
+
+def _render(statement: str) -> str:
+    """One representative rendering of a ``.format()``-ed statement (see :data:`_TEMPLATE_ARGS`)."""
+    for placeholder, value in _TEMPLATE_ARGS.items():
+        statement = statement.replace(placeholder, value)
+    return statement.replace("{{", "{").replace("}}", "}")
+
+
+def _clauses(statement: str) -> List[str]:
+    """Split into clauses at **top-level** keywords only.
+
+    A naive ``re.split`` breaks a quantified path apart at the ``WHERE`` *inside* its parentheses
+    (``((x)-[:TS_CALLS]->(y) WHERE …){1,5}``), which silently drops the pattern's own trailing node
+    from the audit -- the variable most likely to be the leak. Depth-tracking keeps it whole.
+    """
+    parts, depth, start, i = [], 0, 0, 0
+    while i < len(statement):
+        char = statement[i]
+        if char in "([":
+            depth += 1
+        elif char in ")]":
+            depth -= 1
+        elif depth == 0 and (i == 0 or statement[i - 1] == " "):
+            for keyword in _CLAUSE_KEYWORDS:
+                if statement.startswith(keyword, i) and i > start and not statement.endswith(("OPTIONAL ", "STARTS ", "ENDS "), 0, i):
+                    parts.append(statement[start:i].strip())
+                    start = i
+                    break
+        i += 1
+    parts.append(statement[start:].strip())
+    return [c for c in parts if c]
+
+
+def _match_clauses(statement: str) -> List[str]:
+    return [re.sub(r"^(?:OPTIONAL )?MATCH ", "", c) for c in _clauses(statement) if re.match(r"(?:OPTIONAL )?MATCH ", c)]
+
+
+def _chain(clause: str) -> Tuple[List[Tuple[str, str | None, str | None]], List[Tuple[str, str, Set[str]]]]:
+    """One clause's bound node variables and the relationship edges between adjacent ones.
+
+    Tokens are scanned in source order; anything the scanner cannot read as a node or a hop breaks
+    the chain, so an unparsed construct can only ever *remove* an excuse, never invent one.
+    """
+    nodes: List[Tuple[str, str | None, str | None]] = []
+    links: List[Tuple[str, str, Set[str]]] = []
+    previous, rels, pos = None, None, 0
+    for m in _TOKEN.finditer(clause):
+        if clause[pos : m.start()].strip():  # a gap the scanner could not read: the chain breaks
+            previous, rels = None, None
+        pos = m.end()
+        if m.group(0).startswith("("):
+            var = m.group(1) or f"_{m.start()}"
+            nodes.append((var, m.group(2), m.group(3)))
+            if previous is not None and rels is not None:
+                links.append((previous, var, rels))
+            previous, rels = var, None
+        else:
+            rels = set((m.group(6) or "").split("|"))
+    return nodes, links
+
+
+def _unscoped_variables(statement: str) -> List[str]:
+    """The node variables the statement binds that are **not** provably inside one application.
+
+    Judging per variable is the point, and it is the hardening Java's leg-3a review forced. A
+    presence check ("does the text contain a prefix predicate?") passes
+    ``MATCH (s:TSCallable)-[:TS_CALLS]->(t:TSCallable {signature: $sig}) WHERE s.id STARTS WITH $p1
+    OR s.id STARTS WITH $p2``, which matches ``t`` by a signature two applications can both declare
+    and returns whichever the graph holds.
+
+    A variable is inside when it carries a scoped ``STARTS WITH`` (:data:`_SCOPED_VAR`), when it is
+    pinned to an id (:data:`_PINNED_BY_ID`), when it *is* the ``(:Application {id: $app_id})``
+    anchor, or when the pattern connects it to one of those over :data:`_KEEPS_SCOPE`. Anonymous
+    pattern nodes bind nothing and are skipped. Variable-length and quantified paths are judged by
+    the variables they bind, which for an unnamed interior is only their endpoints -- a limit of
+    what a bound variable *is*, stated rather than hidden.
+    """
+    rendered = _render(statement)
+    seeds = set(_SCOPED_VAR.findall(rendered)) | {v for m in _PINNED_BY_ID.finditer(rendered) for v in m.groups() if v}
+    inside: Dict[str, bool] = {}
+    links: List[Tuple[str, str, Set[str]]] = []
+    bound: List[str] = []
+    for clause in _match_clauses(rendered):
+        nodes, clause_links = _chain(clause)
+        links += clause_links
+        for var, labels, props in nodes:
+            anchor = labels == "Application" and (props or "").startswith("id: $app_id")
+            inside[var] = inside.get(var, False) or var in seeds or anchor
+            if not var.startswith("_"):
+                bound.append(var)
+    changed = True
+    while changed:  # containment and shared-vocabulary edges carry scope in either direction
+        changed = False
+        for src, dst, rels in links:
+            if rels <= _KEEPS_SCOPE and inside.get(src, False) != inside.get(dst, False):
+                inside[src] = inside[dst] = True
+                changed = True
+    return sorted({v for v in bound if not inside.get(v, False)})
+
+
 def _is_scoped(statement: str) -> bool:
     return bool(_MATCHES_BY_PREFIX.search(statement))
 
@@ -683,6 +888,8 @@ def _is_scoped(statement: str) -> bool:
 def _scope_kind(statement: str) -> str | None:
     if _INTROSPECTION.match(statement):
         return "introspection"
+    if _unscoped_variables(statement):
+        return None
     if _is_scoped(statement):
         return "prefix"
     if _ANCHORED_ON_THE_APPLICATION.search(statement):
@@ -756,6 +963,79 @@ def _every_statement() -> Dict[str, str]:
     return {**{n: s for n, s in _class_level_statements().items() if n not in _FRAGMENTS}, **inline}
 
 
+#: What the backend is allowed to touch on the driver and on the session it opens. The harvester
+#: only follows Cypher passed to ``self._run(`` / ``self._fetch(``, so anything reaching the server
+#: another way is invisible to it: ``self._driver.execute_query(...)`` would satisfy a ``.run(``
+#: count of one and be harvested zero times. Judging the *surface* instead makes a new driver API a
+#: deliberate act -- adding it here, with the harvester taught to follow it. (Java's leg-3a review
+#: forced this; it is ported, not re-derived.)
+_DRIVER_SURFACE = frozenset({"session", "close"})
+_SESSION_SURFACE = frozenset({"run", "close"})
+
+
+def _attribute_uses(target: str) -> Dict[str, List[str]]:
+    """``<method>@<line> -> [attribute, ...]`` for every ``self.<target>.<attr>`` in the class."""
+    out: Dict[str, List[str]] = defaultdict(list)
+    for fn in ast.walk(ast.parse(inspect.getsource(TSNeo4jBackend))):
+        if not isinstance(fn, ast.FunctionDef):
+            continue
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Attribute) and node.value.attr == target and getattr(node.value.value, "id", None) == "self":
+                out[f"{fn.name}@{node.lineno}"].append(node.attr)
+    return out
+
+
+@pytest.mark.parametrize("target, allowed", [("_driver", _DRIVER_SURFACE), ("_session_obj", _SESSION_SURFACE)])
+def test_the_backend_reaches_the_server_only_through_the_harvested_surface(target, allowed):
+    """Every attribute the backend touches on the driver and on its session is in a small
+    allow-list, so no statement can reach Neo4j by a route the audit does not read."""
+    for where, attributes in _attribute_uses(target).items():
+        assert set(attributes) <= allowed, f"{where} uses self.{target}.{sorted(set(attributes) - allowed)}, outside the audited surface"
+
+
+@pytest.mark.parametrize(
+    "statement, leaks",
+    [
+        ("MATCH (s:TSCallable)-[:TS_CALLS]->(t:TSCallable {signature: $sig}) WHERE (s.id STARTS WITH $p1 OR s.id STARTS WITH $p2) RETURN t.id", ["t"]),
+        ("MATCH (:Application {id: $app_id})-[:TS_HAS_MODULE]->(m:TSModule) MATCH (x:TSClass) RETURN x.id", ["x"]),
+        ("MATCH (c:TSCallable) RETURN c.id", ["c"]),
+        ("MATCH (a) ((x:TSCallable)-[:TS_CALLS]->(y:TSCallable) WHERE (x.id STARTS WITH $p1 OR x.id STARTS WITH $p2)){1,5} (m:TSCallable) RETURN m.id", ["a", "m", "y"]),
+    ],
+    ids=["one-endpoint-of-two", "a-second-unanchored-match", "no-scope-at-all", "a-quantified-paths-far-end"],
+)
+def test_the_audit_rejects_a_statement_that_scopes_only_part_of_its_pattern(statement, leaks):
+    """The net's own net. A presence check ("does the text contain a prefix predicate?") passes the
+    first and the last of these -- the first matches ``t`` by a signature two applications can both
+    declare, the last walks out of the application on every hop but the first."""
+    assert _unscoped_variables(statement) == leaks
+    assert _scope_kind(statement) is None
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        "MATCH (s:TSCallable)-[:TS_CALLS]->(t:TSCallable) WHERE (s.id STARTS WITH $p1 OR s.id STARTS WITH $p2) AND (t.id STARTS WITH $p1 OR t.id STARTS WITH $p2) RETURN s.id",
+        "MATCH (:Application {id: $app_id})-[:TS_HAS_MODULE]->(m:TSModule)-[:TS_HAS_FIELD]->(f:TSField) RETURN m.name",
+        "MATCH (o:TSClass)-[:TS_HAS_METHOD]->(c:TSCallable) WHERE (c.id STARTS WITH $p1 OR c.id STARTS WITH $p2) RETURN o.signature",
+        "MATCH (c:CanNode:TSCallable {id: $id})-[:TS_DECORATED_BY]->(d:TSDecorator) RETURN d.name",
+        "CALL db.relationshipTypes()",
+    ],
+    ids=["both-endpoints-prefixed", "walked-from-the-anchor", "containment-read-backwards", "pinned-by-id-into-shared-vocabulary", "introspection"],
+)
+def test_the_audit_accepts_the_shapes_that_are_actually_scoped(statement):
+    assert _unscoped_variables(statement) == []
+    assert _scope_kind(statement) is not None
+
+
+def test_the_audit_reads_a_template_as_the_statement_it_becomes():
+    """``_render`` is load-bearing, not cosmetic: without it a template's ``{{id:$src}}`` is not an
+    id lookup and its quantified pattern does not tokenise, so the audit would judge a statement
+    nobody issues -- and would pass it for the wrong reason."""
+    assert _render("MATCH (a:CanNode:TSBodyNode {{id:$src}})-[:{rels}*1..{depth}]->(m) RETURN m").startswith("MATCH (a:CanNode:TSBodyNode {id:$src})-[:TS_")
+    assert "{0,5}" in _render("(x){{0,{depth}}} (m)")
+    assert _unscoped_variables("MATCH (a:CanNode:TSBodyNode {{id:$src}})-[:{rels}*1..{depth}]->(m:TSBodyNode) WHERE " + neo4j_backend._scoped("m") + " RETURN m.id") == []
+
+
 def test_the_audit_sees_every_inline_statement_too():
     """One harvested statement per ``self._run(`` / ``self._fetch(`` site; a site the harvester
     cannot fully reassemble is reported; the one allowed indirection is ``_fetch``'s own two
@@ -791,6 +1071,26 @@ def test_the_audit_sees_every_inline_statement_too():
         "get_dependencies",
         "get_config_keys",
         "get_config_uses",
+        # leg 2.5b: addressing (Task 1), dataflow (Task 2), entrypoints and config readers (Task 3)
+        "locate_many",
+        "resolve_callable",
+        "resolve_value",
+        "_sources_for",
+        "get_source",
+        "_probe_resolution_edges",
+        "_own_edges",
+        "_slice",
+        "reaches",
+        "backward_cone",
+        "callers_of",
+        "callees_of",
+        "_paths",
+        "_value_reaches",
+        "flows_to_call",
+        "get_entrypoints",
+        "get_entrypoint_classes",
+        "get_entrypoint_coverage",
+        "get_config_readers",
     ):
         assert any(name.startswith(expected + "@") for name in inline), f"{expected}'s statement is not harvested"
 
@@ -841,6 +1141,8 @@ def test_every_statement_is_application_scoped_or_keyed_by_an_application_stampe
     by construction. A statement anchored on ``(:Application {id: $app_id})`` walks out from the
     application node and cannot leave it."""
     statement = _every_statement()[name]
+    leaks = _unscoped_variables(statement)
+    assert leaks == [], f"{name} leaks through {leaks}: {statement[:200]!r}"
     kind = _scope_kind(statement)
     assert kind is not None, f"{name} carries no application scope: {statement[:160]!r}"
     if _MATCHES_BY_SIGNATURE.search(statement):
@@ -862,8 +1164,9 @@ def test_seek_labels_follow_the_measured_rule():
     range-seek union), while an id-equality point lookup is a 1.5 ms unique-index seek only with
     ``:CanNode`` (a 9 ms label scan without). So: every prefix-scoped statement without an id
     equality never names ``:CanNode``; ``{id: $…}`` point lookups always do."""
-    for name, s in _every_statement().items():
-        for m in re.finditer(r"\(\w*:([\w:|]+) \{id: \$\w+\}\)", s):
+    for name, statement in _every_statement().items():
+        s = _render(statement)  # a template's `{{id:$x}}` is an id point lookup; judge what runs
+        for m in re.finditer(r"\(\w*:([\w:|]+) ?\{id ?: ?\$\w+\}\)", s):
             assert m.group(1).startswith("CanNode:") or m.group(1) in ("Application",), f"{name}: id point lookup without :CanNode -- {m.group(0)}"
-        if _is_scoped(s) and not re.search(r"\{id: \$\w+\}", s):
+        if _is_scoped(s) and not re.search(r"\{id ?: ?\$\w+\}", s):
             assert "CanNode" not in s, f"{name}: a prefix-scoped statement names :CanNode (measured: bare 1.62 ms vs 32.35 ms) -- {s[:120]!r}"

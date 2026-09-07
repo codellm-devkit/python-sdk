@@ -57,7 +57,7 @@ from cldk.analysis.commons.bounds import (
 )
 from cldk.analysis.commons.graphs import as_slice_node, edge_sort_key, sdg_rel_pattern, sdg_rels, via_table
 from cldk.analysis.commons.keys import module_dotted
-from cldk.analysis.commons.results import EdgePage, FlowPaths, LocateResult, Slice, SliceNode
+from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, FlowPaths, LocateResult, Slice, SliceNode
 from cldk.models.typescript import (
     TSApplication,
     TSCallable,
@@ -67,6 +67,7 @@ from cldk.models.typescript import (
     TSCfgEdge,
     TSClass,
     TSClassAttribute,
+    TSClassOverview,
     TSDdgEdge,
     TSDecorator,
     TSEnum,
@@ -360,6 +361,71 @@ class TSAnalysisBackend(AnalysisBackend[TSApplication, TSModule, TSType, TSCalla
         """Call sites of the given callable signatures, keyed by owning signature. Each existing
         signature gets an entry (an empty list if it has no call sites); signatures with no matching
         callable are omitted."""
+
+    # -----[ entrypoints and the config readers (leg 2.5b, Task 3) ]-----
+    # Declared here rather than on the generic cross-language ABC for the same reason their Python
+    # twins are declared on ``PythonAnalysisBackend``: the return types are this language's own
+    # projections, and each analyzer spells the entrypoint mark differently.
+    @abstractmethod
+    def get_entrypoints(self) -> List[TSCallableOverview]:
+        """Overviews of every *callable* codeanalyzer-typescript marked as an entrypoint
+        (``TSCallable.is_entrypoint``) — a CLI command, route handler, or other externally-invoked
+        callable its entrypoint-detection pass already found.
+
+        An empty list means the pass found no entrypoint *callables* — the ordinary "no
+        entrypoints in this project" case, never a stand-in for the mark not existing (1.3.0
+        carries ``is_entrypoint`` as a real boolean on every callable, and a graph emitted below
+        1.3.0 is refused at attach, so it is never ambiguous at the property level).
+
+        Two things this accessor alone cannot tell you, each answered by a sibling rather than by
+        widening its frozen ``List[TSCallableOverview]`` return:
+
+        * **Class-level entrypoints.** ``TSClass`` carries its own ``is_entrypoint``: a class the
+          rulesets matched with no individually-marked method. This walk is callables-only; use
+          :meth:`get_entrypoint_classes`.
+        * **Whether the pass itself had gaps.** Detection under-approximates by design, so silence
+          is its failure mode — an empty result here cannot distinguish "ran clean, found none"
+          from "had gaps". Use :meth:`get_entrypoint_coverage`."""
+
+    @abstractmethod
+    def get_entrypoint_classes(self) -> List[TSClassOverview]:
+        """Overviews of every *class* the analyzer marked as an entrypoint in its own right
+        (``TSClass.is_entrypoint``) — the class-level sibling of :meth:`get_entrypoints`, which
+        walks callables only. Same empty-vs-absent guarantee as :meth:`get_entrypoints`.
+
+        **Classes only.** The 1.3.0 schema declares ``is_entrypoint`` on all five type kinds, but
+        the Neo4j projection stamps it onto ``:TSCallable`` and ``:TSClass`` nodes only (measured
+        on the reference graph: no other label carries the property at all), so widening this past
+        classes would make the two backends answer differently. That is a gap in the projection,
+        recorded rather than papered over — see :class:`~cldk.models.typescript.TSClassOverview`."""
+
+    @abstractmethod
+    def get_entrypoint_coverage(self) -> EntrypointCoverage:
+        """Coverage and failure record for the entrypoint-detection pass
+        (``TSApplication.entrypoint_report``), so a caller can tell "the pass ran clean and found
+        nothing" apart from "the pass had gaps" — a distinction :meth:`get_entrypoints`'s empty
+        list alone cannot make.
+
+        See :class:`~cldk.analysis.commons.results.EntrypointCoverage` for the field-by-field
+        contract. Both TypeScript backends can normally supply it in full: the local backend
+        passes ``entrypoint_report`` through, and the Neo4j backend parses the
+        ``entrypoint_report_json`` string property 1.3.0 stamps on the ``:Application`` anchor
+        (alongside the derived ``entrypoint_frameworks``). A source that carries neither answers
+        with a ``diagnostics``-only result rather than fabricating empty-but-clean-looking
+        coverage fields — the same "say so honestly" precedent as ``LocateResult``'s
+        ``module_source_unavailable``."""
+
+    @abstractmethod
+    def get_config_readers(self, key: str) -> List[TSCallableOverview]:
+        """Overviews of every callable that reads configuration key ``key``, resolved from
+        :meth:`~cldk.analysis.commons.backend.AnalysisBackend.get_config_uses`'s edges.
+
+        That generic accessor hands back ``PyConfigUseEdge.src`` as an opaque body-node id;
+        resolving it to "which callable" is a containment walk (``TS_HAS_BODY_NODE``, or the
+        callable's own ``body`` map in process), never a split on ``@`` — an anonymous callable's
+        own id contains one. Empty means no callable reads this key, which is not the same as "a
+        read exists but never resolved to a key": see
+        :meth:`~cldk.analysis.commons.backend.AnalysisBackend.get_unresolved_config_reads`."""
 
     # =====================================================================================
     # The addressing surface (leg 2.5b, TS-2). Python's semantics are the contract: every

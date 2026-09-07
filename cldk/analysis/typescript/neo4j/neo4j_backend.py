@@ -108,7 +108,20 @@ from cldk.analysis.commons.bounds import (
 from cldk.analysis.commons.graphs import cone_sinks, flow_path, slice_resolved
 from cldk.analysis.commons.keys import body_key_column, module_key_of, resolve_module_key
 from cldk.analysis.commons.resolve import CallableCandidate, resolve_callable_signature, resolve_value_name, resolve_within
-from cldk.analysis.commons.results import BodyRef, CallableRef, Diagnostic, EdgePage, FlowPaths, LocateResult, ModuleRef, Slice, SliceNode, Span, TypeRef
+from cldk.analysis.commons.results import (
+    BodyRef,
+    CallableRef,
+    Diagnostic,
+    EdgePage,
+    EntrypointCoverage,
+    FlowPaths,
+    LocateResult,
+    ModuleRef,
+    Slice,
+    SliceNode,
+    Span,
+    TypeRef,
+)
 from cldk.analysis.typescript.backend import (
     CDG_ORDER,
     CFG_ORDER,
@@ -134,9 +147,11 @@ from cldk.models.typescript import (
     TSCallsite,
     TSClass,
     TSClassAttribute,
+    TSClassOverview,
     TSConfigUse,
     TSDecorator,
     TSDependency,
+    TSEntrypointReport,
     TSEnum,
     TSEnumMember,
     TSExport,
@@ -571,7 +586,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
         """Every ``TS_CALLS`` edge whose source is this application's, with what each endpoint needs
         to be keyed the way every other accessor keys it (see :meth:`_graph_key`)."""
         return self._run(
-            f"MATCH (s)-[r:TS_CALLS]->(t) WHERE {_scoped('s')} "
+            f"MATCH (s)-[r:TS_CALLS]->(t) WHERE {_scoped('s')} AND {_scoped('t')} "
             "RETURN s.id AS src, s.kind AS src_kind, s.signature AS src_sig, s.module AS src_module, s.name AS src_name, "
             "t.id AS dst, t.kind AS dst_kind, t.signature AS dst_sig, t.module AS dst_module, t.name AS dst_name, r.weight AS weight, r.prov AS prov",
             **self._scope_params,
@@ -750,7 +765,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
                 "the projection carries only the extends-implements union in base_classes, and the split exists in analysis.json."
             )
         rows = self._run(
-            f"MATCH (c:TSClass {{signature: $sig}}) WHERE {_scoped('c')} MATCH (c)-[:{rel}]->(b) RETURN DISTINCT b.signature AS sig ORDER BY sig",
+            f"MATCH (c:TSClass {{signature: $sig}}) WHERE {_scoped('c')} MATCH (c)-[:{rel}]->(b) WHERE {_scoped('b')} RETURN DISTINCT b.signature AS sig ORDER BY sig",
             sig=qualified_class_name,
             **self._scope_params,
         )
@@ -983,6 +998,91 @@ class TSNeo4jBackend(TSAnalysisBackend):
         rows = self._run(
             f"MATCH (c:TSCallable)-[:TS_DECORATED_BY]->(marker:TSDecorator) WHERE {_scoped('c')} AND marker.name IN $markers WITH DISTINCT c " + self._OVERVIEW_PROJECTION,
             markers=list(markers),
+            **self._scope_params,
+        )
+        return [self._overview(r) for r in rows]
+
+    # =====================================================================================
+    # entrypoints and the config readers (leg 2.5b, Task 3)
+    # =====================================================================================
+    def get_entrypoints(self) -> List[TSCallableOverview]:
+        """Callables the 1.3.0 emitter stamped ``is_entrypoint`` (see
+        :meth:`TSAnalysisBackend.get_entrypoints`). Prefix-scoped on the bare label, the measured
+        rule for an application-wide prefix."""
+        rows = self._run(
+            f"MATCH (c:TSCallable) WHERE {_scoped('c')} AND c.is_entrypoint = true " + self._OVERVIEW_PROJECTION,
+            **self._scope_params,
+        )
+        return [self._overview(r) for r in rows]
+
+    def get_entrypoint_classes(self) -> List[TSClassOverview]:
+        """Classes the 1.3.0 emitter stamped ``is_entrypoint`` (see
+        :meth:`TSAnalysisBackend.get_entrypoint_classes`).
+
+        ``kind = 'class'`` alongside the label is the declaration-merge guard this file uses
+        everywhere: one id can carry ``:TSClass`` and ``:TSCallable`` both, and the node's ``kind``
+        is the facet the last writer minted."""
+        rows = self._run(
+            f"MATCH (cl:TSClass) WHERE {_scoped('cl')} AND cl.is_entrypoint = true AND cl.kind = $kind "
+            "OPTIONAL MATCH (cl)-[:TS_DECORATED_BY]->(d:TSDecorator) "
+            "RETURN cl.id AS id, cl.signature AS signature, cl.name AS name, cl.start_line AS start_line, cl.end_line AS end_line, "
+            "collect(DISTINCT d.name) AS decorators",
+            kind=TYPE_LABEL_KINDS["TSClass"],
+            **self._scope_params,
+        )
+        return [R.class_overview({**r, "path": self._module_key(r["id"])}) for r in rows]
+
+    def get_entrypoint_coverage(self) -> EntrypointCoverage:
+        """The entrypoint pass's coverage record, read off ``:Application.entrypoint_report_json``.
+
+        Measured on the 1.3.0 reference graph: the anchor carries the whole ``TSEntrypointReport``
+        as a JSON string property beside the derived ``entrypoint_frameworks`` list (which is that
+        report's own ``frameworks_detected`` and is therefore not read separately), and there are
+        no per-entrypoint nodes to rebuild it from. So it is parsed, and the local backend and this
+        one answer with the same model and no lossiness between them.
+
+        A graph without the property answers with ``entrypoint_report_unavailable`` rather than
+        empty-but-clean-looking fields -- the same precedent as ``LocateResult``'s
+        ``module_source_unavailable``."""
+        # ``properties(a)`` rather than ``a.entrypoint_report_json``: naming a property key the
+        # graph may not have makes the server log a warning per call.
+        rows = self._run("MATCH (a:Application {id: $app_id}) RETURN properties(a) AS p", app_id=self._app_id)
+        raw = rows[0]["p"].get("entrypoint_report_json") if rows else None
+        if raw is None:
+            return EntrypointCoverage(
+                diagnostics=[
+                    Diagnostic(
+                        code="entrypoint_report_unavailable",
+                        message=(
+                            f"The :Application anchor for {self.application_name!r} carries no entrypoint_report_json property, so the "
+                            "entrypoint pass's coverage (frameworks_detected/rulesets/unresolved/errors) cannot be reported. Use the "
+                            "local codeanalyzer backend for it."
+                        ),
+                    )
+                ]
+            )
+        report = TSEntrypointReport.model_validate_json(raw)
+        return EntrypointCoverage(
+            frameworks_detected=list(report.frameworks_detected),
+            rulesets=list(report.rulesets),
+            unresolved=dict(report.unresolved),
+            errors=list(report.errors),
+        )
+
+    def get_config_readers(self, key: str) -> List[TSCallableOverview]:
+        """Callables reading configuration key ``key`` (see
+        :meth:`TSAnalysisBackend.get_config_readers`).
+
+        The reading body node is walked back to its owner over ``TS_HAS_BODY_NODE`` -- the edge the
+        emitter writes in the same step that mints the node -- rather than by splitting its id on
+        ``@``, which an anonymous callable's own id already contains. ``DISTINCT`` because one
+        callable can read the same key at several call sites. The superset-frontend reference graph
+        declares no ``TS_USES_CONFIG`` relationship type at all, so this is ``[]`` there for the
+        same reason :meth:`get_config_uses` is."""
+        rows = self._run(
+            f"MATCH (bn:TSBodyNode)-[:TS_USES_CONFIG]->(ck:ConfigKey) WHERE {_scoped('bn')} AND ck.key = $key "
+            "MATCH (c:TSCallable)-[:TS_HAS_BODY_NODE]->(bn) WITH DISTINCT c " + self._OVERVIEW_PROJECTION,
+            key=key,
             **self._scope_params,
         )
         return [self._overview(r) for r in rows]
@@ -1442,6 +1542,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
     #: :meth:`resolve_value`, which resolves through :meth:`resolve_callable`.
     _SLICE = (
         "MATCH (r:CanNode:TSBodyNode {{id:$id}}){left}[:{rels}*0..{depth}]{right}(m:TSBodyNode) "
+        "WHERE " + _scoped("m") + " "
         "WITH DISTINCT m.id AS nid ORDER BY nid "
         "WITH collect(nid) AS ids "
         "WITH size(ids) AS total, ids[0..$cap] AS page "
@@ -1486,7 +1587,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
             left="<-" if backward else "-",
             right="-" if backward else "->",
         )
-        rows = self._run(query, id=root.ref, cap=max_nodes)
+        rows = self._run(query, id=root.ref, cap=max_nodes, **self._scope_params)
         return Slice(nodes=[self._slice_row(r) for r in rows], roots=[root], resolved=slice_resolved([root]), total=rows[0]["total"] if rows else 0)
 
     def slice_backward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
@@ -1523,8 +1624,12 @@ class TSNeo4jBackend(TSAnalysisBackend):
     #: what keeps a declaration-merged node out of the facet it is not. Needs Neo4j 5.9+.
     _REACHES = (
         "MATCH (a:TSCallable {{signature:$a}}) WHERE " + _scoped("a") + " AND a.kind IN $callable_kinds "
-        "MATCH (a) ((x:TSCallable)-[:TS_CALLS]->(y:TSCallable) WHERE " + _scoped("x") + " AND x.kind IN $callable_kinds AND y.kind IN $callable_kinds){{1,{depth}}} (m:TSCallable) "
-        "WITH DISTINCT m WHERE m.signature = $b RETURN count(m) > 0 AS ok"
+        "MATCH (a) ((x:TSCallable)-[:TS_CALLS]->(y:TSCallable) WHERE "
+        + _scoped("x")
+        + " AND "
+        + _scoped("y")
+        + " AND x.kind IN $callable_kinds AND y.kind IN $callable_kinds){{1,{depth}}} (m:TSCallable) "
+        "WITH DISTINCT m WHERE " + _scoped("m") + " AND m.signature = $b RETURN count(m) > 0 AS ok"
     )
 
     def reaches(self, src: str, dst: str, *, depth: int | None = None) -> bool:
@@ -1545,7 +1650,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
     _CONE = (
         "MATCH (s:TSCallable) WHERE s.signature IN $sigs AND " + _scoped("s") + " AND s.kind IN $callable_kinds "
         "MATCH (s) (()<-[:TS_CALLS]-(x:TSCallable|TSModule) WHERE " + _scoped("x") + "){{0,{depth}}} (m:TSCallable|TSModule) "
-        "WITH DISTINCT m ORDER BY m.id "
+        "WITH DISTINCT m ORDER BY m.id WHERE " + _scoped("m") + " "
         "WITH collect(" + _vertex("m", escape=True) + ") AS found "
         "RETURN size(found) AS total, found[0..$cap] AS page"
     )
@@ -1565,14 +1670,16 @@ class TSNeo4jBackend(TSAnalysisBackend):
     #: the callee side keeps the externals a caller tracing a sink is looking for. Both are ordered
     #: by id, which is the one total order the local backend can also compute -- without it a caller
     #: comparing the two backends would be comparing two arbitrary orders.
+    # Both endpoints carry the scope, never just the one the signature pins: ``TS_CALLS`` runs
+    # between two application-owned nodes, and this SDK attaches to graphs it did not emit.
     _CALLERS = (
         "MATCH (s:TSCallable|TSModule)-[:TS_CALLS]->(t:TSCallable {signature: $sig}) "
-        f"WHERE {_scoped('s')} AND t.kind IN $callable_kinds "
+        f"WHERE {_scoped('s')} AND {_scoped('t')} AND t.kind IN $callable_kinds "
         "RETURN " + _vertex("s") + " AS v ORDER BY s.id"
     )
     _CALLEES = (
         "MATCH (s:TSCallable {signature: $sig})-[:TS_CALLS]->(t:TSCallable|TSExternal) "
-        f"WHERE {_scoped('s')} AND s.kind IN $callable_kinds "
+        f"WHERE {_scoped('s')} AND {_scoped('t')} AND s.kind IN $callable_kinds "
         "RETURN " + _vertex("t") + " AS v ORDER BY t.id"
     )
 

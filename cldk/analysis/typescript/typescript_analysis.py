@@ -30,8 +30,9 @@ from typing import Dict, List, Sequence, Set, Tuple
 import networkx as nx
 
 from cldk.analysis.commons.backend_config import CodeAnalyzerConfig, Neo4jConnectionConfig, TSBackend, cache_subdir
+from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
 from cldk.analysis.commons.bounds import DEFAULT_DEPTH, DEFAULT_MAX_NODES, DEFAULT_MAX_PATHS, DEFAULT_PAGE_SIZE
-from cldk.analysis.commons.results import EdgePage, FlowPaths, LocateResult, Slice, SliceNode
+from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, FlowPaths, LocateResult, Slice, SliceNode
 from cldk.analysis.typescript.backend import TSAnalysisBackend
 from cldk.analysis.typescript.codeanalyzer import TSCodeanalyzer
 from cldk.analysis.typescript.neo4j import TSNeo4jBackend
@@ -44,6 +45,7 @@ from cldk.models.typescript import (
     TSCfgEdge,
     TSClass,
     TSClassAttribute,
+    TSClassOverview,
     TSDdgEdge,
     TSDecorator,
     TSEnum,
@@ -737,3 +739,142 @@ class TypeScriptAnalysis:
             ValueError: ``depth`` is not a positive ``int``.
         """
         return self.backend.flows_to_argument(src, callee, arg, within=within, depth=depth)
+
+    # =====================================================================================
+    # Entrypoints and the repository-artifact layer (leg 2.5b, Task 3)
+    #
+    # The five artifact getters have been on both *backends* since leg 2.5a; this is where a
+    # caller reaches them. They return the shared ``Py*`` models on purpose -- the artifact layer
+    # is the one part of the graph every analyzer projects identically, so a TypeScript-only copy
+    # of the models would be a second name for the same thing (see
+    # ``cldk/analysis/commons/backend.py``'s module docstring).
+    # =====================================================================================
+    def get_entrypoints(self) -> List[TSCallableOverview]:
+        """Return overviews of every callable the analyzer marked as an entrypoint.
+
+        A CLI command, a route handler — whatever ruleset the entrypoint pass matched. This is
+        where an agent starts a taint question: the callables reachable from outside.
+
+        Returns:
+            One overview per marked callable. Empty means the pass found no entrypoint
+            *callables* — a real fact about the project, not "cannot tell".
+
+        See Also:
+            :meth:`get_entrypoint_classes`: The class-level sibling this walk never sees.
+            :meth:`get_entrypoint_coverage`: Whether the detection pass itself had gaps.
+        """
+        return self.backend.get_entrypoints()
+
+    def get_entrypoint_classes(self) -> List[TSClassOverview]:
+        """Return overviews of every class the analyzer marked as an entrypoint in its own right.
+
+        :meth:`get_entrypoints` walks callables only, so a class the rulesets matched with no
+        individually-marked method is invisible to it.
+
+        Returns:
+            One overview per marked class. Empty means no class carries the mark.
+
+        See Also:
+            :meth:`get_entrypoints`: The callable-level projection.
+        """
+        return self.backend.get_entrypoint_classes()
+
+    def get_entrypoint_coverage(self) -> EntrypointCoverage:
+        """Return the entrypoint-detection pass's own coverage and failure record.
+
+        Entrypoint detection under-approximates by design, so silence is its failure mode:
+        :meth:`get_entrypoints` returning ``[]`` cannot say whether the pass ran clean or gave up.
+        This is what distinguishes them — the frameworks it recognized, the rulesets it consulted,
+        the near-misses it could not resolve, and the errors it hit.
+
+        Returns:
+            The coverage record. A non-empty ``diagnostics`` means the source carries no report at
+            all, and the other fields are then not "no gaps found" but "nothing to report from".
+
+        See Also:
+            :meth:`get_entrypoints`: The accessor whose empty result this disambiguates.
+        """
+        return self.backend.get_entrypoint_coverage()
+
+    def get_artifacts(self) -> Dict[str, PyArtifact]:
+        """Return every non-code artifact the analyzer indexed, keyed by repo-relative path.
+
+        ``package.json``, ``tsconfig.json``, a lockfile, a Dockerfile — the files that say what the
+        project depends on and how it is configured, which the code itself never states.
+
+        Returns:
+            ``{path: artifact}``. Each artifact carries its roles, its text and the config keys it
+            defines.
+
+        See Also:
+            :meth:`get_dependencies`, :meth:`get_config_keys`, :meth:`get_config_uses`.
+        """
+        return self.backend.get_artifacts()
+
+    def get_dependencies(self, *, direct_only: bool = False, ecosystem: str | None = None, declared_in: str | None = None) -> List[PyDependency]:
+        """Return every declared dependency, optionally filtered.
+
+        Args:
+            direct_only: Keep only dependencies the project declares itself, not transitive ones.
+            ecosystem: Keep only one packaging ecosystem. Every TypeScript dependency is ``npm``.
+            declared_in: Keep only dependencies declared by one artifact (``PyDependency.declared_in``,
+                e.g. from :meth:`get_artifacts`).
+
+        Returns:
+            The matching dependencies.
+        """
+        return self.backend.get_dependencies(direct_only=direct_only, ecosystem=ecosystem, declared_in=declared_in)
+
+    def get_config_keys(self) -> Dict[str, PyConfigKey]:
+        """Return every configuration key the analyzer extracted from the artifacts.
+
+        Returns:
+            ``{id: key}``. Each value carries the key's dotted name, its namespace and its literal
+            value as text.
+        """
+        return self.backend.get_config_keys()
+
+    def get_config_uses(self, key: str | None = None) -> List[PyConfigUseEdge]:
+        """Return the resolved edges from a code read to the configuration key it names.
+
+        Args:
+            key: Keep only edges naming this key by its dotted name (e.g.
+                ``"compilerOptions.strict"``) — matched against :meth:`get_config_keys`, since the
+                edge itself carries ids.
+
+        Returns:
+            The matching edges.
+
+        See Also:
+            :meth:`get_config_readers`: The same edges, resolved to their reading callables.
+            :meth:`get_unresolved_config_reads`: The reads this cannot show.
+        """
+        return self.backend.get_config_uses(key)
+
+    def get_unresolved_config_reads(self) -> List[PyConfigRead]:
+        """Return every detector-matched configuration read that resolved to no declared key.
+
+        :meth:`get_config_uses` can only show reads that landed on a key the analyzer extracted. A
+        read of a key defined somewhere it does not index resolves to nothing, and an empty
+        :meth:`get_config_uses` for some key cannot then distinguish "nothing reads this" from "a
+        read exists and never resolved". This is that second list.
+
+        Returns:
+            The unresolved reads, each naming the call site and the callee it went through.
+        """
+        return self.backend.get_unresolved_config_reads()
+
+    def get_config_readers(self, key: str) -> List[TSCallableOverview]:
+        """Return overviews of every callable that reads configuration key ``key``.
+
+        :meth:`get_config_uses` hands back opaque body-node ids; this answers the question a caller
+        actually has — *which code* reads this setting.
+
+        Args:
+            key: The key's dotted name, exactly as :meth:`get_config_uses` matches it.
+
+        Returns:
+            One overview per reading callable. Empty means no callable reads this key — see
+            :meth:`get_unresolved_config_reads` for the read that never resolved to one.
+        """
+        return self.backend.get_config_readers(key)

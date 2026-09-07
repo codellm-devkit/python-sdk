@@ -531,3 +531,68 @@ def test_the_dataflow_miss_paths_raise_the_same_way(ref_l4, ts_dual):
         call = pair[0]
         a, b = _same_raise(lambda: call(ref_l4), lambda: call(neo))
         assert str(a).split(";")[0] == str(b).split(";")[0] or type(a) is type(b)
+
+
+# =====================================================================================
+# Leg 2.5b Task 3: entrypoints and the artifact/config layer answer identically on both backends.
+#
+# The sample app marks no entrypoint at all, which is the interesting case rather than a dull one:
+# the two backends must agree that the mark is absent *and* agree on the coverage record that says
+# whether that silence is clean.
+# =====================================================================================
+def test_entrypoints_parity(ts_dual):
+    ref, neo = ts_dual
+    assert {_overview_tuple(o) for o in ref.get_entrypoints()} == {_overview_tuple(o) for o in neo.get_entrypoints()}
+
+
+def test_entrypoint_classes_parity(ts_dual):
+    ref, neo = ts_dual
+    shape = lambda o: (o.signature, o.name, o.path, o.start_line, o.end_line, tuple(sorted(o.decorators)))
+    assert {shape(o) for o in ref.get_entrypoint_classes()} == {shape(o) for o in neo.get_entrypoint_classes()}
+
+
+def test_entrypoint_coverage_parity(ts_dual):
+    """The local backend passes ``TSApplication.entrypoint_report`` through; the Neo4j backend
+    parses the ``entrypoint_report_json`` property off the anchor. Same report, no lossiness — so
+    neither may report a ``diagnostics``-only result here."""
+    ref, neo = ts_dual
+    a, b = ref.get_entrypoint_coverage(), neo.get_entrypoint_coverage()
+    assert a.diagnostics == [] and b.diagnostics == [], "one backend could not supply the report at all"
+    assert (a.frameworks_detected, a.rulesets, a.unresolved, a.errors) == (b.frameworks_detected, b.rulesets, b.unresolved, b.errors)
+    assert a.unresolved, "the sample app's pass records near-misses; an empty one means the report was not read"
+
+
+def test_artifacts_parity(ts_dual):
+    ref, neo = ts_dual
+    a, b = ref.get_artifacts(), neo.get_artifacts()
+    assert set(a) == set(b) and a, "the sample app declares package.json and tsconfig.json"
+    for path in a:
+        assert (a[path].path, a[path].format, sorted(a[path].roles), a[path].sha256) == (b[path].path, b[path].format, sorted(b[path].roles), b[path].sha256), path
+        assert {ck.id for ck in a[path].config_keys} == {ck.id for ck in b[path].config_keys}, path
+
+
+def test_dependencies_and_config_keys_parity(ts_dual):
+    ref, neo = ts_dual
+    shape = lambda d: (d.name, d.ecosystem, d.direct, d.declared_in)
+    assert sorted(shape(d) for d in ref.get_dependencies()) == sorted(shape(d) for d in neo.get_dependencies())
+    assert sorted(shape(d) for d in ref.get_dependencies(direct_only=True)) == sorted(shape(d) for d in neo.get_dependencies(direct_only=True))
+    assert {k: (v.key, v.namespace, v.value) for k, v in ref.get_config_keys().items()} == {k: (v.key, v.namespace, v.value) for k, v in neo.get_config_keys().items()}
+
+
+def test_config_uses_and_readers_parity(ts_dual):
+    ref, neo = ts_dual
+    assert sorted((e.src, e.dst) for e in ref.get_config_uses()) == sorted((e.src, e.dst) for e in neo.get_config_uses())
+    for key in sorted({v.key for v in ref.get_config_keys().values()})[:5]:
+        assert {_overview_tuple(o) for o in ref.get_config_readers(key)} == {_overview_tuple(o) for o in neo.get_config_readers(key)}, key
+
+
+def test_unresolved_config_reads_is_the_one_documented_divergence(ts_dual):
+    """Not a parity failure but a recorded gap: the Neo4j projection carries no ``config_reads`` at
+    all, so that backend raises naming the gap rather than answering ``[]``, which would read as
+    "every read resolved". Asserted here so the day the projection gains them, this test fails and
+    the divergence is closed rather than forgotten."""
+    ref, neo = ts_dual
+    assert ref.get_unresolved_config_reads() == []
+    with pytest.raises(Exception) as e:
+        neo.get_unresolved_config_reads()
+    assert "unresolved config reads" in str(e.value)

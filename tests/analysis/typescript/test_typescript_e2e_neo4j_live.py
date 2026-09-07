@@ -37,6 +37,7 @@ against itself.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 from typing import Any, Dict, List
@@ -398,10 +399,10 @@ def test_synthesized_callables_are_the_anonymous_tree_nodes(analysis, count):
 
 
 # =====================================================================================
-# artifact layer (backend-level; the facade does not expose it yet)
+# artifact layer -- reached through the facade since leg 2.5b Task 3 put it there
 # =====================================================================================
 def test_artifact_layer_matches_the_graph(analysis, cypher):
-    backend = analysis.backend
+    backend = analysis
     assert len(backend.get_artifacts()) == cypher("MATCH (:Application {id: $id})-[:HAS_ARTIFACT]->(a) RETURN count(a) AS n", id=APP_ID)[0]["n"]
     deps = backend.get_dependencies()
     assert len(deps) == cypher("MATCH (:Application {id: $id})-[:HAS_ARTIFACT]->()-[r:DECLARES_DEPENDENCY]->() RETURN count(r) AS n", id=APP_ID)[0]["n"]
@@ -411,6 +412,63 @@ def test_artifact_layer_matches_the_graph(analysis, cypher):
     assert len(backend.get_config_uses()) == cypher(f"MATCH (x:TSBodyNode)-[u:TS_USES_CONFIG]->() WHERE {SCOPED} RETURN count(u) AS n", **SCOPE)[0]["n"]
     with pytest.raises(CodeanalyzerExecutionException, match="unresolved config reads"):
         backend.get_unresolved_config_reads()
+
+
+# =====================================================================================
+# entrypoints (leg 2.5b Task 3) -- every expectation read off the graph at run time
+# =====================================================================================
+def test_entrypoints_are_exactly_the_callables_the_graph_marks(analysis, cypher):
+    marked = {r["sig"] for r in cypher(f"MATCH (x:TSCallable) WHERE {SCOPED} AND x.is_entrypoint = true RETURN x.signature AS sig", **SCOPE)}
+    assert marked, "the reference graph marks at least one entrypoint callable"
+    entrypoints = analysis.get_entrypoints()
+    assert {o.signature for o in entrypoints} == marked
+    # every overview carries a module key verified against the application's own (F4), not a split id
+    assert all(o.path in analysis.get_symbol_table() for o in entrypoints)
+
+
+def test_entrypoint_classes_are_exactly_the_classes_the_graph_marks(analysis, cypher):
+    """This corpus marks none, which is the case worth pinning: the mark exists on
+    ``:TSClass`` nodes (they all carry ``is_entrypoint`` as a real boolean), and none is true."""
+    marked = {r["sig"] for r in cypher(f"MATCH (x:TSClass) WHERE {SCOPED} AND x.is_entrypoint = true AND x.kind = 'class' RETURN x.signature AS sig", **SCOPE)}
+    assert {o.signature for o in analysis.get_entrypoint_classes()} == marked
+    assert cypher(f"MATCH (x:TSClass) WHERE {SCOPED} AND x.is_entrypoint IS NOT NULL RETURN count(x) AS n", **SCOPE)[0]["n"] > 0, "the mark is projected onto classes at all"
+
+
+def test_entrypoint_coverage_is_the_anchors_own_report_parsed(analysis, cypher):
+    """1.3.0 stamps the whole ``TSEntrypointReport`` on ``:Application`` as a JSON **string**
+    property; there are no per-entrypoint nodes to rebuild it from, so it is parsed. The sibling
+    ``entrypoint_frameworks`` list is that report's own ``frameworks_detected``."""
+    row = cypher("MATCH (a:Application {id: $id}) RETURN a.entrypoint_report_json AS j, a.entrypoint_frameworks AS f", id=APP_ID)[0]
+    assert row["j"], "the anchor carries no entrypoint_report_json; the floor should have refused this graph"
+    report = json.loads(row["j"])
+    coverage = analysis.get_entrypoint_coverage()
+    assert coverage.diagnostics == []
+    assert coverage.frameworks_detected == report["frameworks_detected"] == list(row["f"] or [])
+    assert (coverage.rulesets, coverage.unresolved, coverage.errors) == (report["rulesets"], report["unresolved"], report["errors"])
+    # The whole point of the separate accessor, on this corpus: a framework *was* detected and the
+    # pass left near-misses behind, neither of which a one-element get_entrypoints() list can say.
+    assert coverage.frameworks_detected and coverage.unresolved
+
+
+def test_config_readers_agrees_with_the_config_use_edges(analysis, cypher):
+    """``TS_USES_CONFIG`` is not a relationship type on this corpus at all, so both this and
+    ``get_config_uses`` are empty for the same reason -- a floor, not a verdict (see
+    ``TSNeo4jBackend.get_config_uses``). Asserted against the graph rather than hardcoded, so the
+    day a corpus carries the edges this compares readers to edges instead."""
+    keys = [r["key"] for r in cypher(f"MATCH (x:TSBodyNode)-[:TS_USES_CONFIG]->(k:ConfigKey) WHERE {SCOPED} RETURN DISTINCT k.key AS key ORDER BY key LIMIT 3", **SCOPE)]
+    if not keys:
+        assert analysis.get_config_uses() == [] and analysis.get_config_readers("any.key") == []
+        return
+    for key in keys:
+        owners = {
+            r["sig"]
+            for r in cypher(
+                f"MATCH (x:TSBodyNode)-[:TS_USES_CONFIG]->(k:ConfigKey {{key: $key}}) WHERE {SCOPED} MATCH (c:TSCallable)-[:TS_HAS_BODY_NODE]->(x) RETURN DISTINCT c.signature AS sig",
+                key=key,
+                **SCOPE,
+            )
+        }
+        assert {o.signature for o in analysis.get_config_readers(key)} == owners, key
 
 
 # =====================================================================================

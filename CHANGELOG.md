@@ -6,13 +6,51 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
-Leg 2.5a of the CLDK 2.0 facade: the TypeScript layer on schema v2 (see
-`docs/design/specs/2026-09-06-leg-2.5-typescript.md`; plan
-`docs/design/plans/2026-09-06-leg-2.5a-typescript-schema-v2.md`). Targets `2.0.0-rc.3`. The
-leg-1.5/1.6 query surface for TypeScript (addressing, scoping keywords, per-callable graphs, slices,
-paths, entrypoints) is 2.5b, on codeanalyzer-typescript 1.3.0 when it is cut.
+Legs 2.5a and 2.5b of the CLDK 2.0 facade: the TypeScript layer on schema v2, then the
+leg-1.5/1.6 query surface on top of it (see `docs/design/specs/2026-09-06-leg-2.5-typescript.md`;
+plans `docs/design/plans/2026-09-06-leg-2.5a-typescript-schema-v2.md` and
+`…-leg-2.5b-typescript-query-surface.md`). Targets `2.0.0-rc.3`.
+
+### Added
+- **The agent-facing query surface on `TypeScriptAnalysis` (leg 2.5b): 29 accessors, each with
+  `PythonAnalysis`'s signature and semantics.** Addressing (`locate`, `locate_many`,
+  `resolve_callable`, `resolve_value`, `get_source`, `describe`, `has_resolution_edges`);
+  per-callable graphs and dataflow (`get_cfg`/`get_cdg`/`get_ddg`, `slice_backward`/`slice_forward`/
+  `backward_cone`, `reaches`, `callers_of`/`callees_of`, `paths_between`/`call_paths_between`,
+  `flows_to_call`/`flows_to_argument`); entrypoints (`get_entrypoints`, `get_entrypoint_classes`,
+  `get_entrypoint_coverage`, `get_config_readers`); and the five repository-artifact getters, which
+  existed on both backends and now reach the caller. Both backends answer identically.
+- `cldk.models.typescript.TSClassOverview`, the class-level projection `get_entrypoint_classes`
+  returns — `PyClassOverview`'s TypeScript twin.
 
 ### Changed
+- **Pinned `codeanalyzer-typescript` 1.2.0 → 1.3.0, and the graph floor with it.** A graph emitted
+  below 1.3.0 — a 1.2.0 graph included — is now refused at attach with `GraphSchemaMismatch`
+  naming the version found and the floor, because it carries neither the entrypoint marks nor the
+  body-node ids the query surface reads. **Migration:** re-emit with
+  `codeanalyzer-typescript>=1.3.0 --emit neo4j`, which no longer accepts `-a` (the emit is always
+  full depth). No model changed: leg 2.5a had already declared 1.3.0's additive fields.
+- **`LocateResult.body` is a language-neutral `BodyRef`** (`{id, kind, span, callee}`), replacing
+  `LocateResult.node` and its `cldk.models.python.BodyNode`, so `cldk/analysis/commons/results.py`
+  no longer imports a language package (`commons/backend.py` still declares the shared artifact
+  getters on the `Py*` models, which is the contract). `Span` gains a commons twin that validates
+  from either analyzer's span; `cldk.models.python.Span` is unchanged and still the analyzer's own
+  class.
+- TypeScript's DDG has **one** provenance tier: every `TS_DDG` edge carries
+  `prov == ["reaching-defs"]`, so `prov_rank` is constant there where Python ranks three ways. The
+  field and helper are unchanged.
+- Every Cypher statement `TSNeo4jBackend` issues is now scoped **per bound variable**, not
+  per statement: both endpoints of a `TS_CALLS` edge, a quantified path's far end, and a slice's
+  reached body nodes each carry the two-prefix predicate. A statement that matched one endpoint by
+  a signature two applications can both declare could previously return the other application's
+  node.
+
+### Fixed
+- `docs/agent-api-reference.md` said `EntrypointCoverage.unresolved` was a `list[str]`; it is a
+  `dict[str, int]` (near-miss selector → count), and `get_config_keys()` is keyed by the key's
+  `can://` id rather than by its name (python-sdk#346 tracks changing that key).
+
+### Changed (leg 2.5a)
 - **Pinned `codeanalyzer-typescript` 0.4.3 → 1.2.0** (`pyproject.toml` `dependencies` and
   `[tool.backend-versions]`). The analyzer emits canonical schema v2, and `cldk.models.typescript`
   is rewritten as an `extra="forbid"` mirror of it: `analysis.json` is the `TSAnalysis` envelope
