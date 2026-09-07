@@ -52,6 +52,22 @@ surface** (3b). Design records: `docs/design/specs/2026-09-06-leg-2.5-typescript
   including on the miss paths.
 - `cldk.models.java.JCallableOverview` and `JClassOverview`, the projections those bulk accessors
   return. They carry the addressable `"<type fqn>.<signature>"` key, never a `can://` id.
+- **Six Java accessors that only ever raised `NotImplementedError` now answer** (#366), at the
+  signature they have always been published with: `get_imports()` (the project's distinct import
+  targets, sorted — the Neo4j projection aggregates a module's imports per target, so file order is
+  not recoverable and the set is what both backends can give), `get_variables()` (each callable's
+  local variables, keyed by the `"<type fqn>.<signature>"` call-graph key and ordered by
+  `(line, name)`; fields and parameters keep their own accessors, and an unexpected keyword now
+  raises `TypeError` instead of being ignored), `get_class_hierarchy()` (a `nx.DiGraph`, subclass →
+  supertype, each edge carrying `type="EXTENDS"` or `"IMPLEMENTS"` — read off each declaration's own
+  `base_types`/`interfaces`, which is why out-of-project supertypes are in it),
+  `get_methods_with_annotations()` (grouped by the spelling the caller passed, matched by the J-5
+  marker rule, each entry `{class, signature, method_name, body}`), `get_call_targets()` (the
+  declared names some call site actually writes — simple-name matching, no overload resolution) and
+  `get_calling_lines()` (sorted, distinct absolute file lines, off the call graph's own
+  `calling_lines`). Both backends answer identically; none of the six issues any new Cypher.
+  `get_service_entry_point_classes`/`get_service_entry_point_methods` and `remove_all_comments`
+  still raise.
 - **Java reaches analysis levels 3 and 4** — control flow, control and data dependence, and the interprocedural
   graph. The level now reaches the analyzer, which it never did before.
 - **A `java` install extra.** `pip install "cldk[java]"` brings the analyzer and its bundled JVM;

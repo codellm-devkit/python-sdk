@@ -72,7 +72,8 @@ def test_get_symbol_table_is_not_null(test_fixture, analysis_json):
         assert analysis.get_symbol_table() is not None
 
 def test_get_imports(test_fixture, analysis_json):
-    """Should return NotImplemented for get_imports()"""
+    """The distinct, sorted import targets of the project (#366); the per-accessor policy and both
+    backends are in ``test_java_v1_accessors.py``."""
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
@@ -85,14 +86,13 @@ def test_get_imports(test_fixture, analysis_json):
             eager_analysis=False,
         )
 
-        # When this is implemented please add a real test case
-        with pytest.raises(NotImplementedError) as except_info:
-            java_analysis.get_imports()
-        assert except_info.type == NotImplementedError
+        imports = java_analysis.get_imports()
+        assert imports == sorted(set(imports)) and len(imports) == 268
+        assert "com.ibm.websphere.samples.daytrader.util.Log" in imports
 
 
 def test_get_variables(test_fixture, analysis_json):
-    """Should return NotImplemented for get_variables()"""
+    """The locals each callable declares, keyed by the J-1 call-graph key (#366)."""
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
@@ -105,10 +105,10 @@ def test_get_variables(test_fixture, analysis_json):
             eager_analysis=False,
         )
 
-        # When this is implemented please add a real test case
-        with pytest.raises(NotImplementedError) as except_info:
-            java_analysis.get_variables()
-        assert except_info.type == NotImplementedError
+        variables = java_analysis.get_variables()
+        assert len(variables) == 1216 and sum(len(v) for v in variables.values()) == 854
+        with pytest.raises(TypeError):
+            java_analysis.get_variables(qualified_class_name="anything")
 
 
 def test_get_service_entry_point_classes(test_fixture, analysis_json):
@@ -227,10 +227,9 @@ def test_get_class_hierarchy(test_fixture, analysis_json):
             eager_analysis=False,
         )
 
-        # When this is implemented please add a real test case
-        with pytest.raises(NotImplementedError) as except_info:
-            java_analysis.get_class_hierarchy()
-        assert except_info.type == NotImplementedError
+        hierarchy = java_analysis.get_class_hierarchy()
+        assert hierarchy.number_of_nodes() == 170 and hierarchy.number_of_edges() == 103
+        assert hierarchy.edges["com.ibm.websphere.samples.daytrader.web.prims.PingServlet", "javax.servlet.http.HttpServlet"]["type"] == "EXTENDS"
 
 
 def test_is_parsable(test_fixture, analysis_json):
@@ -839,16 +838,12 @@ def test_get_methods_with_annotations(test_fixture, analysis_json):
             eager_analysis=False,
         )
 
-        # TODO: The code is broken. It requires Treesitter but JCodeanalyzer does not!
-
-        annotations = ["WebServlet"]
-        try:
-            code_with_annotations = java_analysis.get_methods_with_annotations(annotations)
-        except NotImplementedError:
-            assert True
-            return
-
-        assert False, "Did not raise NotImplementedError"
+        # ``WebServlet`` annotates 53 **types** in this fixture and no callable, so a
+        # callable-level filter reports nothing for it -- the same split get_decorated_callables has.
+        assert java_analysis.get_methods_with_annotations(["WebServlet"]) == {}
+        overridden = java_analysis.get_methods_with_annotations(["Override"])["Override"]
+        assert len(overridden) == 328
+        assert set(overridden[0]) == {"class", "signature", "method_name", "body"}
 
 
 def test_get_test_methods(test_fixture, analysis_json):
@@ -914,18 +909,10 @@ def test_get_calling_lines(test_fixture, analysis_json):
             eager_analysis=False,
         )
 
-        # TODO: The code is broken. It requires Treesitter but JCodeanalyzer does not!
-
-        try:
-            calling_lines = java_analysis.get_calling_lines("trace(String)")
-            assert calling_lines is not None
-            assert isinstance(calling_lines, List)
-            assert len(calling_lines) > 0
-        except NotImplementedError:
-            assert True
-            return
-
-        assert False, "Did not raise NotImplementedError"
+        # This fixture is a level-1 payload -- an empty call graph (0 nodes, 0 edges) -- so there
+        # is no call site to report a line for. The real lines are asserted on the level-4 fixture
+        # in ``test_java_v1_accessors.py`` and against the live graph.
+        assert java_analysis.get_calling_lines("trace(String)") == []
 
 
 def test_get_call_targets(test_fixture, analysis_json):
@@ -942,17 +929,11 @@ def test_get_call_targets(test_fixture, analysis_json):
             eager_analysis=False,
         )
 
-        # TODO: The code is broken. It requires Treesitter but JCodeanalyzer does not!
-        try:
-            call_targets = java_analysis.get_call_targets("trace(String)")
-            assert call_targets is not None
-            assert isinstance(call_targets, Set)
-            assert len(call_targets) > 0
-        except NotImplementedError:
-            assert True
-            return
-
-        assert False, "Did not raise NotImplementedError"
+        declared = java_analysis.get_methods_in_class("com.ibm.websphere.samples.daytrader.impl.direct.TradeDirect")
+        call_targets = java_analysis.get_call_targets(declared)
+        assert isinstance(call_targets, set) and len(call_targets) == 53
+        assert "cancelOrder" in call_targets
+        assert java_analysis.get_call_targets({}) == set()
 
 
 def test_get_all_comments(test_fixture, analysis_json):

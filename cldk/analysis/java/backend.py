@@ -50,7 +50,7 @@ from __future__ import annotations
 import re
 from abc import abstractmethod
 from functools import cached_property
-from typing import ClassVar, Dict, Iterable, List, Mapping, NamedTuple, Optional, Sequence, Tuple, Union
+from typing import ClassVar, Dict, Iterable, List, Mapping, NamedTuple, Optional, Sequence, Set, Tuple, Union
 
 import networkx as nx
 
@@ -100,6 +100,7 @@ from cldk.models.java.models import (
     JEnumConstant,
     JExternalSymbol,
     JField,
+    JLocalVariable,
     JMethodDetail,
     JType,
 )
@@ -1124,6 +1125,221 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
 
     def _of_kind(self, kind: str) -> Dict[str, JType]:
         return {name: t for name, t in self._types.items() if t.kind == kind}
+
+    # =====================================================================================
+    # The six 1.x accessors leg 3 deferred (#366). Each is implemented **once, here**, over what
+    # both backends already answer -- the symbol table, the class index, the callable index and
+    # ``get_call_graph()`` -- for the same reason the call-graph half of the dataflow surface is:
+    # a per-backend implementation would have nothing to read that this one cannot, and would only
+    # be a second place for the answer to drift. **No new Cypher is issued for any of the six**;
+    # every fact they need (``J_IMPORTS``, ``J_DECLARES_VAR``, ``J_EXTENDS``/``J_IMPLEMENTS``,
+    # ``J_ANNOTATED_BY``, ``J_CALLS``) is already read by the projection's reconstruction into the
+    # pydantic models, so the graph backend answers all six off the application it already builds.
+    #
+    # Their signatures are the 1.x facade's, frozen (the Iron Rule): they are *not* Python's, which
+    # has five of the six not at all, and not TypeScript's, which spells three of them differently
+    # on purpose. What each one *returns* is decided here, and the decision is written down.
+    # =====================================================================================
+    def get_imports(self) -> List[str]:
+        """Every distinct import target of the application, sorted -- a **set**, not a per-file
+        listing, and not the file's import order.
+
+        That is a fact about the projection, not a simplification: ``--emit neo4j`` aggregates every
+        import of a module that resolves to the same target onto **one** ``J_IMPORTS`` edge carrying
+        their dotted ``spellings`` (see :func:`cldk.analysis.java.neo4j.reconstruct.imports`), so
+        the order the imports appear in the file is not recoverable from the graph, and a list that
+        preserved it locally would be a list the two backends disagree about. Sorting and
+        de-duplicating is the answer both can give -- and the 1.x signature is a flat
+        ``List[str]`` anyway, which never carried the file an import belongs to. Per-file import
+        declarations, with their spans, are on
+        :attr:`~cldk.models.java.models.JCompilationUnit.import_declarations`.
+
+        A wildcard import keeps its ``.*`` (the analyzer writes the spelling, ``java.util.*``) and a
+        static import is not marked as such here; both distinctions live on
+        :class:`~cldk.models.java.models.JImport`.
+        """
+        return sorted({i.path for unit in self.get_symbol_table().values() for i in unit.import_declarations})
+
+    def get_variables(self) -> Dict[str, List[JLocalVariable]]:
+        """The **local variables** each callable declares, keyed by the J-1 call-graph key
+        ``"<type fqn>.<signature>"`` -- the ``J_DECLARES_VAR`` layer of the graph.
+
+        The 1.x return type is a bare ``Dict`` and the docstring names "local variables, fields, and
+        parameters". Those are three different things with three different homes, and this is the
+        one with no other accessor: fields are :meth:`get_all_fields` (``J_HAS_FIELD``) and
+        parameters are :meth:`get_method_parameters`, both already on this surface, so folding all
+        three into one dict would give every caller a bag they have to re-split. Locals are what is
+        left, and ``J_DECLARES_VAR`` is exactly them.
+
+        Every callable in the addressing domain gets an entry, including the ones that declare
+        nothing: an absent key would be indistinguishable from a callable that is not in the
+        application, which is the ambiguous empty (D7). Implicit constructors carry no body and so
+        carry an empty list.
+
+        **Ordered by (line, name), not by declaration order within a line.** The wire's order is the
+        source's, but the projection carries a line-only span -- ``:JLocal`` has no column -- so two
+        variables declared on one line (``String htmlString, arrow;``) come back in an order the
+        graph does not fix. Measured on the reference graph: 6 of daytrader8's 1,216 callables, 12
+        variables, same multiset, different order. Sorting is what the two backends can both do; the
+        alternative is a list whose order means "source" on one backend and "arbitrary" on the
+        other. The span itself still differs -- ``start_column``/``end_column`` and the byte offsets
+        are placeholders over the graph, as they are everywhere else on this surface -- so compare
+        variables on ``name``/``type``/``start_line``.
+        """
+        return {
+            f"{klass}.{signature}": sorted(c.local_variables, key=lambda v: (v.start_line, v.name))
+            for klass, methods in self.get_all_methods_in_application().items()
+            for signature, c in methods.items()
+        }
+
+    def get_class_hierarchy(self) -> nx.DiGraph:
+        """The inheritance graph: a node per type declared in the application, and an edge
+        **child → base** for each supertype, carrying ``type="EXTENDS"`` or ``type="IMPLEMENTS"``.
+
+        Modelled on :meth:`cldk.analysis.typescript.backend.TypeScriptAnalysisBackend.get_class_hierarchy`,
+        which is the only sibling that has one, with the one difference Java forces: TypeScript's
+        wire has a single ``base_classes`` list, while Java's has ``base_types`` and ``interfaces``
+        and the projection keeps them as two relationship types (``J_EXTENDS`` / ``J_IMPLEMENTS``).
+        Collapsing them would throw away the distinction the graph is at pains to keep, so it is on
+        the edge.
+
+        Nodes are :meth:`get_all_classes`'s keys -- every declared kind, interfaces, enums,
+        annotations and records included, since all of them participate. A supertype **outside** the
+        application (``javax.servlet.http.HttpServlet``) becomes a node too, by being an edge
+        endpoint: it is named exactly as the analyzer wrote it on the declaration, which is the
+        source spelling and not necessarily a qualified name. Type arguments are part of that
+        spelling where the source wrote them.
+
+        **Read off each declaration's own** ``base_types`` / ``interfaces``, **not off the**
+        ``J_EXTENDS`` / ``J_IMPLEMENTS`` **relationships**, and that is the difference between an
+        answer and a fifteenth of one: those relationships can only join two types the projection
+        has *nodes* for, and daytrader8 extends and implements almost nothing it declares itself.
+        Measured on the reference graph: 8 relationships (1 ``J_EXTENDS``, 7 ``J_IMPLEMENTS``)
+        against the 103 edges (58 / 45) the declarations carry. The properties are projected onto
+        every ``:JType``, so both backends read the same list.
+
+        A type that neither extends nor is extended is an isolated node rather than a missing one,
+        which is why the nodes are added before the edges.
+        """
+        graph = nx.DiGraph()
+        for name, declared in self.get_all_classes().items():
+            graph.add_node(name)
+            for base in declared.base_types:
+                graph.add_edge(name, base, type="EXTENDS")
+            for interface in declared.interfaces:
+                graph.add_edge(name, interface, type="IMPLEMENTS")
+        return graph
+
+    def get_methods_with_annotations(self, annotations: List[str]) -> Dict[str, List[Dict]]:
+        """The callables carrying each requested annotation, grouped by the requested spelling.
+
+        Neither sibling language has this accessor, so it is designed rather than ported, and the
+        pattern it follows is :meth:`JavaAnalysis.get_test_methods`: read the **analyzer's own**
+        annotations off the model (``J_ANNOTATED_BY``; 26,162 edges on the reference graph) rather
+        than re-parsing a source string, so it answers identically on both backends -- a
+        Neo4j-backed analysis carries no module source at all, and the 1.x tree-sitter version
+        returned ``{}`` there.
+
+        Args:
+            annotations: Annotation names, matched by the J-5 marker rule
+                :meth:`get_decorated_callables` uses: both sides compared on the segment after the
+                last ``.``, with a leading ``@`` stripped, so ``Test``, ``@Test`` and
+                ``org.junit.Test`` all match a callable annotated ``@Test``.
+
+        Returns:
+            A dict keyed by **the string the caller passed**, not by the annotation's spelling in
+            the source, so ``result[a]`` works for every ``a`` the caller asked about. An annotation
+            no callable carries is **omitted** (the 1.x shape), so an empty dict means none of the
+            requested annotations was found. Each value is a list of dicts, in
+            :meth:`get_all_methods_in_application` order, with four keys:
+
+            * ``class`` -- the declaring type's qualified name;
+            * ``signature`` -- the callable's signature within that type;
+            * ``method_name`` -- its simple name (the 1.x key, kept);
+            * ``body`` -- :attr:`~cldk.models.java.models.JCallable.code` (the 1.x key, kept).
+              Note this is the body block off ``analysis.json`` and the whole declaration off the
+              Neo4j projection, exactly as it is for :meth:`JavaAnalysis.get_test_methods`; it is a
+              documented property of the model, not a divergence introduced here.
+
+            ``class`` and ``signature`` are new against 1.x, which returned the simple name alone.
+            A simple name is not an address in Java -- 200 of daytrader8's 581 distinct signatures
+            are declared by more than one type -- so without them a caller cannot find again what
+            this hands them.
+
+            Each list is sorted by ``(class, signature)``. The obvious alternative, "the order
+            :meth:`get_all_methods_in_application` walks in", is not one order but two: the local
+            backend walks the symbol table and the graph backend walks its reconstruction, and the
+            same 328 callables came back in different orders (measured on the reference graph).
+        """
+        wanted = {a: a.lstrip("@").rpartition(".")[2] for a in annotations}
+        found: Dict[str, List[Dict]] = {}
+        for klass, methods in sorted(self.get_all_methods_in_application().items()):
+            for signature, c in sorted(methods.items()):
+                carried = {d.name.rpartition(".")[2] for d in c.decorators}
+                for asked, marker in wanted.items():
+                    if marker in carried:
+                        found.setdefault(asked, []).append({"class": klass, "signature": signature, "method_name": signature.partition("(")[0], "body": c.code})
+        return found
+
+    def get_call_targets(self, declared_methods: dict) -> Set[str]:
+        """The simple names, out of ``declared_methods``, that are actually invoked somewhere in the
+        application -- "simple name resolution", as the 1.x docstring calls it.
+
+        The 1.x version took a method *body* as well and answered for that one body; the facade
+        signature the Iron Rule freezes has no body parameter, so the domain is the whole
+        application: every call site of every callable, filtered to the names asked about. That is
+        the only reading of the frozen signature that uses the argument it does take.
+
+        Deliberately **not** the resolved call graph. A call site's ``method_name`` is the name as
+        written at the call, matched against a set of declared names with no overload resolution, no
+        receiver typing and no hierarchy walk -- which is what the docstring's "without full
+        semantic analysis" means, and what makes this different from :meth:`get_call_graph`. Use the
+        call graph when you want the callable that actually runs.
+
+        Args:
+            declared_methods: The names to match against, read from its **keys** -- so
+                :meth:`get_all_methods_in_class`'s result can be passed straight in. A key may be a
+                signature (``cancelOrder(java.lang.Integer, boolean)``) or a bare name
+                (``cancelOrder``); the parameter tail is cut at the last ``(``, the cut
+                :func:`java_callable_names` documents.
+
+        Returns:
+            The matched simple names -- a subset of the cut keys, never a name the caller did not
+            ask about. Empty when nothing was asked or nothing was called.
+        """
+        declared = {java_callable_names(key)[-1] for key in declared_methods}
+        return {site.method_name for methods in self.get_all_methods_in_application().values() for c in methods.values() for site in c.call_sites if site.method_name in declared}
+
+    def get_calling_lines(self, target_method_name: str) -> List[int]:
+        """The **absolute file lines**, sorted and de-duplicated, of every call to a method of this
+        name anywhere in the application.
+
+        Read straight off ``get_call_graph()``'s ``calling_lines`` edge attribute, which is
+        :class:`CallingLines` -- the one place this SDK turns a call site into a file line, and
+        which already resolved (leg 3a) the 1.x bug where the number was an offset into
+        :attr:`~cldk.models.java.models.JCallable.code` and so meant two different things on the two
+        backends. Nothing here re-derives it.
+
+        Args:
+            target_method_name: A method's simple name (``cancelOrder``). A full signature is
+                accepted and cut at its first ``(``, as the 1.x accessor did -- and as
+                :meth:`CallingLines.of` keys its own index, which is why an overload pair cannot be
+                separated here: the index matches on the name a call site *writes*, and a call site
+                writes no parameter types. Asking for one overload is asking for the name.
+
+        Returns:
+            Sorted, distinct file lines, 1-based as the analyzer's spans are. Empty when no call to
+            that name is on the call graph -- including when the name is not a method of this
+            application at all: the two are the same fact here, because this asks about call sites
+            and not about declarations.
+        """
+        name = target_method_name.partition("(")[0]
+        graph = self.get_call_graph()
+        lines: Set[int] = set()
+        for _, dst, data in graph.edges(data=True):
+            if graph.nodes[dst]["method_detail"].method.signature.partition("(")[0] == name:
+                lines.update(data["calling_lines"])
+        return sorted(lines)
 
     # =====================================================================================
     # The dataflow surface (leg 3b, Task 2): per-callable graphs, slices, reachability, paths and

@@ -288,14 +288,27 @@ What Java answers today is the 1.x accessor surface, on the v2 models: `get_symb
 `get_entry_point_classes` / `get_entry_point_methods`, `get_test_methods`, the comment and
 docstring accessors, and — new in 3a, from the generic backend ABC — `get_artifacts` /
 `get_dependencies` / `get_config_keys` (`get_config_uses` and `get_unresolved_config_reads` are
-`[]`: the Java analyzer emits neither). **Nine accessors still raise `NotImplementedError`, and 3b
-did not retire them** — `get_imports`, `get_variables`, `get_class_hierarchy`,
-`get_methods_with_annotations`, `get_calling_lines`, `get_call_targets`,
-`get_service_entry_point_classes` / `get_service_entry_point_methods`, and `remove_all_comments`
-(which only ever worked in the removed single-file mode). Retiring them is a separate, deliberate
-change, not something to expect from the next release: see the **§4 erratum** in
-`docs/design/specs/2026-09-06-leg-3-java.md`, and
-`tests/analysis/java/test_java_public_surface.py`'s `RAISING`, which pins all nine.
+`[]`: the Java analyzer emits neither). Six more joined them in #366 — `get_imports`,
+`get_variables`, `get_class_hierarchy`, `get_methods_with_annotations`, `get_call_targets` and
+`get_calling_lines`, all at their published 1.x signatures, answering identically on both backends
+and issuing no new Cypher. Note what each one is: `get_imports()` is the project's **distinct
+sorted set** of import targets (the projection aggregates a module's imports per target, so file
+order is not recoverable); `get_variables()` is **local variables only**, keyed by the
+`"<type fqn>.<signature>"` call-graph key and ordered by `(line, name)` because `:JLocal` carries a
+line-only span (fields are `get_fields`, parameters are `get_method_parameters`, and an unexpected
+keyword raises `TypeError` rather than being ignored); `get_class_hierarchy()` reads each
+declaration's own `base_types`/`interfaces` rather than `J_EXTENDS`/`J_IMPLEMENTS`, which is why
+library supertypes are in it — those two relationships join **8** of daytrader8's type pairs where
+the declarations join **103**; `get_methods_with_annotations()` keys by the spelling you passed and
+its `body` is `JCallable.code`, so it is the body block in-process and the whole declaration over
+the graph; `get_call_targets()` is simple-name matching with no overload resolution (use the call
+graph for what actually runs); `get_calling_lines()` is absolute **file** lines.
+**Three accessors still raise `NotImplementedError`** —
+`get_service_entry_point_classes` / `get_service_entry_point_methods`, which the **§4 erratum** in
+`docs/design/specs/2026-09-06-leg-3-java.md` proposes deleting rather than implementing (the working
+`get_entry_point_*` pair already answers), and `remove_all_comments`, which only ever worked in the
+removed single-file mode. `tests/analysis/java/test_java_public_surface.py`'s `RAISING` pins those
+three.
 
 The differences below will mislead you if you don't know them — each is measured, and each
 names its upstream issue where there is one:
