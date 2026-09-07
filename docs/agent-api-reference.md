@@ -224,8 +224,10 @@ accessors** — `get_callables_overview`, `get_method_bodies`, `get_decorated_ca
   `"<type fqn>.<signature>"` name, matched exactly. A bare Java signature is unique only within its
   declaring type, so it is not an address; `key` is what the overview hands you and what
   `resolve_callable` returns. A key with no callable is **omitted** rather than mapped to `None`,
-  and so is a callable with no source text (the 99 implicit constructors and the two
-  `<clinit>$N()` initializers).
+  and so is a callable with no source text — the 99 implicit constructors, and only those, so
+  `get_method_bodies` over daytrader8's whole overview is 1,117 of 1,216. The two `<clinit>$N()`
+  initializers carry a body block and *are* in the result; what they lack is a `declaration`, which
+  is a different field (101 callables have no `declaration`, 99 have no `code`).
 - **`get_config_keys` is keyed `"<artifact path>@key/<dotted key>"`,** artifact-relative rather than
   by the raw `can://artifact/<app>/…` id. Python and TypeScript still key by the id; aligning the
   three is python-sdk#346 and is deliberately not done piecemeal.

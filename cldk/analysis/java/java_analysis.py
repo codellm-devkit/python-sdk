@@ -1689,8 +1689,9 @@ class JavaAnalysis:
 
         Returns:
             A dict mapping each key to its source text. Keys with no matching callable are omitted,
-            as are callables with no source text of their own (the implicit constructors and the
-            ``<clinit>$N()`` initializers) — every value is a real, non-empty ``str``.
+            as are callables with no source text of their own — the implicit constructors, and only
+            those (1,117 of daytrader8's 1,216). The ``<clinit>$N()`` initializers carry a body
+            block and do come back. Every value is a real, non-empty ``str``.
 
         Note:
             The text differs by backend exactly as :meth:`get_source` does: the body block off

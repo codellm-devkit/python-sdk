@@ -155,7 +155,15 @@ def test_get_method_bodies_omits_what_has_no_source_text(both):
     bodies = both.get_method_bodies([CANCEL_INT_BOOL, IMPLICIT, "no.such.Type.m()"])
     assert set(bodies) == {CANCEL_INT_BOOL}, "the implicit callable has no text and the miss is omitted, not None"
     assert isinstance(bodies[CANCEL_INT_BOOL], str) and bodies[CANCEL_INT_BOOL].strip()
-    assert all(isinstance(v, str) and v for v in both.get_method_bodies([o.key for o in both.get_callables_overview()]).values())
+    overview = both.get_callables_overview()
+    everything = both.get_method_bodies([o.key for o in overview])
+    assert all(isinstance(v, str) and v for v in everything.values())
+    # The omitted set is exactly the 99 implicit callables -- **not** the 101 whose ``declaration``
+    # is ``None``. The two ``<clinit>$N()`` initializers are in the second set and not the first:
+    # they have no declaration text to slice but they do carry a body block, so they come back.
+    assert len(everything) == 1117
+    assert {o.key for o in overview} - set(everything) == {o.key for o in overview if o.is_implicit}
+    assert all(f"{o.owner}.{o.signature}" in everything for o in overview if "<clinit>" in o.signature)
 
 
 def test_get_method_bodies_is_keyed_by_the_key_get_callables_overview_hands_back(both):

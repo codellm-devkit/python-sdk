@@ -946,8 +946,11 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         Returns:
             A dict mapping each key to its source text. A key with no matching callable is
             **omitted**, as is a callable with no source text of its own — the 99 implicit
-            constructors and the two ``<clinit>$N()`` initializers of daytrader8 — so every value
-            is a real, non-empty ``str`` rather than a ``None`` a caller has to re-check.
+            constructors of daytrader8, and only those: 1,117 of its 1,216 callables come back.
+            Every value is a real, non-empty ``str`` rather than a ``None`` a caller has to
+            re-check. The filter is ``code``, not ``declaration``: the two ``<clinit>$N()``
+            initializers have no ``declaration`` text to slice but do carry a body block, so they
+            *are* in the result. 101 callables have ``declaration is None``; 99 have no ``code``.
         """
         found = ((key, self._addressing.by_key.get(key)) for key in signatures)
         # ``code`` slices (and on a non-ASCII unit decodes) the module source, so it is read once
