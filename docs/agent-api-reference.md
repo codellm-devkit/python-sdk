@@ -291,8 +291,10 @@ did not retire them** — `get_imports`, `get_variables`, `get_class_hierarchy`,
 (which only ever worked in the removed single-file mode). Retiring them is a separate, deliberate
 change, not something to expect from the next release: see the **§4 erratum** in
 `docs/design/specs/2026-09-06-leg-3-java.md`, and
-`tests/analysis/java/test_java_public_surface.py`'s `RAISING`, which pins all nine. These will mislead you if you don't know them — each is measured, and each names
-its upstream issue where there is one:
+`tests/analysis/java/test_java_public_surface.py`'s `RAISING`, which pins all nine.
+
+The differences below will mislead you if you don't know them — each is measured, and each
+names its upstream issue where there is one:
 
 - **Call-graph nodes are strings** — `"<type fqn>.<signature>"` — not `(signature, klass)` tuples.
   Read the parts off `cg.nodes[key]["method_detail"]` rather than parsing the key. A local or
