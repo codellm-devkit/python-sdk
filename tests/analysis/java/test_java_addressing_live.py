@@ -146,6 +146,12 @@ def test_locate_many_agrees_on_every_callable_and_every_module(backends):
         ], where
         assert a.node_id == b.node_id, where
         assert (a.body.kind, a.body.span.start[0], a.body.span.end[0]) == (b.body.kind, b.body.span.start[0], b.body.span.end[0]) if a.body else b.body is None, where
+        # ``callee`` is CONTAINMENT, not equality, and the direction is fixed: ``--emit neo4j``
+        # forces ``--external-calls`` and the reference run does not, so the graph homes the JDK
+        # and library targets the payload leaves null (measured on daytrader8: 1,723 of 4,006 call
+        # sites resolve in the payload, all 4,006 in the graph, the extra 2,283 to ``:JExternal``).
+        # Wherever the payload resolved, the graph must name the same thing.
+        assert a.body is None or a.body.callee is None or a.body.callee == b.body.callee, where
         assert (a.span.start[0], a.span.end[0]) == (b.span.start[0], b.span.end[0]), where
         if a.callable is not None:
             assert b.source.endswith(a.source), f"{where}: the graph's text is the declaration, which must end with the body block"
@@ -169,6 +175,29 @@ def test_the_body_node_ids_are_the_ones_the_graph_carries(backends):
     assert ids
     rows = neo._run("UNWIND $ids AS i MATCH (b:JBodyNode {id: i}) RETURN count(b) AS n", ids=sorted(set(ids)))
     assert rows[0]["n"] == len(set(ids)), "a node_id names nothing in the graph"
+
+
+def test_the_graph_resolves_every_call_the_payload_does_and_the_externals_besides(backends):
+    """``BodyRef.callee`` under the one relation that is true of it, stated as containment.
+
+    Equality would be the wrong assertion and would have to be weakened to something untrue to
+    pass: the two sources were asked different questions. ``--emit neo4j`` forces
+    ``--external-calls``, so the graph homes every call target; the reference run does not pass the
+    flag, so its ``callee`` is null on every call that leaves the project. What must hold is that
+    the graph *agrees* wherever the payload resolved, and that everything it resolves besides is an
+    external the caller can look up -- ``get_external_symbols`` is keyed by exactly those ids.
+    """
+    ref, neo = backends
+    ids = sorted(ref._callables)
+    mine = {node_id: n.callee for nodes in ref._body_nodes(ids).values() for node_id, n in nodes.items() if n.callee}
+    theirs = {node_id: n.callee for nodes in neo._body_nodes(ids).values() for node_id, n in nodes.items() if n.callee}
+    assert mine, "the reference payload resolved nothing; the containment would be vacuous"
+    assert set(mine) < set(theirs), "the graph resolves strictly more, being the run that was asked for externals"
+    assert {node_id: theirs[node_id] for node_id in mine} == mine, "the graph disagrees with the payload on a call both resolved"
+    extra = [theirs[node_id] for node_id in set(theirs) - set(mine)]
+    assert all("/@external/" in callee for callee in extra), "the graph resolved a project callable the payload did not"
+    externals = neo.get_external_symbols()
+    assert all(callee in externals for callee in extra), "an @external callee that get_external_symbols does not name"
 
 
 # ---- resolve_callable / resolve_value ----------------------------------------------------------

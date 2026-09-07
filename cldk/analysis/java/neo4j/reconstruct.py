@@ -222,6 +222,13 @@ def body_node(props: Props, callee_signature: Optional[str]) -> JBodyNode:
     ``J_RESOLVES_TO`` edge points at -- a project callable or an external -- and ``None`` when the
     analyzer left the call unresolved.
 
+    ``callee`` -- the *id* of that same target, which is what
+    :attr:`~cldk.analysis.commons.results.BodyRef.callee` carries -- comes off ``props`` rather than
+    off a second parameter, because the graph writes it on no node: it is the ``t.id`` of the same
+    edge, projected into the row by :attr:`JNeo4jBackend._BODY_NODES`. A caller of this function
+    that does not project it (the call-site reconstruction, which needs the signature) leaves it
+    ``None``, which is what it was before it was ever projected.
+
     **Columns are the model's own ``-1``, not the body key's.** The key a body node's id ends with
     (``@65:28``) spells a *different* position from the node's span: measured over daytrader8's
     4,006 call nodes, the key column equals the ``span.start`` column on only 629 of them, and on
@@ -235,6 +242,7 @@ def body_node(props: Props, callee_signature: Optional[str]) -> JBodyNode:
     return JBodyNode(
         kind=props["kind"],
         span=None if start is None or end is None else JSpan(start=(start, _UNKNOWN), end=(end, _UNKNOWN), bytes=(_UNKNOWN, _UNKNOWN)),
+        callee=props.get("callee"),
         method_name=props.get("method_name"),
         receiver_expr=props.get("receiver_expr"),
         receiver_type=props.get("receiver_type"),

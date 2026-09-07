@@ -82,10 +82,17 @@ def _local(payload: str) -> JCodeanalyzer:
 class _BodyNodeResponder:
     """The two statements the graph backend issues in the offline suites: the per-callable body-node
     fetch (leg 3b Task 1) and the port-lattice probe (Task 2). Both are answered out of the same
-    fixture, in the graph's own vocabulary (a global ``id``, ``kind`` and a line-only span), so the
-    rows are shaped like the projection's rather than like the model's -- and the probe's answer is
-    the fixture's own fact, not a constant: it is ``True`` exactly when some ``formal_in`` of the
-    payload has an outgoing dependence edge, which is what the graph would report."""
+    fixture, in the graph's own vocabulary (a global ``id``, ``kind``, a line-only span and the
+    ``J_RESOLVES_TO`` target's id as ``callee``), so the rows are shaped like the projection's
+    rather than like the model's -- and the probe's answer is the fixture's own fact, not a
+    constant: it is ``True`` exactly when some ``formal_in`` of the payload has an outgoing
+    dependence edge, which is what the graph would report.
+
+    ``callee`` is projected because the column exists: leaving it out of the fake rows is how a
+    backend that never reads it passes offline while minting ``callee=None`` on every located call
+    site over a real graph. What the fake **cannot** stand for is the graph resolving *more* than
+    the payload -- ``--emit neo4j`` forces ``--external-calls`` and a plain run does not -- and that
+    half is the live suite's."""
 
     def __init__(self, application: JApplication) -> None:
         self.rows: Dict[str, List[Dict[str, object]]] = {}
@@ -98,7 +105,8 @@ class _BodyNodeResponder:
     def _walk(self, t) -> None:
         for c in t.callables.values():
             self.rows[c.id] = [
-                {"id": java_body_node_id(c.id, key), "kind": n.kind, "s": n.start_line if n.span else None, "e": n.end_line if n.span else None} for key, n in c.body.items()
+                {"id": java_body_node_id(c.id, key), "kind": n.kind, "s": n.start_line if n.span else None, "e": n.end_line if n.span else None, "callee": n.callee}
+                for key, n in c.body.items()
             ]
             for local in c.types.values():
                 self._walk(local)
@@ -225,6 +233,35 @@ def test_locate_finds_the_body_node_and_it_round_trips(both):
     assert found.node_id == found.body.id
     assert found.body.id.startswith("can://java/daytrader8/")
     assert "@" in found.body.id
+
+
+def test_a_call_sites_resolution_is_the_same_on_both_backends(analysis_json_a4):
+    """``BodyRef.callee`` is "the id of what this call resolves to", and it has to be that on both
+    backends: the graph writes it as a ``J_RESOLVES_TO`` edge, the payload as a ``callee`` field,
+    and reading only the payload's leaves every located call site over Neo4j reading as unresolved
+    while ``has_resolution_edges`` says the nulls are per-site.
+
+    Asserted as **containment**, not equality, because the two sources were asked different
+    questions: ``--emit neo4j`` forces ``--external-calls`` and a plain analyzer run does not, so a
+    real graph resolves the externals a payload leaves null. The fake responder here stands for the
+    payload's own resolutions, so containment is equality on this fixture; the live suite asserts
+    the wider relation against the real graph.
+    """
+    local, graph = _local(analysis_json_a4), _graph(analysis_json_a4)
+    ids = sorted(local._callables)
+    mine = {node_id: n.callee for nodes in local._body_nodes(ids).values() for node_id, n in nodes.items() if n.callee}
+    theirs = {node_id: n.callee for nodes in graph._body_nodes(ids).values() for node_id, n in nodes.items() if n.callee}
+    assert len(mine) == 226, "the level-4 fixture resolves 226 of its 975 call sites"
+    assert all(c.startswith("can://java/daytrader8/") for c in mine.values())
+    assert {k: theirs.get(k) for k in mine} == mine, "the graph must agree wherever the payload resolved"
+
+
+def test_a_located_call_site_reports_what_it_calls(both_l4):
+    """The same fact where a caller meets it: through ``locate``, not through the seam."""
+    positions = [(path, line) for path, unit in both_l4.get_symbol_table().items() for line in range(1, 400)]
+    resolved = [r for r in both_l4.locate_many(positions) if r.body is not None and r.body.kind == "call" and r.body.callee]
+    assert resolved, "no located call site resolved anything; the assertion proved nothing"
+    assert all(r.body.callee.startswith("can://java/daytrader8/") for r in resolved)
 
 
 def test_locate_many_answers_in_input_order(both):

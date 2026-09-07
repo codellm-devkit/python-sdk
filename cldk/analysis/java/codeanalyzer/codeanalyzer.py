@@ -372,7 +372,12 @@ class JCodeanalyzer(JavaAnalysisBackend):
         the same strings the Neo4j backend reads off ``b.id``.
 
         Which kinds are present is the *analysis level*, not this backend: at level 1 and 2 the
-        analyzer emits the ``call`` nodes only, and the whole vertex set from level 3."""
+        analyzer emits the ``call`` nodes only, and the whole vertex set from level 3. So is
+        :attr:`~cldk.analysis.commons.results.BodyRef.callee`, which is the analyzer's ``callee``
+        verbatim: it arrives with the **call graph**, at level 2. At ``-a 1`` no call node carries
+        one (0 of a1's 4,006) even though every one of them carries a ``callee_signature``, so a
+        ``callee`` of ``None`` there is the level and not the site --- the one reading
+        :attr:`has_resolution_edges` does *not* cover, since that flag is about the signature."""
         out: Dict[str, Dict[str, JBodyNode]] = {}
         for callable_id in callable_ids:
             found = self._callables.get(callable_id)
@@ -390,7 +395,11 @@ class JCodeanalyzer(JavaAnalysisBackend):
         """See :meth:`JavaAnalysisBackend.has_resolution_edges`. Unconditionally ``True``:
         codeanalyzer-java writes ``callee_signature`` on a call node at every analysis level (all
         4,006 of daytrader8's are resolved at ``-a 1``), so an unresolved call site here is that
-        site, never the level."""
+        site, never the level.
+
+        This is a statement about the *signature*, and the id --
+        :attr:`~cldk.analysis.commons.results.BodyRef.callee` -- is not covered by it: that field
+        arrives with the call graph at ``-a 2`` (see :meth:`_body_nodes`)."""
         return True
 
     # =====================================================================================

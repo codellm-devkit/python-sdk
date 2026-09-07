@@ -581,7 +581,26 @@ class JNeo4jBackend(JavaAnalysisBackend):
     #:
     #: ``UNWIND`` rather than ``any(p IN $prefixes …)``: one indexed range seek per prefix, where
     #: the ``any`` form plans as a label scan (the same trap :func:`_scoped` exists to avoid).
-    _BODY_NODES = "UNWIND $prefixes AS p MATCH (b:JBodyNode) WHERE b.id STARTS WITH p RETURN b.id AS id, b.kind AS kind, b.start_line AS s, b.end_line AS e"
+    #: ``OPTIONAL MATCH`` and not a second statement: a ``call`` node's ``J_RESOLVES_TO`` target is
+    #: what :attr:`~cldk.analysis.commons.results.BodyRef.callee` *is*, and reading it here keeps
+    #: :meth:`locate` at one round trip. ``OPTIONAL`` because most body nodes are not calls (4,006
+    #: of daytrader8's 12,236 are) and an unresolved call is a real outcome; at most one edge leaves
+    #: any body node (checked: 0 nodes with two, on both applications), so no row is duplicated.
+    #: Measured cost of adding it (PROFILE, median of 5 with the first discarded, ThingsBoard, 8
+    #: callables / 2,579 body nodes): 70.65 ms against 57.91 without, 22,401 db hits against 10,324
+    #: -- one expand per body node, paid inside the round trip it saves.
+    #:
+    #: **An ``@external`` target is a ``callee``.** ``--emit neo4j`` forces ``--external-calls``, so
+    #: 2,283 of daytrader8's 4,006 call sites resolve to a ``:JExternal`` whose id is
+    #: application-scoped (``can://java/daytrader8/@external/…``). The contract is "the id of what it
+    #: resolves to", and that id is one: :meth:`get_external_symbols` keys its map by exactly these
+    #: strings, so the caller already has the vocabulary to look one up. Withholding it would mint
+    #: the ``None`` that means "never resolved" for a call that plainly did.
+    _BODY_NODES = (
+        "UNWIND $prefixes AS p MATCH (b:JBodyNode) WHERE b.id STARTS WITH p "
+        "OPTIONAL MATCH (b)-[:J_RESOLVES_TO]->(t) WHERE " + _scoped("t") + " "
+        "RETURN b.id AS id, b.kind AS kind, b.start_line AS s, b.end_line AS e, t.id AS callee"
+    )
 
     def _body_nodes(self, callable_ids: Sequence[str]) -> Dict[str, Dict[str, JBodyNode]]:
         """See :meth:`JavaAnalysisBackend._body_nodes` — read from the graph, which holds every
@@ -596,9 +615,9 @@ class JNeo4jBackend(JavaAnalysisBackend):
         if not ids:
             return {}
         out: Dict[str, Dict[str, JBodyNode]] = {}
-        for row in self._run(self._BODY_NODES, prefixes=[f"{i}@" for i in ids]):
+        for row in self._run(self._BODY_NODES, prefixes=[f"{i}@" for i in ids], prefix=self._scope_prefix):
             node_id = row["id"]
-            out.setdefault(node_id.partition("@")[0], {})[node_id] = R.body_node({"kind": row["kind"], "start_line": row["s"], "end_line": row["e"]}, None)
+            out.setdefault(node_id.partition("@")[0], {})[node_id] = R.body_node({"kind": row["kind"], "start_line": row["s"], "end_line": row["e"], "callee": row["callee"]}, None)
         return out
 
     def _body_source(self, node: JBodyNode) -> str | None:
