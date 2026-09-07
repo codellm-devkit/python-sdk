@@ -190,11 +190,15 @@ bounds rule (slices bounded by default, predicates and path queries unbounded, b
 predicate returns a *wrong* answer rather than a small one) and the same `complete` protocol.
 Java-specific facts:
 
-- **Four of them refuse rather than return a false empty.** `slice_forward`, `paths_between`,
-  `flows_to_call` and `flows_to_argument` raise, naming the gap, because codeanalyzer-java 3.0.1
-  emits the L4 port lattice disconnected from the statement dependence graph — see the lossiness
-  list below. `slice_backward` is deliberately not guarded: it follows `J_PARAM_IN` reversed and
-  really does reach the argument vertex at every call site that passes one.
+- **All four interprocedural value verbs answer from codeanalyzer-java 3.0.3.** `slice_forward`,
+  `paths_between`, `flows_to_call` and `flows_to_argument` used to raise, because the analyzer
+  emitted the L4 port lattice disconnected from the statement dependence graph; 3.0.3 joins the
+  two, so a value can be followed out of a parameter, across call boundaries, into a callee's
+  parameter. They still refuse — naming the gap rather than returning a false empty — on an
+  analysis where no dependence edge leaves a `formal_in`: a Neo4j graph emitted by 3.0.1 or 3.0.2
+  (both still attachable), or any analysis run under `--l3-engine wala`. The check reads the data,
+  never a version, so re-emitting the graph (or re-running the analyzer) is the whole fix. See the
+  lossiness list below.
 - **The DDG has two provenance tiers**, `ssa` (133,608 edges) and `points-to` (1,134), against
   Python's three and TypeScript's one. `points-to` ranks least certain.
 - **Self-loops are real edges and are returned.** The graph carries 978 `J_DDG` edges from a body
@@ -334,29 +338,32 @@ names its upstream issue where there is one:
   returns the comment above `class Foo` and `get_comments_in_a_method` the one above the
   declaration (at most one) — never the comments inside the body. Comments inside a body reach the
   SDK only through `get_comment_in_file`, which is `analysis.json`-only (it raises on Neo4j).
-- **The L4 port lattice is disconnected from the statement dependence graph**
-  (`codeanalyzer-java#227`). Measured on the reference graph and on `analysis.json` alike: **zero**
-  of the 134,742 `J_DDG` edges and zero of the 46,936 `J_CDG` edges have a
-  `formal_in`/`actual_in`/`formal_out`/`actual_out` vertex at either end. The lattice's only edges
-  are `J_PARAM_IN` (`actual_in` → `formal_in`), `J_PARAM_OUT` (`formal_out` → `actual_out`) and
-  `J_SUMMARY` (`actual_in` → `actual_out`), so a `formal_in` — the only thing `resolve_value` ever
-  returns — has **out-degree zero**. `slice_forward` would therefore be the seed alone,
-  `paths_between` `[]`, and `flows_to_call`/`flows_to_argument` `False`, *for every input, whatever
-  the program does*. All four raise instead, through one guard over one measured fact, so the day
-  the analyzer connects the layers they answer with no code change. Neither of the other two
-  analyzers has this gap, each measured on its own reference graph: 129,883 `PY_DDG` edges leave a
-  `formal_in` on the Python graph, and **16,774 `TS_DDG` edges leave a `formal_in`** on the
-  TypeScript one (7,704 of superset-frontend's 8,025 `formal_in` vertices have out-degree ≥ 1,
-  against Java's zero of all of them).
-- **87 of daytrader8's 5,434 `ddg` edges name an endpoint the analyzer never emitted as a body
-  node** (`codeanalyzer-java#228`), so the graph reports **5,347** and `analysis.json` reports
-  5,434. This is the one place the two Java backends disagree on an edge count. All 87 are
-  `points-to` edges over 38 distinct keys, every one of the shape `<line>:0`; `cfg` (6,984) and
-  `cdg` (4,416) are identical on both sides, and there is nothing in the other direction. The Neo4j
-  emitter materialises body nodes from `body{}`, so an edge with no node cannot be projected —
-  neither backend hides its own source's answer, and the live suite measures the difference exactly.
-  It is invisible on the committed fixtures (a4 has no dangling endpoint), so it is a
-  whole-application fact only.
+- **An analysis older than codeanalyzer-java 3.0.3 carries a disconnected L4 port lattice**
+  (`codeanalyzer-java#227`, fixed in 3.0.3). On such output — measured on the 3.0.1 reference graph
+  and on `analysis.json` alike — **zero** of the 134,742 `J_DDG` edges and zero of the 46,936
+  `J_CDG` edges had a `formal_in`/`actual_in`/`formal_out`/`actual_out` vertex at either end, so a
+  `formal_in` (the only thing `resolve_value` ever returns) had **out-degree zero** and the four
+  forward value verbs would have been the seed alone / `[]` / `False` *for every input, whatever
+  the program does*. They raise there instead. 3.0.3 emits `@formal_in:k → use`,
+  `return → @formal_out`, `statement → <call>/actual_in:i` and `<call>/actual_out → statement`:
+  measured on daytrader8 at `-a 4`, 5,079 `ddg` edges now cross in all four directions and
+  `formal_in` vertices with out-degree zero fall to 139 of 1,165 — parameters no statement reads,
+  which is why "every port is attached" is the wrong thing to assert. **A Neo4j graph emitted
+  before 3.0.3 is still attachable (the floor is 3.0.1) and still refuses; re-emit it to lift the
+  refusal.** `--l3-engine wala` has no `@entry` edges to mirror, so `formal_in` ports stay
+  unattached there even on 3.0.3.
+- **The attachment of `actual_in`/`actual_out` is deliberately coarse.** Every actual of a call
+  site is fed by the one statement containing it, not by the reaching definition of that particular
+  argument. Paths are complete and the hop vocabulary is honest, but `flows_to_argument` cannot be
+  read as per-argument precision: on daytrader8 every argument of a reached call site answers
+  `True` together. Do not assert a tighter shape than the analyzer promises.
+- **`ddg` edges naming an endpoint that is not a body node are gone** (`codeanalyzer-java#228`,
+  fixed in 3.0.3). Up to 3.0.2, 87 of daytrader8's 5,434 `ddg` edges named an endpoint the analyzer
+  never emitted as a body node — all `points-to`, over 38 distinct keys of the shape `<line>:0` —
+  so the Neo4j graph reported 5,347 against `analysis.json`'s 5,434, the one place the two Java
+  backends disagreed on an edge count. On 3.0.3 there are **0** dangling endpoints on the whole of
+  daytrader8 and the two backends agree; both suites assert that rather than tolerating a
+  difference.
 - **The graph carries a twelfth body-node kind, `switch`**, which is outside `SliceNode.KINDS` (3
   vertices in daytrader8 and 385 in ThingsBoard, carrying 71 and 3,561 `J_CDG` edges, at most 154
   out of any one). That list is codeanalyzer-python's vocabulary and Python has no switch statement. Dropping or renaming

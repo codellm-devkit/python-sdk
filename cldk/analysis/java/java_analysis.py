@@ -1487,11 +1487,12 @@ class JavaAnalysis:
     def slice_backward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
         """Return everything the value ``src`` depends on.
 
-        On Java today that is the seed plus the argument vertex at every call site that passes a
-        value into the parameter: codeanalyzer-java emits the L4 port lattice disconnected from the
-        statement dependence graph, so nothing behind those arguments is reachable. It is a real
-        answer that varies with the program, which is why this one answers where
-        :meth:`slice_forward` refuses.
+        On an analysis whose port lattice carries no dependence edge — codeanalyzer-java before
+        3.0.3, or ``--l3-engine wala`` — that is the seed plus the argument vertex at every call
+        site that passes a value into the parameter, and nothing behind those arguments. It is
+        still a real answer that varies with the program, which is why this one answers where
+        :meth:`slice_forward` refuses. From 3.0.3 the walk carries on into the statements that
+        computed those arguments.
 
         Args:
             src: The value's name — in Java, a parameter of ``within``.

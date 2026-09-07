@@ -207,33 +207,36 @@ def java_body_node_kind(node_id: str, kind: str, parameters: Sequence[JCallableP
     return kind, None
 
 
-#: Why the four forward value accessors refuse (D7). **Measured, on the analyzer's output and on
-#: the reference graph, not assumed:** codeanalyzer-java 3.0.1 emits the L4 port lattice
-#: *disconnected* from the statement dependence graph. Not one of the 134,742 ``J_DDG`` and 46,936
-#: ``J_CDG`` edges has a :data:`PORT_KINDS` vertex at either end; the only edges the lattice
-#: carries are ``J_PARAM_IN`` (``actual_in`` → ``formal_in``), ``J_PARAM_OUT`` (``formal_out`` →
-#: ``actual_out``) and ``J_SUMMARY`` (``actual_in`` → ``actual_out``). So a ``formal_in`` — which
-#: is the only thing :meth:`JavaAnalysisBackend.resolve_value` ever returns — has **out-degree
-#: zero**, and every forward traversal seeded on one ends where it starts.
+#: Why the four forward value accessors refuse (D7), **when they do**. Up to codeanalyzer-java
+#: 3.0.2 the L4 port lattice was emitted *disconnected* from the statement dependence graph: not
+#: one of the reference graph's 134,742 ``J_DDG`` and 46,936 ``J_CDG`` edges had a
+#: :data:`PORT_KINDS` vertex at either end, so a ``formal_in`` — the only thing
+#: :meth:`JavaAnalysisBackend.resolve_value` ever returns — had **out-degree zero** and every
+#: forward traversal seeded on one ended where it started. That made ``flows_to_call`` and
+#: ``flows_to_argument`` ``False`` for every input, ``paths_between`` empty for every input and
+#: ``slice_forward`` the seed alone — each indistinguishable from a proved absence of flow, which
+#: is exactly the ambiguous empty D7 forbids. They raise instead.
 #:
-#: That makes ``flows_to_call`` and ``flows_to_argument`` ``False`` for every input,
-#: ``paths_between`` empty for every input, and ``slice_forward`` the seed alone — each of them
-#: indistinguishable from a proved absence of flow, which is exactly the ambiguous empty D7
-#: forbids. They raise instead. It is not a property of this SDK: codeanalyzer-python connects the
-#: two layers (129,883 ``PY_DDG`` edges leave a ``formal_in`` on the leg-1.6 reference graph), and
-#: this check is over the *data*, so the day codeanalyzer-java does the same these accessors answer
-#: with no change here.
+#: **codeanalyzer-java 3.0.3 joins the two layers** (codeanalyzer-java#227): ``@formal_in:k → use``,
+#: ``return → @formal_out``, ``statement → <call>/actual_in:i`` and ``<call>/actual_out →
+#: statement``. On output from 3.0.3 the probe below answers ``True`` and all four accessors
+#: answer, with no change here — which is the point of asking the *data* rather than the analyzer
+#: version. The refusal is kept because it can still fire honestly: the Neo4j floor is 3.0.1, so a
+#: graph emitted by 3.0.1 or 3.0.2 is still attachable, and ``--l3-engine wala`` leaves
+#: ``formal_in`` ports unattached even on 3.0.3 (there are no ``@entry`` edges to mirror).
 #:
-#: ``slice_backward`` and the whole call-graph half are deliberately **not** guarded: a backward
-#: slice from a parameter follows ``J_PARAM_IN`` reversed and reaches the argument vertex at every
-#: call site that passes one, which is a real answer that varies with the program.
+#: ``slice_backward`` and the whole call-graph half are deliberately **not** guarded: even on the
+#: disconnected shape a backward slice from a parameter follows ``J_PARAM_IN`` reversed and reaches
+#: the argument vertex at every call site that passes one, which is a real answer that varies with
+#: the program.
 PORTS_DISCONNECTED = (
-    "{accessor}() cannot be answered for application {app!r}: codeanalyzer-java emits no data or control "
+    "{accessor}() cannot be answered for application {app!r}: this analysis carries no data or control "
     "dependence edge out of a callable's formal_in vertices, so a value traversal that starts at a parameter "
     "cannot leave the parameter lattice. Every call would return the same answer whatever the program does, "
-    "which is indistinguishable from a proved absence of flow, so this raises instead. slice_backward(), "
-    "get_ddg(), and the call-graph accessors (reaches, callers_of, callees_of, backward_cone, "
-    "call_paths_between) are unaffected."
+    "which is indistinguishable from a proved absence of flow, so this raises instead. codeanalyzer-java joins "
+    "the port lattice to the statement graph from 3.0.3 onwards (except under --l3-engine wala), so re-emitting "
+    "or re-analysing with 3.0.3 or newer makes these answer. slice_backward(), get_ddg(), and the call-graph "
+    "accessors (reaches, callers_of, callees_of, backward_cone, call_paths_between) are unaffected."
 )
 
 
@@ -1150,8 +1153,10 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
     # ONE COMPLETENESS PROTOCOL. Truncation is reported by ``complete`` on ``EdgePage`` / ``Slice``
     # / ``FlowPaths``, never by silently returning less.
     #
-    # THE PORT LATTICE IS DISCONNECTED, AND FOUR ACCESSORS SAY SO RATHER THAN ANSWERING A CONSTANT.
-    # See :data:`PORTS_DISCONNECTED` -- the one thing this surface has to declare about Java.
+    # FOUR ACCESSORS REFUSE ON A DISCONNECTED PORT LATTICE RATHER THAN ANSWERING A CONSTANT.
+    # Asked of the analysis, never of the analyzer version: codeanalyzer-java joins the port lattice
+    # to the statement graph from 3.0.3, and on such output all four answer with no change here.
+    # See :data:`PORTS_DISCONNECTED`.
     # =====================================================================================
     @property
     def _application_name(self) -> str:
@@ -1229,16 +1234,14 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         itself complete. That is python-sdk#349, 64,702 lost edges on the Python corpus; neither
         Java backend spells it that way, and both suites assert the loops are present.
 
-        **The one place the two backends do not agree, and it is the analyzer's.** codeanalyzer-java
-        3.0.1 emits ddg edges whose endpoint is a body key it did **not** emit as a body node —
-        measured on daytrader8: 87 of 5,434, 38 distinct keys, every one of the shape ``<line>:0``,
-        every one on a ``points-to`` edge, and none at all on ``cfg`` or ``cdg``. The Neo4j emitter
-        materialises nodes from the ``body{}`` map, so an edge with no node to attach to is not
-        projected, and the graph reports 5,347. Neither backend hides its own source's answer: this
-        one returns the analyzer's edge with an endpoint that :meth:`get_source` cannot resolve, and
-        the graph backend never saw it. The live suite measures the difference exactly rather than
-        tolerating it, and the slices are unaffected — a walk indexes nodes, so a dangling endpoint
-        is not reachable on either side.
+        **The one place the two backends used to disagree, and it was the analyzer's.**
+        codeanalyzer-java up to 3.0.2 emitted ddg edges whose endpoint is a body key it did **not**
+        emit as a body node — measured on daytrader8: 87 of 5,434, 38 distinct keys, every one of
+        the shape ``<line>:0``, every one on a ``points-to`` edge, and none at all on ``cfg`` or
+        ``cdg``. The Neo4j emitter materialises nodes from the ``body{}`` map, so an edge with no
+        node to attach to was not projected and the graph reported 5,347. **3.0.3 drops them**
+        (codeanalyzer-java#228) and the two counts agree; both suites assert the count rather than
+        tolerating a difference, so the divergence coming back is a failure and not a footnote.
         """
 
     # -----[ slicing ]-----
@@ -1249,14 +1252,15 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         parameter-passing relationships across a call, and the callee summaries at a call site. All
         five point *with* the flow, so a backward slice follows them reversed.
 
-        **What this answers on Java today, stated rather than discovered.** ``src`` is a parameter
-        (see :meth:`resolve_value`), and the only edge that reaches one is ``J_PARAM_IN`` from a
-        caller's argument vertex — codeanalyzer-java emits no dependence edge between the port
-        lattice and the statement graph (:data:`PORTS_DISCONNECTED`). So the answer is the seed plus
-        the argument vertex at every call site that passes a value here: 35 nodes for
-        ``TradeDirect.getStatement``'s ``conn``, two for ``cancelOrder``'s ``orderID``. That is a
-        real answer that varies with the program, which is why this accessor is not among the four
-        that refuse — but it is a *thin* one, and the expression behind each argument is not in it.
+        **What this answers on Java, stated rather than discovered.** ``src`` is a parameter (see
+        :meth:`resolve_value`), and the edge that reaches one is ``J_PARAM_IN`` from a caller's
+        argument vertex. On a disconnected port lattice (:data:`PORTS_DISCONNECTED`) that is the
+        whole answer — the seed plus one argument vertex per call site, which is why this accessor
+        is not among the four that refuse, but a *thin* answer with the expression behind each
+        argument missing. From codeanalyzer-java 3.0.3 the walk carries on through the statement
+        that computed each argument and into the caller's own parameters: measured on the committed
+        a4 fixture, ``TradeDirect.getStatement``'s ``conn`` went from 35 nodes of two kinds to 465
+        across 44 callables, and ``cancelOrder``'s ``orderID`` from two to 15.
 
         ``within`` is **required**: a value name is scoped by its callable and :meth:`resolve_value`
         cannot resolve one without it, so a ``None`` default would be a signature that raises on its
@@ -1290,11 +1294,11 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
     def slice_forward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
         """Everything the value ``src`` can affect: forward reachability over the same edges.
 
-        The usually-interesting direction for a value entering a callable — and the one Java cannot
-        answer today. A ``formal_in`` has out-degree zero over all five SDG relationship types, so
-        this would return the seed alone for every parameter of every application, which is
-        indistinguishable from "this parameter affects nothing". It refuses instead; see
-        :data:`PORTS_DISCONNECTED` for the measurement and for what is unaffected.
+        The usually-interesting direction for a value entering a callable. It refuses on an
+        analysis whose ``formal_in`` vertices have out-degree zero over all five SDG relationship
+        types — there it would return the seed alone for every parameter of every application,
+        indistinguishable from "this parameter affects nothing". See :data:`PORTS_DISCONNECTED` for
+        when that is still the case and for what is unaffected.
 
         Arguments, bounds and failures are :meth:`slice_backward`'s, and they are judged **first**:
         a malformed ``depth`` is a ``ValueError`` and a name that misses is
@@ -1471,8 +1475,8 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         plus the callable it enters, so two values need two callables — and a single scope could
         never find the cross-callable path this accessor exists for.
 
-        Java cannot answer it today: both endpoints are parameters, and a ``formal_in`` has
-        out-degree zero over the SDG, so the search would return ``[]`` for every input
+        Refused when both endpoints are parameters and a ``formal_in`` has out-degree zero over the
+        SDG, because the search would then return ``[]`` for every input
         (:data:`PORTS_DISCONNECTED`). Arguments and names are judged first, then it refuses.
 
         Args:
@@ -1560,8 +1564,8 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         alone, so a second scope would have nothing to scope. ``depth`` defaults to ``None``: a bare
         ``False`` on a boolean carries no signal that a bound fired.
 
-        Java cannot answer it today — :data:`PORTS_DISCONNECTED` — and refuses rather than being
-        ``False`` for every input.
+        Refused on an analysis whose port lattice carries no dependence edge
+        (:data:`PORTS_DISCONNECTED`), rather than being ``False`` for every input.
 
         Raises:
             AmbiguousName: ``src`` or ``callee`` matched more than one thing.
@@ -1590,7 +1594,8 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         ``resolve_value(arg, within=callee)`` can only return one of ``callee``'s ``formal_in``
         vertices, and that set is exactly what :meth:`flows_to_call` tests reachability of.
 
-        Java cannot answer it today — :data:`PORTS_DISCONNECTED`.
+        Refused on an analysis whose port lattice carries no dependence edge
+        (:data:`PORTS_DISCONNECTED`).
 
         Raises:
             AmbiguousName: A name matched more than one thing.
@@ -1661,7 +1666,8 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
 
         Asked of the data, once per backend, rather than hard-coded from the analyzer version: the
         refusal above is a statement about what was emitted, and a graph or a payload that connects
-        the two layers must make these accessors work with no change here.
+        the two layers must make these accessors work with no change here — which is exactly what
+        happened when codeanalyzer-java 3.0.3 landed codeanalyzer-java#227.
         """
 
     # -----[ application / whole-program ]-----
