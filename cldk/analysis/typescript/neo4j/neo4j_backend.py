@@ -75,27 +75,27 @@ reads no dataflow at all (2.5b's Task 2 does). One more arrived with the address
 answers ``""`` plus a ``module_source_unavailable`` diagnostic and :meth:`get_source` refuses a
 body-node id outright, where the local backend answers both.
 
-**And one that is a value divergence rather than an absence**, which is why it is stated loudly:
-codeanalyzer-typescript 1.3.0 and 1.4.0 project ``:TSCallable.code`` **one line short of the callable's own
-span** -- the graph text is the in-memory text minus its final ``"\\n}"`` (measured: 544 characters
-against 546 for the sample app's ``src/index.main``), while ``start_line``/``end_line`` on the same
-node are correct. Every accessor that hands a caller a callable's source over this backend is
-affected: :meth:`get_source`, :meth:`get_method_bodies`, :meth:`describe`, :meth:`locate` /
-:meth:`locate_many` and ``TSCallable.code`` on a rebuilt node. Filed upstream as
-codellm-devkit/codeanalyzer-typescript#179; four ``xfail(strict=True)`` marks in
-``tests/analysis/typescript/test_typescript_bulk_parity_live.py`` are pinned to it, so they fail
-loudly the day it is fixed rather than passing quietly.
+**Two value divergences used to be stated loudly here and are gone at the 1.5.0 pin**, both fixed
+upstream and both re-measured against the re-emitted reference graph rather than taken on trust.
+``:TSCallable.code`` was one line short of the callable's own span, the graph text being the
+in-memory text minus its final ``"\\n}"`` (cants#179) -- the four ``xfail(strict=True)`` marks in
+``tests/analysis/typescript/test_typescript_bulk_parity_live.py`` that pinned it now XPASS, so the
+tests are ordinary parity assertions again. And spans are now UTF-8 byte offsets throughout, the
+same break, which is what lets ``TSCallable.code`` mean one thing on both backends for a non-ASCII
+file (see :meth:`~cldk.models.typescript.models._Spanned.code`).
 
 One thing is *less* lossy here than in the Python twin: a TypeScript ``call`` body node carries
 ``callee`` as a property, so ``LocateResult.body.callee`` is populated over Neo4j too.
 
-One more is the emitter's: two declarations of one name (TypeScript
-declaration merging -- ``const X = …`` + ``interface X``, ``const X = …`` + ``type X``, ``type X`` +
-a field ``X``) share one id, so ``MERGE`` collapses them onto one node carrying both labels and the
-``kind`` of whichever was written last. Such a node is rebuilt as the facet the containment edge
-declares (``TS_DECLARES`` names a type or callable; its labels say which) and the other facet's
-members under it are lost; a node whose labels cannot name the facet is raised as the defect it is
-(three merged nodes on the superset graph).
+**Declaration merging is no longer a collision.** Two declarations of one name (``const X = …`` +
+``interface X``, ``class X`` + ``interface X``, ``const X = …`` + ``type X``) used to share one id,
+so ``MERGE`` collapsed them onto one node carrying both labels and the ``kind`` of whichever was
+written last, and the facet that ``kind`` did not name was lost. 1.5.0 mints **one id per facet**
+(cants#177) -- the second suffixed ``#interface`` / ``#type`` -- so both facets are nodes and both
+are served, each through the accessor its ``kind`` names. Measured on the re-emitted superset
+graph: **no** node carries two declaration labels, and 7 signatures name two nodes apiece. The
+kind-alongside-label predicates below are kept: they are what keeps an accessor to its own facet
+now that a signature is no longer unique, and they cost nothing.
 """
 
 from __future__ import annotations
@@ -1462,11 +1462,10 @@ class TSNeo4jBackend(TSAnalysisBackend):
         callables the emitter writes no ``code`` for are the implicit constructors, which the local
         backend also has no text for.
 
-        **The text this returns is one line short of the callable's span** on
-        codeanalyzer-typescript 1.3.0 -- the graph's ``code`` is the source minus its final
-        ``"\\n}"`` (codellm-devkit/codeanalyzer-typescript#179). Every caller of this seam --
-        :meth:`get_source` and :meth:`describe` -- inherits it, as do :meth:`get_method_bodies` and
-        :meth:`locate`, which read ``c.code`` by their own statements. See the module docstring.
+        The text was one line short of the callable's span through 1.4.0
+        (codellm-devkit/codeanalyzer-typescript#179); 1.5.0 fixed it, so this and every caller of
+        the seam -- :meth:`get_source`, :meth:`describe`, and :meth:`get_method_bodies` /
+        :meth:`locate`, which read ``c.code`` by their own statements -- return the whole span.
         """
         wanted = set(refs)
         found: Dict[str, "str | None"] = {}

@@ -219,30 +219,45 @@ def test_type_accessors_match_the_graphs_label_and_kind_counts(analysis, count):
         assert all(type(v) is model and v.kind == kind and v.signature == k for k, v in got.items()), label
 
 
+#: The declaration labels a node can carry; one apiece since codeanalyzer-typescript 1.5.0.
+DECLARATION_LABELS = ["TSCallable", "TSClass", "TSInterface", "TSEnum", "TSTypeAlias", "TSNamespace", "TSField"]
+
+
 @pytest.fixture(scope="module")
 def merged(cypher) -> List[Dict[str, Any]]:
-    """The declaration-merged nodes: one id carrying two declaration labels."""
+    """Declaration merging as 1.5.0 projects it (cants#177): **one id per facet**, so a signature
+    two declarations share names two nodes rather than one node carrying both labels. One row per
+    such signature, with every facet on it."""
     return cypher(
-        f"MATCH (m:CanNode) WHERE {SCOPED.replace('x.', 'm.')} AND size([l IN labels(m) WHERE l IN ['TSCallable','TSClass','TSInterface','TSEnum','TSTypeAlias','TSNamespace','TSField']]) > 1 "
-        "OPTIONAL MATCH (p:TSModule)-[:TS_DECLARES]->(m) RETURN m.signature AS sig, m.name AS name, m.kind AS kind, labels(m) AS labels, p.name AS module ORDER BY sig",
+        f"MATCH (m:CanNode) WHERE {SCOPED.replace('x.', 'm.')} AND m.signature IS NOT NULL AND size([l IN labels(m) WHERE l IN $decl]) > 0 "
+        "WITH m.signature AS sig, collect({id: m.id, kind: m.kind, labels: [l IN labels(m) WHERE l IN $decl]}) AS facets "
+        "WHERE size(facets) > 1 RETURN sig, facets ORDER BY sig",
+        decl=DECLARATION_LABELS,
         **SCOPE,
     )
 
 
-def test_declaration_merged_nodes_are_one_facet_each_and_never_a_namespace(analysis, merged):
-    assert merged, "the graph no longer has merged-label nodes; retire this test"
-    functions, interfaces, aliases = analysis.get_functions(), analysis.get_interfaces(), analysis.get_type_aliases()
-    for node in merged:
-        sig, kind, labels = node["sig"], node["kind"], set(node["labels"])
-        assert sig not in interfaces and sig not in aliases, f"{sig} served as a type it is not"
-        if kind in ("arrow", "function", "method"):
-            assert type(functions[sig]) is TSCallable and functions[sig].kind == kind, f"{sig} is a callable to get_functions"
-            if "TSInterface" in labels:
-                assert analysis.get_interface_properties(sig) == [], "no interface facet is served for it"
-        else:
-            assert sig not in functions
-            facet = analysis.get_typescript_module(node["module"]).types[node["name"]]
-            assert type(facet) in (TSClass, TSInterface, TSEnum, TSTypeAlias) and "TS" + type(facet).__name__[2:] in labels, f"{sig} rebuilt as the facet TS_DECLARES + labels name"
+def test_declaration_merging_mints_one_id_per_facet_and_every_facet_is_served(analysis, merged, cypher):
+    """The fix in cants#177, and the behaviour change it buys: under 1.3.0/1.4.0 the two
+    declarations collapsed onto one node carrying both labels and the last writer's ``kind``, and
+    the SDK could serve only the facet that ``kind`` named — the other was lost. Now each facet is
+    its own node and **both are reachable**, each through the accessor its kind names.
+
+    Two assertions, in order: no node is left carrying two declaration labels, and every facet of
+    every shared signature is served. Both read off the graph, so the day a corpus stops merging
+    the second fails loudly rather than passing vacuously."""
+    assert cypher(f"MATCH (m:CanNode) WHERE {SCOPED.replace('x.', 'm.')} AND size([l IN labels(m) WHERE l IN $decl]) > 1 RETURN count(m) AS n", decl=DECLARATION_LABELS, **SCOPE)[0][
+        "n"
+    ] == 0, "a node still carries two declaration labels; cants#177 has regressed"
+    assert merged, "this corpus carries no declaration shared by two facets; retire this test"
+    by_kind = {"class": analysis.get_classes(), "interface": analysis.get_interfaces(), "enum": analysis.get_enums(), "type_alias": analysis.get_type_aliases()}
+    functions = analysis.get_functions()
+    for row in merged:
+        for facet in row["facets"]:
+            assert len(facet["labels"]) == 1, f"{facet['id']} carries {facet['labels']}"
+            served = by_kind.get(facet["kind"], functions)
+            assert row["sig"] in served, f"{row['sig']} has a {facet['kind']} facet the matching accessor does not serve"
+            assert served[row["sig"]].kind == facet["kind"], f"{row['sig']} was served as the wrong facet"
 
 
 def test_class_method_and_code_round_trip(analysis, sample, cypher):

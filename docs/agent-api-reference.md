@@ -43,7 +43,7 @@ and the message names what it found and the floor. What attaching to each genera
 
 ## TypeScript
 
-Status: leg 2.5b (`codeanalyzer-typescript` 1.4.0 pinned; graphs emitted by 1.3.0 or newer
+Status: leg 2.5b (`codeanalyzer-typescript` 1.5.0 pinned; graphs emitted by 1.3.0 or newer
 served, with four accessors gated on the 1.4.0 binding layer — see the floor below). What attaches
 today is the **1.x accessor surface** — symbol table, classes / interfaces /
 enums / type aliases / namespaces, methods, fields, call graph, call sites, decorators, externals,
@@ -96,11 +96,11 @@ ts = CLDK.typescript(project_path="/path/to/project", backend=TSCodeAnalyzerConf
 | emitted by 0.4.x (`:Symbol` / `CALLS` / `HAS_CALLSITE`), a Python graph, an empty database | refused (`GraphSchemaMismatch`), naming the relationship types found and missing |
 | `analyzer_version` below 1.3.0 (a 1.2.0 graph included), unparsable, or no `:Application` with that id | refused, naming what was found and the floor |
 | 1.3.0 | served, silent — but `get_imports` / `get_exports` / `get_method_parameters` / `get_unresolved_config_reads` refuse (below) |
-| 1.4.0 and newer | served, silent; all four answer |
+| 1.4.0 and newer | served, silent; all four answer. 1.5.0 also fixes the one-line source truncation and the declaration-merge id collision below |
 
 A 1.2.0 graph carries none of the entrypoint marks and none of the per-callable graph vocabulary
 this surface reads, so it is refused rather than served with silent empties. **Migration:** re-emit
-with `codeanalyzer-typescript>=1.4.0 --emit neo4j` (which takes no `-a`: the emit is always full
+with `codeanalyzer-typescript>=1.5.0 --emit neo4j` (which takes no `-a`: the emit is always full
 depth).
 
 **The 1.4.0 binding layer, and how its absence is decided.** codeanalyzer-typescript 1.4.0
@@ -142,7 +142,6 @@ documented empty comes back.
 | `TSCallable.comments`, `type_parameters`, `overload_signatures`, `body`, `cfg`/`cdg`/`ddg`/`summary` | empty. `parameters` are populated from `parameters_json` on a 1.4.0 graph |
 | `TSEnumMember.value`; `TSModule.source` / `imports` / `comments`; decorator positions; a call site's `method_name`, receiver and argument facets | empty / `None`. `TSModule.exports` **is** populated from `exports_json`; `imports` stay empty on a rebuilt module — they live on edges the containment fetch does not walk, and `get_imports()` is what reads them |
 | `code` on any node | the text the graph projected for that node, on a line-only span (columns `0`) |
-| **any source text of a callable** — `get_source(sig)`, `get_method_bodies(...)`, `describe(...).source`, `locate(...).source`, `TSCallable.code` | **truncated by one line**: codeanalyzer-typescript 1.3.0 and 1.4.0 project `:TSCallable.code` as the callable's text minus its final `\n}`, while `start_line`/`end_line` on the same node are correct. Measured: 544 characters against the 546 the in-memory backend returns for the same callable. Upstream: [codeanalyzer-typescript#179](https://github.com/codellm-devkit/codeanalyzer-typescript/issues/179). **If you feed graph source to a parser or a diff, expect the closing brace to be missing** — until the fix ships, read the text in-process or re-slice the span yourself |
 | `get_call_targets(sig)` | an unresolved call site contributes `""` (in-memory: the call's `method_name`) |
 | `get_synthesized_callables()` | keyed by the anonymous node's own id (the analyzer's older compatibility key is JSON-only) |
 | `locate(path, line)` at module scope | `source == ""` plus a second `module_source_unavailable` diagnostic — `:TSModule` carries no `source`. In-memory: the module's text |
@@ -231,7 +230,7 @@ accessors** — `get_callables_overview`, `get_method_bodies`, `get_decorated_ca
 - **`get_entrypoint_coverage` reports that there is no report.** codeanalyzer-java emits the
   entrypoint *marks* and nothing about the pass that made them: `analysis.json` carries no report
   key and the `:JApplication` anchor carries only `name` / `schema_version` / `analyzer_name` /
-  `analyzer_version` — unlike codeanalyzer-python 1.4.1 and codeanalyzer-typescript 1.4.0, which
+  `analyzer_version` — unlike codeanalyzer-python 1.4.1 and codeanalyzer-typescript 1.5.0, which
   both project one. So it answers with `diagnostics=[entrypoint_report_unavailable]` and empty
   fields that are explicitly *not* coverage. It is not synthesised from the `is_entrypoint`
   booleans: a count of syntactically-marked callables is not a coverage record. The marks

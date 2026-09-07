@@ -30,6 +30,14 @@ surface** (3b). Design records: `docs/design/specs/2026-09-06-leg-2.5-typescript
   `TSCallableOverview.from_callable` takes a required keyword-only `path`.
 - **Removed:** `TypeScriptAnalysis.get_entry_point_methods` and `get_service_entry_point_methods`, which only
   ever raised — the working entrypoint accessors below replace them.
+- **TypeScript `TSSpan.bytes` are UTF-8 byte offsets**, on every node at every level
+  (codeanalyzer-typescript 1.5.0, cants#179). They were UTF-16 code units, which Python sliced as code points
+  and the Neo4j projection sliced as bytes — three units that agreed only on ASCII. `TSCallable.code` and
+  every accessor built on it (`get_source`, `get_method_bodies`, `describe`, `locate(...).source`) now decode
+  the module's UTF-8 bytes, the way Java's `JCompilationUnit.slice()` already did: encoded once per module, a
+  plain index when the file is ASCII. **On a non-ASCII file, text read through 1.3.0/1.4.0 was wrong and is now
+  right — re-emit rather than compare offsets across versions.** Note that `schema_version` stays `2.0.0`
+  through this break: the contract version is not a signal that a breaking change landed.
 
 ### Added
 
@@ -95,7 +103,7 @@ surface** (3b). Design records: `docs/design/specs/2026-09-06-leg-2.5-typescript
   `ddg` edges whose endpoint was never emitted as a body node (codeanalyzer-java#228), so `get_ddg()` over
   `analysis.json` and over Neo4j now report the same edges — 10,430 on daytrader8, set for set, against a
   5,434/5,347 split before.
-- **Pins:** `codeanalyzer-java` 2.4.1 → 3.0.3, `codeanalyzer-typescript` 0.4.3 → 1.4.0.
+- **Pins:** `codeanalyzer-java` 2.4.1 → 3.0.3, `codeanalyzer-typescript` 0.4.3 → 1.5.0.
 - **The Java analyzer ships as a wheel, not a jar in this repo.** The 35 MB checked-in jar, the Temurin download
   in `_jdk.py`, and the release workflow's jar injection are gone; no `JAVA_HOME` is read or set, and no JDK is
   downloaded. The published wheel drops from about 35 MB to 320 KB.
@@ -115,7 +123,15 @@ surface** (3b). Design records: `docs/design/specs/2026-09-06-leg-2.5-typescript
   still refuse there rather than answer an empty that would read as a fact; the decision is measured from the
   application's own data — is any carrier present — never from the analyzer's version string, so a re-emitted
   graph starts answering with no SDK change. `TSImport`/`TSExport` gained the analyzer's new
-  `resolved_module`. **Migration:** re-emit with `codeanalyzer-typescript>=1.4.0 --emit neo4j`.
+  `resolved_module`. **Migration:** re-emit with `codeanalyzer-typescript>=1.5.0 --emit neo4j`.
+- **Three more codeanalyzer-typescript ceilings are gone in 1.5.0**, verified against the re-emitted reference
+  graph rather than taken from the release notes. `:TSCallable.code` is no longer one line short over Neo4j
+  (cants#179) — the four `xfail(strict=True)` marks that pinned it now XPASS and are removed. Declaration
+  merging mints **one id per facet** (cants#177), so a `class X` + `interface X` pair is two nodes and *both*
+  are served, where before one facet was lost to whichever declaration the emitter saw last; on
+  superset-frontend that is 7 signatures, and no node carries two declaration labels any more. The analyzer
+  also refuses a missing or non-directory input instead of exiting 0 (cants#181) and no longer clones the whole
+  envelope per module (cants#180); neither had an SDK workaround to remove.
 - **Every Cypher statement is scoped per bound variable, not per statement** — both endpoints of a call edge, a
   quantified path's far end, a slice's reached body nodes, and every *interior* node of a variable-length or
   shortest-path walk (`all(n IN nodes(p) …)` on the slice, path and reachability queries). A statement that
@@ -164,14 +180,7 @@ surface** (3b). Design records: `docs/design/specs/2026-09-06-leg-2.5-typescript
   are not recoverable, and the emitter drops a relative specifier that resolved to no emitted module. Exports,
   parameters and unresolved config reads are lossless, except that the config-read edge carries no `site` and
   collapses sites sharing a `(callee, key, reason)` triple.
-- **Source text read over the TypeScript Neo4j backend is truncated by one line.** codeanalyzer-typescript
-  1.3.0 and 1.4.0 project `:TSCallable.code` as the callable's text minus its final `\n}` while the line
-  numbers stay correct, so `get_source`, `get_method_bodies`, `describe` and `locate(...).source` return short text over
-  Neo4j and complete text in process (codeanalyzer-typescript#179). Read the text in process, or re-slice the
-  span, until the fix ships.
 - TypeScript's DDG has one provenance tier; Java's has two; Python's has three.
-- codeanalyzer-typescript mints one id for a value and a type of the same name under declaration merging
-  (codeanalyzer-typescript#177); such a node resolves to the facet its kind names, or not at all.
 - `get_config_keys()` is still keyed by a `can://` id on Python and TypeScript, where Java now uses the
   artifact-relative key (#346).
 - **Java's `slice_forward`, `paths_between`, `flows_to_call` and `flows_to_argument` still raise on an
