@@ -54,6 +54,19 @@ seek it still loses — 118 ms against 24 on a whole-application prefix; it wins
 prefix, which no statement here issues. See ``test_no_statement_anchors_on_the_marker_label`` and
 the table in Task 3 of the leg-3a plan.
 
+**Which labels actually own an id constraint** (``SHOW CONSTRAINTS`` / ``SHOW INDEXES`` on 7691,
+read 2026-09-07 — it is not "each keyed label", which is what the leg-3a plan assumed before the
+graph existed). ``:JBodyNode`` owns a uniqueness constraint on ``id`` (``j_body_node_id``) and is
+the **only** anchor on this surface that owns one directly — its nodes carry no other keyed label.
+``:JCallable``, ``:JType`` and ``:JExternal`` own **no id index at all**: ``:JCallable`` has a range
+index on ``name`` plus the ``code``/``docstring`` fulltext, ``:JType`` a range index on ``name``,
+``:JExternal`` nothing. Their *nodes* also carry the merge label ``:JSymbol``, whose ``id``
+uniqueness constraint is the only way to seek one by id — which is why the ``:JSymbol`` variants
+were measured (they are a wash on the traversals and lose a signature lookup, 31.6 ms against 22.4)
+and why the ``J_HAS_BODY_NODE`` hop anchored on ``:JCallable`` reads 6.7× the db hits. So the seek
+rule holds not because every keyed label is indexed but because the hot statements anchor on the
+one label that is.
+
 **Strategy.** Unlike the Python and TypeScript Neo4j backends, which answer each accessor with its
 own statement, this one rebuilds the canonical :class:`JApplication` from the graph and then answers
 every query with the *same* logic the in-memory backend runs over the same models. The application
@@ -807,6 +820,19 @@ class JNeo4jBackend(JavaAnalysisBackend):
     #: field-by-field comparison **only** when the separator sorts below every character a field can
     #: hold, and ``|`` (0x7C) sorts *above* every lowercase letter. ``elementId`` is the last field
     #: of each hop and breaks the tie between parallel relationships a caller cannot tell apart.
+    #:
+    #: **The per-callable graph orders do not have this tie-break, and that asymmetry is deliberate
+    #: but not free.** ``CFG_ORDER``/``CDG_ORDER``/``DDG_ORDER`` (``cldk/analysis/java/backend.py``)
+    #: end at ``coalesce(kind,'')`` / ``dst`` / ``coalesce(prov,[])`` — no ``elementId``, because
+    #: the key has to be *the same key the in-memory backend sorts by*, and there is no element id
+    #: in ``analysis.json``. Two edges with an identical full sort key straddling a page boundary
+    #: would therefore lose the second to the keyset ``WHERE`` while ``total``, counted from the
+    #: same MATCH, still counted both. Measured 2026-09-07, and it cannot fire today: **0** fully
+    #: identical parallel ``J_CFG_NEXT``/``J_CDG``/``J_DDG`` edges across both applications of the
+    #: reference graph, and 0 in ``analysis.json`` — the committed a1 and a4 fixtures and the whole
+    #: 22.5 MB daytrader8 ``-a 4`` payload (6,984 ``cfg``, 4,416 ``cdg`` and 5,434 ``ddg`` edges,
+    #: every one with a distinct key within its callable). If an analyzer ever emits one, the fix
+    #: is a fourth component both backends can compute, not an ``elementId`` only one of them has.
     _PATH_ORDER = (
         "reduce(k = '', i IN range(0, length(p) - 1) | k + " + _VIA_CASE + " + '\\u0001' + coalesce(relationships(p)[i].var, '') "
         "+ '\\u0001' + nodes(p)[i + 1].id + '\\u0001' + elementId(relationships(p)[i]) + '\\u0001')"
