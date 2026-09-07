@@ -341,7 +341,16 @@ def java_callable_names(signature: str) -> Tuple[str, ...]:
     as erased or qualified. Matching both spellings is the whole rule: a bare name finds the
     callable through the cut form, an ambiguity lists the tail-carrying form (the only spelling
     that *resolves* an overload pair, since ``in_class=`` cannot split one), and a caller who
-    writes the tail matches exactly.
+    writes the tail matches on it exactly rather than by prefix.
+
+    **The tail separates overloads, not types, so it is not an address on its own** (J-3 erratum).
+    An interface and its implementors declare the same signature by construction:
+    ``"cancelOrder(java.lang.Integer, boolean)"`` matches **4** of daytrader8's callables
+    (``TradeDirect``, ``TradeSLSBBean``, ``DirectSLSBBean``, ``TradeServices``) and raises. Across
+    the whole fixture, 1,216 callables carry only 581 distinct tails, 200 of them declared by more
+    than one type, so a bare tail addresses just 381 of the 1,216. The address is J-1's
+    ``<type fqn>.<signature>`` — which is exactly what an ambiguity here lists, and what
+    ``in_class=`` narrows to.
 
     **The cut is at the last** ``(``, **not the first.** A local or anonymous class's qualified
     name carries the signature of the callable that declares it (the J-1 erratum), so the name of

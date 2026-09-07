@@ -161,10 +161,15 @@ rest of this file.
 keyword-for-keyword, and answering identically on both Java backends. Three Java-specific rules
 apply to it, and each is a decision rather than an accident:
 
-- **`resolve_callable` matches the parameter tail too.** A Java callable is keyed by a signature
-  carrying its parameters, so `"cancelOrder"` matches on the name with the tail cut, two overloads
-  raise `AmbiguousName` listing the full signatures, and writing one of those signatures resolves it
-  exactly. No keyword can split an overload pair, and the error says so instead of suggesting one.
+- **`resolve_callable` matches the parameter tail too — but the tail separates overloads, not
+  types.** A Java callable is keyed by a signature carrying its parameters, so `"cancelOrder"`
+  matches on the name with the tail cut and overloads raise `AmbiguousName` listing the full keys.
+  Adding the tail is **not** enough to address one: an interface and its implementors declare the
+  same signature, so `"cancelOrder(java.lang.Integer, boolean)"` still raises with 4 matches on
+  daytrader8. Of its 1,216 callables only 381 have a tail unique across the application. The
+  address is the full `"<type fqn>.<signature>"` key — copy one of the strings the exception
+  carries, or narrow with `in_class=`. No keyword can split an overload pair *within* one type, and
+  when that is the case the error offers only the full key rather than a keyword that cannot work.
 - **`in_module=` takes the declared package, not a path-derived name.** `"com.ibm…​.impl.direct"`,
   or that package plus a type it declares (`"…​.impl.direct.TradeDirect"`), or a repo-relative path
   suffix. A dotted name derived from a Java *path* would be `src.main.java.com.ibm…`, which names
