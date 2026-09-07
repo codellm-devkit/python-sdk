@@ -51,9 +51,12 @@ class JCallableOverview(BaseModel):
         key: The J-1 name, ``"<type fqn>.<signature>"`` — the application-unique address every
             other accessor on this surface accepts. A local or anonymous class's segment carries
             the signature of the callable that declares it (the J-1 erratum).
-        signature: The analyzer's own signature with its erased parameter tail
-            (``cancelOrder(java.lang.Integer, boolean)``). Unique within ``owner``, not across the
-            application — which is why ``key`` exists.
+        signature: The analyzer's own signature, parameter tail and all, exactly as it spells it
+            (``cancelOrder(java.lang.Integer, boolean)``). **Not a normal form**: the tail is
+            whatever the analyzer could resolve, so the same method reads
+            ``setTopLosers(java.util.Collection)`` in one run and
+            ``setTopLosers(Collection<QuoteDataBean>)`` in another where the type was unresolvable.
+            Unique within ``owner``, not across the application — which is why ``key`` exists.
         name: The callable's short name (``cancelOrder``, ``<init>``, ``<clinit>$0``).
         owner: Qualified name of the declaring type. Never ``None``: every Java callable is
             declared by a type.

@@ -246,6 +246,20 @@ def test_the_ambiguity_advice_is_followable_because_it_names_the_listed_matches(
         assert java_resolve_callable(candidate, a4) == candidate, "the advice, followed literally"
 
 
+def test_no_java_model_describes_the_parameter_tail_as_erased_either():
+    """The same ruling one layer down. The error path was pinned above and the *models* were not,
+    so ``JCallableOverview.signature`` documented "the analyzer's own signature with its erased
+    parameter tail" -- describing exactly the normalisation the fixtures disprove
+    (``setTopLosers(Collection<QuoteDataBean>)`` in a4 against ``setTopLosers(java.util.Collection)``
+    in a1). A caller reads the model's docstring at least as often as the exception's text."""
+    import inspect
+
+    from cldk.models.java import models, projections
+
+    for module in (models, projections):
+        assert "erased" not in inspect.getsource(module), f"{module.__name__} describes the tail as erased"
+
+
 def test_the_advice_reads_as_a_sentence_in_both_the_pruned_and_the_unpruned_case(a4):
     """``AmbiguousName`` renders ``Narrow it with {narrow_with}.``, so every clause that can appear
     there has to be a **noun phrase**. Java's was "by naming the full signature ...", which read
