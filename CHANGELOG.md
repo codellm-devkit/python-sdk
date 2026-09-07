@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **`get_cfg`/`get_cdg`/`get_ddg` on the Python Neo4j backend no longer drop self-loop edges.** The
+  per-callable query bound the containment relationship twice, so Cypher's relationship-uniqueness rule
+  silently discarded every edge whose endpoints are the same body node — a statement that reads a
+  variable it also redefines. 64,702 such edges exist on the odoo reference graph; one callable returned
+  28,146 of its 28,394. `total` was counted from the same match, so the short page reported itself
+  complete. (#349)
+
 ## [v2.0.0-rc.2] - 2026-09-06
 Python legs 1, 1.5 and 1.6 of the CLDK 2.0 agent-facing query facade (see
 `docs/design/specs/2026-09-03-agent-facing-query-facade.md`,

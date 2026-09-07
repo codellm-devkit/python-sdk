@@ -1336,9 +1336,17 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     #: one is impossible on a graph built that way (verified: 0 cross-callable edges of 5,521,626
     #: on odoo-slim-19), but a graph built some other way must not be able to widen the answer
     #: silently.
+    #: One callable's own ``rel`` edges. The second containment hop is a **pattern predicate**, not a
+    #: second pattern: written as ``(s)-[r]->(d)<-[:PY_HAS_BODY_NODE]-(c)`` it binds the same
+    #: ``PY_HAS_BODY_NODE`` relationship twice whenever ``s`` and ``d`` are the same node, and Cypher's
+    #: relationship-uniqueness rule then drops the row. A data-dependence self-loop — a statement that
+    #: reads a variable it also redefines — is exactly that shape, and there are 64,702 of them on the
+    #: odoo reference graph. The old spelling lost every one of them silently, and because ``total`` is
+    #: counted from the same match, the short page reported itself complete (#349).
     _OWN_EDGES = (
         "MATCH (c:PyCallable) WHERE c.id STARTS WITH $prefix AND c.signature = $sig "
-        "MATCH (c)-[:PY_HAS_BODY_NODE]->(s:PyBodyNode)-[r:{rel}]->(d:PyBodyNode)<-[:PY_HAS_BODY_NODE]-(c) "
+        "MATCH (c)-[:PY_HAS_BODY_NODE]->(s:PyBodyNode)-[r:{rel}]->(d:PyBodyNode) "
+        "WHERE (c)-[:PY_HAS_BODY_NODE]->(d) "
     )
 
     def _own_edges(self, name: str, in_class: str | None, rel: str, projection: str, order: EdgeOrder, page_size: int, cursor: str | None):
