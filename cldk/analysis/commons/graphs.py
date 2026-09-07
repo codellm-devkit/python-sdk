@@ -29,7 +29,7 @@ from typing import Callable, Iterable, List, Literal, Mapping, Sequence, Tuple
 import networkx as nx
 
 from cldk.analysis.commons.bounds import check_selector, reject_bare_string
-from cldk.analysis.commons.results import FlowPath, PathHop, SliceNode
+from cldk.analysis.commons.results import FlowPath, LocateResult, PathHop, SliceNode
 
 
 def bounded_subgraph(graph: nx.DiGraph, roots: List[str], depth: int | None, declared: Iterable[str]) -> nx.DiGraph:
@@ -248,6 +248,59 @@ def shortest_walks(edges: Mapping[str, Mapping[str, Sequence[tuple]]], src: str,
     return out
 
 
+def call_reaches(graph: "nx.DiGraph", a: str, b: str, depth: "int | None") -> bool:
+    """Whether a call path of **at least one hop** runs from ``a`` to ``b``, within ``depth`` hops.
+
+    One function for the three in-memory backends because ``reaches(x, x)`` is the case they all
+    got wrong in the same way, and because the advice that points at it is shared too
+    (:func:`~cldk.analysis.commons.bounds.check_distinct_endpoints` tells a caller to "ask
+    ``reaches(X, X)`` whether a cycle exists").
+
+    ``nx.descendants`` and ``ego_graph(...) - {a}`` both **exclude the source**, even when the
+    source has a self-loop or sits on a cycle — that is what "descendants" means — so asking them
+    ``b in reachable`` for ``b == a`` answered ``False`` for every input. Both Neo4j backends
+    already answer the cycle question, because their quantified pattern is ``{1,depth}`` and lands
+    back on the source like any other node, so this was also a backend divergence and not only a
+    wrong docstring.
+
+    The self-question is asked of the predecessors instead: ``a`` is on a cycle exactly when
+    something that reaches ``a`` is reachable *from* ``a`` — including ``a`` itself, which is the
+    direct self-loop. Bounded, the two halves have to add up to ``depth``, so the reachable half is
+    one hop shorter.
+    """
+    if a not in graph or b not in graph:
+        return False
+    reachable = nx.descendants(graph, a) if depth is None else set(nx.ego_graph(graph, a, radius=depth).nodes) - {a}
+    if a != b:
+        return b in reachable
+    inner = {a} | reachable if depth is None else set(nx.ego_graph(graph, a, radius=depth - 1).nodes)
+    return any(predecessor in inner for predecessor in graph.predecessors(a))
+
+
+def _no_body_node(found: LocateResult) -> str:
+    """Why a :class:`~cldk.analysis.commons.results.LocateResult` has no ``node_id``, in the
+    caller's own vocabulary.
+
+    Three distinguishable reasons and three sentences, because they call for different next steps: a
+    position inside a callable but on no emitted vertex (a declaration line, a blank line, a comment
+    -- the common case), a position at module scope, and a file the analysis does not cover. Each
+    ends with something that actually runs on the value the caller already has (E8: advice must be
+    followable), and none of them spells a ``can://`` id (E6)."""
+    where = f"{found.module.path}:{found.span.start[0]}"
+    if found.callable is not None:
+        return (
+            f"the locate() result for {where} landed inside {found.callable.signature} but on no statement, call or branch "
+            "the analyzer emitted, so it carries no ref for describe() to look up. Its enclosing callable does: pass "
+            f"resolve_callable({found.callable.signature!r}) instead, or read the text off the result's own .source."
+        )
+    reasons = ", ".join(d.code for d in found.diagnostics) or "no enclosing callable"
+    return (
+        f"the locate() result for {where} is not inside any callable ({reasons}), so it carries no ref for describe() "
+        "to look up. Nothing below the module is addressable at that position; locate() a line inside a callable, or name "
+        "a callable with resolve_callable()."
+    )
+
+
 def as_slice_node(node: object) -> SliceNode:
     """The :class:`~cldk.analysis.commons.results.SliceNode` for anything carrying an address.
 
@@ -263,12 +316,18 @@ def as_slice_node(node: object) -> SliceNode:
 
     Raises:
         TypeError: ``node`` carries neither a ``ref`` nor a ``node_id``, so there is nothing to
-            look up. Guessing an address from a file and a line is what ``locate`` is for.
+            look up. Guessing an address from a file and a line is what ``locate`` is for. A
+            :class:`~cldk.analysis.commons.results.LocateResult` that landed on **no body node** is
+            the common way to arrive here — measured on daytrader8, 187 of 300 random in-callable
+            positions have ``body is None`` — so it is refused in its own words: naming the type
+            among the accepted ones and then refusing it reads as a bug in the accessor.
     """
     if isinstance(node, SliceNode):
         return node
     ref = getattr(node, "node_id", None)
     if ref is None:
+        if isinstance(node, LocateResult):
+            raise TypeError(_no_body_node(node))
         raise TypeError(f"describe() needs something carrying a ref (a SliceNode, a path hop endpoint, a locate() result); got {type(node).__name__}")
     module, callable_ref, body = node.module, node.callable, getattr(node, "body", None)
     return SliceNode(

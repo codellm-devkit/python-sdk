@@ -31,7 +31,8 @@ The policy, in full (leg 1.5, E8):
   segment matching on a hierarchical name, not a similarity heuristic.
 * **One survivor resolves. More than one raises** :class:`~cldk.utils.exceptions.AmbiguousName`
   carrying every match, and names only the ways out still open to *that* caller — never a keyword
-  it already used or one its method does not accept. **None raises**
+  it already used, never one its method does not accept, and never one that cannot split the very
+  matches it is listing. **None raises**
   :class:`~cldk.utils.exceptions.SelectorNotInGraph`.
 * **The candidate names are the caller's, not the analyzer's.** :func:`value_candidate` is where a
   ``formal_in`` vertex stops being ``"<global>:payment::AccessError"`` and becomes a ``"global"``
@@ -47,7 +48,7 @@ addressing layer exists to prevent. Every string in an ``AmbiguousName`` genuine
 
 from __future__ import annotations
 
-from typing import Callable, List, NamedTuple, Optional, Sequence, TypeVar
+from typing import Callable, List, NamedTuple, Optional, Sequence, Tuple, TypeVar
 
 from cldk.analysis.commons.keys import module_dotted
 from cldk.utils.exceptions import AmbiguousName, SelectorNotInGraph
@@ -71,24 +72,47 @@ RETURN_MARKER = "<return>"
 
 
 class CallableCandidate(NamedTuple):
-    """One callable a name could resolve to, reduced to the three fields the policy needs.
+    """One callable a name could resolve to, reduced to the fields the policy needs.
 
     Both backends project their callables into this shape before resolving, so the policy sees the
     same tuple whether it came from a Cypher row or an in-memory :class:`PyCallable`.
 
     Attributes:
-        signature: The dotted name matched against (``pkg.mod.Class.method``) — never a ``can://``
-            id, which is what E6 keeps out of the caller's hands.
+        signature: The dotted name **returned and reported** (``pkg.mod.Class.method``) — never a
+            ``can://`` id, which is what E6 keeps out of the caller's hands. Also what a name is
+            matched against, unless ``match_names`` says otherwise.
         class_signature: The owning class's signature, or ``None`` for a module-level function or a
             closure. What ``in_class=`` is matched against.
         path: The module's repo-relative path (``addons/foo/models/bar.py``) — the same vocabulary
             as ``locate().module.path`` and the symbol table's keys. What ``in_module=`` is matched
             against.
+        match_names: The spellings this callable *answers to*, when they are not just
+            :attr:`signature`. Empty means ``(signature,)``, which is every Python and TypeScript
+            callable. Java needs more than one: its signature carries a parameter tail
+            (``…TradeDirect.cancelOrder(java.lang.Integer, boolean)``) that a caller writing
+            ``"cancelOrder"`` has not typed, so the name is matched against the signature *and*
+            against the same signature with the tail cut, while the tail-carrying form stays what
+            resolves an overload exactly and what an ambiguity lists (J-3). Empty is the right
+            spelling of "none" here: a callable always answers to *something*, so "no match names"
+            can only mean "the signature is the name" — there is no second reading to confuse it
+            with, which is why this field defaults to ``()`` and :attr:`module_names` does not.
+        module_names: The dotted spellings of this callable's module. ``None`` — the default —
+            means "this language does not supply them; derive one with ``module_dotted(path)``",
+            which is what Python and TypeScript want. Java supplies its own: a Java module's
+            dotted name is its **declared package**, and deriving it from the path yields
+            ``src.main.java.com.ibm…``, which names nothing (J-2). **An empty tuple is not the
+            default**: it means the language supplied names and there are none — a unit in the
+            default package declaring no type — and such a candidate answers to no dotted module
+            spelling at all rather than falling back to a derivation from a path that is a build
+            layout. Conflating the two is how a ``.java`` path would silently be matched against
+            a ``.py``-suffixed derivation, which is exactly what J-2 forbids.
     """
 
     signature: str
     class_signature: Optional[str]
     path: str
+    match_names: Tuple[str, ...] = ()
+    module_names: Optional[Tuple[str, ...]] = None
 
 
 class ValueCandidate(NamedTuple):
@@ -152,6 +176,33 @@ def segment_match(query: str, candidate: str, sep: str = ".") -> bool:
     return candidate == query or candidate.endswith(sep + query)
 
 
+def _narrow_callables(query: str, candidates: Sequence[CallableCandidate]) -> List[CallableCandidate]:
+    """:func:`_narrow`, over candidates that may answer to more than one spelling.
+
+    The two-step is unchanged — exact matches if there are any, otherwise every segment-suffix
+    match — it just runs over :attr:`CallableCandidate.match_names` instead of the bare signature,
+    and a candidate matched by either of its names counts once. With the default empty
+    ``match_names`` this *is* :func:`_narrow` on signatures.
+    """
+    names = [(c, c.match_names or (c.signature,)) for c in candidates]
+    exact = [c for c, ns in names if query in ns]
+    return exact or [c for c, ns in names if any(segment_match(query, n) for n in ns)]
+
+
+def _module_names(c: CallableCandidate, dotted: Callable[[str], str] = module_dotted) -> Tuple[str, ...]:
+    """The dotted spellings ``in_module=`` matches this candidate's module against.
+
+    The test is ``is None``, not truthiness, and that is the whole point of the function: an empty
+    :attr:`CallableCandidate.module_names` means *the language supplied none* — a Java unit in the
+    default package declaring no type — and must stay distinct from ``None``, which means *derive
+    it from the path*. Falling back on a falsy empty would hand a ``.java`` path to a derivation
+    whose default suffix list is ``(".py",)``, so nothing is stripped and the ``.java`` rides into
+    the dotted name; the result would then *match* some caller spellings, presenting a path
+    derivation J-2 forbids as a successful resolution.
+    """
+    return (dotted(c.path),) if c.module_names is None else c.module_names
+
+
 def _narrow(query: str, candidates: Sequence[str]) -> List[str]:
     """Exact matches if there are any, otherwise every segment-suffix match.
 
@@ -190,6 +241,7 @@ def resolve_callable_signature(
     in_class: Optional[str] = None,
     in_module: Optional[str] = None,
     dotted: Callable[[str], str] = module_dotted,
+    by_full_name: str = "more of the dotted path",
 ) -> str:
     """The signature of the one callable ``name`` names, narrowed by ``in_class`` / ``in_module``.
 
@@ -207,7 +259,16 @@ def resolve_callable_signature(
     ``SliceNode.defined_in`` carry — is the *bare* last segment, ``"mail"``, which the dotted rule
     also accepts.) A path spelling with ``/`` never matches dotted and vice versa, so the widening
     adds no ambiguity: a dotted ``"mail"`` names only a module whose dotted name *ends* in
-    ``.mail``, not everything under a ``mail/`` package.
+    ``.mail``, not everything under a ``mail/`` package. A candidate that carries
+    :attr:`CallableCandidate.module_names` is matched against those instead: the derivation is a
+    *convention*, and Java's is different enough that deriving it silently names nothing (J-2).
+
+    **An ambiguity's advice names only keywords that could work.** ``in_class=`` is offered only
+    when the matches disagree on their owning class and ``in_module=`` only when they disagree on
+    their module: two overloads of one Java method, or two ``__init__``s of one Python class, are
+    an ambiguity neither keyword can split, and naming one anyway is advice a caller can follow to
+    the same exception (E8). What is always offered is ``by_full_name``, because the way out that
+    needs no keyword is always open.
 
     **The error names the argument that actually missed.** ``callers_of("x", in_module="…")``
     used to fail with ``callable not in graph: 'x'`` when ``x`` plainly existed and it was the
@@ -228,6 +289,19 @@ def resolve_callable_signature(
             One injected function rather than two forwarded keywords: the caller already has to
             know its own convention, and threading each knob separately is how the two backends of
             one language start disagreeing about it.
+            A candidate that carries its own ``module_names`` overrides this; the two compose,
+            with the explicit names winning and this function used only to derive.
+        by_full_name: The last clause of an ambiguity's "narrow it with …" advice — the way out
+            that needs no keyword. **A noun phrase**, because the sentence around it reads
+            ``Narrow it with {narrow_with}.`` and the clauses either side of it are ``in_class=`` /
+            ``in_module=``; a verb phrase there produced "Narrow it with by naming …", which is now
+            the reading of *every* Java overload ambiguity since the keyword pruning leaves this as
+            the only clause. It is a parameter because it is language-specific and must be
+            *true*: more of the dotted path is what splits two Python callables, but it
+            cannot split two Java overloads, which differ only in the parameter tail (J-3). An
+            instruction that cannot work is the same confident-wrong-answer failure E8 keeps out
+            of the error path — and so is one that *describes* a spelling the analyzer does not
+            produce, which is why Java's clause points at the listed matches instead.
 
     Raises:
         AmbiguousName: More than one callable matched.
@@ -238,22 +312,33 @@ def resolve_callable_signature(
     """
     filters = {
         "in_class": (in_class, lambda c: bool(c.class_signature) and segment_match(in_class, c.class_signature)),
-        "in_module": (in_module, lambda c: segment_match(in_module, c.path, sep="/") or segment_match(in_module, dotted(c.path))),
+        "in_module": (
+            in_module,
+            lambda c: segment_match(in_module, c.path, sep="/")
+            or any(segment_match(in_module, d) for d in _module_names(c, dotted)),
+        ),
     }
-    by_name = set(_narrow(name, [c.signature for c in candidates]))
-    matched = [c for c in candidates if c.signature in by_name]
+    matched = _narrow_callables(name, candidates)
     for keyword, (given, keep) in filters.items():
         if given is None:
             continue
         candidates = [c for c in candidates if keep(c)]
         if matched and not any(keep(c) for c in matched):
             raise SelectorNotInGraph(keyword, [given], 1, detail=f"{name!r} matches {len(matched)} callable(s), none of them satisfying {keyword}={given!r}")
-    # Only offer the keywords the caller has *not* already used: telling someone who wrote
-    # ``in_class="ResPartner"`` to "narrow it with in_class=" is advice they have already taken.
-    unused = [kw for kw, given in (("in_class=", in_class), ("in_module=", in_module)) if given is None]
-    narrow_with = " or ".join(unused + ["by naming more of the dotted path"]) if unused else "by naming more of the dotted path"
-    return resolve_name(name, [c.signature for c in candidates], kind="callable", narrow_with=narrow_with)
-
+    hits = _narrow_callables(name, candidates)
+    if len(hits) == 1:
+        return hits[0].signature
+    if not hits:
+        raise SelectorNotInGraph("callable", [name], 1)
+    # Only offer the keywords the caller has *not* already used **and that could split these very
+    # hits**: telling someone who wrote ``in_class="ResPartner"`` to "narrow it with in_class=" is
+    # advice they have already taken, and offering it for two overloads of one class — or for two
+    # ``__init__``s of one class — is advice that provably cannot work, which is the same
+    # confident-wrong-answer failure E8 keeps out of the error path. A keyword splits the hits only
+    # if they disagree on what it matches against.
+    splits = {"in_class=": {c.class_signature for c in hits}, "in_module=": {c.path for c in hits}}
+    unused = [kw for kw, given in (("in_class=", in_class), ("in_module=", in_module)) if given is None and len(splits[kw]) > 1]
+    raise AmbiguousName(name, [c.signature for c in hits], kind="callable", narrow_with=" or ".join(unused + [by_full_name]))
 
 
 def resolve_within(resolve_callable: Callable[[str], "T"], within: str) -> "T":

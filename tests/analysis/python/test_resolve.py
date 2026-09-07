@@ -242,19 +242,68 @@ def test_the_ambiguity_message_is_actionable_rather_than_a_wall_of_strings():
 
 
 def test_the_hint_does_not_repeat_a_keyword_the_caller_already_supplied():
-    """"Narrow it with ``in_class=``" is not advice for someone who wrote ``in_class=``. The
-    message offers only the ways out that are still open."""
-    candidates = [CallableCandidate(f"m{i}.ResPartner.write", "m.ResPartner", "pkg/m.py") for i in range(3)]
+    """ "Narrow it with ``in_class=``" is not advice for someone who wrote ``in_class=``. The
+    message offers only the ways out that are still open.
+
+    The three candidates live in three modules, because the *other* pruning rule now also applies:
+    a keyword that cannot split these particular hits is dropped too (see
+    ``test_the_hint_drops_a_keyword_that_cannot_split_these_matches``), so three callables at one
+    path would have had ``in_module=`` removed for that reason instead and proved nothing about
+    this one.
+    """
+    candidates = [CallableCandidate(f"m{i}.ResPartner.write", "m.ResPartner", f"pkg/m{i}.py") for i in range(3)]
     with pytest.raises(AmbiguousName) as e:
         resolve_callable_signature("write", candidates, in_class="ResPartner")
     msg = str(e.value)
     assert "in_class=" not in msg
-    assert "in_module=" in msg and "naming more of the dotted path" in msg
+    assert "in_module=" in msg and "more of the dotted path" in msg
 
+    one_module = [CallableCandidate("m.ResPartner.write", "m.ResPartner", "pkg/m.py") for _ in range(3)]
     with pytest.raises(AmbiguousName) as both:
-        resolve_callable_signature("write", candidates, in_class="ResPartner", in_module="pkg/m.py")
+        resolve_callable_signature("write", one_module, in_class="ResPartner", in_module="pkg/m.py")
     assert "in_class=" not in str(both.value) and "in_module=" not in str(both.value)
-    assert "naming more of the dotted path" in str(both.value)
+    assert "more of the dotted path" in str(both.value)
+
+
+def test_every_narrow_with_clause_is_something_you_can_narrow_with():
+    """``Narrow it with {narrow_with}.`` is the sentence; each clause has to fit it.
+
+    The shared default was "by naming more of the dotted path", giving "Narrow it with by naming
+    more of the dotted path" -- and Java's override made that the reading of its most common
+    ambiguity. Every clause this module can produce is checked here, since the sentence is shared.
+    """
+    messages = []
+    with pytest.raises(AmbiguousName) as ambiguous:
+        resolve_callable_signature("__init__", [CallableCandidate("m.C.__init__", "m.C", "pkg/m.py") for _ in range(2)])
+    messages.append(ambiguous.value.message)
+    with pytest.raises(AmbiguousName) as keywords:
+        resolve_callable_signature("write", [CallableCandidate(f"m{i}.C{i}.write", f"m.C{i}", f"pkg/m{i}.py") for i in range(2)])
+    messages.append(keywords.value.message)
+    with pytest.raises(AmbiguousName) as inside:
+        resolve_within(lambda name: (_ for _ in ()).throw(AmbiguousName(name, ["a", "b"], kind="callable", narrow_with="in_class=")), "write")
+    messages.append(inside.value.message)
+    with pytest.raises(AmbiguousName) as value:
+        resolve_value_name("AccessError", ["a.AccessError", "b.AccessError"], within="m.C.f")
+    messages.append(value.value.message)
+    for message in messages:
+        advice = message.split("Narrow it with ", 1)[1].split(". Matches:", 1)[0]
+        assert not advice.startswith(("by ", "naming ", "name ")), f"{advice!r} is not something you narrow *with*"
+
+
+def test_the_hint_drops_a_keyword_that_cannot_split_these_matches():
+    """Two ``__init__``s of one class in one module are an ambiguity neither keyword can split, so
+    offering either is advice the caller can follow to the same exception (E8). A keyword is named
+    only when the matches actually disagree on what it matches against."""
+    one_class = [CallableCandidate("m.C.__init__", "m.C", "pkg/m.py") for _ in range(2)]
+    with pytest.raises(AmbiguousName) as e:
+        resolve_callable_signature("__init__", one_class)
+    assert "in_class=" not in str(e.value) and "in_module=" not in str(e.value)
+    assert "more of the dotted path" in str(e.value)
+
+    two_classes = [CallableCandidate("m.C.__init__", "m.C", "pkg/m.py"), CallableCandidate("m.D.__init__", "m.D", "pkg/m.py")]
+    with pytest.raises(AmbiguousName) as split_by_class:
+        resolve_callable_signature("__init__", two_classes)
+    assert "in_class=" in str(split_by_class.value) and "in_module=" not in str(split_by_class.value)
 
 
 def test_an_ambiguous_within_advises_a_keyword_resolve_value_actually_accepts():

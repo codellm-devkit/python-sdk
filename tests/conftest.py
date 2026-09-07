@@ -23,6 +23,7 @@ import os
 os.putenv("ASAN_DISABLE", "1")
 os.putenv("ASAN_OPTIONS", "verify_asan_link_order=0")
 
+import gzip
 import json
 from pdb import set_trace
 import shutil
@@ -48,7 +49,7 @@ def analysis_json_fixture():
     # Load the configuration
     config = toml.load(pyproject_path)
 
-    return Path(config["tool"]["cldk"]["testing"]["sample-application-analysis-json"]) / "slim"
+    return Path(config["tool"]["cldk"]["testing"]["sample-application-analysis-json"]) / "v2" / "a1"
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -56,18 +57,25 @@ def analysis_json(analysis_json_fixture) -> str:
     """Opens the analysis.json file and returns the contents as a json string"""
     json_file = {}
     # Read the json file and return it as a json string
-    with open(os.path.join(analysis_json_fixture, "analysis.json"), "r", encoding="utf-8") as json_data:
+    with gzip.open(os.path.join(analysis_json_fixture, "analysis.json.gz"), "rt", encoding="utf-8") as json_data:
         json_file = json.dumps(json.load(json_data))
 
     return json_file
+
+
+@pytest.fixture(scope="session")
+def analysis_json_a4(analysis_json_fixture) -> str:
+    """The codeanalyzer-java 3.0.2 ``-a 4`` fixture (``v2/a4``) as a JSON string."""
+    with gzip.open(analysis_json_fixture.parent / "a4" / "analysis.json.gz", "rt", encoding="utf-8") as json_data:
+        return json.dumps(json.load(json_data))
 
 
 @pytest.fixture(scope="session", autouse=True)
 def codeanalyzer_backend_path():
     """Backend-path override for the Java analyzer in tests.
 
-    Returns None so the analyzer uses its default: the ``codeanalyzer-*.jar`` bundled under
-    ``cldk/analysis/java/codeanalyzer/jar/``, run on a cached JDK (``[java, -jar, <jar>]``).
+    Returns None so the analyzer uses its default: ``codeanalyzer_java.command()`` — the jar and
+    the JVM the pinned ``codeanalyzer-java`` wheel carries.
     """
     return None
 

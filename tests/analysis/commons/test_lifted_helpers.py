@@ -130,3 +130,64 @@ def test_python_still_re_exports_its_own_analyzers_span_object():
     assert Span is py_schema.Span
     assert BodyNode.model_fields["span"].annotation is not None
     assert BodyNode(kind="statement", span=Span(start=(1, 0), end=(1, 0), bytes=(0, 0))).span.start == (1, 0)
+
+
+# ---- reaches(x, x) is the cycle question, in every language -------------------------------------
+def _cycle_graph():
+    import networkx as nx
+
+    g = nx.DiGraph()
+    g.add_edge("selfcaller", "selfcaller")  # direct recursion
+    g.add_edge("ping", "pong")
+    g.add_edge("pong", "ping")  # mutual recursion, two hops
+    g.add_edge("top", "leaf")  # no cycle at all
+    return g
+
+
+def test_call_reaches_answers_the_self_question_as_the_cycle_question():
+    """``reaches(x, x)`` is documented in three facades as "``True`` only through a real cycle",
+    and both Neo4j backends answer it that way -- their pattern is ``{1,depth}``, which lands back
+    on the source like any other node. The in-memory backends asked ``b in nx.descendants(graph, a)``
+    instead, and *descendants excludes the source*, self-loop or not: the answer was ``False`` for
+    every input, including a directly recursive callable.
+
+    That made the advice on the self-path refusal wrong too --
+    :func:`~cldk.analysis.commons.bounds.check_distinct_endpoints` says "ask ``reaches(X, X)``
+    whether a cycle exists", and it could not answer yes.
+    """
+    from cldk.analysis.commons.graphs import call_reaches
+
+    g = _cycle_graph()
+    assert call_reaches(g, "selfcaller", "selfcaller", None) is True
+    assert call_reaches(g, "selfcaller", "selfcaller", 1) is True
+    assert call_reaches(g, "ping", "ping", None) is True
+    assert call_reaches(g, "ping", "ping", 2) is True
+    assert call_reaches(g, "ping", "ping", 1) is False, "the cycle is two hops; a one-hop budget must say no"
+    assert call_reaches(g, "top", "top", None) is False, "no path is still no path -- never vacuously true"
+    assert call_reaches(g, "leaf", "leaf", None) is False
+
+
+def test_call_reaches_is_unchanged_for_two_different_endpoints():
+    from cldk.analysis.commons.graphs import call_reaches
+
+    g = _cycle_graph()
+    assert call_reaches(g, "top", "leaf", None) is True and call_reaches(g, "leaf", "top", None) is False
+    assert call_reaches(g, "top", "leaf", 1) is True and call_reaches(g, "top", "leaf", 0) is False
+    assert call_reaches(g, "top", "missing", None) is False and call_reaches(g, "missing", "top", None) is False
+
+
+@pytest.mark.parametrize(
+    "module, owner",
+    [
+        ("cldk.analysis.java.backend", "JavaAnalysisBackend"),
+        ("cldk.analysis.python.codeanalyzer.codeanalyzer", "PyCodeanalyzer"),
+        ("cldk.analysis.typescript.codeanalyzer.codeanalyzer", "TSCodeanalyzer"),
+    ],
+)
+def test_every_in_memory_reaches_routes_through_the_shared_rule(module, owner):
+    """One rule, not three copies of it -- the three had the identical wrong line."""
+    import inspect
+
+    source = inspect.getsource(getattr(importlib.import_module(module), owner).reaches)
+    assert "call_reaches(" in source, f"{owner}.reaches does not use the shared rule"
+    assert "nx.descendants" not in source, f"{owner}.reaches still asks descendants, which excludes the source"

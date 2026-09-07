@@ -6,175 +6,140 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
-Legs 2.5a and 2.5b of the CLDK 2.0 facade: the TypeScript layer on schema v2, then the
-leg-1.5/1.6 query surface on top of it (see `docs/design/specs/2026-09-06-leg-2.5-typescript.md`;
-plans `docs/design/plans/2026-09-06-leg-2.5a-typescript-schema-v2.md` and
-`…-leg-2.5b-typescript-query-surface.md`). Targets `2.0.0-rc.3`.
+
+Four legs of the 2.0 line: **TypeScript on schema v2** (2.5a) and **its query surface** (2.5b), and
+**Java on schema v2** (3a, with the analyzer wheel and honest degradation reporting) and **its query
+surface** (3b). Design records: `docs/design/specs/2026-09-06-leg-2.5-typescript.md` and
+`docs/design/specs/2026-09-06-leg-3-java.md`.
+
+### Breaking
+
+- **Java: `get_call_graph()` nodes are `"<type fqn>.<signature>"` strings, not `(signature, klass)` tuples.**
+  Take the owning class from `cg.nodes[key]["method_detail"].klass` rather than splitting the key.
+- **Java: single-file `source_code` mode is gone.** Analyze the project directory instead.
+- **Java: a local or anonymous class's qualified name carries its declaring callable** (`p.Outer.m(int).$anon$0`).
+  Without it, sibling callables collide. Take class keys from `get_all_classes()` rather than composing them.
+- **A graph emitted below the analyzer floor is refused at attach** with `GraphSchemaMismatch` instead of
+  answering every query with zero rows: codeanalyzer-java 3.0.1 and codeanalyzer-typescript 1.3.0. Re-emit;
+  there is no in-place upgrade. `TSNeo4jBackend` also speaks a graph vocabulary that shares nothing with 0.4.3's.
+- **Values that changed shape:** `JGraphEdges` and `TSCallEdge` are now `{src, dst, prov, weight}`; Java's
+  `calling_lines` is a sorted list of absolute file lines; Java's `get_config_keys()` is keyed by the
+  artifact-relative key; Java's `get_test_methods()` reads the analyzer's annotations rather than re-parsing
+  source; `TSCallable` lost `path`/`call_sites`/`accessed_symbols`/`local_variables`/`code_start_line` and
+  `TSModule` lost `file_path`/`module_name`, since v2 keys modules by path and stores source once;
+  `TSCallableOverview.from_callable` takes a required keyword-only `path`.
+- **Removed:** `TypeScriptAnalysis.get_entry_point_methods` and `get_service_entry_point_methods`, which only
+  ever raised — the working entrypoint accessors below replace them.
 
 ### Added
-- **The agent-facing query surface on `TypeScriptAnalysis` (leg 2.5b): 29 accessors, each with
-  `PythonAnalysis`'s signature and semantics.** Addressing (`locate`, `locate_many`,
-  `resolve_callable`, `resolve_value`, `get_source`, `describe`, `has_resolution_edges`);
-  per-callable graphs and dataflow (`get_cfg`/`get_cdg`/`get_ddg`, `slice_backward`/`slice_forward`/
-  `backward_cone`, `reaches`, `callers_of`/`callees_of`, `paths_between`/`call_paths_between`,
-  `flows_to_call`/`flows_to_argument`); entrypoints (`get_entrypoints`, `get_entrypoint_classes`,
-  `get_entrypoint_coverage`, `get_config_readers`); and the five repository-artifact getters, which
-  existed on both backends and now reach the caller. Both backends answer identically.
-- `cldk.models.typescript.TSClassOverview`, the class-level projection `get_entrypoint_classes`
-  returns — `PyClassOverview`'s TypeScript twin.
+
+- **The agent-facing query surface on `TypeScriptAnalysis` — 29 accessors, each with `PythonAnalysis`'s
+  signature and semantics.** Addressing (`locate`, `locate_many`, `resolve_callable`, `resolve_value`,
+  `get_source`, `describe`, `has_resolution_edges`); per-callable graphs and dataflow (`get_cfg`/`get_cdg`/
+  `get_ddg`, `slice_backward`/`slice_forward`/`backward_cone`, `reaches`, `callers_of`/`callees_of`,
+  `paths_between`/`call_paths_between`, `flows_to_call`/`flows_to_argument`); entrypoints
+  (`get_entrypoints`, `get_entrypoint_classes`, `get_entrypoint_coverage`, `get_config_readers`); and the five
+  repository-artifact getters. Both backends answer identically, including on the miss paths.
+- **The agent-facing query surface on `JavaAnalysis` — 38 accessors, each with `PythonAnalysis`'s signature and
+  semantics.** Addressing (`locate`, `locate_many`, `resolve_callable`, `resolve_value`, `get_source`,
+  `describe`, `has_resolution_edges`); per-callable graphs and dataflow (`get_cfg`/`get_cdg`/`get_ddg`,
+  `slice_backward`/`slice_forward`/`backward_cone`, `reaches`, `callers_of`/`callees_of`,
+  `paths_between`/`call_paths_between`, `flows_to_call`/`flows_to_argument`); entrypoints and the bulk
+  projections (`get_entrypoints`, `get_entrypoint_classes`, `get_entrypoint_coverage`,
+  `get_callables_overview`, `get_method_bodies`, `get_decorated_callables`, `get_callsites_for`,
+  `get_external_symbols`); the six repository-artifact getters; and the type-kind leaf accessors
+  `get_interfaces`/`get_enums`/`get_enum_members`/`get_records`. Both backends answer identically,
+  including on the miss paths.
+- `cldk.models.java.JCallableOverview` and `JClassOverview`, the projections those bulk accessors
+  return. They carry the addressable `"<type fqn>.<signature>"` key, never a `can://` id.
+- **Java reaches analysis levels 3 and 4** — control flow, control and data dependence, and the interprocedural
+  graph. The level now reaches the analyzer, which it never did before.
+- **A `java` install extra.** `pip install "cldk[java]"` brings the analyzer and its bundled JVM;
+  `pip install "cldk[all]"` reproduces the previous behaviour. Bare `cldk` no longer carries either. The Python
+  and TypeScript analyzers are still installed unconditionally; #340 moves them into extras of their own.
+- **JavaScript modules are in scope** for TypeScript analysis, under their own id prefix.
+- **A degraded Java level-3 or level-4 run is reported rather than silent.** Those levels need compiled classes;
+  without them the analyzer emits a declared-only graph and still reports the level. The SDK now surfaces the
+  analyzer's own warnings and records them beside the payload, so a cached run still knows. The graph is
+  returned either way.
+- `cldk.models.typescript.TSClassOverview`, the class-level projection `get_entrypoint_classes` returns.
 
 ### Changed
-- **Pinned `codeanalyzer-typescript` 1.2.0 → 1.3.0, and the graph floor with it.** A graph emitted
-  below 1.3.0 — a 1.2.0 graph included — is now refused at attach with `GraphSchemaMismatch`
-  naming the version found and the floor, because it carries neither the entrypoint marks nor the
-  body-node ids the query surface reads. **Migration:** re-emit with
-  `codeanalyzer-typescript>=1.3.0 --emit neo4j`, which no longer accepts `-a` (the emit is always
-  full depth). No model changed: leg 2.5a had already declared 1.3.0's additive fields.
-- **BREAKING: `LocateResult.node` is now `LocateResult.body`, a language-neutral `BodyRef`**
-  (`{id, kind, span, callee}`) in place of `cldk.models.python.BodyNode`, so
-  `cldk/analysis/commons/results.py` no longer imports a language package (`commons/backend.py`
-  still declares the shared artifact getters on the `Py*` models, which is the contract).
-  **Migration:** rename `result.node` to `result.body`; `result.node_id` is unchanged and is still
-  the handle `get_source()` takes. `Span` gains a commons twin that validates from either
-  analyzer's span; `cldk.models.python.Span` is unchanged and still the analyzer's own class.
-- TypeScript's DDG has **one** provenance tier: every `TS_DDG` edge carries
-  `prov == ["reaching-defs"]`, so `prov_rank` is constant there where Python ranks three ways. The
-  field and helper are unchanged.
-- Every Cypher statement `TSNeo4jBackend` issues is now scoped **per node it can reach**, not per
-  statement: both endpoints of a `TS_CALLS` edge, a quantified path's far end, a slice's reached
-  body nodes, and every *interior* node of a variable-length or shortest-path walk (`all(n IN
-  nodes(p) …)` on the slice, path and reachability queries) each carry the two-prefix predicate. A
-  statement that matched one endpoint by a signature two applications can both declare, or that
-  walked through an intermediate it never predicated, could previously return the other
-  application's node.
+
+- **Pins:** `codeanalyzer-java` 2.4.1 → 3.0.2, `codeanalyzer-typescript` 0.4.3 → 1.3.0.
+- **The Java analyzer ships as a wheel, not a jar in this repo.** The 35 MB checked-in jar, the Temurin download
+  in `_jdk.py`, and the release workflow's jar injection are gone; no `JAVA_HOME` is read or set, and no JDK is
+  downloaded. The published wheel drops from about 35 MB to 320 KB.
+- **Both languages' backends inherit the generic `AnalysisBackend`**, so each answers the shared artifact,
+  dependency and configuration accessors.
+- **Where a backend cannot answer, it says so instead of returning an empty value.** On Neo4j: Java's file-keyed
+  comment accessors, and TypeScript's `get_imports`, `get_all_exports`, `get_unresolved_config_reads`,
+  `get_method_parameters` for a found method, and `get_extended_classes`/`get_implemented_interfaces` when the
+  relationship type is absent. The remaining documented gaps, and where the two backends legitimately differ,
+  are listed in `docs/agent-api-reference.md`.
+- **Every Cypher statement is scoped per bound variable, not per statement** — both endpoints of a call edge, a
+  quantified path's far end, a slice's reached body nodes, and every *interior* node of a variable-length or
+  shortest-path walk (`all(n IN nodes(p) …)` on the slice, path and reachability queries). A statement that
+  matched one endpoint by a signature two applications both declare, or that walked through an intermediate it
+  never predicated, could previously return the other application's node.
+- **`LocateResult.body` is a language-neutral `BodyRef`**, so `cldk/analysis/commons/` no longer imports a
+  language package for it.
+- **An `AmbiguousName` now names only the ways out that are actually open — on all three languages.** The
+  `Narrow it with …` sentence offers `in_class=` / `in_module=` only when the caller has not already passed
+  that keyword *and* the listed matches disagree on it, so two overloads of one class, or two `__init__`s of
+  one class, are no longer told to narrow by a keyword that provably cannot split them. The last clause is
+  always offered and is language-specific: `more of the dotted path` on Python and TypeScript, and on Java
+  `the full signature, exactly as one of the listed matches spells it` (more of the dotted path cannot
+  separate two overloads). `AmbiguousName.candidates` is unchanged. Python's `resolve_callable`,
+  `callers_of`, `callees_of` and `resolve_within` therefore produce a different message for the same input
+  than in rc.2; assert on `.candidates`, not on the sentence.
+- Internal: the language-neutral query helpers moved from `cldk/analysis/python/` to `cldk/analysis/commons/`;
+  Python re-imports every name unchanged.
 
 ### Fixed
-- `docs/agent-api-reference.md` said `EntrypointCoverage.unresolved` was a `list[str]`; it is a
-  `dict[str, int]` (near-miss selector → count), and `get_config_keys()` is keyed by the key's
-  `can://` id rather than by its name (python-sdk#346 tracks changing that key).
-- `get_source()` on the in-process TypeScript backend named the application by its `can://` id
-  where the Neo4j backend named it plainly; both now name the application. `get_external_symbols()`
-  and `get_source()` over Neo4j scoped externals by the `can://typescript/` prefix alone, dropping
-  any external a JavaScript module owns; both now carry the two-prefix scope.
 
-### Known issues
-- **Source text read over the TypeScript Neo4j backend is truncated by one line.**
-  codeanalyzer-typescript 1.3.0 projects `:TSCallable.code` as the callable's text minus its final
-  `\n}` while the line numbers stay correct, so `get_source`, `get_method_bodies`, `describe` and
-  `locate(...).source` return short text over Neo4j and complete text in process. Upstream:
-  codellm-devkit/codeanalyzer-typescript#179. Read the text in process, or re-slice the span, until
-  the fix ships.
+- **`JavaAnalysis.get_method_parameters()`** is annotated `List[JCallableParameter]`, which is what it has always
+  returned.
+- **`get_call_graph()` on Java no longer re-parses each method body once per edge** — 145.7s to 41.0s on a
+  4,100-file project.
+- Two documentation errors: `EntrypointCoverage.unresolved` is a `dict[str, int]`, not a `list[str]`; and the
+  `get_config_keys()` example used a key form that never worked.
+- `get_source()` on the in-process TypeScript backend named the application by its `can://` id where the Neo4j
+  backend named it plainly; both now name the application. `get_external_symbols()` and `get_source()` over
+  Neo4j scoped externals by the `can://typescript/` prefix alone, dropping any external a JavaScript module
+  owns; both now carry the two-prefix scope.
 
-### Changed (leg 2.5a)
-- **Pinned `codeanalyzer-typescript` 0.4.3 → 1.2.0** (`pyproject.toml` `dependencies` and
-  `[tool.backend-versions]`). The analyzer emits canonical schema v2, and `cldk.models.typescript`
-  is rewritten as an `extra="forbid"` mirror of it: `analysis.json` is the `TSAnalysis` envelope
-  (`analyzer.version`, `max_level`, `application`); every node carries a `can://` `id`, a `kind` and a
-  `span`; a module's `classes`/`interfaces`/`enums`/`type_aliases`/`namespaces` are read-only views over
-  one `types` map; `start_line`/`end_line`/`code` are properties over `span` and the module `source`.
-  A 0.4.x `analysis.json` no longer validates — re-run the analyzer.
-  **BREAKING by value:** `TSCallEdge` is `TSCallGraphEdge{src, dst, prov, weight}` (was
-  `source/target/provenance/tags`), with `can://` ids as endpoints; `TSExternalSymbol` /
-  `TSSynthesizedCallable` are the id-keyed `TSExternalNode` / `TSSynthesizedNode`; `TSCallable` has no
-  `path`, `call_sites`, `accessed_symbols`, `local_variables` or `code_start_line`. The 1.x class names
-  stay importable as aliases. **BREAKING (public classmethod):**
-  `TSCallableOverview.from_callable(c, owner_signature, owner_kind)` now takes a required
-  keyword-only `path` — a v2 `TSCallable` no longer carries one, so the caller walking
-  `symbol_table` must pass the module's key. `TSCallableOverview` itself is unchanged.
-  `is_entrypoint`/`entrypoints` (1.3.0 additive, `Optional`) are declared on **every** type kind,
-  not only `TSClass`, so a 1.3.0 payload that stamps them on an interface, enum, type alias or
-  namespace validates under `extra="forbid"` before the pin moves.
-- **JavaScript modules are in scope** (`.js/.jsx/.mjs/.cjs`; spec TS-3). The analyzer ids them
-  `can://javascript/<app>/…` beside `can://typescript/<app>/…`, and every accessor on both backends
-  reads both: the symbol table lists them, and the Neo4j backend scopes every statement by the two
-  prefixes. A single-prefix reading would have dropped every `.js` file silently.
-- **`TSAnalysisBackend` inherits the generic `AnalysisBackend`** (`P = "TS"`, `N = "TS"`), so both
-  TypeScript backends now also answer `get_artifacts` / `get_dependencies` / `get_config_keys` /
-  `get_config_uses` / `get_unresolved_config_reads` with the shared `PyArtifact` / `PyDependency` /
-  `PyConfigKey` / `PyConfigUseEdge` / `PyConfigRead` models (a TypeScript dependency's `ecosystem` is
-  `"npm"`; a non-string config value is rendered as its JSON text).
-- **`get_call_graph()` on TypeScript** keys nodes as every other accessor does (module file key,
-  signature, `"<module>.<name>"` for an external) with `id` and `kind` node attributes — `kind` is
-  one of `module | class | interface | enum | type_alias | namespace | callable | external` — and
-  edges carry `type="CALL_DEP"`, `weight` and `provenance` (a tuple) as Python's do; the 1.x `tags`
-  dict is gone with the wire. Module callers and class callees are kept, not dropped as on Python —
-  filter on `kind == "callable"` for that shape. `get_external_symbols()` is keyed `"<module>.<name>"`
-  to match. `get_call_sites` / `get_calling_lines` / `get_call_targets` / `get_callsites_for` read a
-  callable's `body` nodes of `kind == "call"`; `get_method_bodies` omits a callable with no source
-  text (an implicit constructor's `code` is now `""`, not `None`).
-- The in-process backend drives the 1.2.0 CLI: `-i <project> --app-name <project.name> -a <1..4>
-  -o <cache> --cache-dir <cache> --skip-tests [--eager] [-t <file>]...`. Every `AnalysisLevel` is
-  sent as its integer (the old cap at level 2 is gone). **`TSCodeAnalyzerConfig.tsc_only` is a
-  deprecated no-op** (the flag was removed upstream in 1.0.0); `True` emits a `DeprecationWarning`.
-- **BREAKING: TypeScript Neo4j graph vocabulary migration.** `TSNeo4jBackend` now queries the 1.2.0
-  projection — `:Application {id: can://typescript/<app>}`, `TSModule` / `TSClass` / `TSInterface` /
-  `TSEnum` / `TSTypeAlias` / `TSNamespace` / `TSCallable` / `TSField` / `TSBodyNode {kind:'call'}` /
-  `TSExternal` under `TS_HAS_MODULE` / `TS_DECLARES` / `TS_HAS_METHOD` / `TS_HAS_FIELD` /
-  `TS_HAS_BODY_NODE` / `TS_RESOLVES_TO` / `TS_CALLS {weight, prov}` / `TS_DECORATED_BY` — instead of
-  0.4.3's `:Symbol` / `:CallSite` / `CALLS` / `HAS_CALLSITE`, with which it shares nothing. There is no
-  `_module` property to scope on; scope is the two id prefixes above. **Signature-level backwards
-  compatibility does not extend to graph generation:** a graph emitted by codeanalyzer-typescript
-  **below 1.2.0**, or one that holds no `:Application` with the requested id (an absent application,
-  a Python graph), used to answer every query with zero rows and now **raises `GraphSchemaMismatch`
-  at attach**, naming the relationship types found and missing, or the `analyzer_version` found and
-  the `1.2.0` floor. **Migration:** re-ingest with `codeanalyzer-typescript>=1.2.0 --emit neo4j`;
-  there is no in-place upgrade. A graph emitted by an unreleased `main` build stamps `1.2.0` too and
-  cannot be told apart from a release graph (filed upstream).
-- **What the 1.2.0 Neo4j projection does not carry**, stated rather than papered over. On
-  `TSNeo4jBackend`, four accessors **raise `CodeanalyzerExecutionException` naming the gap**, because
-  their empty value would read as a fact: `get_imports` and `get_exports` (no import/export
-  vocabulary in the graph), `get_unresolved_config_reads` (no `config_reads`; `[]` would read as
-  "every read resolved") and `get_method_parameters` for a **found** method (`:TSCallable` projects
-  no parameters; a missing method still answers `[]`). Two more join them where a *wrong* value was
-  the alternative: **`get_extended_classes` and `get_implemented_interfaces` read the split off
-  `TS_EXTENDS`/`TS_IMPLEMENTS`**, not off `base_classes`/`implements_types` — `base_classes` is the
-  extends-implements union and `implements_types` is written by no node in the projection (0 of 207
-  classes and 0 of 687 interfaces on the reference graph), so subtracting it would have returned a
-  class's interfaces as its extended classes. They cover **resolved in-repo bases only** (a library
-  base is in `base_classes` with no node to point at) and each **raises** when its relationship type
-  is absent from the database — as `TS_IMPLEMENTS` is on superset-frontend. Everything else returns
-  the model's documented empty where the graph is silent: a callable's `parameters`, `comments`,
-  `type_parameters`, `overload_signatures`, `body`, `cfg`/`cdg`/`ddg`/`summary`; an enum member's
-  `value`; a module's `source`, `imports`, `exports`, `comments`; a decorator's position; a call
-  site's `method_name`/receiver/argument facets and columns. Each rebuilt node's `code` is the text
-  the graph projected for it, on a line-only span. `get_call_targets` differs by one value: an
-  unresolved call site contributes `""` from the graph where the in-memory backend contributes the
-  call's `method_name`. `get_synthesized_callables` is keyed by the anonymous node's own id on Neo4j
-  (the analyzer's older compatibility key exists only in `analysis.json`); the ABC's docstring now
-  states that keying as backend-dependent rather than describing the in-memory backend only.
-  `get_config_uses` returns `[]` both for a corpus the analyzer found no config read in and for a
-  database that declares no `TS_USES_CONFIG` at all — indistinguishable on this graph, and
-  deliberately **not** refused at attach, since a project that reads no configuration is a valid
-  project. `get_nested_classes` is permanently `[]` on **both** backends and is not a projection
-  gap at all: a schema-v2 class holds only `callables` and `fields`, so no class nests a class
-  (`TSCallable.inner_classes` is the surviving case).
-- **`get_application_view()` on `TSNeo4jBackend` now carries the repository-artifact layer** —
-  `artifacts` (with their config keys), `dependencies` and `config_uses`, from the same rows the
-  dedicated accessors return, retyped onto the wire's `TSArtifact`/`TSDependency`/`TSConfigUse` (a
-  dependency's `ecosystem` has no field there and is dropped; `get_dependencies()` keeps it). It
-  used to hand back an empty artifact layer while the dedicated accessors answered 832 artifacts,
-  3,601 dependencies and 526 config keys on the same attach, so `app.dependencies` read as "this
-  project declares none". Three overlays stay empty, each stated in the docstring: `param_in`/
-  `param_out` (leg 2.5a reads **no** dataflow overlay; 2.5b does), `config_reads` (not projected)
-  and `unresolved_imports` (no accessor on this surface reads `TS_UNRESOLVED_IMPORT`).
-- **Known emitter limitation (declaration merging).** codeanalyzer-typescript mints one id for a
-  value and a type of the same name (`const X = …` + `interface X`, `const X = …` + `type X`,
-  `type X` + a field `X`), so its own `MERGE` collapses them onto one node carrying both labels and
-  the last writer's `kind`. The Neo4j backend rebuilds such a node as the one facet its containment
-  edge and labels name, keeps it out of the accessors for the other facet, and raises when the
-  labels name none or several. Three such nodes on the superset-frontend reference graph (1,841
-  modules: 1,557 TypeScript, 284 JavaScript).
-- Internal: the language-neutral helpers leg 1.5/1.6 built inside `cldk/analysis/python/` moved to
-  `cldk/analysis/commons/` — `bounds.py` (bounds, keyset paging, `EdgeOrder`), `graphs.py`
-  (bounded subgraphs, path assembly, the `SDG_RELS`/`VIA` tables as functions of the `P` prefix),
-  `keys.py` (module keys, scoping selectors, `module_key_of`, `module_dotted` with the extension set
-  as a parameter), `levels.py` (the `-a` integers), `artifacts.py` (the shared artifact-layer
-  reconstructors) and `backend.semver` (the version-floor parser). Python re-imports every name;
-  nothing changed in behaviour or count.
+### Known limitations
 
-### Removed
-- `TypeScriptAnalysis.get_entry_point_methods` and `get_service_entry_point_methods`, which only ever
-  raised `NotImplementedError`. Working entrypoint accessors arrive with the query surface (2.5b).
+- Java CRUD accessors raise: schema v2 does not carry CRUD yet (codeanalyzer-java#187).
+- The Java graph's `JCallable.code` is the declaration slice where the JSON's is the body block, and the graph
+  cannot recover the body block (codeanalyzer-java#176).
+- **Source text read over the TypeScript Neo4j backend is truncated by one line.** codeanalyzer-typescript
+  1.3.0 projects `:TSCallable.code` as the callable's text minus its final `\n}` while the line numbers stay
+  correct, so `get_source`, `get_method_bodies`, `describe` and `locate(...).source` return short text over
+  Neo4j and complete text in process (codeanalyzer-typescript#179). Read the text in process, or re-slice the
+  span, until the fix ships.
+- TypeScript's DDG has one provenance tier; Java's has two; Python's has three.
+- codeanalyzer-typescript mints one id for a value and a type of the same name under declaration merging
+  (codeanalyzer-typescript#177); such a node resolves to the facet its kind names, or not at all.
+- `get_config_keys()` is still keyed by a `can://` id on Python and TypeScript, where Java now uses the
+  artifact-relative key (#346).
+- **Java's `slice_forward`, `paths_between`, `flows_to_call` and `flows_to_argument` raise instead of
+  answering.** codeanalyzer-java 3.0.1 emits the level-4 port lattice disconnected from the statement
+  dependence graph, so every forward answer would be empty whatever the program does
+  (codeanalyzer-java#227). They answer unchanged once the analyzer connects the two.
+- **Java's two backends disagree on 87 of daytrader8's 5,434 `ddg` edges.** The analyzer names endpoints it
+  never emitted as body nodes, so the graph cannot project them and reports 5,347 (codeanalyzer-java#228).
+- **Java has no entrypoint report**, so `get_entrypoint_coverage()` returns `entrypoint_report_unavailable`
+  rather than fabricated coverage. `get_entrypoints()` and `get_entrypoint_classes()` carry the real marks.
+- **Java's `get_external_symbols()` answers over Neo4j and raises locally**: the analyzer homes out-of-project
+  call targets only under `--external-calls`, which `--emit neo4j` forces and a local run does not.
+- The Java graph carries a `switch` body-node kind, which is outside `SliceNode.KINDS` (that vocabulary is
+  codeanalyzer-python's, and Python has no switch statement). It is reported as the analyzer spells it.
+- **Java's `get_config_readers(key)`, `get_config_uses()` and `get_unresolved_config_reads()` are `[]` for
+  every input**: the Java wire carries no code-to-config edges and no config-read detector, so there is
+  nothing to resolve to a reading callable. The empty list means the analyzer emits no such edge, not that
+  no code reads the key. `get_config_keys()` is the configuration accessor Java really answers.
 
 ## [v2.0.0-rc.2] - 2026-09-06
 Python legs 1, 1.5 and 1.6 of the CLDK 2.0 agent-facing query facade (see
