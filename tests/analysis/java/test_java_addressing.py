@@ -448,8 +448,26 @@ def test_describe_raises_on_a_ref_naming_nothing(both):
 
 
 def test_describe_needs_an_address(both):
-    with pytest.raises(TypeError):
+    with pytest.raises(TypeError) as raised:
         both.describe([object()])
+    assert "got object" in str(raised.value)
+
+
+@pytest.mark.parametrize("line, expected", [(646, "landed inside"), (1, "is not inside any callable")], ids=["in-a-callable", "module-scope"])
+def test_describe_refuses_a_bodyless_locate_result_in_its_own_words(both, line, expected):
+    """The refusal is right; the old message was not. A ``locate()`` result that landed on no body
+    node has no ``node_id``, and the type-error branch it fell into named ``LocateResult`` among the
+    shapes ``describe`` accepts and then refused it -- which reads as a bug in the accessor rather
+    than a fact about the position. It is the *common* reading, not an edge case: 187 of 300 random
+    in-callable positions on daytrader8 have ``body is None``.
+    """
+    found = both.locate(TRADE_DIRECT_FILE, line)
+    assert found.body is None and found.node_id is None
+    with pytest.raises(TypeError) as raised:
+        both.describe([found])
+    message = str(raised.value)
+    assert expected in message and "got LocateResult" not in message
+    assert f"{TRADE_DIRECT_FILE}:{line}" in message and "can://" not in message
 
 
 # ---- has_resolution_edges ----------------------------------------------------------------------
