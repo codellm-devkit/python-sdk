@@ -43,7 +43,7 @@ and the message names what it found and the floor. What attaching to each genera
 
 ## TypeScript
 
-Status: leg 2.5a (`codeanalyzer-typescript` 1.2.0 pinned; graphs emitted by 1.2.0 or newer
+Status: leg 2.5b (`codeanalyzer-typescript` 1.3.0 pinned; graphs emitted by 1.3.0 or newer
 served). What attaches today is the **1.x accessor surface** — symbol table, classes / interfaces /
 enums / type aliases / namespaces, methods, fields, call graph, call sites, decorators, externals,
 synthesized callables, the four bulk accessors and the repository-artifact layer — on both backends.
@@ -56,11 +56,27 @@ exercise all of them on data: it holds **no `TSDecorator` nodes and no `TS_DECOR
 `get_implemented_interfaces` only to raise. Their query shapes are pinned offline against a fake
 two-application graph that does carry those edges; their behaviour on a decorator-heavy or
 `implements`-heavy corpus (an Angular or NestJS project) is **untested by corpus**.
-**The query surface documented in the rest of this reference** (`locate`, the scoping
-keywords, `get_cfg`/`get_cdg`/`get_ddg`, slices, reachability, paths, `describe`, entrypoints,
-`SelectorNotInGraph` / `AmbiguousName`) **is not on `TypeScriptAnalysis` yet — it arrives in leg
-2.5b**, on codeanalyzer-typescript 1.3.0. Design record:
+**The query surface documented in the rest of this reference is on `TypeScriptAnalysis` too**, as
+of leg 2.5b: `locate` / `locate_many` / `resolve_callable` / `resolve_value` / `get_source` /
+`describe` / `has_resolution_edges`, the scoping keywords, `get_cfg` / `get_cdg` / `get_ddg`, the
+three slices, `reaches` / `callers_of` / `callees_of` / `paths_between` / `call_paths_between` /
+`flows_to_call` / `flows_to_argument`, `get_entrypoints` / `get_entrypoint_classes` /
+`get_entrypoint_coverage` / `get_config_readers`, the five repository-artifact getters, and the
+`SelectorNotInGraph` / `AmbiguousName` vocabulary — 29 accessors, each with `PythonAnalysis`'s
+signature and semantics, so everything below reads the same in either language. Design record:
 `docs/design/specs/2026-09-06-leg-2.5-typescript.md`.
+
+Three TypeScript-specific facts about that surface:
+
+* **One DDG provenance tier.** Every `TS_DDG` edge carries `prov == ["reaching-defs"]` — cants has
+  no `ssa` or `points-to` tier, so `prov_rank` is constant here where Python's ranks three ways.
+  The field and the helper stay; the ranking simply has nothing to separate.
+* **A dotted `in_module=` keeps the file's own extension.** `src/foo/index.ts` dots to
+  `src.foo.index`; neither `index` nor `__init__` is stripped, because the module key that names it
+  everywhere else on this surface does not strip them either.
+* **An argument has no name to report.** A `TSBodyNode` of kind `actual_in` records the *position*
+  (`arg0`), not the parameter it binds, so `SliceNode.name` is `None` there rather than carrying an
+  ordinal. `flows_to_argument` therefore addresses arguments by the callee's parameter name.
 
 ```python
 ts = CLDK.typescript(project_path=None, backend=Neo4jConnectionConfig(
@@ -70,15 +86,20 @@ ts = CLDK.typescript(project_path=None, backend=Neo4jConnectionConfig(
 ts = CLDK.typescript(project_path="/path/to/project", backend=TSCodeAnalyzerConfig())
 ```
 
-**Graph version floor: codeanalyzer-typescript 1.2.0.** The probe requires `TS_HAS_MODULE` /
+**Graph version floor: codeanalyzer-typescript 1.3.0.** The probe requires `TS_HAS_MODULE` /
 `TS_HAS_METHOD` / `TS_HAS_BODY_NODE` / `TS_CALLS`, then reads `analyzer_version` off
 `:Application {id: can://typescript/<app>}`.
 
 | graph | attach |
 | --- | --- |
 | emitted by 0.4.x (`:Symbol` / `CALLS` / `HAS_CALLSITE`), a Python graph, an empty database | refused (`GraphSchemaMismatch`), naming the relationship types found and missing |
-| `analyzer_version` below 1.2.0, unparsable, or no `:Application` with that id (an absent application) | refused, naming what was found and the floor |
-| 1.2.0 and newer | served, silent — a graph emitted by an unreleased `main` build also stamps `1.2.0` and cannot be told apart (filed upstream) |
+| `analyzer_version` below 1.3.0 (a 1.2.0 graph included), unparsable, or no `:Application` with that id | refused, naming what was found and the floor |
+| 1.3.0 and newer | served, silent |
+
+A 1.2.0 graph carries none of the entrypoint marks and none of the per-callable graph vocabulary
+this surface reads, so it is refused rather than served with silent empties. **Migration:** re-emit
+with `codeanalyzer-typescript>=1.3.0 --emit neo4j` (which takes no `-a`: the emit is always full
+depth).
 
 **JavaScript is in scope.** The analyzer ids `.js/.jsx/.mjs/.cjs` modules `can://javascript/<app>/…`
 beside `can://typescript/<app>/…`; every accessor reads both, and every Neo4j statement is scoped
@@ -106,8 +127,21 @@ documented empty comes back.
 | `TSCallable.parameters`, `comments`, `type_parameters`, `overload_signatures`, `body`, `cfg`/`cdg`/`ddg`/`summary` | empty |
 | `TSEnumMember.value`; `TSModule.source` / `imports` / `exports` / `comments`; decorator positions; a call site's `method_name`, receiver and argument facets | empty / `None` |
 | `code` on any node | the text the graph projected for that node, on a line-only span (columns `0`) |
+| **any source text of a callable** — `get_source(sig)`, `get_method_bodies(...)`, `describe(...).source`, `locate(...).source`, `TSCallable.code` | **truncated by one line**: codeanalyzer-typescript 1.3.0 projects `:TSCallable.code` as the callable's text minus its final `\n}`, while `start_line`/`end_line` on the same node are correct. Measured: 544 characters against the 546 the in-memory backend returns for the same callable. Upstream: [codeanalyzer-typescript#179](https://github.com/codellm-devkit/codeanalyzer-typescript/issues/179). **If you feed graph source to a parser or a diff, expect the closing brace to be missing** — until the fix ships, read the text in-process or re-slice the span yourself |
 | `get_call_targets(sig)` | an unresolved call site contributes `""` (in-memory: the call's `method_name`) |
 | `get_synthesized_callables()` | keyed by the anonymous node's own id (the analyzer's older compatibility key is JSON-only) |
+| `locate(path, line)` at module scope | `source == ""` plus a second `module_source_unavailable` diagnostic — `:TSModule` carries no `source`. In-memory: the module's text |
+| `get_source(node_id)` for a **body-node** id | **raises `NotImplementedError`** — the graph carries no text below callable granularity. In-memory: the span's slice |
+| `LocateResult.span` columns and byte offsets | placeholders; lines are real on both backends |
+| `get_entrypoint_coverage()` | the anchor's `entrypoint_report_json` string, parsed — same report as in-memory, no lossiness. A graph without the property answers `entrypoint_report_unavailable` rather than empty-but-clean fields |
+
+Two more hold on **both** backends. `get_entrypoint_classes()` covers **classes only**: 1.3.0
+declares `is_entrypoint` on all five type kinds, but the Neo4j projection stamps it onto
+`:TSCallable` and `:TSClass` nodes alone, so widening it would make the backends disagree. And
+`get_config_keys()` is keyed by the config key's `can://` **id**, not by its artifact-relative
+`key` — a URI in a public return value, and one that embeds the application name, so the same key
+is a different string in two applications. Java fixed this in its own leg; python-sdk#346 tracks
+doing the same for Python and TypeScript, which is a cross-language break and not this leg's.
 
 One more is the emitter's: a value and a type of the same name (`const X = …` + `interface X`)
 share one id, so the graph holds one node with both labels. The backend rebuilds it as the facet
@@ -140,8 +174,8 @@ Most questions decompose into these. Start here, then use the tables below.
 
 ```python
 class LocateResult:
-    node: BodyNode | None      # innermost body node at that position
-    node_id: str | None        # handle for get_source()
+    body: BodyRef | None       # innermost body node at that position: {id, kind, span, callee}
+    node_id: str | None        # handle for get_source() — the same value as body.id
     callable: CallableRef | None
     type: TypeRef | None
     module: ModuleRef
@@ -340,7 +374,7 @@ detail — and know that shape is the one under review.
 class EntrypointCoverage:
     frameworks_detected: list[str]
     rulesets: list[str]
-    unresolved: list[str]
+    unresolved: dict[str, int]   # near-miss selector -> how many times it was seen
     errors: list[str]
     diagnostics: list[Diagnostic]
 ```
@@ -361,6 +395,13 @@ it and the answer is the pass's own report, same as the local backend.
 Concluding "this application has no attack surface" from an empty list is the single worst mistake
 available in this API.
 
+**On TypeScript** the same three accessors return `TSCallableOverview` / `TSClassOverview` / the
+same `EntrypointCoverage`, and the corpus makes the point for you: superset-frontend marks **one**
+entrypoint callable and no class, while its coverage record names the `commander` framework and 65
+unresolved selectors seen 411 times. Both backends supply the record in full — the local one from
+`TSApplication.entrypoint_report`, the graph one by parsing the `entrypoint_report_json` string on
+the `:Application` anchor. `get_entrypoint_classes()` is classes-only; see the TypeScript section.
+
 ---
 
 ## Repository artifacts and configuration
@@ -369,7 +410,7 @@ available in this API.
 | --- | --- | --- |
 | `get_artifacts()` | `Dict[str, PyArtifact]` | `py.get_artifacts()["pyproject.toml"]` |
 | `get_dependencies(direct_only=, ecosystem=, declared_in=)` | `List[PyDependency]` | `py.get_dependencies(direct_only=True)` |
-| `get_config_keys()` | `Dict[str, PyConfigKey]` | `py.get_config_keys()["DB_URL"]` |
+| `get_config_keys()` | `Dict[str, PyConfigKey]` | keyed by the key's `can://` **id**, not by `PyConfigKey.key` — filter on `.key` to find one by name (python-sdk#346) |
 | `get_config_uses(key=None)` | `List[PyConfigUseEdge]` | raw code→config edges |
 | `get_config_readers(key)` | `List[PyCallableOverview]` | **`py.get_config_readers("DB_URL")`** |
 | `get_unresolved_config_reads()` | `List[PyConfigRead]` | reads that could not be resolved |

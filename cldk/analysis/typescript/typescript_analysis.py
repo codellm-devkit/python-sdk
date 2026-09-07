@@ -25,11 +25,14 @@ those, delegates all indexing and query work to its backend (:class:`TSCodeanaly
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Sequence, Set, Tuple
 
 import networkx as nx
 
 from cldk.analysis.commons.backend_config import CodeAnalyzerConfig, Neo4jConnectionConfig, TSBackend, cache_subdir
+from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
+from cldk.analysis.commons.bounds import DEFAULT_DEPTH, DEFAULT_MAX_NODES, DEFAULT_MAX_PATHS, DEFAULT_PAGE_SIZE
+from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, FlowPaths, LocateResult, Slice, SliceNode
 from cldk.analysis.typescript.backend import TSAnalysisBackend
 from cldk.analysis.typescript.codeanalyzer import TSCodeanalyzer
 from cldk.analysis.typescript.neo4j import TSNeo4jBackend
@@ -38,8 +41,12 @@ from cldk.models.typescript import (
     TSCallable,
     TSCallableOverview,
     TSCallsite,
+    TSCdgEdge,
+    TSCfgEdge,
     TSClass,
     TSClassAttribute,
+    TSClassOverview,
+    TSDdgEdge,
     TSDecorator,
     TSEnum,
     TSEnumMember,
@@ -143,9 +150,11 @@ class TypeScriptAnalysis:
         return self.backend.get_call_graph_json()
 
     def get_callers(self, target_class_name: str, target_method_declaration: str | None = None) -> Dict:
-        """Callers of a method, with the connecting call-graph edge metadata (``provenance`` /
-        ``tags``). Pass a bare signature as the first argument for module-level functions or
-        external (phantom) targets."""
+        """Callers of a method, with the connecting call-graph edge metadata — ``type``,
+        ``weight`` and ``provenance``, the same three keys :meth:`get_call_graph` puts on an edge.
+        (There is no ``tags``: it was a schema-1.0.0 call-edge field, and schema v2's
+        ``TSCallGraphEdge`` is ``{src, dst, prov, weight}``.) Pass a bare signature as the first
+        argument for module-level functions or external (phantom) targets."""
         return self.backend.get_all_callers(target_class_name, target_method_declaration)
 
     def get_callees(self, source_class_name: str, source_method_declaration: str | None = None) -> Dict:
@@ -354,3 +363,520 @@ class TypeScriptAnalysis:
             Signatures with no matching callable are omitted.
         """
         return self.backend.get_callsites_for(signatures)
+
+    # -----[ addressing (leg 2.5b) ]-----
+    def locate(self, path: str, line: int) -> LocateResult:
+        """Resolve a source position to its enclosing callable, with the source in hand.
+
+        The single most-needed query for triaging a scanner alert: an alert arrives as
+        ``file:line`` and this resolves it to the enclosing callable in one call, rather than
+        ``get_method``, falling back to ``get_callers``, falling back to scanning the symbol table
+        by hand. Four outcomes stay distinguishable — see
+        :class:`~cldk.analysis.commons.results.LocateResult`: inside a callable (``callable`` set,
+        plus ``body`` when a body node is that precise), at real module scope (``module_scope``
+        diagnostic), in the gap between two callables (also module scope, never snapped to the
+        nearest callable), or in a file the analysis has no module for (``file_not_in_graph``).
+
+        There is no ``col`` parameter. Column-level disambiguation would have to be honoured by
+        both backends to mean anything, and the Neo4j graph projects only ``start_line`` /
+        ``end_line`` on ``:TSCallable`` and ``:TSBodyNode`` — so a ``col`` would work in-process and
+        be silently ignored over Neo4j. Better absent than documented and inert.
+
+        Args:
+            path: The file path. Normalised against the backend's module keys, so a ``./``-prefixed
+                or absolute path resolves rather than reading back as ``file_not_in_graph``.
+            line: The 1-based line number.
+
+        Returns:
+            A :class:`~cldk.analysis.commons.results.LocateResult` carrying the innermost body
+            node, the enclosing callable, its owning class/interface, its module, and the source
+            slice — never an ambiguous empty.
+
+        See Also:
+            :meth:`locate_many`: The bulk form — the point, not an optimisation.
+        """
+        return self.backend.locate(path, line)
+
+    def locate_many(self, positions: Sequence[Tuple[str, int]]) -> List[LocateResult]:
+        """Resolve many ``(path, line)`` positions in one round trip, in input order.
+
+        Args:
+            positions: The ``(path, line)`` pairs to resolve, e.g. from a scanner's alert list.
+
+        Returns:
+            One :class:`~cldk.analysis.commons.results.LocateResult` per input position, in the
+            same order.
+
+        See Also:
+            :meth:`locate`: The single-position form.
+        """
+        return self.backend.locate_many(positions)
+
+    def resolve_callable(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> SliceNode:
+        """Resolve a callable name to the one callable it names, in the caller's vocabulary.
+
+        The addressing step every name-taking accessor performs, exposed so a caller can perform it
+        once and keep the answer::
+
+            node = ts.resolve_callable("show", in_class="UserController")
+            node.callable   # the full dotted signature — what every other accessor keys by
+            node.file, node.line
+
+        ``name`` matches whole or as a dotted suffix; ``in_class`` is a dotted suffix of the owning
+        class or interface, ``in_module`` a module key (``"src/controllers.ts"``) or the dotted form
+        (``"src.controllers"``). An anonymous callable is addressed by its ``<anon@line:col>``
+        signature, never by its name — cants calls every one of them ``"(anonymous)"``. Ambiguity
+        raises with every candidate; nothing is guessed.
+
+        Raises:
+            AmbiguousName: More than one callable matched.
+            SelectorNotInGraph: Nothing matched — naming the argument that missed.
+        """
+        return self.backend.resolve_callable(name, in_class=in_class, in_module=in_module)
+
+    def resolve_value(self, name: str, *, within: str) -> SliceNode:
+        """Resolve a value name inside a callable — in TypeScript, a parameter — to the position
+        that carries it.
+
+        The same resolution the dataflow accessors perform on their ``src``, exposed so a caller can
+        check what a name means before asking a question of it::
+
+            ts.resolve_value("id", within="UserController.show").kind   # "parameter"
+
+        Raises:
+            AmbiguousName: ``within`` named more than one callable, or ``name`` more than one value.
+            SelectorNotInGraph: No such callable, or no such value in it.
+        """
+        return self.backend.resolve_value(name, within=within)
+
+    def get_source(self, node_id: str) -> str:
+        """Return the source text named by ``node_id`` — a callable, or one of its body nodes.
+
+        Generalises :meth:`get_method_bodies` below callable granularity: ``node_id`` is a
+        callable's signature, a callable's opaque id, or the body-node id
+        :attr:`~cldk.analysis.commons.results.LocateResult.node_id` hands back, so a statement or
+        call site :meth:`locate` found can be re-fetched precisely.
+
+        Args:
+            node_id: A callable signature, or an id from :meth:`locate` / :meth:`resolve_callable` —
+                passed back as received, not composed.
+
+        Returns:
+            The source text, never an ambiguous empty string.
+
+        Raises:
+            KeyError: Nothing matches ``node_id``, or it has no recoverable source.
+            NotImplementedError: (Neo4j backend only) ``node_id`` names a body node — the attached
+                graph carries no source text below callable granularity.
+        """
+        return self.backend.get_source(node_id)
+
+    def describe(self, nodes: Sequence[object]) -> List[SliceNode]:
+        """Fill in ``source`` for these positions, in one round trip.
+
+        Addressing answers *where*; this answers *what*, and it is a second call because source is
+        the one field with no size ceiling. Takes anything carrying an address — slice nodes, a
+        ``locate()`` result — and gives back the same
+        :class:`~cldk.analysis.commons.results.SliceNode` shape with ``source`` filled.
+
+        Afterwards, ``source=None`` means exactly one thing: **this position exists and there is no
+        text for it.** A ref that names nothing raises instead.
+
+        Args:
+            nodes: The positions to hydrate. An empty sequence costs no round trip.
+
+        Returns:
+            The same positions, in the same order, with ``source`` filled where the backend has
+            text for them.
+
+        Raises:
+            KeyError: A ref names nothing in this application.
+            TypeError: An element carries no address to look up.
+        """
+        return self.backend.describe(nodes)
+
+    @property
+    def has_resolution_edges(self) -> bool:
+        """Whether :meth:`get_callsites_for` can resolve call sites on this backend right now.
+
+        ``False`` means every ``callee_signature=None`` it returns is explained by the view having
+        been built below the level at which cants resolves callees, not by individual call sites
+        failing to resolve. On the local backend that is ``analysis.max_level < 2``; over Neo4j it
+        is a graph carrying no ``TS_RESOLVES_TO`` edge for this application.
+
+        See Also:
+            :meth:`get_callsites_for`: The accessor whose ``None`` this disambiguates.
+        """
+        return self.backend.has_resolution_edges
+
+    # =====================================================================================
+    # The dataflow surface (leg 2.5b, Task 2). Every signature is
+    # :class:`~cldk.analysis.python.python_analysis.PythonAnalysis`'s, keyword-for-keyword.
+    # =====================================================================================
+    def get_cfg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[TSCfgEdge]:
+        """Return one page of the control flow inside one callable, addressed by name.
+
+        The graph the analyzer built, not one re-derived here: a conditional's two successors stay
+        two edges discriminated by ``kind``. Endpoints are the body nodes' own opaque ids, which
+        :meth:`get_source` and :meth:`describe` both accept::
+
+            page = ts.get_cfg("show", in_class="UserController")
+            page.total          # the whole graph's size, on every page
+            page.complete       # False when there is more, with page.next_cursor to fetch it
+
+        Args:
+            callable: The callable's name, resolved as by :meth:`resolve_callable`.
+            in_class: Disambiguate by owning class or interface.
+            page_size: Most edges to return.
+            cursor: ``next_cursor`` from a previous page; ``None`` starts at the beginning.
+
+        Returns:
+            An :class:`~cldk.analysis.commons.results.EdgePage` of
+            :class:`~cldk.models.typescript.TSCfgEdge`.
+
+        Raises:
+            AmbiguousName: More than one callable matched.
+            SelectorNotInGraph: Nothing matched.
+            ValueError: ``page_size`` below 1, or a cursor from another page, callable or accessor.
+            CodeanalyzerUsageException: (local backend) built below
+                ``analysis_level="program_dependency_graph"``.
+        """
+        return self.backend.get_cfg(callable, in_class=in_class, page_size=page_size, cursor=cursor)
+
+    def get_cdg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[TSCdgEdge]:
+        """Return one page of the control *dependence* inside one callable.
+
+        ``src`` is the branching node ``dst`` is control dependent on. Arguments, paging and
+        failures are :meth:`get_cfg`'s.
+        """
+        return self.backend.get_cdg(callable, in_class=in_class, page_size=page_size, cursor=cursor)
+
+    def get_ddg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[TSDdgEdge]:
+        """Return one page of the data dependence inside one callable.
+
+        Each edge carries the variable it flows and the evidence for it. **TypeScript has a single
+        provenance tier:** every edge's ``prov`` is ``["reaching-defs"]``, where Python distinguishes
+        ``ssa`` / ``reaching-defs`` / ``points-to``. Arguments, paging and failures are
+        :meth:`get_cfg`'s.
+        """
+        return self.backend.get_ddg(callable, in_class=in_class, page_size=page_size, cursor=cursor)
+
+    def slice_backward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """Return everything the value ``src`` depends on — reverse reachability over the SDG.
+
+        ``depth`` defaults to a **finite** bound on purpose: a bounded traversal answers a narrower
+        question *completely*, and ``total`` says how much was left out. ``depth=None`` asks for the
+        whole cone::
+
+            s = ts.slice_backward("id", within="UserController.show")
+            s.total, s.truncated
+
+        Args:
+            src: The value's name — in TypeScript, a parameter.
+            within: The callable to look inside. Required: a value name is scoped by its callable.
+            depth: Most hops from the seed; ``None`` for the whole cone.
+            max_nodes: Most nodes in the result; a cap that fires is reported, never silent.
+
+        Returns:
+            A :class:`~cldk.analysis.commons.results.Slice`, ordered by node id, with ``source``
+            unhydrated (:meth:`describe` fills it in).
+
+        Raises:
+            AmbiguousName: ``within`` or ``src`` matched more than one thing.
+            SelectorNotInGraph: No such callable, or no such value in it.
+            ValueError: ``depth`` is not a positive ``int``, or ``max_nodes`` is below 1.
+        """
+        return self.backend.slice_backward(src, within=within, depth=depth, max_nodes=max_nodes)
+
+    def slice_forward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """Return everything the value ``src`` can affect — the same edges read forward.
+
+        Usually the interesting direction for a parameter: nothing flows *into* one except from its
+        callers. Arguments, bounds and failures are :meth:`slice_backward`'s.
+        """
+        return self.backend.slice_forward(src, within=within, depth=depth, max_nodes=max_nodes)
+
+    def reaches(self, src: str, dst: str, *, depth: int | None = None) -> bool:
+        """Return whether control can get from one callable to another over the call graph.
+
+        The cheap check before asking for the paths themselves. **``depth`` is unbounded by
+        default**, unlike the slices: a bound on a boolean would collapse "there is no path" and
+        "there is no path within five hops" into the same ``False``.
+
+        Args:
+            src: The calling callable's name.
+            dst: The called callable's name.
+            depth: Most call hops, or ``None`` for any distance.
+
+        Raises:
+            AmbiguousName: Either name matched more than one callable.
+            SelectorNotInGraph: Either matched none.
+            ValueError: ``depth`` is not a positive ``int``.
+        """
+        return self.backend.reaches(src, dst, depth=depth)
+
+    def backward_cone(self, sinks: Sequence[str], *, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """Return every call-graph vertex that can reach any of ``sinks`` — "what could get here".
+
+        The accessor to reach for when the sink is a dangerous function and the question is which
+        entry points lead to it. Its nodes are callables **and modules**: cants makes a module the
+        caller of its own top-level code, so a cone without them would under-report.
+
+        Args:
+            sinks: The callables to walk back from; a bare string is refused.
+            depth: Most call hops back; ``None`` for the whole cone.
+            max_nodes: Most nodes in the result.
+
+        Raises:
+            AmbiguousName: A sink matched more than one callable.
+            SelectorNotInGraph: A sink matched none.
+            TypeError: ``sinks`` is a bare string.
+            ValueError: ``sinks`` is empty, or a bound is out of range.
+        """
+        return self.backend.backward_cone(sinks, depth=depth, max_nodes=max_nodes)
+
+    def callers_of(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> List[SliceNode]:
+        """Return who calls this — one hop back over the call graph, addressed by name.
+
+        The name-based sibling of :meth:`get_callers`, returning
+        :class:`~cldk.analysis.commons.results.SliceNode` objects rather than raw dicts. A module is
+        a legitimate caller (``kind="module"``). ``[]`` is unambiguous: a name matching nothing
+        raises.
+
+        Raises:
+            AmbiguousName: More than one callable matched.
+            SelectorNotInGraph: Nothing matched.
+        """
+        return self.backend.callers_of(name, in_class=in_class, in_module=in_module)
+
+    def callees_of(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> List[SliceNode]:
+        """Return what this calls — one hop forward, externals included (``kind="external"``).
+
+        An external was never analysed, so it has no position: ``file=""`` and ``line=0``, with
+        ``kind`` saying why. Its ``callable`` is the readable ``"<module>.<name>"``.
+
+        Raises:
+            AmbiguousName: More than one callable matched.
+            SelectorNotInGraph: Nothing matched.
+        """
+        return self.backend.callees_of(name, in_class=in_class, in_module=in_module)
+
+    def paths_between(self, src: str, dst: str, *, src_within: str, dst_within: str, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+        """Return how one value reaches another — the *sequences*, where a slice is the set.
+
+        Each hop says what justified it: the kind of edge (``data`` / ``control`` / ``argument`` /
+        ``return`` / ``summary``), the variable, and the provenance — which in TypeScript is always
+        ``["reaching-defs"]``. Only shortest paths are returned.
+
+        **Two scopes, not one**: a value is addressed by a name plus the callable it enters, and a
+        single scope could never find the cross-callable path this accessor exists for. ``depth`` is
+        unbounded by default, for :meth:`reaches`'s reason.
+
+        Args:
+            src: The value the flow starts at.
+            dst: The value it must reach.
+            src_within: The callable ``src`` enters. Required.
+            dst_within: The callable ``dst`` enters. Required.
+            depth: Most hops a path may take; ``None`` for no bound.
+            max_paths: Most paths to return; ``complete`` says whether more existed.
+
+        Raises:
+            AmbiguousName: A name matched more than one thing.
+            SelectorNotInGraph: A name matched nothing.
+            ValueError: A bound is out of range, or the two endpoints are the same position.
+        """
+        return self.backend.paths_between(src, dst, src_within=src_within, dst_within=dst_within, depth=depth, max_paths=max_paths)
+
+    def call_paths_between(self, src: str, dst: str, *, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+        """Return how one callable reaches another — the evidence-carrying form of :meth:`reaches`.
+
+        Every hop is ``via="call"`` with no variable and no provenance: a call is a syntactic fact,
+        and saying so is better than inventing a provenance for it. ``depth`` is unbounded by
+        default.
+
+        Raises:
+            AmbiguousName: Either name matched more than one callable.
+            SelectorNotInGraph: Either matched nothing.
+            ValueError: A bound is out of range, or ``src`` and ``dst`` name the same callable.
+        """
+        return self.backend.call_paths_between(src, dst, depth=depth, max_paths=max_paths)
+
+    def flows_to_call(self, src: str, callee: str, *, within: str, depth: int | None = None) -> bool:
+        """Return whether this value reaches **any** argument of a call to ``callee``.
+
+        A dataflow claim, not a control one: a value that merely runs before a call site and feeds
+        none of its arguments is not counted. ``depth`` is unbounded by default — a bare ``False``
+        carries no signal that a bound fired.
+
+        Args:
+            src: The value, named as a caller would.
+            callee: The called callable.
+            within: The callable ``src`` enters. Required; it scopes ``src`` only.
+            depth: Most hops; ``None`` for no bound.
+
+        Raises:
+            AmbiguousName: A name matched more than one thing.
+            SelectorNotInGraph: A name matched nothing.
+            ValueError: ``depth`` is not a positive ``int``.
+        """
+        return self.backend.flows_to_call(src, callee, within=within, depth=depth)
+
+    def flows_to_argument(self, src: str, callee: str, arg: str, *, within: str, depth: int | None = None) -> bool:
+        """Return whether this value reaches the argument ``arg`` of a call to ``callee``.
+
+        The narrower question: a tainted value routinely reaches a function without reaching the
+        parameter that matters. ``arg`` is resolved **by name**, never by position.
+
+        Args:
+            src: The value the flow starts at.
+            callee: The called callable.
+            arg: The callee's parameter, by name.
+            within: The callable ``src`` enters. Required; ``arg`` is scoped by ``callee``.
+            depth: Most hops; ``None`` for no bound.
+
+        Raises:
+            AmbiguousName: A name matched more than one thing.
+            SelectorNotInGraph: A name matched nothing — including ``arg`` naming no parameter of
+                ``callee``, which is a caller error and not a ``False``.
+            ValueError: ``depth`` is not a positive ``int``.
+        """
+        return self.backend.flows_to_argument(src, callee, arg, within=within, depth=depth)
+
+    # =====================================================================================
+    # Entrypoints and the repository-artifact layer (leg 2.5b, Task 3)
+    #
+    # The five artifact getters have been on both *backends* since leg 2.5a; this is where a
+    # caller reaches them. They return the shared ``Py*`` models on purpose -- the artifact layer
+    # is the one part of the graph every analyzer projects identically, so a TypeScript-only copy
+    # of the models would be a second name for the same thing (see
+    # ``cldk/analysis/commons/backend.py``'s module docstring).
+    # =====================================================================================
+    def get_entrypoints(self) -> List[TSCallableOverview]:
+        """Return overviews of every callable the analyzer marked as an entrypoint.
+
+        A CLI command, a route handler — whatever ruleset the entrypoint pass matched. This is
+        where an agent starts a taint question: the callables reachable from outside.
+
+        Returns:
+            One overview per marked callable. Empty means the pass found no entrypoint
+            *callables* — a real fact about the project, not "cannot tell".
+
+        See Also:
+            :meth:`get_entrypoint_classes`: The class-level sibling this walk never sees.
+            :meth:`get_entrypoint_coverage`: Whether the detection pass itself had gaps.
+        """
+        return self.backend.get_entrypoints()
+
+    def get_entrypoint_classes(self) -> List[TSClassOverview]:
+        """Return overviews of every class the analyzer marked as an entrypoint in its own right.
+
+        :meth:`get_entrypoints` walks callables only, so a class the rulesets matched with no
+        individually-marked method is invisible to it.
+
+        Returns:
+            One overview per marked class. Empty means no class carries the mark.
+
+        See Also:
+            :meth:`get_entrypoints`: The callable-level projection.
+        """
+        return self.backend.get_entrypoint_classes()
+
+    def get_entrypoint_coverage(self) -> EntrypointCoverage:
+        """Return the entrypoint-detection pass's own coverage and failure record.
+
+        Entrypoint detection under-approximates by design, so silence is its failure mode:
+        :meth:`get_entrypoints` returning ``[]`` cannot say whether the pass ran clean or gave up.
+        This is what distinguishes them — the frameworks it recognized, the rulesets it consulted,
+        the near-misses it could not resolve, and the errors it hit.
+
+        Returns:
+            The coverage record. A non-empty ``diagnostics`` means the source carries no report at
+            all, and the other fields are then not "no gaps found" but "nothing to report from".
+
+        See Also:
+            :meth:`get_entrypoints`: The accessor whose empty result this disambiguates.
+        """
+        return self.backend.get_entrypoint_coverage()
+
+    def get_artifacts(self) -> Dict[str, PyArtifact]:
+        """Return every non-code artifact the analyzer indexed, keyed by repo-relative path.
+
+        ``package.json``, ``tsconfig.json``, a lockfile, a Dockerfile — the files that say what the
+        project depends on and how it is configured, which the code itself never states.
+
+        Returns:
+            ``{path: artifact}``. Each artifact carries its roles, its text and the config keys it
+            defines.
+
+        See Also:
+            :meth:`get_dependencies`, :meth:`get_config_keys`, :meth:`get_config_uses`.
+        """
+        return self.backend.get_artifacts()
+
+    def get_dependencies(self, *, direct_only: bool = False, ecosystem: str | None = None, declared_in: str | None = None) -> List[PyDependency]:
+        """Return every declared dependency, optionally filtered.
+
+        Args:
+            direct_only: Keep only dependencies the project declares itself, not transitive ones.
+            ecosystem: Keep only one packaging ecosystem. Every TypeScript dependency is ``npm``.
+            declared_in: Keep only dependencies declared by one artifact (``PyDependency.declared_in``,
+                e.g. from :meth:`get_artifacts`).
+
+        Returns:
+            The matching dependencies.
+        """
+        return self.backend.get_dependencies(direct_only=direct_only, ecosystem=ecosystem, declared_in=declared_in)
+
+    def get_config_keys(self) -> Dict[str, PyConfigKey]:
+        """Return every configuration key the analyzer extracted from the artifacts.
+
+        Returns:
+            ``{id: key}``. Each value carries the key's dotted name, its namespace and its literal
+            value as text.
+        """
+        return self.backend.get_config_keys()
+
+    def get_config_uses(self, key: str | None = None) -> List[PyConfigUseEdge]:
+        """Return the resolved edges from a code read to the configuration key it names.
+
+        Args:
+            key: Keep only edges naming this key by its dotted name (e.g.
+                ``"compilerOptions.strict"``) — matched against :meth:`get_config_keys`, since the
+                edge itself carries ids.
+
+        Returns:
+            The matching edges.
+
+        See Also:
+            :meth:`get_config_readers`: The same edges, resolved to their reading callables.
+            :meth:`get_unresolved_config_reads`: The reads this cannot show.
+        """
+        return self.backend.get_config_uses(key)
+
+    def get_unresolved_config_reads(self) -> List[PyConfigRead]:
+        """Return every detector-matched configuration read that resolved to no declared key.
+
+        :meth:`get_config_uses` can only show reads that landed on a key the analyzer extracted. A
+        read of a key defined somewhere it does not index resolves to nothing, and an empty
+        :meth:`get_config_uses` for some key cannot then distinguish "nothing reads this" from "a
+        read exists and never resolved". This is that second list.
+
+        Returns:
+            The unresolved reads, each naming the call site and the callee it went through.
+        """
+        return self.backend.get_unresolved_config_reads()
+
+    def get_config_readers(self, key: str) -> List[TSCallableOverview]:
+        """Return overviews of every callable that reads configuration key ``key``.
+
+        :meth:`get_config_uses` hands back opaque body-node ids; this answers the question a caller
+        actually has — *which code* reads this setting.
+
+        Args:
+            key: The key's dotted name, exactly as :meth:`get_config_uses` matches it.
+
+        Returns:
+            One overview per reading callable. Empty means no callable reads this key — see
+            :meth:`get_unresolved_config_reads` for the read that never resolved to one.
+        """
+        return self.backend.get_config_readers(key)

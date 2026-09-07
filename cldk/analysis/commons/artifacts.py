@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from typing import Any, List, Mapping
 
-from cldk.models.python import PyArtifact, PyConfigKey, PyDependency, Span
+from cldk.models.python import PyArtifact, PyConfigKey, PyDependency
 
 Props = Mapping[str, Any]
 
@@ -40,7 +40,11 @@ def config_key(props: Props) -> PyConfigKey:
     Line-only ``span`` (see :func:`body_node`): the projection writes ``start_line``/``end_line``
     and nothing finer, so the columns and byte offsets rehydrate as ``0``. ``span`` stays ``None``
     when the node carries no lines at all (best-effort extraction never located the key in the
-    artifact's source).
+    artifact's source). It is spelled as a mapping rather than built from
+    ``cldk.models.python.Span``: ``PyConfigKey.span`` is annotated on *that* class, so only it
+    validates -- and importing it here would put one language's declaration schema back into
+    ``commons/`` (TS-1), which the shared artifact layer is exempt from only for the five ``Py*``
+    models this module rebuilds.
     """
     lines = (props.get("start_line"), props.get("end_line"))
     return PyConfigKey(
@@ -48,7 +52,7 @@ def config_key(props: Props) -> PyConfigKey:
         key=props.get("key", ""),
         namespace=props.get("namespace", ""),
         value=props.get("value"),
-        span=Span(start=(lines[0], 0), end=(lines[1], 0), bytes=(0, 0)) if None not in lines else None,
+        span={"start": (lines[0], 0), "end": (lines[1], 0), "bytes": (0, 0)} if None not in lines else None,
         references=list(props.get("references", []) or []),
     )
 

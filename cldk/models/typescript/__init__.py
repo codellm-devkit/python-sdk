@@ -72,7 +72,7 @@ from .models import (
     TSTypeParameter,
     TSVariableDeclaration,
 )
-from .projections import TSCallableOverview
+from .projections import TSCallableOverview, TSClassOverview
 
 __all__ = [
     "TSAnalysis",
@@ -84,6 +84,7 @@ __all__ = [
     "TSCallGraphEdge",
     "TSCallable",
     "TSCallableOverview",
+    "TSClassOverview",
     "TSCallableParameter",
     "TSCallsite",
     "TSCdgEdge",

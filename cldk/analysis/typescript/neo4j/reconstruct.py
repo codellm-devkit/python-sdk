@@ -51,6 +51,7 @@ from typing import Any, Dict, List, Mapping
 from cldk.models.typescript import (
     TSCallable,
     TSCallableOverview,
+    TSClassOverview,
     TSCallsite,
     TSClass,
     TSDecorator,
@@ -165,6 +166,22 @@ def overview(row: Props) -> TSCallableOverview:
         is_async=bool(row.get("is_async", False)),
         is_static=bool(row.get("is_static", False)),
         accessibility=row.get("accessibility"),
+    )
+
+
+def class_overview(row: Props) -> TSClassOverview:
+    """A projected class row (``get_entrypoint_classes``'s ``RETURN`` plus a derived ``path``).
+
+    Defensive in the same way :func:`overview` is: the projection reads properties the graph is
+    free not to carry, and a missing line is the model's ``-1`` sentinel rather than a
+    ``ValidationError`` on a class the caller asked about."""
+    return TSClassOverview(
+        signature=row.get("signature", ""),
+        name=row.get("name", ""),
+        path=row["path"],
+        start_line=row.get("start_line", -1),
+        end_line=row.get("end_line", -1),
+        decorators=[d for d in (row.get("decorators") or []) if d is not None],
     )
 
 

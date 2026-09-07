@@ -411,7 +411,7 @@ def test_locate_resolves_to_the_enclosing_callable(analysis, sample):
     assert result.span.end[0] == sample["end_line"]
 
     # The position was chosen to sit on a call body node, so it must resolve past the callable.
-    assert result.node is not None
+    assert result.body is not None
     assert result.node_id is not None
     # #320: the id is the graph's own ``:PyBodyNode.id``, read off the node — not composed from
     # the dotted signature, which is a different namespace and joined to nothing.
@@ -507,7 +507,7 @@ def test_locate_at_module_scope_reports_source_unavailable(analysis, sample):
     result = analysis.locate(sample["module_path"], sample["module_scope_line"])
 
     assert result.callable is None
-    assert result.node is None
+    assert result.body is None
     assert result.type is None
     assert result.module.path == sample["module_path"]
     assert result.source == ""

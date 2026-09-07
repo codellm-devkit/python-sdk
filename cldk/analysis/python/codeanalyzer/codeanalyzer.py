@@ -50,6 +50,7 @@ See Also:
 from __future__ import annotations
 
 import logging
+from functools import partial
 from pathlib import Path
 from typing import Dict, Iterator, List, Sequence, Tuple, Union
 
@@ -62,7 +63,7 @@ from codeanalyzer.schema import Analysis, model_dump_json
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.levels import ANALYZER_LEVELS, LEVEL_NAMES, analyzer_level
 from cldk.analysis.commons.resolve import CallableCandidate, body_node_kind, resolve_callable_signature, resolve_value_name, resolve_within, value_candidate
-from cldk.analysis.commons.results import CallableRef, Diagnostic, EdgePage, EntrypointCoverage, FlowPaths, LocateResult, ModuleRef, Slice, SliceNode, TypeRef
+from cldk.analysis.commons.results import BodyRef, CallableRef, Diagnostic, EdgePage, EntrypointCoverage, FlowPaths, LocateResult, ModuleRef, Slice, SliceNode, TypeRef
 from cldk.utils.exceptions import CodeanalyzerUsageException
 from cldk.analysis.python.backend import (
     CDG_ORDER,
@@ -87,6 +88,7 @@ from cldk.analysis.python.backend import (
     flow_path,
     resolve_module_key,
     scope_paths,
+    shortest_walks,
     slice_resolved,
 )
 from cldk.models.python import (
@@ -1417,58 +1419,12 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         return out
 
     # -----[ paths, mixed queries, hydration ]-----
-    @staticmethod
-    def _shortest_walks(edges: Dict[str, Dict[str, list]], src: str, dst: str, depth: int | None, limit: int) -> List[list]:
-        """Up to ``limit`` shortest ``src``->``dst`` walks over ``edges``, in the documented order.
-
-        The local twin of the graph's ``allShortestPaths``, and only shortest walks for its reason:
-        enumerating every walk does not terminate on a real dependence graph.
-
-        Two passes. The first is the same breadth-first level walk :meth:`_reach` does, keeping the
-        hop count each node was *first* reached at; the second is a depth-first replay that only
-        ever steps to a node whose recorded distance is exactly one more than the walk so far, so
-        it visits shortest walks and nothing else.
-
-        The replay's branch order is ``(via, var, to)`` -- exactly the per-hop key
-        :func:`~cldk.analysis.python.backend.hop_sort_key` documents -- and every walk found has
-        the same length, so a pre-order depth-first traversal emits them already sorted. That is
-        what makes ``limit`` a *prefix* of a total order rather than whichever ``limit`` walks the
-        recursion happened to find first.
-        """
-        dist, frontier, hops = {src: 0}, [src], 0
-        while frontier and dst not in dist and (depth is None or hops < depth):
-            hops += 1
-            nxt = []
-            for s in frontier:
-                for d in edges.get(s, ()):
-                    if d not in dist:
-                        dist[d] = hops
-                        nxt.append(d)
-            frontier = nxt
-        if dst not in dist or dist[dst] == 0:
-            return []
-        target, out = dist[dst], []
-
-        def walk(node: str, walked: list) -> None:
-            if len(walked) == target:
-                if node == dst:
-                    out.append(list(walked))
-                return
-            options = sorted(
-                (VIA[rel], var or "", d, (rel, var, prov))
-                for d, labels in edges.get(node, {}).items()
-                if dist.get(d) == len(walked) + 1
-                for rel, var, prov in labels
-            )
-            for _, _, d, label in options:
-                walked.append((d, label))
-                walk(d, walked)
-                walked.pop()
-                if len(out) >= limit:
-                    return
-
-        walk(src, [])
-        return out
+    #: Up to ``limit`` shortest walks over a ``{src: {dst: [label]}}`` adjacency, in
+    #: :func:`~cldk.analysis.python.backend.hop_sort_key` order. Lifted to
+    #: :func:`~cldk.analysis.commons.graphs.shortest_walks` (leg 2.5b) with the ``via`` table as its
+    #: one parameter -- it is a graph algorithm over strings and knows no language, and TypeScript's
+    #: local backend answers ``paths_between`` with the same two passes.
+    _shortest_walks = staticmethod(partial(shortest_walks, via=VIA))
 
     def _value_paths(self, a: SliceNode, b: SliceNode, depth: int | None, max_paths: int) -> FlowPaths:
         """Build the :class:`FlowPaths` for value ``a`` -> value ``b``."""
@@ -1711,7 +1667,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         on_disk = Path(path).is_file() or bool(project_dir and (Path(project_dir) / path).is_file())
         why = "the file exists but no analysed module covers it" if on_disk else "no such file in the analysed project"
         return LocateResult(
-            node=None,
+            body=None,
             callable=None,
             type=None,
             module=ModuleRef(path=str(path)),
@@ -1735,7 +1691,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         found = _find_innermost(module, line)
         if found is None:
             return LocateResult(
-                node=None,
+                body=None,
                 callable=None,
                 type=None,
                 module=module_ref,
@@ -1753,8 +1709,11 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         # a bare ``"line:col"``, so this path was already right; it routes through the shared
         # helper so it stays right if that ever changes.
         node, node_id = (found_body[1], body_node_id(c.id, found_body[0])) if found_body else (None, None)
+        # ``BodyRef`` is the language-neutral handle (TS-1): id, kind, span, and -- unlike the graph
+        # backend, where callee resolution is a separate ``PY_RESOLVES_TO`` edge and not a node
+        # property -- the callee the analyzer already resolved on a call node.
         return LocateResult(
-            node=node,
+            body=BodyRef(id=node_id or "", kind=node.kind, span=node.span, callee=node.callee) if node else None,
             node_id=node_id,
             callable=CallableRef(signature=c.signature, name=c.name, class_signature=owner.signature if owner else None),
             type=TypeRef(signature=owner.signature, name=owner.name) if owner else None,

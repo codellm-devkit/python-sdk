@@ -37,6 +37,33 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
+def pytest_configure(config):
+    config.addinivalue_line("markers", "timed: the test asserts on a wall clock; coverage is paused around its call")
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_call(item):
+    """Pause the coverage tracer around a ``timed`` test's call -- when there is one to pause.
+
+    The same hook ``tests/analysis/python/conftest.py`` carries, and for the same measured reason:
+    leg 1.5 saw about five seconds of tracer overhead on one large accessor, so a wall-clock
+    assertion run under instrumentation measures the tracer, not the query. pytest-cov's own
+    ``no_cover`` marker does the same, but its hook (through 7.1.0) dereferences ``cov_controller``
+    unguarded, and under ``--no-cov`` that is ``None``. This checks for the plugin *and* a live
+    controller.
+    """
+    cov = item.config.pluginmanager.get_plugin("_cov")
+    controller = getattr(cov, "cov_controller", None)
+    if item.get_closest_marker("timed") and controller is not None:
+        controller.pause()
+        try:
+            yield
+        finally:
+            controller.resume()
+    else:
+        yield
+
+
 # --- neutralize the heavy autouse fixtures from the parent conftest for this subtree ---
 @pytest.fixture(scope="session", autouse=True)
 def test_fixture():  # noqa: D401 - override
@@ -131,7 +158,7 @@ class FakeDriver:
     """Stands in for ``neo4j.GraphDatabase.driver``. ``analyzer_version=None`` means "no
     ``:Application`` with that id"."""
 
-    def __init__(self, rel_types=V2_RELATIONSHIP_TYPES, responder=None, analyzer_version="1.2.0") -> None:
+    def __init__(self, rel_types=V2_RELATIONSHIP_TYPES, responder=None, analyzer_version="1.3.0") -> None:
         self.rel_types = set(rel_types)
         self.analyzer_version = analyzer_version
         self.responder = responder

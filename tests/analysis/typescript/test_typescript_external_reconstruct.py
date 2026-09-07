@@ -41,10 +41,15 @@ def test_external_reconstructs_with_empty_name_and_module():
     assert isinstance(sym, TSExternalNode)
 
 
-def test_get_external_symbols_keys_module_dot_name_and_scopes_by_the_external_prefix():
+def test_get_external_symbols_keys_module_dot_name_and_scopes_by_both_namespace_prefixes():
+    """The scope is the **two** application prefixes plus the ``@external`` segment, not the
+    typescript prefix alone: an external a ``.js`` module owns is homed under
+    ``can://javascript/<app>/`` and a single-prefix reading dropped it silently (TS-3; leg 2.5b
+    review, finding 9). The third row is that external, and it must come back."""
     rows = [
         {"p": {"id": f"{APP_ID}/@external/commander/parse", "name": "parse", "module": "commander", "kind": "external"}},
         {"p": {"id": f"{APP_ID}/@external/fs/readFileSync", "name": "readFileSync", "module": "fs", "kind": "external"}},
+        {"p": {"id": "can://javascript/app/@external/lodash/merge", "name": "merge", "module": "lodash", "kind": "external"}},
     ]
     captured = {}
 
@@ -57,8 +62,8 @@ def test_get_external_symbols_keys_module_dot_name_and_scopes_by_the_external_pr
     backend.application_name = "app"
     with patch.object(TSNeo4jBackend, "_run", side_effect=_run):
         out = backend.get_external_symbols()
-    assert set(out) == {"commander.parse", "fs.readFileSync"}
+    assert set(out) == {"commander.parse", "fs.readFileSync", "lodash.merge"}
     assert out["commander.parse"].module == "commander"
     assert out["commander.parse"].id == f"{APP_ID}/@external/commander/parse"
-    assert "(e:TSExternal) WHERE e.id STARTS WITH $prefix" in captured["query"]
-    assert captured["prefix"] == f"{APP_ID}/@external/"
+    assert "(e:TSExternal) WHERE (e.id STARTS WITH $p1 OR e.id STARTS WITH $p2) AND e.id CONTAINS '/@external/'" in captured["query"]
+    assert (captured["p1"], captured["p2"]) == (f"{APP_ID}/", "can://javascript/app/")

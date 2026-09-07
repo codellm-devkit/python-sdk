@@ -66,10 +66,11 @@ from cldk.analysis.commons.graphs import (
     hop_sort_key,
     sdg_rel_pattern,
     sdg_rels,
+    shortest_walks,
     slice_resolved,
     via_table,
 )
-from cldk.analysis.commons.keys import call_graph_scope, resolve_module_key, scope_paths
+from cldk.analysis.commons.keys import body_key_column, call_graph_scope, resolve_module_key, scope_paths
 from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, FlowPaths, LocateResult, Slice, SliceNode
 from cldk.models.python import (
     CdgEdge,
@@ -87,22 +88,9 @@ from cldk.models.python import (
 )
 
 
-def body_key_column(key: str) -> int:
-    """The start column encoded in a body node's local key (``"21:12"`` -> ``12``), or ``-1``.
-
-    Both backends need one tie-break for two body nodes that span the *same* line — ``if x: return x``
-    emits an ``if`` and a ``return`` each spanning one line — and line numbers are the only positional
-    data the Neo4j projection carries, so the span cannot break it. The local *key* can: it is
-    ``<line>:<col>`` (sometimes suffixed, as in ``"22:8/actual_in:0"``), it exists on both sides
-    (locally the ``body`` dict key, over Neo4j the trailing segment of ``<callable id>@<key>``), and a
-    larger column is the more deeply nested statement. Comparing the keys as *strings* instead would
-    order ``"29:10"`` before ``"29:4"`` and pick the outer node, so the column is parsed as an int.
-
-    ``-1`` for a key with no column (the synthetic ``@entry`` / ``@exit`` vertices) — they carry no
-    span, so they are filtered out before ranking and never reach this.
-    """
-    _, _, col = key.split("/", 1)[0].partition(":")
-    return int(col) if col.isdigit() else -1
+# ``body_key_column`` moved to :mod:`cldk.analysis.commons.keys` (leg 2.5b): its key grammar is
+# shared with TypeScript's body nodes, and a second copy is a second thing to keep in step. It is
+# imported above and re-exported from here, which is where every Python caller already reads it.
 
 
 _CFG_KEY, _CDG_KEY, _DDG_KEY = edge_sort_key("cfg"), edge_sort_key("cdg"), edge_sort_key("ddg")
@@ -423,15 +411,16 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
 
     # -----[ locate ]-----
     # The v2 query-facade spec's D3. Declared here rather than on the generic cross-language ABC
-    # because LocateResult carries codeanalyzer-python's BodyNode/Span — see
-    # cldk/analysis/commons/backend.py's module docstring for why that stays out of the shared
-    # contract until a second language implements it.
+    # because it has one implementation, not because of its types: TS-1 (leg 2.5b) made
+    # LocateResult language-neutral (BodyRef + the commons Span), so the type blocker is gone and
+    # the declaration hoists with TypeScript's implementation — see
+    # cldk/analysis/commons/backend.py's module docstring.
     @abstractmethod
     def locate(self, path: str, line: int) -> LocateResult:
         """Resolve a source position to its enclosing callable, with the source in hand.
 
         Four outcomes, kept distinguishable rather than collapsed into an ambiguous empty: inside a
-        callable (``callable`` set, and ``node`` set too when a body node is that precise); at module
+        callable (``callable`` set, and ``body`` set too when a body node is that precise); at module
         scope (a real position with no enclosing callable — a ``module_scope`` diagnostic); in the
         gap between two callables (also module scope, and never silently snapped to the nearest
         callable); or in a file the graph has no module for (``file_not_in_graph``).
@@ -557,7 +546,7 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
 
         Generalises body access below callable granularity: ``node_id`` is either a callable's
         signature (the same key :meth:`get_method_bodies` uses) or the opaque body-node id
-        :attr:`LocateResult.node_id` hands back alongside :attr:`LocateResult.node`, so a caller
+        :attr:`LocateResult.node_id` hands back alongside :attr:`LocateResult.body`, so a caller
         can re-fetch the precise statement or call site :meth:`locate` found, not just its
         enclosing callable. The body-node form is the analyzer's own id
         (``"<callable can:// id>@<body key>"``) — round-tripped, never composed by the caller.

@@ -14,14 +14,20 @@
 # limitations under the License.
 ################################################################################
 
-"""The v2 TypeScript models against real codeanalyzer-typescript 1.2.0 output, one fixture per
-analysis level (``tests/resources/typescript/analysis_json/v2/a{1,2,3,4}``)."""
+"""The v2 TypeScript models against real codeanalyzer-typescript output, one fixture per analysis
+level (``tests/resources/typescript/analysis_json/v2/a{1,2,3,4}``), at whatever the pin says.
+
+Leg 2.5a wrote these models against 1.2.0 and pre-declared 1.3.0's additive fields as optional so
+one model parses both generations; leg 2.5b moved the pin and regenerated the fixtures.
+:func:`test_the_pinned_generation_parses_with_nothing_widened` is what holds that claim honest.
+"""
 
 import json
 from pathlib import Path
 from typing import Iterator, Tuple
 
 import pytest
+import toml
 from pydantic import ValidationError
 
 from cldk.models.typescript import (
@@ -38,6 +44,14 @@ from cldk.models.typescript import (
 )
 
 FIXTURES = Path(__file__).resolve().parents[2] / "resources" / "typescript" / "analysis_json" / "v2"
+
+
+def _pinned_version() -> str:
+    """The pinned analyzer, read rather than written down: the fixtures are regenerated with the
+    pinned wheel, so a hand-copied version string here is one more place a pin bump has to be
+    remembered (and 2.5b found it stale)."""
+    root = Path(__file__).resolve().parents[2].parent
+    return toml.load(root / "pyproject.toml")["tool"]["backend-versions"]["codeanalyzer-typescript"]
 
 
 def _load(level: int) -> TSAnalysis:
@@ -78,7 +92,7 @@ def test_every_level_validates(level: int):
     assert a.language == "typescript"
     assert a.max_level == level
     assert a.analyzer.name == "codeanalyzer-typescript"
-    assert a.analyzer.version == "1.2.0"  # T2: read from the pin in pyproject [tool.backend-versions]
+    assert a.analyzer.version == _pinned_version()
     assert a.application.id == "can://typescript/slim"
     assert a.application.kind == "application"
     assert (a.k_limit is not None) == (level >= 3)
@@ -236,3 +250,58 @@ def test_every_type_kind_accepts_the_1_3_0_entrypoint_fields():
         assert node.is_entrypoint is True, kind
         assert node.entrypoints and node.entrypoints[0].framework == "express", kind
         assert cls.model_validate({k: v for k, v in raw.items() if k not in ("is_entrypoint", "entrypoints")}).is_entrypoint is None, kind
+
+
+def test_the_pinned_generation_parses_with_nothing_widened():
+    """The 1.3.0 bump moved no model (leg 2.5b, Task 0).
+
+    Every fixture is 1.3.0 output and every model is ``extra="forbid"``, so a field 1.3.0 added
+    that 2.5a had not pre-declared would be a ``ValidationError`` here, not a silent pass. What
+    1.3.0 added over 1.2.0 in this corpus: ``application.entrypoint_report`` (**required** on the
+    application in 1.3.0's ``schema.ts``, kept optional here because the graph-backed application
+    view carries the report as a JSON string on the anchor instead), ``is_entrypoint`` /
+    ``entrypoints`` on classes and callables, ``parameters[].id`` and body-node ``id``s, and the
+    L4 port lattice wired into the statement DDG.
+    """
+    for level in (1, 2, 3, 4):
+        a = _load(level)  # extra="forbid": this line is the assertion
+        report = a.application.entrypoint_report
+        assert report is not None, f"a{level} carries no entrypoint_report"
+        assert report.rulesets == ["shipped"]
+        assert report.unresolved == {"Get": 2, "Controller": 1}
+        assert report.frameworks_detected == [] and report.errors == []
+
+
+def test_is_entrypoint_is_declared_on_every_type_kind_and_emitted_where_the_corpus_has_one():
+    """``entrypoints`` / ``is_entrypoint`` live on ``TSType``, the base every kind extends, and on
+    ``TSCallable`` -- so all five kinds *parse* them.
+
+    Only classes and callables carry them in this corpus, which is a property of the corpus, not of
+    1.3.0: this application declares no entrypoint at all (``is_entrypoint`` is ``False`` on the
+    class the two unresolved decorators sit on). The other four kinds fall back to the model's
+    ``None`` default, and "untested by corpus" is the honest word for them.
+    """
+    for kind in (TSClass, TSInterface, TSEnum, TSTypeAlias, TSNamespace, TSCallable):
+        assert {"is_entrypoint", "entrypoints"} <= set(kind.model_fields), kind.__name__
+    a = _load(4)
+    seen = {t.kind: (t.is_entrypoint, t.entrypoints) for m in a.application.symbol_table.values() for t in m.types.values()}
+    assert seen["class"] == (False, [])
+    assert {k: v for k, v in seen.items() if k != "class"} == {k: (None, None) for k in seen if k != "class"}
+    for c, _ in _all_callables(a.application):
+        assert c.is_entrypoint is False and c.entrypoints == []
+
+
+def test_1_3_0_stopped_emitting_a_decorator_qualified_name():
+    """An analyzer behaviour change the pin bump brought with it, recorded rather than papered over.
+
+    1.2.0 emitted ``qualified_name`` on every ``TSDecorator`` (equal to ``name`` in this corpus);
+    1.3.0 emits none. The field stays ``Optional[str] = None`` -- which is why nothing had to be
+    widened -- so it now reads ``None`` on the local backend. No TypeScript accessor reads it; the
+    Neo4j reconstructor still maps the property if a graph carries one.
+    """
+    a = _load(1)
+    decorated = [t for m in a.application.symbol_table.values() for t in m.types.values() if getattr(t, "decorators", None)]
+    assert decorated, "the fixture application must still have a decorated type"
+    for t in decorated:
+        assert [d.name for d in t.decorators] == ["Controller"]
+        assert all(d.qualified_name is None for d in t.decorators)

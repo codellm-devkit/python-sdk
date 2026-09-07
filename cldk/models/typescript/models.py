@@ -15,7 +15,10 @@
 ################################################################################
 
 """TypeScript schema models — a pydantic mirror of ``codeanalyzer-typescript/src/schema/schema.ts``
-at the pinned release (1.2.0), schema v2.
+at the pinned release (1.3.0), schema v2. Written against 1.2.0 in leg 2.5a with 1.3.0's additive
+fields pre-declared as optional, so one model parses both generations; the pin moved in leg 2.5b
+without a single field changing (pinned by
+``tests/models/typescript/test_ts_v2_models.py::test_the_pinned_generation_parses_with_nothing_widened``).
 
 The wire is one additive containment tree: ``TSAnalysis{analyzer, application}`` →
 ``TSApplication{symbol_table{module → types{}/functions{}/fields{}}, call_graph, …}`` →
@@ -147,6 +150,8 @@ class TSDecorator(_Base):
     """A decorator applied to a class / member / parameter (structured, with arguments)."""
 
     name: str
+    #: Emitted by 1.2.0 (equal to ``name`` on every decorator measured) and by **no** 1.3.0 build,
+    #: so it reads ``None`` at the pin. Optional since 2.5a, which is why the bump widened nothing.
     qualified_name: Optional[str] = None
     positional_arguments: List[str] = []
     keyword_arguments: Dict[str, str] = {}
@@ -239,7 +244,7 @@ class TSDdgEdge(_Base):
     src: str
     dst: str
     var: Optional[str] = None
-    prov: List[str] = []  # 1.2.0 emits ["reaching-defs"]; the analyzer reserves more
+    prov: List[str] = []  # one tier: 1.2.0 and 1.3.0 both emit ["reaching-defs"]; the analyzer reserves more
 
 
 class TSSummaryEdge(_Base):
@@ -298,7 +303,7 @@ class TSField(_Base):
 
 
 # ----------------------------------------------------------------------------------------------
-# Entrypoints — declared now (1.3.0 additive), never emitted by 1.2.0
+# Entrypoints — additive at 1.3.0, the pinned release; never emitted by 1.2.0
 # ----------------------------------------------------------------------------------------------
 
 

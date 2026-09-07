@@ -12,7 +12,7 @@ an optional read-only Neo4j backend — selected by the *type* of the `backend=`
 |----------|-------------|---------------|---------------|--------|
 | Java | `CLDK.java(...)` | `JCodeanalyzer` (bundled JAR, subprocess) | `JNeo4jBackend` | `cldk/models/java/` |
 | Python | `CLDK.python(...)` | `PyCodeanalyzer` (in-process `codeanalyzer-python`) | `PyNeo4jBackend` | re-exported from `codeanalyzer-python` |
-| TypeScript (+ JavaScript modules) | `CLDK.typescript(...)` | `TSCodeanalyzer` (`codeanalyzer-typescript` 1.2.0 binary from the wheel, subprocess; `-a 1..4`) | `TSNeo4jBackend` (graphs emitted by ≥ 1.2.0; older refused at attach) | `cldk/models/typescript/` (schema v2 mirror) |
+| TypeScript (+ JavaScript modules) | `CLDK.typescript(...)` | `TSCodeanalyzer` (`codeanalyzer-typescript` 1.3.0 binary from the wheel, subprocess; `-a 1..4`, but `--emit neo4j` takes no `-a` and is always full depth) | `TSNeo4jBackend` (graphs emitted by ≥ 1.3.0; older refused at attach) | `cldk/models/typescript/` (schema v2 mirror) |
 
 The legacy `CLDK(language="<lang>").analysis(...)` entry still works as a compat shim. Adding a
 language means a new factory method + facade + backend ABC/impl(s) + models + tests — **update this

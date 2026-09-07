@@ -94,7 +94,7 @@ from codeanalyzer.schema.py_schema import PyEntrypointReport
 from cldk.analysis.commons.backend import semver as _semver
 from cldk.analysis.commons.keys import module_key_of
 from cldk.analysis.commons.resolve import CallableCandidate, body_node_kind, resolve_callable_signature, resolve_value_name, resolve_within, value_candidate
-from cldk.analysis.commons.results import CallableRef, Diagnostic, EdgePage, EntrypointCoverage, FlowPath, FlowPaths, LocateResult, ModuleRef, PathHop, Slice, SliceNode, TypeRef
+from cldk.analysis.commons.results import BodyRef, CallableRef, Diagnostic, EdgePage, EntrypointCoverage, FlowPath, FlowPaths, LocateResult, ModuleRef, PathHop, Slice, SliceNode, TypeRef
 from cldk.analysis.python.backend import (
     CDG_ORDER,
     CFG_ORDER,
@@ -1960,7 +1960,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         module_props = next((r["module_props"] for r in rows if r["module_props"] is not None), None)
         if module_props is None:
             return LocateResult(
-                node=None,
+                body=None,
                 callable=None,
                 type=None,
                 module=ModuleRef(path=path),
@@ -2001,7 +2001,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             # built and may not have the project checked out), and concatenating the callables'
             # ``code`` would silently drop every module-level statement.
             return LocateResult(
-                node=None,
+                body=None,
                 callable=None,
                 type=None,
                 module=module_ref,
@@ -2022,8 +2022,11 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         cprops, clsprops = best_row["callable_props"], best_row["class_props"]
         found_body = self._innermost_body_node(rows, cprops["signature"])
         node, node_id = (found_body[1], found_body[0]) if found_body else (None, None)
+        # ``BodyRef.callee`` is projection-lossy here and always ``None``: callee resolution is the
+        # separate ``PY_RESOLVES_TO`` edge, not a property of the body node (see
+        # :func:`~cldk.analysis.python.neo4j.reconstruct.body_node`). The local backend fills it.
         return LocateResult(
-            node=node,
+            body=BodyRef(id=node_id or "", kind=node.kind, span=node.span, callee=node.callee) if node else None,
             node_id=node_id,
             callable=CallableRef(signature=cprops["signature"], name=cprops["name"], class_signature=clsprops["signature"] if clsprops else None),
             type=TypeRef(signature=clsprops["signature"], name=clsprops["name"]) if clsprops else None,

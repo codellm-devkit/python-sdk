@@ -31,24 +31,59 @@ import os
 import shlex
 import subprocess
 import warnings
+from collections import defaultdict
+from functools import cached_property, partial
 from pathlib import Path
 from subprocess import CompletedProcess
-from typing import Dict, Iterator, List, Set, Tuple, Union
+from typing import Dict, Iterator, List, Sequence, Set, Tuple, Union
 
 import networkx as nx
 
-from cldk.analysis.commons.levels import analyzer_level
-from cldk.analysis.typescript.backend import TSAnalysisBackend
+from cldk.analysis.commons.bounds import (
+    DEFAULT_DEPTH,
+    DEFAULT_MAX_NODES,
+    DEFAULT_MAX_PATHS,
+    DEFAULT_PAGE_SIZE,
+    check_depth,
+    check_distinct_endpoints,
+    check_max_nodes,
+    check_max_paths,
+    check_page_size,
+    edge_page,
+)
+from cldk.analysis.commons.graphs import cone_sinks, flow_path, shortest_walks, slice_resolved
+from cldk.analysis.commons.keys import body_key_column, resolve_module_key
+from cldk.analysis.commons.levels import ANALYZER_LEVELS, LEVEL_NAMES, analyzer_level
+from cldk.analysis.commons.resolve import CallableCandidate, resolve_callable_signature, resolve_value_name, resolve_within
+from cldk.analysis.commons.results import (
+    BodyRef,
+    CallableRef,
+    Diagnostic,
+    EdgePage,
+    EntrypointCoverage,
+    FlowPaths,
+    LocateResult,
+    ModuleRef,
+    Slice,
+    SliceNode,
+    Span,
+    TypeRef,
+)
+from cldk.analysis.typescript.backend import CDG_ORDER, CFG_ORDER, DDG_ORDER, VIA, TSAnalysisBackend, ts_body_node_kind, ts_module_dotted
 from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
 from cldk.models.typescript import (
     TSAnalysis,
     TSApplication,
     TSBodyNode,
     TSCallable,
+    TSCdgEdge,
+    TSCfgEdge,
+    TSDdgEdge,
     TSCallableOverview,
     TSCallsite,
     TSClass,
     TSClassAttribute,
+    TSClassOverview,
     TSConfigKey,
     TSDecorator,
     TSEnum,
@@ -59,17 +94,23 @@ from cldk.models.typescript import (
     TSInterface,
     TSModule,
     TSNamespace,
+    TSSpan,
     TSSynthesizedCallable,
     TSTypeAlias,
     TSVariableDeclaration,
 )
-from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
+from cldk.analysis import AnalysisLevel
+from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException, CodeanalyzerUsageException
 
 logger = logging.getLogger(__name__)
 
 #: The codeanalyzer-typescript release that removed ``--tsc-only`` (the resolver is no longer a
 #: choice; 1.x's ``tsc`` and ``defuse`` provenances are both emitted and tagged per edge).
 _TSC_ONLY_REMOVED_IN = "1.0.0"
+
+#: The analyzer level at which cants resolves a call node's ``callee`` (its level-2 pass). Below
+#: it every ``call`` body node carries ``callee: null`` -- what ``has_resolution_edges`` reports.
+_CALLEE_RESOLUTION_LEVEL = 2
 
 
 class TSCodeanalyzer(TSAnalysisBackend):
@@ -121,6 +162,11 @@ class TSCodeanalyzer(TSAnalysisBackend):
             )
         self.analysis: TSAnalysis = self._init_codeanalyzer(analysis_level=analyzer_level(analysis_level))
         self.application: TSApplication = self.analysis.application
+        #: The ``--app-name`` the analyzer stamped into every id, read back off the application's
+        #: own ``can://typescript/<app>`` id. Spelled the same as :attr:`TSNeo4jBackend.application_name`
+        #: so a message naming the application reads identically whichever backend raised it -- and
+        #: so no message has to embed a ``can://`` id to name it (E6).
+        self.application_name: str = self.application.id.rsplit("/", 1)[-1]
         self._call_graph: nx.DiGraph | None = None
         self._index()
 
@@ -705,3 +751,651 @@ class TSCodeanalyzer(TSAnalysisBackend):
             if c is not None:
                 result[sig] = [self._callsite(k, n) for k, n in self._call_nodes(c)]
         return result
+
+    # ----------------------------------------------------------- entrypoints / config readers
+    def get_entrypoints(self) -> List[TSCallableOverview]:
+        """Return overviews of every callable marked ``is_entrypoint`` (see
+        :meth:`TSAnalysisBackend.get_entrypoints`). ``is_entrypoint`` is ``Optional[bool]``, so
+        the test is truthiness, not ``is True``: below 1.3.0 it is ``None``, which is not a mark."""
+        return [
+            TSCallableOverview.from_callable(c, owner_sig, owner_kind, path=self._file_of[c.signature]) for c, owner_sig, owner_kind in self._iter_callables() if c.is_entrypoint
+        ]
+
+    def get_entrypoint_classes(self) -> List[TSClassOverview]:
+        """Return overviews of every class marked ``is_entrypoint`` (see
+        :meth:`TSAnalysisBackend.get_entrypoint_classes`)."""
+        return [TSClassOverview.from_class(cl, path=self._file_of[sig]) for sig, cl in self._classes.items() if cl.is_entrypoint]
+
+    def get_entrypoint_coverage(self) -> EntrypointCoverage:
+        """Return the entrypoint pass's coverage record (see
+        :meth:`TSAnalysisBackend.get_entrypoint_coverage`) -- a passthrough of
+        ``TSApplication.entrypoint_report``, which this backend has in full.
+
+        The field is optional on the model (TS-1 kept it so, because the graph-backed application
+        view carries the report as a string property on the anchor rather than as a structured
+        field), so its absence is reported rather than fabricated."""
+        report = self.application.entrypoint_report
+        if report is None:
+            return EntrypointCoverage(
+                diagnostics=[
+                    Diagnostic(
+                        code="entrypoint_report_unavailable",
+                        message="This analysis.json carries no TSApplication.entrypoint_report, so the entrypoint pass's coverage cannot be reported. "
+                        "codeanalyzer-typescript 1.3.0 and newer always emit it.",
+                    )
+                ]
+            )
+        return EntrypointCoverage(
+            frameworks_detected=list(report.frameworks_detected),
+            rulesets=list(report.rulesets),
+            unresolved=dict(report.unresolved),
+            errors=list(report.errors),
+        )
+
+    def get_config_readers(self, key: str) -> List[TSCallableOverview]:
+        """Return overviews of every callable reading configuration key ``key`` (see
+        :meth:`TSAnalysisBackend.get_config_readers`).
+
+        ``PyConfigUseEdge.src`` is the reading call's own body-node id. It is matched against each
+        callable's ``body`` map rather than split on ``@`` back to an owner: an anonymous
+        callable's id contains an ``@`` of its own (``…/<anon@22:52>``), so the split the Python
+        twin can afford is not sound here."""
+        reading = {e.src for e in self.get_config_uses(key)}
+        if not reading:
+            return []
+        return [
+            TSCallableOverview.from_callable(c, owner_sig, owner_kind, path=self._file_of[c.signature])
+            for c, owner_sig, owner_kind in self._iter_callables()
+            if not reading.isdisjoint(node.id for node in (c.body or {}).values())
+        ]
+
+    # =====================================================================================
+    # The addressing surface (leg 2.5b, TS-2) -- over the in-memory tree.
+    # =====================================================================================
+    @cached_property
+    def _by_module(self) -> Dict[str, List[Tuple[TSCallable, str | None, str | None]]]:
+        """``module key -> the callables declared in it``, with their owner pair.
+
+        Built lazily rather than in :meth:`_index`: every existing accessor answers without it, and
+        on a real application (superset-frontend: 11,085 callables) an index nobody asked for is
+        memory nobody asked for. :meth:`_iter_callables` is the domain, so ``locate`` and
+        ``resolve_callable`` see exactly the set ``get_callables_overview`` reports.
+        """
+        out: Dict[str, List[Tuple[TSCallable, str | None, str | None]]] = defaultdict(list)
+        for c, owner_sig, owner_kind in self._iter_callables():
+            out[self._file_of[c.signature]].append((c, owner_sig, owner_kind))
+        return dict(out)
+
+    def _owner_name(self, owner_sig: str | None) -> str | None:
+        owner = self._classes.get(owner_sig or "") or self._interfaces.get(owner_sig or "")
+        return owner.name if owner is not None else None
+
+    @staticmethod
+    def _contains(span: TSSpan | None, line: int) -> bool:
+        return span is not None and span.start[0] <= line <= span.end[0]
+
+    def _not_analysed(self, path: str, line: int) -> LocateResult:
+        """The ``file_not_in_graph`` outcome, with the one distinction this backend *can* draw.
+
+        Unlike the Neo4j backend (which attaches to a graph and may not have the project checked
+        out), this one runs against the project directory, so it can tell "the file is there and
+        was not analysed" -- a ``--target-files`` narrowing, an excluded directory, a parse the
+        analyzer skipped -- from "there is no such file". The code stays ``file_not_in_graph``
+        either way; the distinction rides in the message, which is the field an agent reads.
+        """
+        on_disk = Path(path).is_file() or bool(self.project_dir and (Path(self.project_dir) / path).is_file())
+        why = "the file exists but no analysed module covers it" if on_disk else "no such file in the analysed project"
+        return LocateResult(
+            body=None,
+            callable=None,
+            type=None,
+            module=ModuleRef(path=str(path)),
+            source="",
+            span=Span(start=(line, 0), end=(line, 0), bytes=(0, 0)),
+            diagnostics=[Diagnostic(code="file_not_in_graph", message=f"{path} is not covered by any analysed module ({why}).")],
+        )
+
+    def _body_ref(self, c: TSCallable, line: int) -> BodyRef | None:
+        """The innermost body node of ``c`` containing ``line``, as the language-neutral handle.
+
+        ``None`` is a real outcome, not an error: a position on a declaration line or a blank line
+        inside a callable is contained by the callable and by no body node, and the caller still
+        gets the callable. Ties break the same way the Neo4j backend breaks them -- narrowest line
+        span, then the deeper column parsed out of the node's own key
+        (:func:`~cldk.analysis.commons.keys.body_key_column`), then the key -- so both backends
+        resolve a tie to the same node.
+        """
+        matches = [(k, n) for k, n in (c.body or {}).items() if self._contains(n.span, line)]
+        if not matches:
+            return None
+        key, node = min(matches, key=lambda kn: (kn[1].span.end[0] - kn[1].span.start[0], -body_key_column(kn[0]), kn[0]))
+        if not node.id:
+            raise CodeanalyzerExecutionException(
+                f"body node {key!r} of {c.signature!r} carries no id: codeanalyzer-typescript {self.analysis.analyzer.version} "
+                "emitted an unaddressable body node (ids are required from 1.3.0, cants#165)"
+            )
+        return BodyRef(id=node.id, kind=node.kind, span=node.span, callee=node.callee)
+
+    def _locate_one(self, path: str, line: int) -> LocateResult:
+        # Whatever the caller's scanner printed ("./src/app.ts", an absolute path) is normalised to
+        # the symbol-table key first; an unnormalised path would otherwise read as file_not_in_graph.
+        key = resolve_module_key(str(path), self.application.symbol_table.keys())
+        module = self.application.symbol_table.get(key)
+        if module is None:
+            return self._not_analysed(key, line)
+        module_ref = ModuleRef(path=key)
+        # Innermost callable = narrowest line span containing the position. A position between two
+        # callables, or at module scope, matches none and falls through to module_scope rather than
+        # snapping to a neighbour. Equal widths (an arrow inside a one-line function) tie, and the
+        # tie is broken on the longer signature, deeper first -- a nested callable's signature
+        # extends its owner's -- which is the rule the Neo4j backend applies to the same rows.
+        found = min(
+            ((c, o, k) for c, o, k in self._by_module.get(key, ()) if self._contains(c.span, line)),
+            key=lambda cok: (cok[0].span.end[0] - cok[0].span.start[0], -len(cok[0].signature), cok[0].signature),
+            default=None,
+        )
+        if found is None:
+            return LocateResult(
+                body=None,
+                callable=None,
+                type=None,
+                module=module_ref,
+                source=module.source,
+                span=Span(start=(line, 0), end=(line, 0), bytes=(0, 0)),
+                diagnostics=[Diagnostic(code="module_scope", message=f"line {line} is at module scope in {key}.")],
+            )
+        c, owner_sig, _ = found
+        owner_name = self._owner_name(owner_sig)
+        body = self._body_ref(c, line)
+        return LocateResult(
+            body=body,
+            node_id=body.id if body else None,
+            callable=CallableRef(signature=c.signature, name=c.name, class_signature=owner_sig),
+            type=TypeRef(signature=owner_sig, name=owner_name) if owner_sig and owner_name else None,
+            module=module_ref,
+            source=c.code or "",
+            span=c.span,
+            diagnostics=[],
+        )
+
+    def locate(self, path: str, line: int) -> LocateResult:
+        """Resolve a source position to its enclosing callable (see :meth:`TSAnalysisBackend.locate`)."""
+        return self._locate_one(path, line)
+
+    def locate_many(self, positions: Sequence[Tuple[str, int]]) -> List[LocateResult]:
+        """Resolve many positions (see :meth:`TSAnalysisBackend.locate_many`). Purely in memory
+        here -- there is no round trip to batch -- but the results still come back in input order,
+        matching the Neo4j backend's contract."""
+        return [self._locate_one(path, line) for path, line in positions]
+
+    def resolve_callable(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> SliceNode:
+        """Resolve a callable name against the in-memory tree (see
+        :meth:`TSAnalysisBackend.resolve_callable`).
+
+        The candidate domain is :meth:`_iter_callables` -- the same set
+        :meth:`get_callables_overview` reports and the same set the Neo4j backend resolves against.
+        Nothing is filtered before the shared policy runs: this backend has the whole list in memory
+        already, so handing the policy the unfiltered domain is the strongest form of "both backends
+        resolve over the same set".
+        """
+        candidates = [CallableCandidate(c.signature, owner_sig, self._file_of[c.signature]) for c, owner_sig, _ in self._iter_callables()]
+        sig = resolve_callable_signature(name, candidates, in_class=in_class, in_module=in_module, dotted=ts_module_dotted)
+        c = self._callables[sig]
+        return SliceNode(file=self._file_of[sig], line=c.span.start[0], callable=sig, kind="callable", name=c.name, source=None, ref=c.id)
+
+    def resolve_value(self, name: str, *, within: str) -> SliceNode:
+        """Resolve a value name inside a callable (see :meth:`TSAnalysisBackend.resolve_value`).
+
+        ``TSBodyNode.of`` carries the value a ``formal_in`` vertex stands for -- the same fact the
+        graph projects as ``b.of`` -- and in TypeScript it is the parameter's own text, with none of
+        the ``"<global>:mod::name"`` grammar codeanalyzer-python marks captured globals with. So
+        there is nothing to translate and no kind to infer: it is a parameter.
+        """
+        owner = resolve_within(self.resolve_callable, within)
+        c = self._callables[owner.callable]
+        # A list, not a dict keyed by name: two values that resolve to the same name are a genuine
+        # ambiguity the policy must see and raise on, and a dict would silently keep the last.
+        entries = [(n, n.of) for n in (c.body or {}).values() if n.kind == "formal_in" and n.of]
+        chosen = resolve_value_name(name, [v for _, v in entries], within=owner.callable)
+        node = next(n for n, v in entries if v == chosen)
+        return SliceNode(file=owner.file, line=owner.line, callable=owner.callable, kind="parameter", name=chosen, source=None, ref=node.id or "")
+
+    def _sources_for(self, refs: Sequence[str]) -> Dict[str, "str | None"]:
+        """Source text for every ref this application holds (see
+        :meth:`TSAnalysisBackend._sources_for`).
+
+        One walk of the callable tree for the whole batch, not one per ref. A callable answers to
+        both of its names (signature and ``can://`` id); a body node is sliced out of its module by
+        its span, so this backend fills in the statements and call sites the graph cannot. A vertex
+        with **no** span -- every ``formal_in``/``formal_out``/``actual_*`` -- maps to ``None``: it
+        is a dataflow position, not a region of the file, and there is nothing to read on either
+        backend. An external ghost is likewise found and textless, by definition.
+        """
+        wanted = set(refs)
+        found: Dict[str, "str | None"] = {}
+        for key, ext in (self.application.external_symbols or {}).items():
+            for ref in (key, ext.id):
+                if ref in wanted:
+                    found[ref] = None
+        for c, _, _ in self._iter_callables():
+            source = self.application.symbol_table[self._file_of[c.signature]].source
+            for ref in (c.signature, c.id):
+                if ref in wanted:
+                    found[ref] = c.code or None
+            for node in (c.body or {}).values():
+                if node.id in wanted:
+                    found[node.id] = source[node.span.bytes[0] : node.span.bytes[1]] if node.span else None
+        return found
+
+    def get_source(self, node_id: str) -> str:
+        """Source text for one node (see :meth:`TSAnalysisBackend.get_source`).
+
+        Routed through :meth:`_sources_for` rather than re-walking the tree with its own splitting
+        rule: a TypeScript body-node id cannot be taken apart on ``@`` (an anonymous callable's own
+        id contains one), so the id is looked up whole, and the two ways of having no text stay
+        apart -- absent from the mapping is "nothing carries this id", ``None`` is "this exists and
+        has no recoverable source".
+        """
+        found = self._sources_for([node_id])
+        if node_id not in found:
+            raise KeyError(f"no callable, body node or external symbol of application {self.application_name!r} is addressed by {node_id!r}")
+        code = found[node_id]
+        if not code:
+            raise KeyError(f"no recoverable source for {node_id!r} (it carries no span, or the analyzer emitted no text for it)")
+        return code
+
+    @property
+    def has_resolution_edges(self) -> bool:
+        """See :meth:`TSAnalysisBackend.has_resolution_edges`. ``True`` from analysis level 2, the
+        level at which cants resolves a call node's ``callee``; below it every call node carries
+        ``callee: null`` and every ``callee_signature`` from :meth:`get_callsites_for` is ``None``
+        for that reason and not because the individual sites failed to resolve. Read off
+        ``analysis.max_level`` -- what the analyzer actually produced -- not off the level the
+        caller asked for."""
+        return self.analysis.max_level >= _CALLEE_RESOLUTION_LEVEL
+
+    # =====================================================================================
+    # The dataflow surface (leg 2.5b, Task 2) -- over the in-memory tree.
+    #
+    # THE LOCAL BACKEND ANSWERS INTERPROCEDURALLY, as the Python twin does and for the same reason:
+    # a level-4 run carries the whole SDG in the model, so the cross-callable index this backend
+    # lacks it can BUILD out of the very lists ``--emit neo4j`` projects.
+    #
+    #   TSCallable.ddg / .cdg / .summary   endpoints are LOCAL body keys -> joined through the
+    #                                      callable's own ``body`` map, whose nodes carry ``id``
+    #   TSApplication.param_in / param_out endpoints are ALREADY global ids
+    #
+    # ONE DIFFERENCE FROM PYTHON, AND IT IS THE ANALYZER'S, NOT A CHOICE HERE: Python composes a
+    # body node's global id from ``(callable id, body key)``. TypeScript reads it off the node --
+    # 1.3.0 emits ``id`` on all 125,532 body nodes (cants#165) -- because a TypeScript id cannot be
+    # composed safely: an anonymous callable's own id already contains an ``@``
+    # (``.../<anon@22:52>``), so the ``<callable id>@<key>`` grammar is not invertible by splitting
+    # and is not worth re-deriving when the analyzer states it.
+    # =====================================================================================
+    #: The analyzer level at which ``cfg``/``cdg``/``ddg`` first exist. Read against
+    #: ``analysis.max_level`` -- what the analyzer actually produced -- not the level the caller
+    #: asked for, the same rule :attr:`has_resolution_edges` already applies.
+    _DATAFLOW_LEVEL = ANALYZER_LEVELS[AnalysisLevel.program_dependency_graph]
+
+    def _require_dataflow(self) -> None:
+        """Refuse, naming both levels, when this analysis was built below the dataflow pass.
+
+        The one guard, shared by the per-callable graphs, the slices and the value-flow accessors:
+        they come from the same analyzer pass and go dark together, and a second copy of this check
+        is a second thing to keep in step. It raises instead of returning empty because at a
+        shallower level an empty answer would mean "not analysed" while looking exactly like "no
+        dependence" (D7). The Neo4j backend has no such mode -- ``--emit neo4j`` is always full
+        depth -- so this is the only place the contract can be broken.
+        """
+        level = self.analysis.max_level
+        if level < self._DATAFLOW_LEVEL:
+            raise CodeanalyzerUsageException(
+                f"control and data flow need analysis_level='program_dependency_graph' or deeper "
+                f"(analyzer level {self._DATAFLOW_LEVEL}); this analysis was produced at "
+                f"'{LEVEL_NAMES.get(level, level)}' (analyzer level {level}), where codeanalyzer-typescript emits no "
+                "cfg/cdg/ddg at all. Returning an empty result would be indistinguishable from a callable that has "
+                "no dependence, so this raises instead. Rebuild with "
+                "CLDK.typescript(..., analysis_level='system_dependency_graph')."
+            )
+
+    def _body_ids(self, c: TSCallable) -> Dict[str, str]:
+        """``local body key -> global body-node id`` for one callable.
+
+        Read off the nodes, never composed (see the block comment above). A span-bearing node
+        without an id is an analyzer defect and is raised as one rather than being worked around --
+        the same guard :meth:`_body_ref` applies to the addressing surface.
+        """
+        out: Dict[str, str] = {}
+        for key, node in (c.body or {}).items():
+            if not node.id:
+                raise CodeanalyzerExecutionException(
+                    f"body node {key!r} of {c.signature!r} carries no id: codeanalyzer-typescript {self.analysis.analyzer.version} "
+                    "emitted an unaddressable body node (ids are required from 1.3.0, cants#165)"
+                )
+            out[key] = node.id
+        return out
+
+    @staticmethod
+    def _endpoint(c: TSCallable, ids: Dict[str, str], key: str) -> str:
+        """One graph endpoint's global id, refusing a key the callable's ``body`` map does not hold.
+
+        Silently dropping such an edge would make a page's ``total`` disagree with the graph's for
+        no reason a caller could see; the graph, whose relationships are between real
+        ``:TSBodyNode``s, cannot have the problem at all.
+        """
+        try:
+            return ids[key]
+        except KeyError:
+            raise CodeanalyzerExecutionException(
+                f"an edge of {c.signature!r} names the body key {key!r}, which is not in that callable's body map: "
+                "codeanalyzer-typescript emitted a dangling intra-callable edge"
+            ) from None
+
+    def _graphs_of(self, name: str, in_class: str | None, page_size: int) -> TSCallable:
+        """The callable ``name`` resolves to, once this backend is deep enough to have dataflow.
+
+        ``page_size`` is validated *first*, before the level guard and before resolution, so a
+        malformed argument is a ``ValueError`` before anything else -- the order the Neo4j backend
+        also applies, so the two cannot answer the same bad call with different exceptions.
+        Resolution is :meth:`resolve_callable`'s, not a second path.
+        """
+        check_page_size(page_size)
+        self._require_dataflow()
+        return self._callables[self.resolve_callable(name, in_class=in_class).callable]
+
+    def get_cfg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[TSCfgEdge]:
+        """One page of control flow within one callable (see :meth:`TSAnalysisBackend.get_cfg`)."""
+        c = self._graphs_of(callable, in_class, page_size)
+        ids = self._body_ids(c)
+        edges = [TSCfgEdge(src=self._endpoint(c, ids, e.src), dst=self._endpoint(c, ids, e.dst), kind=e.kind) for e in c.cfg or []]
+        return edge_page(TSCfgEdge, c.signature, edges, CFG_ORDER, page_size, cursor)
+
+    def get_cdg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[TSCdgEdge]:
+        """One page of control dependence within one callable (see :meth:`TSAnalysisBackend.get_cdg`)."""
+        c = self._graphs_of(callable, in_class, page_size)
+        ids = self._body_ids(c)
+        edges = [TSCdgEdge(src=self._endpoint(c, ids, e.src), dst=self._endpoint(c, ids, e.dst)) for e in c.cdg or []]
+        return edge_page(TSCdgEdge, c.signature, edges, CDG_ORDER, page_size, cursor)
+
+    def get_ddg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[TSDdgEdge]:
+        """One page of data dependence within one callable (see :meth:`TSAnalysisBackend.get_ddg`)."""
+        c = self._graphs_of(callable, in_class, page_size)
+        ids = self._body_ids(c)
+        edges = [TSDdgEdge(src=self._endpoint(c, ids, e.src), dst=self._endpoint(c, ids, e.dst), var=e.var, prov=list(e.prov or [])) for e in c.ddg or []]
+        return edge_page(TSDdgEdge, c.signature, edges, DDG_ORDER, page_size, cursor)
+
+    # -----[ slicing and reachability ]-----
+    @cached_property
+    def _sdg(self) -> Tuple[Dict[str, Dict[str, Dict[str, list]]], Dict[str, Tuple[TSCallable, TSBodyNode, str]]]:
+        """``(adjacency, node index)`` over the whole application's SDG, built once and cached.
+
+        ``adjacency`` is ``{"forward": {src: {dst: [label]}}, "backward": {dst: {src: [label]}}}`` --
+        both directions, because a backward slice is not derivable from a forward index without
+        inverting it, and inverting it per call is the same work done repeatedly. A ``label`` is
+        ``(relationship type, var, prov)``: what a path hop has to report, and what the graph carries
+        on the corresponding relationship. It is a **list** per pair because parallel edges are
+        ordinary and collapsing them would merge several pieces of evidence into one.
+
+        ``node index`` maps a global body-node id to ``(owning callable, body node, module key)``,
+        which is everything :meth:`_slice_node` needs to describe a reached node without a second
+        walk. It is built from :meth:`_iter_callables`, so the described set is exactly the graph's:
+        ``_SLICE`` there joins each reached node back to a ``:TSCallable`` and drops what it cannot.
+        """
+        forward: Dict[str, Dict[str, list]] = {}
+        backward: Dict[str, Dict[str, list]] = {}
+        nodes: Dict[str, Tuple[TSCallable, TSBodyNode, str]] = {}
+
+        def link(src: str, dst: str, label: tuple) -> None:
+            forward.setdefault(src, {}).setdefault(dst, []).append(label)
+            backward.setdefault(dst, {}).setdefault(src, []).append(label)
+
+        for c, _, _ in self._iter_callables():
+            path = self._file_of[c.signature]
+            ids = self._body_ids(c)
+            for key, node in (c.body or {}).items():
+                nodes[ids[key]] = (c, node, path)
+            # The relationship name each list is projected as, so a hop reports the same ``via``
+            # here as it does over the graph -- ``VIA`` is the single translation table.
+            for rel, edges in (("TS_DDG", c.ddg), ("TS_CDG", c.cdg), ("TS_SUMMARY", c.summary)):
+                for e in edges or []:
+                    link(
+                        self._endpoint(c, ids, e.src),
+                        self._endpoint(c, ids, e.dst),
+                        (rel, getattr(e, "var", None), tuple(getattr(e, "prov", None) or ())),
+                    )
+        # Endpoints here are already global, so they are used as-is -- joining them again would
+        # mint ids that name nothing.
+        for rel, edges in (("TS_PARAM_IN", self.application.param_in), ("TS_PARAM_OUT", self.application.param_out)):
+            for e in edges or []:
+                link(e.src, e.dst, (rel, e.var, ()))
+        return {"forward": forward, "backward": backward}, nodes
+
+    def _reach(self, ref: str, direction: str, depth: int | None) -> set:
+        """The set of node ids reachable from ``ref`` in at most ``depth`` hops.
+
+        Level-by-level rather than a plain stack, because ``depth`` is a hop budget and a
+        depth-first walk cannot count hops without revisiting. Shared by the slices and by the two
+        flow predicates so "reachable" means one thing on this backend.
+        """
+        edges = self._sdg[0][direction]
+        seen, frontier, hops = {ref}, [ref], 0
+        while frontier and (depth is None or hops < depth):
+            nxt = [d for src in frontier for d in edges.get(src, ()) if d not in seen]
+            seen.update(nxt)
+            frontier = nxt
+            hops += 1
+        return seen
+
+    def _slice_node(self, ref: str) -> SliceNode:
+        """One reached body node in the caller's vocabulary.
+
+        A parameter-passing vertex has no span of its own -- it is a dataflow position, not a region
+        of the file (55,778 of the reference application's 125,532 body nodes carry no lines at
+        all) -- so the *callable's* first line stands in, which is where a reader would go looking
+        for it and what the Neo4j projection's ``coalesce`` produces from the same two properties.
+        """
+        c, node, path = self._sdg[1][ref]
+        kind, name = ts_body_node_kind(node.kind, node.of)
+        return SliceNode(file=path, line=node.span.start[0] if node.span else c.span.start[0], callable=c.signature, kind=kind, name=name, source=None, ref=ref)
+
+    def _slice_from(self, root: SliceNode, direction: str, depth: int | None, max_nodes: int) -> Slice:
+        """:meth:`_reach`'s closure from ``root``, described and capped like the graph's.
+
+        The whole closure is computed and *then* cut: ``total`` has to be the size of the whole
+        slice for the cap to be reportable (E5), and there is nothing cheaper to compute it from --
+        the same reason the Cypher counts before it pages.
+        """
+        nodes = self._sdg[1]
+        found = [self._slice_node(ref) for ref in sorted(self._reach(root.ref, direction, depth)) if ref in nodes]
+        return Slice(nodes=found[:max_nodes], roots=[root], resolved=slice_resolved([root]), total=len(found))
+
+    def slice_backward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """What affects this value (see :meth:`TSAnalysisBackend.slice_backward`)."""
+        check_depth(depth)
+        check_max_nodes(max_nodes)
+        self._require_dataflow()
+        return self._slice_from(self.resolve_value(src, within=within), "backward", depth, max_nodes)
+
+    def slice_forward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """What this value affects (see :meth:`TSAnalysisBackend.slice_forward`)."""
+        check_depth(depth)
+        check_max_nodes(max_nodes)
+        self._require_dataflow()
+        return self._slice_from(self.resolve_value(src, within=within), "forward", depth, max_nodes)
+
+    # -----[ the call graph, in the caller's vocabulary ]-----
+    @cached_property
+    def _externals_by_key(self) -> Dict[str, TSExternalSymbol]:
+        """``"<module>.<name>" -> the external`` — the key the call graph uses for a ghost, which is
+        not the key :meth:`get_external_symbols` is keyed by (that is the analyzer's own wire key)."""
+        return {f"{e.module}.{e.name}": e for e in (self.application.external_symbols or {}).values()}
+
+    def _vertex(self, key: str, kind: str, node_id: str) -> SliceNode:
+        """One call-graph vertex as a :class:`SliceNode`, whatever kind of thing it is.
+
+        Three shapes, because TypeScript's call graph has three (TS-11): a declared callable; a
+        **module**, which cants makes the caller of its own top-level code and which is addressed by
+        its file key everywhere on this surface; and an **external** ghost, which was never analysed
+        and so has no position -- ``file=""`` and ``line=0``, with ``kind`` saying why. Its
+        ``callable`` is the readable ``"<module>.<name>"``, never its ``can://`` id (E6).
+        """
+        if kind == "module":
+            module = self.application.symbol_table.get(key)
+            return SliceNode(file=key, line=module.span.start[0] if module else 0, callable=key, kind="module", name=key, source=None, ref=node_id)
+        if kind == "external":
+            ext = self._externals_by_key.get(key)
+            return SliceNode(file="", line=0, callable=key, kind="external", name=ext.name if ext else key, source=None, ref=node_id)
+        c = self._callables.get(key)
+        if c is not None:
+            return SliceNode(file=self._file_of[key], line=c.span.start[0], callable=key, kind="callable", name=c.name, source=None, ref=node_id)
+        # A type vertex -- a class as the callee of ``new X()``. None occur on the reference
+        # application (its 17,712 call edges name only callables, modules and externals), but the
+        # id index keeps the five type kinds, so the shape is described rather than dropped.
+        return SliceNode(file=self._file_of.get(key, ""), line=0, callable=key, kind=kind, name=key.rsplit(".", 1)[-1], source=None, ref=node_id)
+
+    def _call_graph_node(self, key: str) -> SliceNode:
+        """A vertex of :meth:`get_call_graph`, described from the ``id``/``kind`` it already carries."""
+        attrs = self.get_call_graph().nodes[key]
+        return self._vertex(key, attrs["kind"], attrs["id"])
+
+    @property
+    def _callable_call_graph(self) -> nx.DiGraph:
+        """The call graph restricted to callable vertices — the domain ``reaches`` and
+        ``call_paths_between`` walk.
+
+        A view, not a copy. It is what the Neo4j backend's hop-by-hop ``:TSCallable`` predicate
+        selects, written here so the two cannot disagree: a module has no *incoming* call edge and
+        an external no *outgoing* one on the reference graph, so restricting changes no answer
+        today, and it is what keeps a future emitter from silently widening one.
+        """
+        graph = self.get_call_graph()
+        return graph.subgraph([n for n, a in graph.nodes(data=True) if a.get("kind") == "callable"])
+
+    def reaches(self, src: str, dst: str, *, depth: int | None = None) -> bool:
+        """Is there a call path (see :meth:`TSAnalysisBackend.reaches`)?"""
+        check_depth(depth)
+        a = self.resolve_callable(src).callable
+        b = self.resolve_callable(dst).callable
+        graph = self._callable_call_graph
+        if a not in graph or b not in graph:
+            return False
+        # ``nx.descendants`` is unbounded and ``ego_graph`` the bounded form; both exclude the
+        # zero-hop case, which is what makes ``reaches(x, x)`` false unless a real cycle exists.
+        reachable = nx.descendants(graph, a) if depth is None else set(nx.ego_graph(graph, a, radius=depth).nodes) - {a}
+        return b in reachable
+
+    def backward_cone(self, sinks: Sequence[str], *, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """Everything that can reach these sinks (see :meth:`TSAnalysisBackend.backward_cone`).
+
+        Walked over the **whole** call graph and not the callable-only view: a module is the caller
+        of its own top-level code, so it is part of the answer to "what could get here" even though
+        it can never be the interior of a path.
+        """
+        check_depth(depth)
+        check_max_nodes(max_nodes)
+        roots = cone_sinks(self.resolve_callable, sinks)
+        graph = self.get_call_graph()
+        described: Dict[str, SliceNode] = {r.callable: r for r in roots}
+        for root in roots:
+            if root.callable not in graph:
+                continue
+            # ``ego_graph`` follows *successors*, so a backward question needs the reversed view.
+            back = graph.reverse(copy=False)
+            reached = nx.ancestors(graph, root.callable) if depth is None else set(nx.ego_graph(back, root.callable, radius=depth).nodes)
+            for key in reached:
+                described.setdefault(key, self._call_graph_node(key))
+        # Ordered by ``ref``, the order ``Slice.nodes`` documents and the graph's ``ORDER BY m.id``
+        # produces -- not by signature, which would make a capped cone return different vertices per
+        # backend.
+        found = sorted(described.values(), key=lambda n: n.ref)
+        return Slice(nodes=found[:max_nodes], roots=roots, resolved=slice_resolved(roots), total=len(found))
+
+    def callers_of(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> List[SliceNode]:
+        """Who calls this, module callers included (see :meth:`TSAnalysisBackend.callers_of`)."""
+        return self._call_neighbours(name, in_class, in_module, callers=True)
+
+    def callees_of(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> List[SliceNode]:
+        """What this calls, externals included (see :meth:`TSAnalysisBackend.callees_of`)."""
+        return self._call_neighbours(name, in_class, in_module, callers=False)
+
+    def _call_neighbours(self, name: str, in_class: str | None, in_module: str | None, *, callers: bool) -> List[SliceNode]:
+        """One hop of the call graph, in the caller's vocabulary, ordered by ``ref``.
+
+        The order is stated rather than left to the graph: NetworkX hands back insertion order and
+        Cypher hands back none, so a caller comparing the two backends would be comparing two
+        arbitrary orders. ``ref`` is the one total order both can compute.
+        """
+        sig = self.resolve_callable(name, in_class=in_class, in_module=in_module).callable
+        graph = self.get_call_graph()
+        if sig not in graph:
+            return []
+        others = graph.predecessors(sig) if callers else graph.successors(sig)
+        return sorted((self._call_graph_node(other) for other in others), key=lambda n: n.ref)
+
+    # -----[ paths and flow predicates ]-----
+    #: Up to ``limit`` shortest walks over a ``{src: {dst: [label]}}`` adjacency, in
+    #: :func:`~cldk.analysis.commons.graphs.hop_sort_key` order -- the shared implementation, bound
+    #: to TypeScript's ``via`` table.
+    _shortest_walks = staticmethod(partial(shortest_walks, via=VIA))
+
+    def paths_between(self, src: str, dst: str, *, src_within: str, dst_within: str, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+        """How a value reaches another value (see :meth:`TSAnalysisBackend.paths_between`)."""
+        check_depth(depth)
+        check_max_paths(max_paths)
+        self._require_dataflow()
+        a = self.resolve_value(src, within=src_within)
+        b = self.resolve_value(dst, within=dst_within)
+        check_distinct_endpoints(a, b)
+        adjacency, nodes = self._sdg
+        walks = self._shortest_walks(adjacency["forward"], a.ref, b.ref, depth, max_paths + 1)
+        described = {ref: self._slice_node(ref) for walk in walks for ref, _ in walk if ref in nodes}
+        described[a.ref] = a
+        paths = [flow_path([described[a.ref]] + [described[ref] for ref, _ in walk], [label for _, label in walk], via=VIA) for walk in walks[:max_paths]]
+        return FlowPaths(paths=paths, complete=len(walks) <= max_paths)
+
+    def call_paths_between(self, src: str, dst: str, *, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+        """How one callable reaches another (see :meth:`TSAnalysisBackend.call_paths_between`).
+
+        Over the callable-only view :meth:`reaches` walks, so the paths cannot disagree with the
+        boolean that summarises them.
+        """
+        check_depth(depth)
+        check_max_paths(max_paths)
+        a_node, b_node = self.resolve_callable(src), self.resolve_callable(dst)
+        check_distinct_endpoints(a_node, b_node)
+        a, b = a_node.callable, b_node.callable
+        graph = self._callable_call_graph
+        if a not in graph or b not in graph:
+            return FlowPaths(paths=[], complete=True)
+        # The call graph re-projected as this module's ``{src: {dst: [label]}}`` adjacency, so one
+        # walker serves both kinds of path.
+        edges: Dict[str, Dict[str, list]] = {n: {m: [("TS_CALLS", None, ())] for m in graph.successors(n)} for n in graph}
+        walks = self._shortest_walks(edges, a, b, depth, max_paths + 1)
+        described = {key: self._call_graph_node(key) for walk in walks for key, _ in walk}
+        described[a] = a_node
+        paths = [flow_path([described[a]] + [described[key] for key, _ in walk], [label for _, label in walk], via=VIA) for walk in walks[:max_paths]]
+        return FlowPaths(paths=paths, complete=len(walks) <= max_paths)
+
+    def _callee_values(self, signature: str) -> List[str]:
+        """The ids of every value that *enters* ``signature`` -- in TypeScript, its parameters. The
+        local twin of the graph's ``formal_in`` body nodes."""
+        c = self._callables.get(signature)
+        return [n.id for n in (c.body or {}).values() if n.kind == "formal_in" and n.id] if c else []
+
+    def flows_to_call(self, src: str, callee: str, *, within: str, depth: int | None = None) -> bool:
+        """Does this value reach any argument of a call to ``callee``
+        (see :meth:`TSAnalysisBackend.flows_to_call`)?"""
+        check_depth(depth)
+        self._require_dataflow()
+        root = self.resolve_value(src, within=within)
+        targets = self._callee_values(self.resolve_callable(callee).callable)
+        return bool(targets) and not self._reach(root.ref, "forward", depth).isdisjoint(set(targets) - {root.ref})
+
+    def flows_to_argument(self, src: str, callee: str, arg: str, *, within: str, depth: int | None = None) -> bool:
+        """Does this value reach ``callee``'s ``arg``
+        (see :meth:`TSAnalysisBackend.flows_to_argument`)?"""
+        check_depth(depth)
+        self._require_dataflow()
+        root = self.resolve_value(src, within=within)
+        target = self.resolve_value(arg, within=callee).ref
+        return target != root.ref and target in self._reach(root.ref, "forward", depth)

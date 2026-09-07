@@ -190,6 +190,64 @@ def flow_path(nodes: Sequence[SliceNode], edges: Sequence[Tuple[str, "str | None
     return FlowPath(hops=[PathHop(frm=nodes[i], to=nodes[i + 1], via=via[rel], var=var, prov=list(prov or [])) for i, (rel, var, prov) in enumerate(edges)])
 
 
+def shortest_walks(edges: Mapping[str, Mapping[str, Sequence[tuple]]], src: str, dst: str, depth: int | None, limit: int, *, via: Mapping[str, str]) -> List[list]:
+    """Up to ``limit`` shortest ``src``->``dst`` walks over ``edges``, in the documented order.
+
+    The local backends' twin of the graph's ``allShortestPaths``, and only shortest walks for its
+    reason: enumerating every walk does not terminate on a real dependence graph.
+
+    ``edges`` is the ``{src: {dst: [label]}}`` adjacency each local backend builds, where a label is
+    ``(relationship type, var, prov)``. A **list** per ``(src, dst)`` pair because parallel edges are
+    ordinary -- one statement feeding one argument on several variables is several distinct paths --
+    and collapsing them would merge several pieces of evidence into one.
+
+    Two passes. The first is a breadth-first level walk keeping the hop count each node was *first*
+    reached at; the second is a depth-first replay that only ever steps to a node whose recorded
+    distance is exactly one more than the walk so far, so it visits shortest walks and nothing else.
+
+    The replay's branch order is ``(via, var, to)`` -- exactly the per-hop key
+    :func:`hop_sort_key` documents -- and every walk found has the same length, so a pre-order
+    depth-first traversal emits them already sorted. That is what makes ``limit`` a *prefix* of a
+    total order rather than whichever ``limit`` walks the recursion happened to find first. ``via``
+    is the backend's :func:`via_table`, so the branch order is the caller's vocabulary and not the
+    graph's relationship-type spelling.
+
+    Lifted out of ``PyCodeanalyzer`` (leg 2.5b) unchanged except for the ``via`` parameter: it is
+    a graph algorithm over an adjacency of strings and knows no language, and a second copy would be
+    a second place for the two backends of a language -- or the backends of two languages -- to
+    drift on what "shortest, in order" means.
+    """
+    dist, frontier, hops = {src: 0}, [src], 0
+    while frontier and dst not in dist and (depth is None or hops < depth):
+        hops += 1
+        nxt = []
+        for s in frontier:
+            for d in edges.get(s, ()):
+                if d not in dist:
+                    dist[d] = hops
+                    nxt.append(d)
+        frontier = nxt
+    if dst not in dist or dist[dst] == 0:
+        return []
+    target, out = dist[dst], []
+
+    def walk(node: str, walked: list) -> None:
+        if len(walked) == target:
+            if node == dst:
+                out.append(list(walked))
+            return
+        options = sorted((via[rel], var or "", d, (rel, var, prov)) for d, labels in edges.get(node, {}).items() if dist.get(d) == len(walked) + 1 for rel, var, prov in labels)
+        for _, _, d, label in options:
+            walked.append((d, label))
+            walk(d, walked)
+            walked.pop()
+            if len(out) >= limit:
+                return
+
+    walk(src, [])
+    return out
+
+
 def as_slice_node(node: object) -> SliceNode:
     """The :class:`~cldk.analysis.commons.results.SliceNode` for anything carrying an address.
 
@@ -201,7 +259,7 @@ def as_slice_node(node: object) -> SliceNode:
 
     A ``SliceNode`` passes through untouched. A ``LocateResult`` is re-expressed as one, keeping
     the vocabulary it already speaks: ``module.path`` is the file, ``callable.signature`` the
-    enclosing callable, ``node.kind`` the position's kind.
+    enclosing callable, ``body.kind`` the position's kind.
 
     Raises:
         TypeError: ``node`` carries neither a ``ref`` nor a ``node_id``, so there is nothing to
@@ -212,7 +270,7 @@ def as_slice_node(node: object) -> SliceNode:
     ref = getattr(node, "node_id", None)
     if ref is None:
         raise TypeError(f"describe() needs something carrying a ref (a SliceNode, a path hop endpoint, a locate() result); got {type(node).__name__}")
-    module, callable_ref, body = node.module, node.callable, getattr(node, "node", None)
+    module, callable_ref, body = node.module, node.callable, getattr(node, "body", None)
     return SliceNode(
         file=module.path,
         line=node.span.start[0],
