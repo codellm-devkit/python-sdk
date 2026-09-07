@@ -1647,14 +1647,19 @@ class TSNeo4jBackend(TSAnalysisBackend):
     #: callable-only edge set the local backend's ``_callable_call_graph`` view walks. The ``kind``
     #: guard alongside the label is Task 1's "the domain is the kind, not the label" rule, which is
     #: what keeps a declaration-merged node out of the facet it is not. Needs Neo4j 5.9+.
+    #: **One endpoint per hop, not two.** Consecutive repetitions of a quantified pattern bind ``x``
+    #: to the previous ``y``, so predicating both ends checks every interior node twice. The walk is
+    #: still scoped in full: ``a`` by the anchor, every node it reaches as some ``x``, and the last
+    #: node -- which is only ever a ``y`` -- by the trailing ``WITH``. Measured on a synthetic
+    #: 5,000-node/100,000-edge cyclic graph with an unreachable target, so the search must exhaust:
+    #: **623.9s predicating both ends, 3.2s predicating one**, same answer. The doctrine is intact --
+    #: every node on the walk carries the predicate, once rather than twice.
     _REACHES = (
         "MATCH (a:TSCallable {{signature:$a}}) WHERE " + _scoped("a") + " AND a.kind IN $callable_kinds "
         "MATCH (a) ((x:TSCallable)-[:TS_CALLS]->(y:TSCallable) WHERE "
         + _scoped("x")
-        + " AND "
-        + _scoped("y")
-        + " AND x.kind IN $callable_kinds AND y.kind IN $callable_kinds){{1,{depth}}} (m:TSCallable) "
-        "WITH DISTINCT m WHERE " + _scoped("m") + " AND m.signature = $b RETURN count(m) > 0 AS ok"
+        + " AND x.kind IN $callable_kinds){{1,{depth}}} (m:TSCallable) "
+        "WITH DISTINCT m WHERE " + _scoped("m") + " AND m.kind IN $callable_kinds AND m.signature = $b RETURN count(m) > 0 AS ok"
     )
 
     def reaches(self, src: str, dst: str, *, depth: int | None = None) -> bool:

@@ -740,6 +740,16 @@ def _unscoped_variables(statement: str) -> List[str]:
     ``MATCH (s:JCallable)-[:J_CALLS]->(t:JCallable) WHERE s.id STARTS WITH $prefix``, which leaks
     through ``t``. Anonymous pattern nodes are skipped -- they bind nothing, so no clause reads one.
 
+    **A quantified path pattern would need the inference the TypeScript twin carries, and Java
+    issues none.** In ``MATCH (a) ((x)-[:R]->(y) WHERE …){1,5} (m)`` a repetition binds ``x`` to
+    the previous ``y``, so predicating one hop node plus the far endpoint pins the other -- and
+    without that inference the audit calls a correctly scoped walk a leak. Java has no such
+    statement: its walks are variable-length hops with an ``all(n IN nodes(p) …)`` interior
+    predicate, and the scan below would break its chain on the group's extra ``(`` in any case.
+    ``test_no_statement_walks_a_quantified_path`` freezes that, so the day one ships, this docstring
+    is wrong and a test says so; the inference to port then lives in
+    ``tests/analysis/typescript/…::_quantified_hops``.
+
     **A variable-length or shortest-path hop is judged by the variables it binds**, which for an
     unnamed interior is only its endpoints. That is a limit of what a bound variable *is*, stated
     rather than hidden: the interior of such a walk is scoped by an ``all(n IN nodes(p) WHERE …)``
@@ -955,6 +965,15 @@ def test_the_audit_rejects_a_statement_that_scopes_only_part_of_its_pattern(stat
 def test_the_audit_accepts_the_three_shapes_that_are_actually_scoped(statement):
     assert _unscoped_variables(statement) == []
     assert _scope_kind(statement) is not None
+
+
+def test_no_statement_walks_a_quantified_path():
+    """The ruling behind a paragraph of :func:`_unscoped_variables`: Java walks distance with
+    ``*0..``/``*1..`` and an ``all(n IN nodes(p) …)`` interior predicate, never with a quantified
+    path pattern (``((x)-[:R]->(y) WHERE …){1,5}``). That is why this audit needs none of the
+    reasoning about what a repetition binds that the TypeScript twin does. Ship one and this fails
+    before it can be miscalled a leak."""
+    assert [name for name, s in _every_statement().items() if re.search(r"\)\s*\{\d*,\d*\}", _render(s))] == []
 
 
 def test_the_interior_audit_sees_every_variable_length_hop_and_not_only_shortest_paths():

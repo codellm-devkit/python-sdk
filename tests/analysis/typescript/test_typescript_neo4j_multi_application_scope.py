@@ -891,6 +891,37 @@ def _chain(clause: str) -> Tuple[List[Tuple[str, str | None, str | None]], List[
     return nodes, links
 
 
+#: The quantifier that closes a **quantified path pattern** -- ``((x)-[:R]->(y) WHERE …){1,5}``.
+_QUANTIFIER = re.compile(r"\)\s*\{\d*,\d*\}")
+
+
+def _quantified_hops(clause: str) -> List[Tuple[str, str, str, str]]:
+    """``(head, first, last, tail)`` for every quantified path pattern in the clause: the node
+    before the group, the group's own first and last node, and the node after it.
+
+    Each sub-pattern is re-read with :func:`_chain` over a *space-padded* slice, so an anonymous
+    node keeps the same ``_<offset>`` name the whole-clause scan gave it. A group whose head or
+    tail is missing (nothing bound on one side) yields nothing: the inference below has no endpoint
+    to stand on.
+    """
+    out: List[Tuple[str, str, str, str]] = []
+    for m in _QUANTIFIER.finditer(clause):
+        i, depth = m.start(), 0
+        while i >= 0:  # balance back to the group's own opening parenthesis
+            depth += (clause[i] == ")") - (clause[i] == "(")
+            if depth == 0:
+                break
+            i -= 1
+        if i < 0:
+            continue
+        inner, _ = _chain(" " * (i + 1) + clause[i + 1 : m.start()])
+        before, _ = _chain(clause[:i])
+        after, _ = _chain(" " * m.end() + clause[m.end() :])
+        if len(inner) >= 2 and before and after:
+            out.append((before[-1][0], inner[0][0], inner[-1][0], after[0][0]))
+    return out
+
+
 def _unscoped_variables(statement: str) -> List[str]:
     """The node variables the statement binds that are **not** provably inside one application.
 
@@ -905,8 +936,20 @@ def _unscoped_variables(statement: str) -> List[str]:
     anchor, or when the pattern connects it to one of those over :data:`_KEEPS_SCOPE`. Anonymous
     pattern nodes bind nothing and are skipped.
 
-    A **quantified** path (``((x)-[:R]->(y) WHERE …){1,5}``) binds its interior, so its hops are
-    judged like any other variable. A **variable-length** hop (``[:R*1..5]``) and a shortest-path
+    A **quantified** path (``MATCH (a) ((x)-[:R]->(y) WHERE …){1,5} (m)``) binds its interior, so
+    its hops are judged like any other variable -- with one inference the pattern's own semantics
+    licence. Consecutive repetitions bind ``x`` to the previous ``y``, so the walk's nodes are both
+    ``{a} ∪ {y₁…yₙ}`` and ``{x₁…xₙ} ∪ {m}``; hence ``y₁…yₙ = {x₂…xₙ} ∪ {m}`` and
+    ``x₁…xₙ = {a} ∪ {y₁…yₙ₋₁}``. So **``y`` is inside when ``x`` is inside and the tail ``m`` is**,
+    and symmetrically **``x`` is inside when ``y`` is inside and the head ``a`` is** -- predicating
+    both hop nodes is redundant. It is also expensive: on a synthetic 5,000-node / 100,000-edge
+    cyclic graph with an unreachable target, so the search must exhaust, predicating both endpoints
+    took 623.9 s against 3.2 s for one, for identical answers; the two spellings were then compared
+    over the superset reference graph at 500 pairs × 2 depths (400 of the 1,000 answers ``True``)
+    with zero mismatches. The inference is narrow on purpose: a group with *neither* endpoint
+    inside, or one whose head or tail is not provably inside, still reports its hop.
+
+    A **variable-length** hop (``[:R*1..5]``) and a shortest-path
     function do not: their interior nodes have no name, and every relationship type this surface
     walks a distance over is deliberately outside :data:`_KEEPS_SCOPE`, so an interior node is not
     provably this application's on a graph the SDK did not emit. Such a walk is therefore judged by
@@ -920,10 +963,12 @@ def _unscoped_variables(statement: str) -> List[str]:
     scoped_paths = _paths_with_scoped_interiors(rendered)
     inside: Dict[str, bool] = {}
     links: List[Tuple[str, str, Set[str]]] = []
+    quantified: List[Tuple[str, str, str, str]] = []
     bound: List[str] = []
     for clause in _match_clauses(rendered):
         nodes, clause_links = _chain(clause)
         links += clause_links
+        quantified += _quantified_hops(clause)
         hops = _VARLENGTH_HOP.findall(clause)
         if hops or _SHORTEST_PATH.search(clause):
             rels = {r for _, types in hops for r in types.split("|") if r}
@@ -943,6 +988,13 @@ def _unscoped_variables(statement: str) -> List[str]:
         for src, dst, rels in links:
             if rels <= _KEEPS_SCOPE and inside.get(src, False) != inside.get(dst, False):
                 inside[src] = inside[dst] = True
+                changed = True
+        for head, first, last, tail in quantified:  # a repetition binds `first` to the previous `last`
+            if inside.get(first, False) and inside.get(tail, False) and not inside.get(last, False):
+                inside[last] = True
+                changed = True
+            if inside.get(last, False) and inside.get(head, False) and not inside.get(first, False):
+                inside[first] = True
                 changed = True
     return sorted({v for v in bound if not inside.get(v, False)})
 
@@ -1150,6 +1202,55 @@ def test_the_audit_rejects_a_statement_that_scopes_only_part_of_its_pattern(stat
 def test_the_audit_accepts_the_shapes_that_are_actually_scoped(statement):
     assert _unscoped_variables(statement) == []
     assert _scope_kind(statement) is not None
+
+
+def _quantified(head: str, hop: str, tail: str) -> str:
+    """A ``_REACHES``-shaped statement: a head node predicated by ``head``, a quantified
+    ``TS_CALLS`` hop predicated by ``hop``, and a tail node predicated by ``tail``. Each predicate
+    is a variable name to scope, or ``""`` for "leave this one unpredicated"."""
+    where = lambda p: (" WHERE " + " AND ".join(neo4j_backend._scoped(v) for v in p.split())) if p else ""
+    return (
+        f"MATCH (a:TSCallable {{signature:$a}}){where(head)} "
+        f"MATCH (a) ((x:TSCallable)-[:TS_CALLS]->(y:TSCallable){where(hop)}){{1,5}} (m:TSCallable) "
+        f"WITH DISTINCT m{where(tail)} RETURN count(m) > 0 AS ok"
+    )
+
+
+@pytest.mark.parametrize(
+    "statement, leaks",
+    [
+        (_quantified("a", "x", "m"), []),
+        (_quantified("a", "y", "m"), []),
+        (_quantified("a", "x y", "m"), []),
+        (_quantified("a", "x", ""), ["m", "y"]),
+        (_quantified("", "y", "m"), ["a", "x"]),
+        (_quantified("a", "", "m"), ["x", "y"]),
+        (_quantified("", "x", "m"), ["a"]),
+    ],
+    ids=[
+        "x-scoped-and-the-tail-scoped",
+        "y-scoped-and-the-head-scoped",
+        "both-hop-nodes-scoped-as-it-used-to-ship",
+        "x-scoped-but-the-tail-is-not",
+        "y-scoped-but-the-head-is-not",
+        "neither-hop-node-scoped",
+        "the-head-is-unscoped-but-the-hop-is-not",
+    ],
+)
+def test_the_audit_knows_what_a_quantified_hop_binds(statement, leaks):
+    """``MATCH (a) ((x)-[:R]->(y) WHERE …){1,5} (m)`` binds ``x`` to the previous ``y`` on every
+    repetition, so the walk's nodes are both ``{a} ∪ {y…}`` and ``{x…} ∪ {m}``. Predicating ``x``
+    and the tail therefore pins ``y`` too, and predicating ``y`` and the head pins ``x`` -- which is
+    why ``_REACHES`` predicates one hop node rather than two (623.9 s against 3.2 s on a synthetic
+    exhausting search, identical answers, and zero mismatches over 1,000 superset pairs).
+
+    The inference is exactly that and no wider: each direction needs *its own* endpoint. Drop the
+    tail and ``y`` is reported again; drop the head and ``x`` is; predicate neither hop node and
+    both are, because head and tail alone say nothing about what lies between them. The last row is
+    the other edge of the same knife -- an unscoped head is reported as the leak it is (``a``), and
+    that does not make ``y`` one, because ``y₁…yₙ = {x₂…xₙ} ∪ {m}`` never mentions the head."""
+    assert _unscoped_variables(statement) == leaks
+    assert (_scope_kind(statement) is None) == bool(leaks)
 
 
 def test_the_audit_reads_a_template_as_the_statement_it_becomes():
