@@ -341,9 +341,11 @@ its upstream issue where there is one:
   returns — has **out-degree zero**. `slice_forward` would therefore be the seed alone,
   `paths_between` `[]`, and `flows_to_call`/`flows_to_argument` `False`, *for every input, whatever
   the program does*. All four raise instead, through one guard over one measured fact, so the day
-  the analyzer connects the layers they answer with no code change. codeanalyzer-python and
-  codeanalyzer-typescript have both already fixed the same gap (129,883 `PY_DDG` edges leave a
-  `formal_in` on the Python reference graph).
+  the analyzer connects the layers they answer with no code change. Neither of the other two
+  analyzers has this gap, each measured on its own reference graph: 129,883 `PY_DDG` edges leave a
+  `formal_in` on the Python graph, and **16,774 `TS_DDG` edges leave a `formal_in`** on the
+  TypeScript one (7,704 of superset-frontend's 8,025 `formal_in` vertices have out-degree ≥ 1,
+  against Java's zero of all of them).
 - **87 of daytrader8's 5,434 `ddg` edges name an endpoint the analyzer never emitted as a body
   node** (`codeanalyzer-java#228`), so the graph reports **5,347** and `analysis.json` reports
   5,434. This is the one place the two Java backends disagree on an edge count. All 87 are
