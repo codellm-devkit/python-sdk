@@ -150,9 +150,11 @@ class TypeScriptAnalysis:
         return self.backend.get_call_graph_json()
 
     def get_callers(self, target_class_name: str, target_method_declaration: str | None = None) -> Dict:
-        """Callers of a method, with the connecting call-graph edge metadata (``provenance`` /
-        ``tags``). Pass a bare signature as the first argument for module-level functions or
-        external (phantom) targets."""
+        """Callers of a method, with the connecting call-graph edge metadata — ``type``,
+        ``weight`` and ``provenance``, the same three keys :meth:`get_call_graph` puts on an edge.
+        (There is no ``tags``: it was a schema-1.0.0 call-edge field, and schema v2's
+        ``TSCallGraphEdge`` is ``{src, dst, prov, weight}``.) Pass a bare signature as the first
+        argument for module-level functions or external (phantom) targets."""
         return self.backend.get_all_callers(target_class_name, target_method_declaration)
 
     def get_callees(self, source_class_name: str, source_method_declaration: str | None = None) -> Dict:

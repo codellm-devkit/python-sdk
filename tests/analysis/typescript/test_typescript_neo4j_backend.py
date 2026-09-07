@@ -32,6 +32,26 @@ is an ssh tunnel on at least one development machine):
 (e.g. `docker run -p 7691:7687 -e NEO4J_AUTH=neo4j/test neo4j:5`). The binary is resolved the
 usual way: ``$CODEANALYZER_TS_BIN``, then the ``codeanalyzer-typescript`` wheel. Read-only live
 coverage of the backend lives in ``test_typescript_e2e_neo4j_live.py``.
+
+**The tolerances, each with its cause.** The graph is the analyzer's own projection and the
+projection is lossy (the full ledger is the "on ``TSNeo4jBackend``" table in
+``docs/agent-api-reference.md``). Three assertions below are therefore weaker than the parity they
+were originally written to prove; each says so where it stands, so a reader does not mistake them
+for parity:
+
+* ``get_method_parameters`` **raises** for a callable that exists — ``:TSCallable`` projects no
+  parameters and the projection mints no parameter nodes, and ``[]`` would read as "takes no
+  parameters" (``neo4j_backend.get_method_parameters``). The two tests that used to read a
+  parameter list off the graph now assert that refusal: it witnesses that the lookup *resolved*
+  the callable — a name it does not resolve returns ``[]`` — and nothing about its signature.
+* A call-graph edge carries ``type`` / ``weight`` / ``provenance`` and nothing else, on both
+  TypeScript backends. There is no ``tags`` key to assert: ``tags`` was a schema-1.0.0 call-edge
+  field, and schema v2's ``TSCallGraphEdge`` is ``{src, dst, prov, weight}``. So the edge shape is
+  asserted exactly rather than by membership, which is what let the stale key go unnoticed.
+* A call site keeps its lines and its resolved ``callee_signature``; ``method_name`` is ``""`` and
+  every receiver/argument facet is ``None``/empty, because the ``:TSBodyNode`` a site is rebuilt
+  from carries neither (``cldk.analysis.typescript.neo4j.reconstruct.callsite``). The loss is
+  asserted rather than skipped — a receiver that started arriving would be news.
 """
 
 import logging
@@ -47,6 +67,7 @@ import pytest
 from cldk import CLDK
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.typescript.neo4j import Neo4jConnectionConfig
+from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 
 logging.getLogger("neo4j").setLevel(logging.ERROR)
 
@@ -292,8 +313,10 @@ def test_methods_and_constructor(ts_neo4j):
 def test_fields_and_parameters(ts_neo4j):
     fields = {f.name for f in ts_neo4j.get_fields("src/models.User")}
     assert {"name", "role"} <= fields
-    params = ts_neo4j.get_method_parameters("src/services.UserService", "create")
-    assert isinstance(params, list)
+    # Fields are projected; parameters are not. This asserts a *refusal*, not parity: the graph
+    # carries no parameters on :TSCallable, and [] would read as "create takes none".
+    with pytest.raises(CodeanalyzerExecutionException, match="no parameters for 'create'"):
+        ts_neo4j.get_method_parameters("src/services.UserService", "create")
 
 
 def test_get_method_resolves_module_level_function(ts_neo4j):
@@ -306,11 +329,14 @@ def test_get_method_resolves_module_level_function(ts_neo4j):
 
 
 def test_get_method_parameters_module_level_function(ts_neo4j):
-    # "main" is declared as `function main(): void` (see index.ts), so it takes no parameters —
-    # this exercises the module-level fallback path in get_method_parameters/get_method, not just
-    # that some list comes back.
-    params = ts_neo4j.get_method_parameters("src/index", "main")
-    assert params == []
+    # Exercises the module-level fallback in get_method_parameters/get_method. The projection
+    # carries no parameters, so the two outcomes are the refusal (the fallback resolved the
+    # callable) and [] (it did not) — which makes the *raise* the thing that proves "src/index.main"
+    # was found. It proves nothing about main's parameter list, even though index.ts declares
+    # `function main(): void`; the graph cannot say so.
+    with pytest.raises(CodeanalyzerExecutionException, match="no parameters for 'main'"):
+        ts_neo4j.get_method_parameters("src/index", "main")
+    assert ts_neo4j.get_method_parameters("src/index", "no_such_function_here") == []
 
 
 def test_structured_decorators(ts_neo4j):
@@ -334,11 +360,15 @@ def test_call_graph_no_dangling_nodes(ts_neo4j):
     for src, dst in graph.edges:
         assert src in nodes
         assert dst in nodes
-    # edge metadata is surfaced just like the in-memory backend
-    src, dst = next(iter(graph.edges))
-    data = graph.get_edge_data(src, dst)
-    assert data["type"] == "CALL_DEP"
-    assert "provenance" in data and "tags" in data
+    # Edge metadata is surfaced just like the in-memory backend: type / weight / provenance and
+    # nothing else. Asserted as an exact key set on every edge, not by membership — the stale
+    # `tags` this used to look for was a schema-1.0.0 field that schema v2 dropped, and a
+    # membership check is what let it sit here unnoticed.
+    for _, _, data in graph.edges(data=True):
+        assert set(data) == {"type", "weight", "provenance"}
+        assert data["type"] == "CALL_DEP"
+        assert data["weight"] >= 1
+        assert set(data["provenance"]) <= {"tsc", "defuse", "import"}
 
 
 def test_callers_and_callees(ts_neo4j):
@@ -353,15 +383,24 @@ def test_callers_and_callees(ts_neo4j):
     caller_sigs = {c["caller_signature"] for c in callers["caller_details"]}
     assert "src/index.main" in caller_sigs
     main_edge = next(c["edge"] for c in callers["caller_details"] if c["caller_signature"] == "src/index.main")
-    assert "provenance" in main_edge and "tags" in main_edge
+    # The same edge dict the call graph carries, reached through the caller view (see the module
+    # docstring on why there is no `tags`): main -> create is resolved by tsc, not inferred.
+    assert main_edge == {"type": "CALL_DEP", "weight": 1, "provenance": ("tsc",)}
 
 
 def test_call_sites(ts_neo4j):
     sites = ts_neo4j.get_call_sites("src/controllers.UserController.show")
     assert any(cs.callee_signature == "src/services.UserService.create" for cs in sites)
     create = next(cs for cs in sites if cs.callee_signature == "src/services.UserService.create")
-    assert create.receiver_type == "UserService"
     assert create.start_line > 0
+    # What a projected call site keeps is its lines and its resolved target. The receiver and
+    # argument facets are a documented loss (agent-api-reference: "a call site's method_name,
+    # receiver and argument facets"): the :TSBodyNode it is rebuilt from carries neither, so the
+    # in-memory backend's receiver_type == "UserService" has no counterpart here. Asserted, not
+    # skipped — a receiver arriving would mean the projection grew.
+    assert create.method_name == ""
+    assert create.receiver_type is None and create.receiver_expr is None
+    assert create.argument_types == [] and create.type_arguments == []
 
     lines = ts_neo4j.get_calling_lines("src/services.UserService.create")
     assert lines == sorted(lines)
