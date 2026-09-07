@@ -23,6 +23,16 @@
 - **Read-only against every Neo4j instance.** Reference graph: `bolt://localhost:7691`, user `neo4j`, password `cldkleg3test`, holding **both** `daytrader8` (18,354 nodes) and `thingsboard` (598,413 nodes) so scoping is exercised rather than assumed. Python regression graph `bolt://localhost:7689` / `cldkleg16test`. **Port 7687 is an ssh tunnel; never a target.** Containers are in the `podman` docker context. Never set `CLDK_TEST_NEO4J_WRITE_*`.
 - **The local analyzer comes from the `codeanalyzer-java` wheel** (`cldk[java]` extra), so no jar path and no `JAVA_HOME` are involved. Levels 3 and 4 need compiled classes; without them the analyzer degrades and the SDK reports it (J-17).
 - **Dependency on leg 2.5b.** `LocateResult.body` is a language-neutral `BodyRef`, and `Span` lives in `cldk/analysis/commons/results.py`, only on the 2.5b branch. This branch is stacked on Java 3a, which predates that. **Rebase onto 2.5b before T1** if it has landed; if it has not, T1 must not invent a second `BodyRef` — stop and report instead, because two incompatible spellings of a shared type is the one merge conflict that cannot be resolved mechanically.
+- **Reconciling the shared resolver with leg 2.5b, decided rather than left to the rebase.** Both legs
+  parameterised `resolve_callable_signature` for the same reason and in different ways: 2.5b injects a
+  `dotted=` function at the call site; this leg puts `match_names`/`module_names` on `CallableCandidate`.
+  They are redundant, and the candidate fields are the more general of the two — a Java module answers to
+  *several* dotted spellings (its declared package, and that package plus each declared type), which a
+  function returning one string cannot express. **On the rebase: keep `match_names`/`module_names`, drop
+  `dotted=`, and migrate TypeScript to supply `module_names`.** That also fixes a live defect this leg
+  found: `resolve_callable_signature` calls `module_dotted(c.path)` with no `extensions=`, so it is
+  hard-wired to `.py` and a TypeScript `in_module=` dotted spelling is derived with Python's suffix list.
+  Do not resolve this conflict mechanically in either direction.
 - Run suites **sequentially**; only one pytest session per checkout (the Java conftest extracts a fixture into the tree and removes it on teardown, so concurrent sessions race). Stage by name.
 - **Baselines at this branch's base:** release gate **1069 passed / 224 skipped**, coverage 83.94%; Java offline **321 passed / 26 skipped**; live parity 19, scale 5, audit 34.
 - **Never add Claude/AI attribution** to any commit, comment, doc or changelog entry. Changelog entries stay Keep-a-Changelog scale — one to three lines, detail in the spec (python-sdk#350).
