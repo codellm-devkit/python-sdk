@@ -1458,8 +1458,9 @@ class JavaAnalysis:
             AmbiguousName: ``callable`` named more than one callable.
             SelectorNotInGraph: Nothing matched.
             ValueError: ``page_size`` below 1, or a cursor from another page.
-            CodeanalyzerUsageException: The analysis was built below
-                ``analysis_level="program_dependency_graph"``.
+            CodeanalyzerUsageException: ``callable`` is an implicit callable — it resolves (J-6)
+                and the analyzer emits it with no body, so there is no flow to page — or the
+                analysis was built below ``analysis_level="program_dependency_graph"``.
         """
         return self.backend.get_cfg(callable, in_class=in_class, page_size=page_size, cursor=cursor)
 

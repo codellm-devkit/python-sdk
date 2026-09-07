@@ -190,6 +190,35 @@ def test_the_whole_fixture_carries_twenty_self_loops(ref):
     assert loops == 20
 
 
+def test_an_implicit_callable_refuses_a_graph_rather_than_answering_empty(both):
+    """J-6 halved: an implicit callable **resolves** -- it is a real call-graph endpoint, and the
+    call-graph accessors answer about it -- and the accessors that would have to read a body
+    refuse, naming the reason.
+
+    ``total=0, edges=[], complete=True`` is the one answer they must not give. It is a well-formed
+    page that says "this callable has no control flow", which is the ambiguous empty (D7) this
+    surface refuses everywhere else, and there are 99 such callables in daytrader8.
+    """
+    key = f"{DIRECT}.<init>()"
+    assert both.resolve_callable("<init>()", in_class=DIRECT).callable == key, "J-6: it still resolves"
+    assert both.callers_of("<init>()", in_class=DIRECT) is not None, "and the call graph still answers about it"
+    for accessor in (both.get_cfg, both.get_cdg, both.get_ddg):
+        with pytest.raises(CodeanalyzerUsageException) as raised:
+            accessor(key)
+        assert "implicit" in str(raised.value) and "can://" not in str(raised.value), accessor.__name__
+
+
+def test_an_implicit_callable_refuses_a_value_address_too(both):
+    """The other half of J-6's list. ``within=`` an implicit callable used to fail as
+    ``value not in graph: 'x'`` -- true, and it blames the name for what the callable is."""
+    key = f"{DIRECT}.<init>()"
+    with pytest.raises(CodeanalyzerUsageException) as raised:
+        both.slice_backward("x", within=key)
+    assert "implicit" in str(raised.value)
+    with pytest.raises(CodeanalyzerUsageException):
+        both.resolve_value("x", within=key)
+
+
 # ---- paging ------------------------------------------------------------------------------------
 def test_a_page_is_ordered_and_a_cursor_resumes_after_it(ref):
     whole = list(ref.get_ddg(TO_JSON))

@@ -449,6 +449,7 @@ class JCodeanalyzer(JavaAnalysisBackend):
         check_page_size(page_size)
         self._require_dataflow()
         key = self.resolve_callable(name, in_class=in_class).callable
+        self._require_explicit(key, "it has no control or data flow to return")
         return key, self._addressing.by_key[key].callable
 
     def get_cfg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[JCfgEdge]:

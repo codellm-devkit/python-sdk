@@ -103,7 +103,7 @@ from cldk.models.java.models import (
     JType,
 )
 from cldk.models.java.projections import JCallableOverview, JClassOverview
-from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException, SelectorNotInGraph
+from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException, CodeanalyzerUsageException, SelectorNotInGraph
 
 # A CRUD query row: the owning type + callable and the operations found within it.
 CRUDRow = Dict[str, Union[JType, JCallable, List[JCRUDOperation]]]
@@ -234,6 +234,16 @@ PORTS_DISCONNECTED = (
     "get_ddg(), and the call-graph accessors (reaches, callers_of, callees_of, backward_cone, "
     "call_paths_between) are unaffected."
 )
+
+
+#: What every accessor J-6 exempts says when it is handed an implicit callable. One string because
+#: the *premise* is one fact about the analyzer -- a callable with no span, no body, no parameters
+#: and no metrics (99 of daytrader8's 1,216) -- and only the consequence differs by accessor. J-6
+#: makes such a callable resolve, because it is a real call-graph endpoint and hiding it would
+#: dangle edges; what it cannot do is answer a question about text or flow it has none of. Returning
+#: an empty page there would read as "this callable has no control flow", which is the ambiguous
+#: empty (D7) this surface refuses everywhere else.
+IMPLICIT_CALLABLE = "{key!r} is an implicit callable: codeanalyzer-java emits it with no span and no body, so {tail}"
 
 
 #: Every call-shaped site in a callable body, under **one** capture name. One name matters: the
@@ -736,8 +746,15 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         Raises:
             AmbiguousName: ``within`` named more than one callable.
             SelectorNotInGraph: No such callable, or no parameter of it carries that name.
+            CodeanalyzerUsageException: ``within`` named an **implicit** callable, which J-6 makes
+                addressable and the analyzer emits with no parameter list at all. Refused rather
+                than reported as a missing name, which would blame the name for the callable.
         """
         owner = resolve_within(self.resolve_callable, within)
+        # J-6: an implicit callable resolves and declares nothing. Refused here rather than in each
+        # of the six accessors that address a value, and refused before the name is judged, because
+        # "no such value" would blame the name for what the callable is.
+        self._require_explicit(owner.callable, "it declares no parameter to address")
         c = self._addressing.by_key[owner.callable].callable
         # Positional, because the vertex id is: ``@formal_in:<n>`` indexes the declared list. A
         # parameter the analyzer emitted without a name has no address here and is left out rather
@@ -776,7 +793,7 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         if not code:
             row = self._addressing.by_key.get(node_id) or self._addressing.by_id.get(node_id)
             if row is not None and row.callable.is_implicit:
-                raise KeyError(f"{node_id!r} is an implicit callable: codeanalyzer-java emits it with no span and no body, so there is no source text to return")
+                raise KeyError(IMPLICIT_CALLABLE.format(key=node_id, tail="there is no source text to return"))
             raise KeyError(f"no recoverable source for {node_id!r} on this backend (it carries no span, or the backend holds no text for it)")
         return code
 
@@ -1135,9 +1152,11 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
             SelectorNotInGraph: Nothing matched.
             ValueError: ``page_size`` below 1, or ``cursor`` not from a previous page of this
                 accessor and this callable.
-            CodeanalyzerUsageException: (local backend) built below
+            CodeanalyzerUsageException: ``callable`` is an **implicit** callable — addressable
+                under J-6 and emitted with no body at all, so it has no flow to page; on both
+                backends. Or, on the local backend only, this analysis was built below
                 ``analysis_level="program_dependency_graph"``, where the analyzer emits no
-                cfg/cdg/ddg at all — an empty page there would read as "no dependence" (D7).
+                cfg/cdg/ddg at all. An empty page for either would read as "no dependence" (D7).
         """
 
     @abstractmethod
@@ -1581,6 +1600,19 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         at full depth: the graph backend has no shallow mode to guard against, and giving it an
         override that can never fire would be a second thing to keep in step.
         """
+
+    def _require_explicit(self, key: str, tail: str) -> None:
+        """Refuse an implicit callable (J-6), in the same words on both backends.
+
+        The guard is here rather than in :meth:`resolve_callable` because J-6 draws the line
+        between the two: an implicit constructor **resolves** -- it is a call-graph endpoint, and
+        ``callers_of`` / ``reaches`` / ``backward_cone`` answer about it honestly -- and only the
+        accessors that would have to read a span, a body or a parameter list refuse. Every one of
+        those reaches this method.
+        """
+        row = self._addressing.by_key.get(key) or self._addressing.by_id.get(key)
+        if row is not None and row.callable.is_implicit:
+            raise CodeanalyzerUsageException(IMPLICIT_CALLABLE.format(key=key, tail=tail))
 
     def _require_connected_ports(self, accessor: str) -> None:
         """Refuse the four forward value accessors while the port lattice carries no dependence

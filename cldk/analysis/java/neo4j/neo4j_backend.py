@@ -707,6 +707,7 @@ class JNeo4jBackend(JavaAnalysisBackend):
         """
         check_page_size(page_size)
         node = self.resolve_callable(name, in_class=in_class)
+        self._require_explicit(node.callable, "it has no control or data flow to return")
         key, params = node.callable, {"prefixes": [node.ref + "@"]}
         match = self._OWN_EDGES.format(rel=rel)
         total = self._run(match + "RETURN count(r) AS total", **params)[0]["total"]
