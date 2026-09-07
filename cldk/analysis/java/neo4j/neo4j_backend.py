@@ -761,9 +761,24 @@ class JNeo4jBackend(JavaAnalysisBackend):
     #: recovers the owner, the file and the parameter names from the id prefix and the index this
     #: backend already holds, which is both cheaper than a ``J_HAS_BODY_NODE`` hop and the reason the
     #: two backends describe a vertex identically.
+    #:
+    #: ``all(n IN nodes(p) …)`` is the **interior**, and it is here for :attr:`_PATHS`'s reason
+    #: rather than by analogy with it: a variable-length pattern binds only its two endpoints, so
+    #: scoping those leaves every node between them free and a walk may leave the application and
+    #: come back. There are 0 cross-application SDG edges in the reference graph today, which makes
+    #: this latent and not a bug report -- and the rule of this leg is that the audit judges the
+    #: predicate that is written, not the graph that happens to be attached. The far endpoint keeps
+    #: its own ``STARTS WITH`` alongside, redundantly and deliberately, exactly as :attr:`_PATHS`
+    #: keeps both of its: the audit judges **per bound variable**, and a variable whose only excuse
+    #: is a predicate over an unnamed path reads to it as unscoped. Cost, re-measured on the shipped
+    #: statements (ThingsBoard, the largest ``formal_in`` backward cone -- 604 nodes at depth 5 --
+    #: the two forms interleaved, median of 5 with the first round discarded, three sessions):
+    #: **9.6 / 9.9 / 9.9 ms with the predicate against 9.2 / 9.5 / 9.1 without**, identical rows.
+    #: Keeping the endpoint predicate is what makes it that cheap: Neo4j inlines the ``all()`` into
+    #: the same expansion instead of re-planning around it.
     _SLICE = (
         "MATCH (r:JBodyNode {{id:$id}}) WHERE r.id STARTS WITH $prefix "
-        "MATCH (r){left}[:{rels}*0..{depth}]{right}(m:JBodyNode) WHERE m.id STARTS WITH $prefix "
+        "MATCH p = (r){left}[:{rels}*0..{depth}]{right}(m:JBodyNode) WHERE m.id STARTS WITH $prefix AND all(n IN nodes(p) WHERE n.id STARTS WITH $prefix) "
         "WITH DISTINCT m.id AS ref, m.kind AS kind, m.start_line AS line ORDER BY ref "
         "WITH collect({{ref: ref, kind: kind, line: line}}) AS found "
         "RETURN size(found) AS total, found[0..$cap] AS page"
@@ -828,10 +843,15 @@ class JNeo4jBackend(JavaAnalysisBackend):
         return FlowPaths(paths=paths, complete=len(rows) <= max_paths)
 
     #: ``WITH DISTINCT m`` before the membership test is what makes this a pruning BFS instead of a
-    #: trail enumeration. Every hop is inside the application, as in :attr:`_PATHS`.
+    #: trail enumeration. Every hop is inside the application, by the same whole-path predicate
+    #: :attr:`_SLICE` and :attr:`_PATHS` carry -- which this claimed before it had one, while
+    #: scoping only its seed and its far endpoint. Measured on ThingsBoard the same way as
+    #: :attr:`_SLICE`: **1.6 / 1.5 / 1.8 ms with the predicate against 1.8 / 2.0 / 1.7 without** at
+    #: depth 5, i.e. inside the noise, and unbounded from the largest forward cone found (2,361
+    #: nodes) 9 ms either way. Binding the path does not cost the pruning.
     _VALUE_REACHES = (
         "MATCH (a:JBodyNode {{id:$src}}) WHERE a.id STARTS WITH $prefix "
-        "MATCH (a)-[:{rels}*1..{depth}]->(m:JBodyNode) WHERE m.id STARTS WITH $prefix "
+        "MATCH p = (a)-[:{rels}*1..{depth}]->(m:JBodyNode) WHERE m.id STARTS WITH $prefix AND all(n IN nodes(p) WHERE n.id STARTS WITH $prefix) "
         "WITH DISTINCT m WHERE m.id IN $dsts RETURN count(m) > 0 AS ok"
     )
 

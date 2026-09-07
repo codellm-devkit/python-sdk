@@ -727,8 +727,9 @@ def _unscoped_variables(statement: str) -> List[str]:
     **A variable-length or shortest-path hop is judged by the variables it binds**, which for an
     unnamed interior is only its endpoints. That is a limit of what a bound variable *is*, stated
     rather than hidden: the interior of such a walk is scoped by an ``all(n IN nodes(p) WHERE …)``
-    predicate on the statement itself, and :func:`test_every_path_pattern_scopes_its_interior`
-    checks that every one of them carries it.
+    predicate on the statement itself, and ``test_every_path_pattern_scopes_its_interior`` checks
+    that every one of them carries it -- every one, not only the ``allShortestPaths`` ones, which
+    is what that filter used to mean.
     """
     rendered = _render(statement)
     prefixed = set(_SCOPED_VAR.findall(rendered))
@@ -940,6 +941,21 @@ def test_the_audit_accepts_the_three_shapes_that_are_actually_scoped(statement):
     assert _scope_kind(statement) is not None
 
 
+def test_the_interior_audit_sees_every_variable_length_hop_and_not_only_shortest_paths():
+    """The net's own net, for the filter this time rather than for the predicate.
+
+    ``"allShortestPaths" in s`` is what this used to select on, while its docstring said "a
+    shortest-path **or variable-length** pattern" -- so the two ``*0..``/``*1..`` walks the sentence
+    described were exactly the two the filter did not reach, and one of them carried a comment
+    asserting the interior scope it was missing. These are the shapes that must select.
+    """
+    for pattern in ("-[:R*0..]->", "-[:R*1..5]->", "-[:R*..3]->", "-[r:R*]->", "allShortestPaths((a)-[:R*1..]->(b))"):
+        assert _VARIABLE_LENGTH.search(pattern), pattern
+    assert not _VARIABLE_LENGTH.search("MATCH (a)-[:J_CALLS]->(b) WHERE a.id STARTS WITH $prefix RETURN a")
+    selected = {n for n, st in _every_statement().items() if _VARIABLE_LENGTH.search(_render(st))}
+    assert {"_SLICE", "_VALUE_REACHES"} <= selected, "the two variable-length walks are in the audit's domain"
+
+
 def test_no_statement_spells_the_scope_with_any():
     """``any(p IN $prefixes WHERE …)`` plans as a label scan; Java has one prefix, so the predicate
     is a bare ``STARTS WITH`` and there is nothing for ``any()`` to iterate."""
@@ -957,8 +973,24 @@ def test_every_statement_is_application_scoped_or_anchored(name):
     assert _scope_kind(statement) is not None, f"{name} carries no application scope: {statement[:160]!r}"
 
 
-@pytest.mark.parametrize("name", sorted(n for n, s in _every_statement().items() if "allShortestPaths" in s))
-def test_every_shortest_path_pattern_scopes_its_interior(name):
+#: A pattern whose interior is unnamed: ``allShortestPaths`` and every variable-length quantifier
+#: (``*0..``, ``*1..5``, ``*..3``, ``*``). The old spelling of this filter was
+#: ``"allShortestPaths" in s``, while the docstring below said "a shortest-path **or
+#: variable-length** pattern" -- so the two variable-length statements the docstring described were
+#: the two the filter silently skipped, which is the class of leak this test exists for.
+_VARIABLE_LENGTH = re.compile(r"allShortestPaths|\*\d*\.\.\d*|\*\]")
+
+#: The one variable-length pattern that needs no interior predicate, named rather than matched away.
+#: :attr:`JNeo4jBackend._SUBTREE` walks ``J_DECLARES|J_HAS_METHOD|J_HAS_FIELD`` **out of the
+#: application anchor**: every hop is a containment edge (:data:`_CONTAINMENT`), which by definition
+#: cannot leave the application that owns the parent, so its interior is scoped by the pattern
+#: itself and an ``all()`` predicate would be a second statement of the same fact. The SDG walks
+#: have no such property -- their relationships run between body nodes and nothing anchors them.
+_INTERIOR_SCOPED_BY_CONTAINMENT = frozenset({"_SUBTREE", "_subtree_rows"})
+
+
+@pytest.mark.parametrize("name", sorted(n for n, s in _every_statement().items() if _VARIABLE_LENGTH.search(_render(s))))
+def test_every_path_pattern_scopes_its_interior(name):
     """The leak :func:`_unscoped_variables` structurally cannot see.
 
     A shortest-path or variable-length pattern binds only its endpoints, so scoping those leaves
@@ -966,7 +998,13 @@ def test_every_shortest_path_pattern_scopes_its_interior(name):
     per-variable audit above would call the statement clean. Leg 2.5b found exactly that twice in
     its own path enumerators. The fix is a node predicate over the whole path, which Neo4j inlines
     into the search; this freezes it.
+
+    Judged on the **pattern**, not on the operator: an ``allShortestPaths`` filter passed the two
+    ``*0..``/``*1..`` walks of the slice and the value-reachability predicate, and one of them
+    carried a comment claiming the scope it did not have.
     """
+    if name.partition("@")[0] in _INTERIOR_SCOPED_BY_CONTAINMENT:  # the constant, and the method that inlines it
+        pytest.skip(f"{name} walks containment out of the application anchor; see _INTERIOR_SCOPED_BY_CONTAINMENT")
     statement = _render(_every_statement()[name])
     assert "all(n IN nodes(p) WHERE " + neo4j_backend._scoped("n") + ")" in statement, f"{name} scopes only its endpoints: {statement[:200]!r}"
 
