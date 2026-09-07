@@ -33,6 +33,12 @@
   found: `resolve_callable_signature` calls `module_dotted(c.path)` with no `extensions=`, so it is
   hard-wired to `.py` and a TypeScript `in_module=` dotted spelling is derived with Python's suffix list.
   Do not resolve this conflict mechanically in either direction.
+- **`a4`'s signature spellings are a pruning artifact; assert spellings against `a1`.** `a4` is a pruned copy,
+  so most types are unresolvable and the analyzer falls back to the source spelling: `a1` has
+  `setTopGainers(java.util.Collection)` where `a4` has `setTopGainers(Collection<QuoteDataBean>)`, and 143
+  signatures contain `<` in `a1` against 8 in `a4`. A signature key is a function of what the analyzer could
+  resolve, not of the analysis level. Use `a4` for the level-4 dataflow structure it exists to carry, and `a1`
+  for anything that pins how a signature is spelled.
 - Run suites **sequentially**; only one pytest session per checkout (the Java conftest extracts a fixture into the tree and removes it on teardown, so concurrent sessions race). Stage by name.
 - **Baselines at this branch's base:** release gate **1069 passed / 224 skipped**, coverage 83.94%; Java offline **321 passed / 26 skipped**; live parity 19, scale 5, audit 34.
 - **Never add Claude/AI attribution** to any commit, comment, doc or changelog entry. Changelog entries stay Keep-a-Changelog scale — one to three lines, detail in the spec (python-sdk#350).

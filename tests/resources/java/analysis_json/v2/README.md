@@ -34,3 +34,22 @@ both `cancelOrder` overloads on `TradeDirect` (`cancelOrder(java.lang.Integer, b
 
 
 The committed files are gzip-compressed (`analysis.json.gz`, `gzip -9`) because the analyzer pretty-prints and the raw pair is 18.7 MB; `tests/conftest.py` reads them with `gzip.open`. Regenerate, then `gzip -9 -k` — never hand-edit.
+
+## A caveat about `a4`'s signature spellings
+
+`a4` is a **pruned copy** of the project (schema v2 rejects `-t`, so a small level-4 fixture can only be made by
+deleting sources). Pruning makes most types unresolvable, and the analyzer then falls back to the spelling written
+in the source. Measured across the four types both fixtures share:
+
+| | `a1` (whole project) | `a4` (pruned) |
+|---|---|---|
+| parameter types | `com.ibm…AccountDataBean` | `AccountDataBean` |
+| generic arguments | erased — `java.util.Collection` | kept — `Collection<QuoteDataBean>` |
+| qualified interface names | 34 of 34 | 4 of 5 |
+| signatures containing `<` | 143 | 8 |
+
+So a callable's signature key is a function of **what the analyzer could resolve**, not of the analysis level.
+
+**Use `a1` for anything that asserts a signature's spelling**, and `a4` only for what it exists to carry: the
+level-4 dataflow structure (`param_in`, `param_out`, `summary`, `points-to` provenance). A test that pins an `a4`
+signature is pinning an artifact of the pruning, and it will not match the same method in a complete project.
