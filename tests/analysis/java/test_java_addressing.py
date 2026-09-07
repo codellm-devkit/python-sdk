@@ -80,13 +80,17 @@ def _local(payload: str) -> JCodeanalyzer:
 
 
 class _BodyNodeResponder:
-    """The one statement the graph backend issues here: the per-callable body-node fetch. Answers
-    it out of the same fixture, in the graph's own vocabulary (a global ``id``, ``kind`` and a
-    line-only span), so the rows are shaped like the projection's rather than like the model's."""
+    """The two statements the graph backend issues in the offline suites: the per-callable body-node
+    fetch (leg 3b Task 1) and the port-lattice probe (Task 2). Both are answered out of the same
+    fixture, in the graph's own vocabulary (a global ``id``, ``kind`` and a line-only span), so the
+    rows are shaped like the projection's rather than like the model's -- and the probe's answer is
+    the fixture's own fact, not a constant: it is ``True`` exactly when some ``formal_in`` of the
+    payload has an outgoing dependence edge, which is what the graph would report."""
 
     def __init__(self, application: JApplication) -> None:
         self.rows: Dict[str, List[Dict[str, object]]] = {}
         self.calls = 0
+        self.ports_carry_dependence = _ports_carry_dependence(application)
         for _, unit in application.symbol_table.items():
             for t in unit.types.values():
                 self._walk(t)
@@ -102,6 +106,8 @@ class _BodyNodeResponder:
             self._walk(nested)
 
     def __call__(self, query: str, params: Dict[str, object]) -> List[Dict[str, object]]:
+        if "kind = 'formal_in'" in query:
+            return [{"ok": self.ports_carry_dependence}]
         if "JBodyNode" not in query:
             return []
         self.calls += 1
@@ -109,6 +115,34 @@ class _BodyNodeResponder:
         for prefix in params.get("prefixes") or []:
             out.extend(self.rows.get(str(prefix)[:-1], []))
         return out
+
+
+def _ports_carry_dependence(application: JApplication) -> bool:
+    """Whether any ``formal_in`` of this payload has an outgoing SDG edge — the fact
+    :attr:`JNeo4jBackend._ports_carry_dependence` asks the graph, computed here from the fixture the
+    fake graph stands for. Read from the analyzer's own lists rather than from the implementation,
+    so the offline suite's answer is a measurement and not a copy of what the code does."""
+    formal_in = set()
+    edges = set()
+
+    def walk(t) -> None:
+        for c in t.callables.values():
+            for key, node in (c.body or {}).items():
+                if node.kind == "formal_in":
+                    formal_in.add(java_body_node_id(c.id, key))
+            for rel in (c.ddg or [], c.cdg or [], c.summary or []):
+                edges.update(java_body_node_id(c.id, e.src) for e in rel)
+            for local in c.types.values():
+                walk(local)
+        for nested in t.types.values():
+            walk(nested)
+
+    for unit in application.symbol_table.values():
+        for t in unit.types.values():
+            walk(t)
+    edges.update(e.src for e in application.param_in)
+    edges.update(e.src for e in application.param_out)
+    return bool(formal_in & edges)
 
 
 def _graph(payload: str) -> JNeo4jBackend:

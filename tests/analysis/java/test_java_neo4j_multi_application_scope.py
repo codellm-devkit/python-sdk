@@ -611,49 +611,107 @@ _SHARED_TARGET = frozenset({"J_ANNOTATED_BY", "J_IMPORTS", "DECLARES_DEPENDENCY"
 _KEEPS_SCOPE = _CONTAINMENT | _SHARED_TARGET
 
 
+#: The ``.format()`` placeholders the templated statements carry, resolved to one representative
+#: rendering so the audit reads real Cypher rather than a template: ``{{`` collapses to ``{``, a
+#: variable-length quantifier's ``*0..{depth}`` to ``*0..5``, ``{left}``/``{right}`` to the forward
+#: direction. Without this a template's ``{{id:$src}}`` does not read as an id lookup and its
+#: quantified hop does not tokenise at all -- and the audit would judge a statement nobody issues.
+_TEMPLATE_ARGS = {"{rel}": "J_DDG", "{rels}": neo4j_backend.SDG_REL_PATTERN, "{depth}": "5", "{left}": "-", "{right}": "->"}
+
+#: One regex for both token kinds, scanned with ``finditer`` rather than anchored ``match``: text
+#: the scanner cannot read (``p = allShortestPaths(``, a ``reduce(...)`` ordering key) breaks the
+#: chain instead of crashing, which can only ever *remove* an excuse and never invent one.
+_CHAIN_TOKEN = re.compile(r"\((\w*)(?::([\w|:]+))?(?: ?\{([^}]*)\})?\)|(<)?-\[(\w*)(?::([\w|]+))?(\*[\d.]*)?\]-(>)?")
+
+_CLAUSE_KEYWORDS = ("OPTIONAL MATCH ", "MATCH ", "WHERE ", "WITH ", "RETURN ", "UNWIND ")
+
+
+def _render(statement: str) -> str:
+    """One representative rendering of a ``.format()``-ed statement (see :data:`_TEMPLATE_ARGS`)."""
+    for placeholder, value in _TEMPLATE_ARGS.items():
+        statement = statement.replace(placeholder, value)
+    return statement.replace("{{", "{").replace("}}", "}")
+
+
+def _clauses(statement: str) -> List[str]:
+    """Split into clauses at **top-level** keywords only.
+
+    A naive ``re.split`` breaks a path pattern apart at the ``WHERE`` *inside* its parentheses
+    (``allShortestPaths((a)-[…]->(b)) WHERE all(n IN nodes(p) …)``), which silently drops the
+    pattern's own nodes from the audit -- the variables most likely to be the leak. Depth-tracking
+    keeps each clause whole.
+    """
+    parts, depth, start, i = [], 0, 0, 0
+    while i < len(statement):
+        char = statement[i]
+        if char in "([":
+            depth += 1
+        elif char in ")]":
+            depth -= 1
+        elif depth == 0 and (i == 0 or statement[i - 1] == " "):
+            for keyword in _CLAUSE_KEYWORDS:
+                if statement.startswith(keyword, i) and i > start and not statement.endswith(("OPTIONAL ", "STARTS ", "ENDS "), 0, i):
+                    parts.append(statement[start:i].strip())
+                    start = i
+                    break
+        i += 1
+    parts.append(statement[start:].strip())
+    return [c for c in parts if c]
+
+
 def _match_clauses(statement: str) -> List[str]:
-    """The pattern of each ``MATCH`` / ``OPTIONAL MATCH`` clause, split as :func:`fake_cypher` does."""
-    clauses = re.split(r"(?<!STARTS)(?<!OPTIONAL) (?=MATCH |OPTIONAL MATCH |WHERE |WITH |RETURN )", statement.strip())
-    return [re.sub(r"^(?:OPTIONAL )?MATCH ", "", c) for c in clauses if re.match(r"(?:OPTIONAL )?MATCH ", c)]
+    """The pattern of each ``MATCH`` / ``OPTIONAL MATCH`` clause."""
+    return [re.sub(r"^(?:OPTIONAL )?MATCH ", "", c) for c in _clauses(statement) if re.match(r"(?:OPTIONAL )?MATCH ", c)]
 
 
 def _unscoped_variables(statement: str) -> List[str]:
     """The node variables the statement binds that are **not** provably inside one application.
 
-    A variable is inside when it carries ``id STARTS WITH $prefix``, when it *is* the
-    ``(:JApplication {name: $app})`` anchor, or when the pattern reaches it from an inside variable
-    over :data:`_KEEPS_SCOPE`. Judging per variable is the point: a presence check ("does the text
-    contain a prefix predicate?") passes ``MATCH (s:JCallable)-[:J_CALLS]->(t:JCallable) WHERE
-    s.id STARTS WITH $prefix``, which leaks through ``t``. Anonymous pattern nodes are skipped --
-    they bind nothing, so no clause can read one.
+    A variable is inside when it carries ``id STARTS WITH $prefix`` (or the narrow ``UNWIND
+    $prefixes`` spelling), when it *is* the ``(:JApplication {name: $app})`` anchor, or when the
+    pattern reaches it from an inside variable over :data:`_KEEPS_SCOPE`. Judging per variable is
+    the point: a presence check ("does the text contain a prefix predicate?") passes
+    ``MATCH (s:JCallable)-[:J_CALLS]->(t:JCallable) WHERE s.id STARTS WITH $prefix``, which leaks
+    through ``t``. Anonymous pattern nodes are skipped -- they bind nothing, so no clause reads one.
+
+    **A variable-length or shortest-path hop is judged by the variables it binds**, which for an
+    unnamed interior is only its endpoints. That is a limit of what a bound variable *is*, stated
+    rather than hidden: the interior of such a walk is scoped by an ``all(n IN nodes(p) WHERE …)``
+    predicate on the statement itself, and :func:`test_every_path_pattern_scopes_its_interior`
+    checks that every one of them carries it.
     """
-    prefixed = set(_SCOPED_VAR.findall(statement))
-    for unwound in _UNWOUND_PREFIXES.findall(statement):
-        prefixed |= set(re.findall(rf"\b(\w+)\.id STARTS WITH {unwound}\b", statement))
+    rendered = _render(statement)
+    prefixed = set(_SCOPED_VAR.findall(rendered))
+    for unwound in _UNWOUND_PREFIXES.findall(rendered):
+        prefixed |= set(re.findall(rf"\b(\w+)\.id STARTS WITH {unwound}\b", rendered))
     inside: Dict[str, bool] = {}
     bound: List[str] = []
-    for clause in _match_clauses(statement):
-        previous, rels = False, None
-        for kind, token in _tokens(clause):
-            if kind == "hop":
-                rels = token[1]
+    for clause in _match_clauses(rendered):
+        previous, rels, pos = False, None, 0
+        for m in _CHAIN_TOKEN.finditer(clause):
+            if clause[pos : m.start()].strip():  # a gap the scanner could not read: the chain breaks
+                previous, rels = False, None
+            pos = m.end()
+            if not m.group(0).startswith("("):
+                rels = set((m.group(6) or "").split("|"))
                 continue
-            var, labels, props = token
+            var, labels, props = m.group(1) or f"_{m.start()}", m.group(2), m.group(3)
             anchor = labels == "JApplication" and props == "name: $app"
             here = var in prefixed or anchor or inside.get(var, False) or (previous and rels is not None and rels <= _KEEPS_SCOPE)
             if not var.startswith("_"):
                 bound.append(var)
             inside[var] = inside.get(var, False) or here
             previous, rels = inside[var], None
-    return sorted({v for v in bound if not inside[v]})
+    return sorted({v for v in bound if not inside.get(v, False)})
 
 
 def _scope_kind(statement: str) -> str | None:
-    if _INTROSPECTION.match(statement):
+    rendered = _render(statement)
+    if _INTROSPECTION.match(rendered):
         return "introspection"
-    if _unscoped_variables(statement):
+    if _unscoped_variables(rendered):
         return None
-    return "prefix" if _SCOPED_VAR.search(statement) or _UNWOUND_PREFIXES.search(statement) else "application"
+    return "prefix" if _SCOPED_VAR.search(rendered) or _UNWOUND_PREFIXES.search(rendered) else "application"
 
 
 def _class_level_statements() -> Dict[str, str]:
@@ -681,14 +739,27 @@ def _inline_statements() -> Dict[str, str]:
                 assigned[node.target.id].append(node.value)
 
         def text(e: ast.expr, depth: int = 0) -> str:
+            # Two different failures, spelled differently on purpose. ``{…}`` means *the statement
+            # itself* could not be followed -- ``self._run(some_variable)`` where the variable is
+            # opaque -- and the test below refuses it, because a statement the harvester cannot see
+            # is a statement the scope audit does not judge. ``<expr>`` means one *interpolated
+            # sub-expression* could not be followed, which is a weaker thing: a fragment spliced
+            # into an f-string after the pattern has already been projected to scalars (the keyset
+            # ``WHERE`` over ``src``/``dst`` column aliases, the ``ORDER BY`` list built from
+            # ``EdgeOrder.exprs``). Neither can bind a node variable, so neither can hide a leak.
+            unfollowed = "{…}" if depth == 0 else "<expr>"
             if depth > 8:
-                return "{…}"
+                return unfollowed
             if isinstance(e, ast.Constant) and isinstance(e.value, str):
                 return e.value
             if isinstance(e, ast.JoinedStr):
                 return "".join(text(v.value if isinstance(v, ast.FormattedValue) else v, depth + 1) for v in e.values)
             if isinstance(e, ast.BinOp) and isinstance(e.op, ast.Add):
                 return text(e.left, depth + 1) + text(e.right, depth + 1)
+            if isinstance(e, ast.IfExp):  # ``f"WHERE …" if cursor is not None else ""`` -- both arms
+                return text(e.body, depth + 1) + text(e.orelse, depth + 1)
+            if isinstance(e, ast.Call) and isinstance(e.func, ast.Attribute) and e.func.attr == "format":
+                return text(e.func.value, depth + 1)
             if isinstance(e, ast.Call) and getattr(e.func, "id", getattr(e.func, "attr", None)) == "_scoped" and e.args and isinstance(e.args[0], ast.Constant):
                 return neo4j_backend._scoped(e.args[0].value)
             if isinstance(e, ast.Attribute) and isinstance(e.value, ast.Name) and e.value.id == "self" and e.attr in class_strings:
@@ -697,7 +768,7 @@ def _inline_statements() -> Dict[str, str]:
                 return "".join(text(v, depth + 1) for v in assigned[e.id])
             if isinstance(e, ast.Name) and e.id in parameters:
                 return f"<{e.id}>"
-            return "{…}"
+            return unfollowed
 
         for call in ast.walk(fn):
             if (
@@ -834,6 +905,20 @@ def test_every_statement_is_application_scoped_or_anchored(name):
     statement = _every_statement()[name]
     assert _unscoped_variables(statement) == [], f"{name} leaks through {_unscoped_variables(statement)}: {statement[:200]!r}"
     assert _scope_kind(statement) is not None, f"{name} carries no application scope: {statement[:160]!r}"
+
+
+@pytest.mark.parametrize("name", sorted(n for n, s in _every_statement().items() if "allShortestPaths" in s))
+def test_every_shortest_path_pattern_scopes_its_interior(name):
+    """The leak :func:`_unscoped_variables` structurally cannot see.
+
+    A shortest-path or variable-length pattern binds only its endpoints, so scoping those leaves
+    the *interior* free: a walk could enter another application's nodes and come back, and the
+    per-variable audit above would call the statement clean. Leg 2.5b found exactly that twice in
+    its own path enumerators. The fix is a node predicate over the whole path, which Neo4j inlines
+    into the search; this freezes it.
+    """
+    statement = _render(_every_statement()[name])
+    assert "all(n IN nodes(p) WHERE " + neo4j_backend._scoped("n") + ")" in statement, f"{name} scopes only its endpoints: {statement[:200]!r}"
 
 
 def test_no_statement_anchors_on_the_marker_label():

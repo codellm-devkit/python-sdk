@@ -128,11 +128,51 @@ flows_to_argument(self, src: str, callee: str, arg: str, *, within: str, depth: 
 ```
 `paths_between` takes **two** scopes: one can never find a cross-callable path.
 
-- [ ] **Step 1: Failing tests**, including a **self-loop test**: pick a callable whose `J_DDG` includes a self-loop (there are 978 in the graph) and assert the page contains it. This is the regression guard for python-sdk#349 in a language that has not shipped the bug.
-- [ ] **Step 2: Implement locally** over the v2 models' `cfg`/`cdg`/`ddg`/`summary`, reusing `commons/{bounds,graphs}.py` — `edge_sort_key`, `flow_path(..., via=via_table("J"))`, `as_slice_node`, `cone_sinks`, `slice_resolved`, the keyset cursor codec, `sdg_rels("J")`. Where a helper does not fit, say why rather than forking it.
-- [ ] **Step 3: Implement on Neo4j**, anchored on the callable's id prefix, never on a doubled containment hop. Record the seek measurements. Quantified path patterns need server 5.9+: read the version at probe and fail at the call that needs it, naming the requirement.
-- [ ] **Step 4: Scale.** `thingsboard` has 496,821 body nodes; a page must not scan the graph. Measure a page's wall clock and record it, using the repo's `timed` marker so the assertion does not run under coverage instrumentation.
-- [ ] **Step 5: Backend parity** across all fourteen, both corpora, miss paths included. Commit — `feat(java): per-callable graphs, slices, reachability and flow predicates`.
+**The block above lists thirteen, not fourteen** — the heading's count is wrong, and inherited: leg
+2.5b's Task 2 says "fourteen accessors" over the same thirteen names, and thirteen is what
+`PythonAnalysis` carries. Thirteen is what shipped.
+
+**The finding this task turned on, before any of the steps: codeanalyzer-java 3.0.1 emits the L4
+port lattice disconnected from the statement dependence graph.** Not one of the reference database's
+134,742 `J_DDG` or 46,936 `J_CDG` edges has a `formal_in` / `actual_in` / `formal_out` /
+`actual_out` vertex at either end; the lattice's only edges are `J_PARAM_IN` (actual_in →
+formal_in), `J_PARAM_OUT` (formal_out → actual_out) and `J_SUMMARY` (actual_in → actual_out). So a
+`formal_in` — the only thing `resolve_value` ever returns — has **out-degree zero**, and the same
+holds in `analysis.json` (measured on the committed a4 fixture and on the whole-application `-a 4`
+run). codeanalyzer-python does *not* have this gap: 129,883 `PY_DDG` edges leave a `formal_in` on
+the leg-1.6 reference graph. Consequently `slice_forward` would be the seed alone, `paths_between`
+`[]`, and `flows_to_call` / `flows_to_argument` `False` — **for every input, whatever the program
+does**, which is the ambiguous empty D7 forbids and the Global Constraints' "where Java genuinely
+cannot answer, it raises naming the gap". Those four refuse, through one shared guard
+(`JavaAnalysisBackend._require_connected_ports`) over one measured fact
+(`_ports_carry_dependence`), so the day the analyzer connects the layers they answer with no code
+change. `slice_backward` is deliberately **not** guarded: it follows `J_PARAM_IN` reversed and
+reaches the argument vertex at every call site that passes one, which varies with the program.
+
+- [x] **Step 1: Failing tests**, including a **self-loop test**: pick a callable whose `J_DDG` includes a self-loop (there are 978 in the graph) and assert the page contains it. This is the regression guard for python-sdk#349 in a language that has not shipped the bug. — **as done:** `tests/analysis/java/test_java_dataflow.py`, 66 tests (both backends over a4 for the call-graph half, the in-memory backend for the accessors that reach Cypher), and `test_java_dataflow_live.py`, 29 tests on 7691. The self-loop guard is asserted in **both**: offline, `MarketSummaryDataBean.toJSON()` has 4 self-loops of 48 DDG edges, and the fixture has 20 in all; live, `Log.printCollection(java.util.Collection)` has **20 edges, 11 of them self-loops**, and the same test runs the doubled-containment spelling and asserts it returns **9** — so the difference is a fact of the suite rather than of a comment. Every expected number was derived from the fixture and from the graph directly, never by running the implementation.
+- [x] **Step 2: Implement locally** over the v2 models' `cfg`/`cdg`/`ddg`/`summary`, reusing `commons/{bounds,graphs}.py`. — **as done, and the split is not the one the plan assumed.** The **call-graph half** (`reaches`, `callers_of`, `callees_of`, `backward_cone`, `call_paths_between`) is implemented **once**, on `JavaAnalysisBackend`, over the `get_call_graph()` both backends already build — leg 3a makes `JNeo4jBackend` project `J_CALLS` into the same `nx.DiGraph` keyed by the same J-1 names, so a second implementation would have nothing to read and would only be a second place to drift. That is Task 1's precedent, and it means those five issue **no new Cypher at all**. So does `_callee_values`: `flows_to_call`'s targets are minted from the parameter list (Task 1 verified formal_in ⟺ parameters, 225 for 225), not queried. Six seams remain per backend: `get_cfg`/`get_cdg`/`get_ddg`, `_value_slice`, `_value_paths`, `_value_reaches`, plus `_ports_carry_dependence` and the level guard `_require_dataflow`. Every shared helper fitted and none was forked: `edge_sort_key`, `edge_page`, `keyset_where`/`encode_cursor`/`cursor_params`, `check_*`, `cone_sinks`, `slice_resolved`, `flow_path(..., via=via_table("J"))`, `shortest_walks`, `sdg_rels("J")`. **`bounded_subgraph` does not fit** — for TypeScript's reason, `backward_cone` needs an ancestor walk over a reversed view, not an induced descendant subgraph — and `body_node_kind` is language-specific, so Java has `java_body_node_kind`; its one Java-only rule is that the parameter's **name comes from the parameter list, not from the vertex**, because the Neo4j projection carries no `of` property on a `:JBodyNode` at all (measured: 0 of daytrader8's 11,436), so reading `of` would name a parameter locally and leave it `None` over the graph.
+- [x] **Step 3: Implement on Neo4j**, anchored on the callable's id prefix, never on a doubled containment hop. Record the seek measurements. Quantified path patterns need server 5.9+. — **as done.** Five statements, all prefix-scoped: `_OWN_EDGES`, `_SLICE`, `_PATHS`, `_VALUE_REACHES`, `_PORTS_CARRY_DEPENDENCE`. Seek measured on ThingsBoard (`PROFILE`, median of 5, first discarded, over the driver), **not ported** — the bare `:JBodyNode` wins again, as in Task 1 and unlike TypeScript, because it owns its own id range index (`j_body_node_id`):
+
+  | statement | wall clock | db hits |
+  |---|---|---|
+  | DDG page, 8 callables / 2,729 edges — `UNWIND $prefixes` + `(s:JBodyNode)` | **76.71 ms** | **19,407** |
+  | …the same with `(s:JCanNode:JBodyNode)` | 79.02 ms | 22,136 |
+  | DDG page, 1 callable / 482 edges — `$bp` + `(s:JBodyNode)` | **17.81 ms** | **3,195** |
+  | …`(c:JCallable {id})-[:J_HAS_BODY_NODE]->(s)` | 19.31 ms | 21,435 |
+  | …`(c:JSymbol {id})-[:J_HAS_BODY_NODE]->(s)` | 18.78 ms | 21,435 |
+  | 1 callable, `J_CFG_NEXT` — bare / marker | 3.12 / 3.15 ms | 1,329 / 1,360 |
+  | 1 callable, `J_CDG` — bare / marker | 2.59 / 2.95 ms | 1,267 / 1,267 |
+  | 1 callable, `J_DDG` — bare / marker | 14.79 / 15.27 ms | 2,231 / 2,713 |
+  | slice seed (point lookup, depth 5) — bare / marker / `:JCanNode` | 2.65 / 2.83 / 2.70 ms | 8 / 9 / 8 |
+  | `UNWIND` of one prefix vs a bare `$bp` | 4.21 / 3.85 ms | 823 / 823 |
+
+  The containment hop is within noise on the clock and reads **6.7×** the db hits (`:JCallable` owns no id index), and it is also *wrong*: it drops every self-loop. `UNWIND $prefixes` is kept over a bare `$bp` — 0.4 ms, same db hits — because it is the spelling the multi-application audit reads as the narrow scope and whose bound values `_responder` checks. **Quantified path patterns turned out not to be needed:** the accessors that need them in TypeScript (`reaches`, `backward_cone`) are answered in memory here, and `allShortestPaths` / `*0..` are ancient Cypher — so there is no version gate to add. (The reference server is 5.26.30 in any case.)
+- [x] **Step 4: Scale.** — **as done.** ThingsBoard (598,413 nodes, 496,821 body nodes, 28,763 callables), through the shipped accessors, median of 5 with the first discarded: `get_ddg` **29.1 ms** on the largest callable (482 edges), `get_cfg` 12.2 ms, `get_cdg` 10.9 ms, `callers_of` 9.9 ms, `slice_backward` **22.2 ms** for a 604-node slice, and the port probe 231 ms (once per backend, and only if one of the four guarded accessors is called; 6.5 ms on daytrader8). The 28.3 s reconstruction leg 3a already pays is unchanged. `test_a_page_does_not_scan_the_scale_graph` carries the ceiling under the repo's `timed` marker, which `tests/analysis/java/conftest.py` gained (the hook the Python and TypeScript conftests already carry).
+- [x] **Step 5: Backend parity** across all thirteen, both corpora, miss paths included. — **as done, with one measured exception that is the analyzer's.** Live on daytrader8 with ThingsBoard in the same database: `get_cfg`/`get_cdg`/`get_ddg` edge-for-edge over the 40 busiest callables; `callers_of`/`callees_of` over all **1,216** callables; `reaches`, `backward_cone` (bounded and unbounded) and `call_paths_between` path-for-path; `slice_backward` node-for-node over every named parameter of the 30 busiest; seven miss paths raising the same type with the same message on both, with no `can://` in any. **The exception:** over the whole application the in-memory backend reports 5,434 `ddg` edges and the graph 5,347. Every one of the 87 is an edge whose endpoint is a body key codeanalyzer-java **did not emit as a body node** — 38 distinct keys, all of the shape `<line>:0`, all on `points-to` edges, none on `cfg` (6,984 identical) or `cdg` (4,416 identical), and nothing in the other direction. The Neo4j emitter materialises nodes from `body{}`, so an edge with no node is not projected. Neither backend hides its own source's answer; the live suite measures the difference exactly and `get_ddg`'s docstring states it. It is invisible on the committed fixtures (a4 has 0 dangling endpoints), so it is a whole-application fact only. Worth an upstream issue.
+
+  **Runs.** Java offline **494 passed / 67 skipped** (baseline 402/38: +66 dataflow, +13 frozen signatures, +13 audit statements, +29 live tests skipped offline). Java live on 7691, whole tree **559 passed / 2 skipped**. Release gate **1419 passed / 338 skipped**, coverage **84.47%** (baseline 1327/309, 84.64%: −0.17 pp over +287 statements, all of it the traversal behind the port guard — `_value_paths` / `_value_reaches` on both backends — which no input can reach on today's analyzer output). Python live on 7689 **589 passed / 6 skipped**, unchanged.
+
+  Commit — `feat(java): per-callable graphs, slices, reachability and flow predicates`.
 
 ---
 

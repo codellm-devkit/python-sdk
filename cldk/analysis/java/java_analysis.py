@@ -53,11 +53,12 @@ import networkx as nx
 from tree_sitter import Tree
 
 from cldk.analysis.commons.backend_config import CodeAnalyzerConfig, JavaBackend, Neo4jConnectionConfig, cache_subdir
-from cldk.analysis.commons.results import LocateResult, SliceNode
+from cldk.analysis.commons.bounds import DEFAULT_DEPTH, DEFAULT_MAX_NODES, DEFAULT_MAX_PATHS, DEFAULT_PAGE_SIZE
+from cldk.analysis.commons.results import EdgePage, FlowPaths, LocateResult, Slice, SliceNode
 from cldk.analysis.commons.treesitter import TreesitterJava
 from cldk.models.java import JCallable
 from cldk.models.java import JApplication
-from cldk.models.java.models import JCallableParameter, JCRUDOperation, JComment, JCompilationUnit, JMethodDetail, JType, JField
+from cldk.models.java.models import JCallableParameter, JCdgEdge, JCfgEdge, JCRUDOperation, JComment, JCompilationUnit, JDdgEdge, JMethodDetail, JType, JField
 from cldk.analysis.java.codeanalyzer import JCodeanalyzer
 from cldk.analysis.java.neo4j import JNeo4jBackend
 from cldk.analysis.java.backend import JavaAnalysisBackend
@@ -1414,6 +1415,216 @@ class JavaAnalysis:
             TypeError: An element carries no address to look up.
         """
         return self.backend.describe(nodes)
+
+    # =====================================================================================
+    # The dataflow surface (leg 3b, Task 2). Every signature is
+    # :class:`~cldk.analysis.python.python_analysis.PythonAnalysis`'s, keyword-for-keyword.
+    # =====================================================================================
+    def get_cfg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[JCfgEdge]:
+        """Return one page of the control flow edges within one callable.
+
+        The intraprocedural half of "how does this method run": the analyzer's own CFG, one edge
+        per successor, with the branch kind on the edge rather than implied by order. Endpoints are
+        body-node ids :meth:`get_source` accepts, so a statement on a path can be read back.
+
+        Args:
+            callable: The callable's name, resolved as in :meth:`resolve_callable`.
+            in_class: Disambiguate by owning class.
+            page_size: Most edges to return.
+            cursor: ``next_cursor`` from a previous page.
+
+        Returns:
+            An :class:`~cldk.analysis.commons.results.EdgePage` of
+            :class:`~cldk.models.java.models.JCfgEdge`, whose ``complete`` says whether the page is
+            the whole graph and whose ``total`` says how large that is.
+
+        Raises:
+            AmbiguousName: ``callable`` named more than one callable.
+            SelectorNotInGraph: Nothing matched.
+            ValueError: ``page_size`` below 1, or a cursor from another page.
+            CodeanalyzerUsageException: The analysis was built below
+                ``analysis_level="program_dependency_graph"``.
+        """
+        return self.backend.get_cfg(callable, in_class=in_class, page_size=page_size, cursor=cursor)
+
+    def get_cdg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[JCdgEdge]:
+        """Return one page of the control dependence edges within one callable.
+
+        ``src`` is the branching node ``dst`` is control dependent on — the analyzer's
+        post-dominance over the CFG, not re-derived here. Arguments and failures are
+        :meth:`get_cfg`'s.
+        """
+        return self.backend.get_cdg(callable, in_class=in_class, page_size=page_size, cursor=cursor)
+
+    def get_ddg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[JDdgEdge]:
+        """Return one page of the data dependence edges within one callable.
+
+        Each edge names the variable it flows (``var``) and the evidence for it (``prov``), which in
+        Java is one of **two** tiers — ``ssa`` (133,608 edges on the reference graph) or
+        ``points-to`` (1,134). :func:`~cldk.analysis.commons.results.prov_rank` ranks ``points-to``
+        least certain, which is what a caller weighing two hops reads. Arguments and failures are
+        :meth:`get_cfg`'s.
+        """
+        return self.backend.get_ddg(callable, in_class=in_class, page_size=page_size, cursor=cursor)
+
+    def slice_backward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """Return everything the value ``src`` depends on.
+
+        On Java today that is the seed plus the argument vertex at every call site that passes a
+        value into the parameter: codeanalyzer-java emits the L4 port lattice disconnected from the
+        statement dependence graph, so nothing behind those arguments is reachable. It is a real
+        answer that varies with the program, which is why this one answers where
+        :meth:`slice_forward` refuses.
+
+        Args:
+            src: The value's name — in Java, a parameter of ``within``.
+            within: The callable to look inside. Required: a value name is scoped by its callable.
+            depth: Most hops from the seed; ``None`` for the whole cone.
+            max_nodes: Most nodes to return. A cap that fires is reported, never silent.
+
+        Returns:
+            A :class:`~cldk.analysis.commons.results.Slice` containing the seed, ordered by node id.
+
+        Raises:
+            AmbiguousName: ``within`` or ``src`` matched more than one thing.
+            SelectorNotInGraph: Either matched nothing.
+            ValueError: ``depth`` is not a positive ``int``, or ``max_nodes`` is below 1.
+        """
+        return self.backend.slice_backward(src, within=within, depth=depth, max_nodes=max_nodes)
+
+    def slice_forward(self, src: str, *, within: str, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """Return everything the value ``src`` can affect.
+
+        **Java cannot answer this today and says so.** A parameter vertex has no outgoing dependence
+        edge in codeanalyzer-java's output, so the result would be the seed alone for every
+        parameter of every application — indistinguishable from "this parameter affects nothing".
+        Arguments and names are judged first; then it raises naming the gap.
+
+        Raises:
+            CodeanalyzerExecutionException: The analyzer's port lattice carries no dependence edge.
+        """
+        return self.backend.slice_forward(src, within=within, depth=depth, max_nodes=max_nodes)
+
+    def backward_cone(self, sinks: Sequence[str], *, depth: int | None = DEFAULT_DEPTH, max_nodes: int = DEFAULT_MAX_NODES) -> Slice:
+        """Return every callable that can reach any of ``sinks`` — "what could get here".
+
+        A call-graph cone, so its vertices are callables; the sinks are in the result and in
+        ``roots``. Bounded by default, because an unbounded cone on a real application is a
+        truncated answer to a question nobody asked; ``depth=None`` asks for the whole thing and
+        ``total`` says how much a cap left out.
+
+        Args:
+            sinks: The callables to walk back from, each resolved as in :meth:`resolve_callable`.
+            depth: Most call hops back; ``None`` for the whole cone.
+            max_nodes: Most nodes to return.
+
+        Raises:
+            AmbiguousName: A sink matched more than one callable.
+            SelectorNotInGraph: A sink matched none.
+            TypeError: ``sinks`` is a bare string.
+            ValueError: ``sinks`` is empty, or a bound is out of range.
+        """
+        return self.backend.backward_cone(sinks, depth=depth, max_nodes=max_nodes)
+
+    def reaches(self, src: str, dst: str, *, depth: int | None = None) -> bool:
+        """Return whether there is a call path from ``src`` to ``dst``.
+
+        The cheap check before asking for the paths themselves. **Unbounded by default**, unlike the
+        slices: a hop budget on a boolean would make "there is no path" and "there is no path within
+        five hops" the same ``False``.
+
+        Raises:
+            AmbiguousName: Either name matched more than one callable.
+            SelectorNotInGraph: Either matched none.
+            ValueError: ``depth`` is not a positive ``int``.
+        """
+        return self.backend.reaches(src, dst, depth=depth)
+
+    def callers_of(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> List[SliceNode]:
+        """Return the callables that call this one, one hop back, addressed by name.
+
+        The name-based sibling of :meth:`get_callers`, which takes a class name plus a method
+        signature and returns raw dicts; that one is a frozen 1.x signature and is unchanged. ``[]``
+        is unambiguous — a name matching nothing raises.
+
+        Raises:
+            AmbiguousName: ``name`` matched more than one callable.
+            SelectorNotInGraph: Nothing matched.
+        """
+        return self.backend.callers_of(name, in_class=in_class, in_module=in_module)
+
+    def callees_of(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> List[SliceNode]:
+        """Return the callables this one calls, one hop forward, addressed by name.
+
+        Java's call graph has no external vertices on either backend (J-1), so unlike Python's and
+        TypeScript's this never reports a ``kind="external"`` node; ``get_external_symbols`` is where
+        call targets outside the project live.
+
+        Raises:
+            AmbiguousName: ``name`` matched more than one callable.
+            SelectorNotInGraph: Nothing matched.
+        """
+        return self.backend.callees_of(name, in_class=in_class, in_module=in_module)
+
+    def paths_between(self, src: str, dst: str, *, src_within: str, dst_within: str, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+        """Return how the value ``src`` reaches the value ``dst`` — the sequences, where a slice is
+        the set.
+
+        Two scopes, not one, and neither defaults to the other: a value is addressed by a name plus
+        the callable it enters, and a single scope could never find the cross-callable path this
+        exists for.
+
+        **Java cannot answer this today and says so** — see :meth:`slice_forward`. Arguments and
+        names are judged first.
+
+        Raises:
+            AmbiguousName / SelectorNotInGraph: A name matched more than one thing, or nothing.
+            ValueError: A bound is out of range, or the two endpoints are the same position.
+            CodeanalyzerExecutionException: The analyzer's port lattice carries no dependence edge.
+        """
+        return self.backend.paths_between(src, dst, src_within=src_within, dst_within=dst_within, depth=depth, max_paths=max_paths)
+
+    def call_paths_between(self, src: str, dst: str, *, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
+        """Return how one callable reaches another — the evidence-carrying form of :meth:`reaches`.
+
+        Every hop is ``via="call"`` with no ``var`` and no ``prov``: a call edge carries neither, and
+        saying so is better than inventing a provenance. Only shortest paths, ordered so that
+        ``max_paths`` truncates a prefix of one total order rather than an arbitrary subset.
+
+        Raises:
+            AmbiguousName / SelectorNotInGraph: A name matched more than one callable, or none.
+            ValueError: A bound is out of range, or ``src`` and ``dst`` name the same callable.
+        """
+        return self.backend.call_paths_between(src, dst, depth=depth, max_paths=max_paths)
+
+    def flows_to_call(self, src: str, callee: str, *, within: str, depth: int | None = None) -> bool:
+        """Return whether the value ``src`` reaches any argument of a call to ``callee``.
+
+        **Java cannot answer this today and says so** — see :meth:`slice_forward`.
+
+        Raises:
+            AmbiguousName / SelectorNotInGraph: A name matched more than one thing, or nothing.
+            ValueError: ``depth`` is not a positive ``int``.
+            CodeanalyzerExecutionException: The analyzer's port lattice carries no dependence edge.
+        """
+        return self.backend.flows_to_call(src, callee, within=within, depth=depth)
+
+    def flows_to_argument(self, src: str, callee: str, arg: str, *, within: str, depth: int | None = None) -> bool:
+        """Return whether the value ``src`` reaches ``callee``'s parameter ``arg``.
+
+        A different question from :meth:`flows_to_call`: a tainted value routinely reaches a method
+        without reaching the parameter that matters. ``arg`` is named, never numbered.
+
+        **Java cannot answer this today and says so** — see :meth:`slice_forward`.
+
+        Raises:
+            AmbiguousName / SelectorNotInGraph: A name matched more than one thing, or nothing —
+                including ``arg`` naming no parameter of ``callee``, which is a caller error and not
+                a ``False``.
+            ValueError: ``depth`` is not a positive ``int``.
+            CodeanalyzerExecutionException: The analyzer's port lattice carries no dependence edge.
+        """
+        return self.backend.flows_to_argument(src, callee, arg, within=within, depth=depth)
 
     @property
     def has_resolution_edges(self) -> bool:

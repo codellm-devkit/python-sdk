@@ -85,11 +85,26 @@ import logging
 import re
 from collections import defaultdict
 from functools import cached_property
-from typing import Any, Dict, FrozenSet, Iterable, List, Tuple
+from typing import Any, Dict, FrozenSet, Iterable, List, Sequence, Tuple
 
 import networkx as nx
 
-from cldk.analysis.java.backend import CRUD_UNAVAILABLE, CallingLines, CRUDRow, JavaAnalysisBackend, duplicate_type_name, unhomed_endpoint
+from cldk.analysis.commons.bounds import DEFAULT_PAGE_SIZE, EdgeOrder, check_page_size, cursor_params, encode_cursor, keyset_where
+from cldk.analysis.commons.graphs import flow_path, slice_resolved
+from cldk.analysis.commons.results import EdgePage, FlowPaths, Slice, SliceNode
+from cldk.analysis.java.backend import (
+    CDG_ORDER,
+    CFG_ORDER,
+    CRUD_UNAVAILABLE,
+    DDG_ORDER,
+    SDG_REL_PATTERN,
+    VIA,
+    CallingLines,
+    CRUDRow,
+    JavaAnalysisBackend,
+    duplicate_type_name,
+    unhomed_endpoint,
+)
 from cldk.analysis.java.neo4j import reconstruct as R
 from cldk.models.java import JGraphEdges
 from cldk.models.java.models import (
@@ -99,8 +114,11 @@ from cldk.models.java.models import (
     JCallableParameter,
     JCallGraphEdge,
     JCallSite,
+    JCdgEdge,
+    JCfgEdge,
     JComment,
     JCompilationUnit,
+    JDdgEdge,
     JDecorator,
     JField,
     JMethodDetail,
@@ -579,6 +597,230 @@ class JNeo4jBackend(JavaAnalysisBackend):
         """See :meth:`JavaAnalysisBackend.has_resolution_edges`. Fixed at construction by
         :meth:`_probe_resolution_edges`."""
         return self._has_resolution_edges
+
+    # =====================================================================================
+    # The dataflow surface (leg 3b, Task 2) -- over Cypher.
+    #
+    # ONLY THE BODY-NODE HALF IS HERE. The call-graph accessors (``reaches``, ``callers_of``,
+    # ``callees_of``, ``backward_cone``, ``call_paths_between``) are answered by the shared
+    # implementation on :class:`JavaAnalysisBackend`, over the ``get_call_graph()`` this backend
+    # already projects out of ``J_CALLS``; what is left is what leg 3a's reconstruction does *not*
+    # rebuild -- ``cfg``/``cdg``/``ddg``/``summary`` and the ``J_PARAM_IN``/``J_PARAM_OUT`` lattice.
+    #
+    # SEEK LABELS, MEASURED ON THINGSBOARD, NOT PORTED (PROFILE, median of 5 with the first
+    # discarded, over the driver; 598,413 nodes, 496,821 of them body nodes). Task 1's per-callable
+    # prefix is the narrowest predicate on this surface and leg 2.5b found narrowness decides the
+    # anchor, so the DDG page was re-measured against it here:
+    #
+    #   per-callable DDG page, 8 callables (2,729 edges)
+    #     UNWIND $prefixes / (s:JBodyNode)           76.71 ms   19,407 db hits
+    #     UNWIND $prefixes / (s:JCanNode:JBodyNode)  79.02 ms   22,136 db hits
+    #   one callable (482 edges)
+    #     $bp / (s:JBodyNode)                        17.81 ms    3,195 db hits
+    #     (c:JCallable {id})-[:J_HAS_BODY_NODE]->(s) 19.31 ms   21,435 db hits
+    #     (c:JSymbol   {id})-[:J_HAS_BODY_NODE]->(s) 18.78 ms   21,435 db hits
+    #   one callable, per graph (bare label / marker label)
+    #     J_CFG_NEXT   3.12 / 3.15 ms      J_CDG   2.59 / 2.95 ms      J_DDG  14.79 / 15.27 ms
+    #
+    # The bare ``:JBodyNode`` wins on both, as it did in Task 1 and unlike TypeScript: it owns an id
+    # range index of its own (``j_body_node_id``) so it seeks, and ``:JCanNode`` seeks too while
+    # reading 14-21% more db hits for the same rows. The containment hop is within noise on the wall
+    # clock and reads **6.7x** the db hits, because ``:JCallable`` owns no id index at all.
+    #
+    # AND THE CONTAINMENT SPELLING IS ALSO WRONG, WHICH IS THE REASON IT IS NOT USED.
+    # ``PyNeo4jBackend._OWN_EDGES`` binds the containment relationship twice --
+    # ``(c)-[:HAS_BODY_NODE]->(s)-[r]->(d)<-[:HAS_BODY_NODE]-(c)`` -- and Cypher's
+    # relationship-uniqueness rule forbids the two from being the same relationship, so every
+    # **self-loop** is silently dropped *and* ``total``, computed from the same MATCH, reports the
+    # page complete. Java has 978 ``J_DDG`` self-loops. Measured on this graph:
+    # ``Log.printCollection(java.util.Collection)`` has 20 DDG edges, 11 of them self-loops, and the
+    # doubled spelling returns 9; ThingsBoard's ``updateState(java.util.Set, …)`` has 84 and returns
+    # 78. The id-prefix spelling below has no such pattern and returns all of them (python-sdk#349).
+    #
+    # THE PREFIX IS EXACT, VERIFIED RATHER THAN ASSUMED: every body-node id is its owning callable's
+    # id plus ``@`` (0 exceptions on both applications), and no callable id is another callable id
+    # plus ``@``, so ``<callable id>@`` selects that callable's body nodes and nothing else. Both
+    # endpoints carry it, which keeps "both ends in one callable" written rather than trusted.
+    # =====================================================================================
+    #: One callable's own edges of one kind. ``UNWIND $prefixes AS p`` rather than a bare ``$bp``
+    #: parameter for the reason Task 1's :attr:`_BODY_NODES` uses it: it is the spelling the
+    #: multi-application audit reads as the *narrow* scope, and whose bound values ``_responder``
+    #: checks. Measured cost of the spelling itself: 4.21 ms against 3.85 for the same single
+    #: prefix, same db hits.
+    _OWN_EDGES = "UNWIND $prefixes AS p MATCH (s:JBodyNode)-[r:{rel}]->(d:JBodyNode) WHERE s.id STARTS WITH p AND d.id STARTS WITH p "
+
+    def _own_edges(self, name: str, in_class: str | None, rel: str, projection: str, order: EdgeOrder, page_size: int, cursor: str | None):
+        """One page of a callable's own ``rel`` edges: ``(key, rows, whole size, is there more)``.
+
+        Resolution is :meth:`resolve_callable`'s, not a second path, so an ambiguous name raises
+        listing candidates here exactly as it does there — and its ``ref`` is the callable id the
+        body-node prefix is built from, which is why this accessor pays no extra lookup for it.
+
+        **Keyset, not ``SKIP``.** ``order.exprs`` is the canonical order written as Cypher — the
+        same components ``order.key`` produces in Python, ``coalesce``-d the way ``or ""`` / ``or []``
+        normalise there — and a cursor becomes a ``WHERE`` filter
+        (:func:`~cldk.analysis.commons.bounds.keyset_where`) rather than an offset, which is flat in
+        the page depth where an offset re-sorts a growing prefix.
+
+        **Two statements, not one.** ``total`` is not optional: without it a caller cannot see the
+        size of what it is walking into from the first page, which is E5's whole point. It is
+        re-counted per page rather than cached, because the alternative is a number that can go
+        stale against a graph this backend does not own. The page asks for ``page_size + 1`` rows and
+        reports ``more`` from whether it got them, so "there is more" is a fact about the data rather
+        than an inference from ``len(rows) == page_size`` — which is wrong exactly when the set ends
+        on a page boundary.
+        """
+        check_page_size(page_size)
+        node = self.resolve_callable(name, in_class=in_class)
+        key, params = node.callable, {"prefixes": [node.ref + "@"]}
+        match = self._OWN_EDGES.format(rel=rel)
+        total = self._run(match + "RETURN count(r) AS total", **params)[0]["total"]
+        where = f"WHERE {keyset_where(order.exprs)} " if cursor is not None else ""
+        rows = self._run(
+            f"{match}WITH s.id AS src, d.id AS dst{projection} {where}RETURN * ORDER BY {', '.join(order.exprs)} LIMIT $lim",
+            lim=page_size + 1,
+            **params,
+            **(cursor_params(cursor, key, len(order.exprs)) if cursor is not None else {}),
+        )
+        return key, rows[:page_size], total, len(rows) > page_size
+
+    @staticmethod
+    def _page(model, scope: str, edges: List, order: EdgeOrder, total: int, more: bool) -> EdgePage:
+        """Wrap a page's edges, deriving ``next_cursor`` from the *same* sort key the in-memory
+        backend uses — so a cursor minted here and one minted there name the same position."""
+        return EdgePage[model](edges=edges, total=total, next_cursor=encode_cursor(scope, order.key(edges[-1])) if more and edges else None)
+
+    def get_cfg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[JCfgEdge]:
+        """One page of control flow within one callable (see :meth:`JavaAnalysisBackend.get_cfg`)."""
+        key, rows, total, more = self._own_edges(callable, in_class, "J_CFG_NEXT", ", r.kind AS kind", CFG_ORDER, page_size, cursor)
+        return self._page(JCfgEdge, key, [JCfgEdge(src=r["src"], dst=r["dst"], kind=r["kind"]) for r in rows], CFG_ORDER, total, more)
+
+    def get_cdg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[JCdgEdge]:
+        """One page of control dependence within one callable (see :meth:`JavaAnalysisBackend.get_cdg`)."""
+        key, rows, total, more = self._own_edges(callable, in_class, "J_CDG", "", CDG_ORDER, page_size, cursor)
+        return self._page(JCdgEdge, key, [JCdgEdge(src=r["src"], dst=r["dst"]) for r in rows], CDG_ORDER, total, more)
+
+    def get_ddg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[JDdgEdge]:
+        """One page of data dependence within one callable (see :meth:`JavaAnalysisBackend.get_ddg`).
+
+        ``prov`` is one of Java's two tiers — ``ssa`` on 133,608 of the reference graph's edges and
+        ``points-to`` on 1,134. ``or []`` restores the model's default rather than failing validation
+        on an edge that carries none, and the ``coalesce`` in the sort key does the same for the
+        ordering: a null there would make the keyset filter drop the row silently."""
+        key, rows, total, more = self._own_edges(callable, in_class, "J_DDG", ", r.var AS var, r.prov AS prov", DDG_ORDER, page_size, cursor)
+        edges = [JDdgEdge(src=r["src"], dst=r["dst"], var=r["var"], prov=list(r["prov"] or [])) for r in rows]
+        return self._page(JDdgEdge, key, edges, DDG_ORDER, total, more)
+
+    # -----[ slicing ]-----
+    #: Reverse (backward) and forward reachability over the SDG, as ONE variable-length match.
+    #: ``*0..`` rather than ``*1..`` so the seed is part of its own slice without being spliced in
+    #: afterwards, which matters because ``total`` and the ``max_nodes`` prefix both have to be over
+    #: the same set. ``total`` and the page come back from one statement: the rows are collected in
+    #: id order, ``size()`` gives the whole slice's size, and only the first ``$cap`` cross the wire.
+    #:
+    #: The seed carries the application prefix as well as its id. Redundant against a ``$id`` this
+    #: SDK minted, and written anyway: this backend attaches to graphs it did not emit, and the
+    #: scope audit judges the predicate that is *written*, never the one a caller can be trusted to
+    #: have satisfied. No callable is joined back: :meth:`JavaAnalysisBackend._body_slice_node`
+    #: recovers the owner, the file and the parameter names from the id prefix and the index this
+    #: backend already holds, which is both cheaper than a ``J_HAS_BODY_NODE`` hop and the reason the
+    #: two backends describe a vertex identically.
+    _SLICE = (
+        "MATCH (r:JBodyNode {{id:$id}}) WHERE r.id STARTS WITH $prefix "
+        "MATCH (r){left}[:{rels}*0..{depth}]{right}(m:JBodyNode) WHERE m.id STARTS WITH $prefix "
+        "WITH DISTINCT m.id AS ref, m.kind AS kind, m.start_line AS line ORDER BY ref "
+        "WITH collect({{ref: ref, kind: kind, line: line}}) AS found "
+        "RETURN size(found) AS total, found[0..$cap] AS page"
+    )
+
+    def _value_slice(self, root: SliceNode, *, backward: bool, depth: int | None, max_nodes: int) -> Slice:
+        """See :meth:`JavaAnalysisBackend._value_slice`. The two directions differ only in which way
+        the arrows point, so they share a query and a builder."""
+        query = self._SLICE.format(rels=SDG_REL_PATTERN, depth="" if depth is None else depth, left="<-" if backward else "-", right="-" if backward else "->")
+        row = self._run(query, id=root.ref, cap=max_nodes, prefix=self._scope_prefix)[0]
+        nodes = [self._body_slice_node(n["ref"], n["kind"], n["line"]) for n in row["page"]]
+        return Slice(nodes=nodes, roots=[root], resolved=slice_resolved([root]), total=row["total"])
+
+    # -----[ paths and the flow predicate ]-----
+    #: The caller's word for a hop, computed in Cypher so the ORDER BY below sorts by the same
+    #: vocabulary :func:`~cldk.analysis.commons.graphs.hop_sort_key` sorts by. Ordering by the raw
+    #: ``type(rel)`` instead would be just as deterministic and a *different* order, so the two
+    #: backends would truncate ``max_paths`` to different witnesses.
+    _VIA_CASE = "CASE type(relationships(p)[i]) " + " ".join(f"WHEN '{rel}' THEN '{word}'" for rel, word in VIA.items()) + " ELSE type(relationships(p)[i]) END"
+
+    #: One string per path, ordered exactly as Python would order the tuple ``hop_sort_key`` builds.
+    #: ``U+0001`` is the separator rather than ``|`` for one reason: string comparison agrees with
+    #: field-by-field comparison **only** when the separator sorts below every character a field can
+    #: hold, and ``|`` (0x7C) sorts *above* every lowercase letter. ``elementId`` is the last field
+    #: of each hop and breaks the tie between parallel relationships a caller cannot tell apart.
+    _PATH_ORDER = (
+        "reduce(k = '', i IN range(0, length(p) - 1) | k + " + _VIA_CASE + " + '\\u0001' + coalesce(relationships(p)[i].var, '') "
+        "+ '\\u0001' + nodes(p)[i + 1].id + '\\u0001' + elementId(relationships(p)[i]) + '\\u0001')"
+    )
+
+    #: ``allShortestPaths`` and not a plain variable-length match: a variable-length pattern
+    #: enumerates *trails*, which does not terminate on a real dependence graph, while
+    #: ``allShortestPaths`` is a bidirectional BFS. ``$cap`` is ``max_paths + 1`` so one extra row
+    #: reports the truncation, rather than a second traversal for a number the caller cannot act on.
+    #:
+    #: ``all(n IN nodes(p) WHERE …)`` is the **interior** scope, and it is not optional: without it
+    #: only the two endpoints carry the application prefix and a path could route through another
+    #: application's nodes and come back. Leg 2.5b found exactly that leak twice in its own path
+    #: enumerators; Neo4j inlines an ``all()`` node predicate into the shortest-path search itself,
+    #: so it is a correctness win at no cost.
+    _PATHS = (
+        "MATCH (a:JBodyNode {{id:$src}}) WHERE a.id STARTS WITH $prefix "
+        "MATCH (b:JBodyNode {{id:$dst}}) WHERE b.id STARTS WITH $prefix "
+        "MATCH p = allShortestPaths((a)-[:{rels}*1..{depth}]->(b)) WHERE all(n IN nodes(p) WHERE n.id STARTS WITH $prefix) "
+        "WITH p, " + _PATH_ORDER + " AS key ORDER BY length(p), key LIMIT $cap "
+        "RETURN [n IN nodes(p) | {{ref: n.id, kind: n.kind, line: n.start_line}}] AS ns, "
+        "[e IN relationships(p) | {{via: type(e), var: e.var, prov: e.prov}}] AS rs"
+    )
+
+    def _value_paths(self, a: SliceNode, b: SliceNode, depth: int | None, max_paths: int) -> FlowPaths:
+        """See :meth:`JavaAnalysisBackend._value_paths`."""
+        query = self._PATHS.format(rels=SDG_REL_PATTERN, depth="" if depth is None else depth)
+        rows = self._run(query, src=a.ref, dst=b.ref, cap=max_paths + 1, prefix=self._scope_prefix)
+        paths = [
+            flow_path(
+                [self._body_slice_node(n["ref"], n["kind"], n["line"]) for n in r["ns"]],
+                [(e["via"], e["var"], e["prov"]) for e in r["rs"]],
+                via=VIA,
+            )
+            for r in rows[:max_paths]
+        ]
+        return FlowPaths(paths=paths, complete=len(rows) <= max_paths)
+
+    #: ``WITH DISTINCT m`` before the membership test is what makes this a pruning BFS instead of a
+    #: trail enumeration. Every hop is inside the application, as in :attr:`_PATHS`.
+    _VALUE_REACHES = (
+        "MATCH (a:JBodyNode {{id:$src}}) WHERE a.id STARTS WITH $prefix "
+        "MATCH (a)-[:{rels}*1..{depth}]->(m:JBodyNode) WHERE m.id STARTS WITH $prefix "
+        "WITH DISTINCT m WHERE m.id IN $dsts RETURN count(m) > 0 AS ok"
+    )
+
+    def _value_reaches(self, src: str, dsts: Sequence[str], depth: int | None) -> bool:
+        """See :meth:`JavaAnalysisBackend._value_reaches`."""
+        query = self._VALUE_REACHES.format(rels=SDG_REL_PATTERN, depth="" if depth is None else depth)
+        return bool(self._run(query, src=src, dsts=[d for d in dsts if d != src], prefix=self._scope_prefix)[0]["ok"])
+
+    #: Whether this application's parameter vertices have any outgoing SDG edge — the measurement
+    #: the four forward value accessors refuse on
+    #: (:data:`~cldk.analysis.java.backend.PORTS_DISCONNECTED`). Costs 6.5 ms on daytrader8 and
+    #: 185.4 ms on ThingsBoard, once per backend, and only when one of those four is called: the
+    #: "no" answer is the expensive one, because it has to look at every ``formal_in``.
+    _PORTS_CARRY_DEPENDENCE = (
+        "MATCH (b:JBodyNode)-[r:J_DDG|J_CDG|J_PARAM_IN|J_PARAM_OUT|J_SUMMARY]->(m:JBodyNode) "
+        "WHERE b.id STARTS WITH $prefix AND m.id STARTS WITH $prefix AND b.kind = 'formal_in' "
+        "RETURN count(r) > 0 AS ok"
+    )
+
+    @cached_property
+    def _ports_carry_dependence(self) -> bool:
+        """See :meth:`JavaAnalysisBackend._ports_carry_dependence`. Asked of the attached graph on
+        first use rather than at attach: a caller who never asks a value-flow question never pays
+        for it, and a caller who does pays once."""
+        return bool(self._run(self._PORTS_CARRY_DEPENDENCE, prefix=self._scope_prefix)[0]["ok"])
 
     # -----[ application / whole-program ]-----
     def get_application_view(self) -> JApplication:

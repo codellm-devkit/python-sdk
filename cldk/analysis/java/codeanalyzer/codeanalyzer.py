@@ -33,18 +33,48 @@ import re
 import subprocess
 from pathlib import Path
 from subprocess import CompletedProcess
-from typing import Dict, Iterable, List, Tuple, Union
+from typing import Any, Dict, Iterable, List, Sequence, Tuple, Union
 
 import networkx as nx
 from pydantic import ValidationError
 
-from cldk.analysis.commons.levels import LEVEL_NAMES, analyzer_level
-from cldk.analysis.commons.results import Diagnostic
-from cldk.analysis.java.backend import CRUD_UNAVAILABLE, CallingLines, CRUDRow, JavaAnalysisBackend, duplicate_type_name, java_body_node_id, unhomed_endpoint
+from cldk.analysis import AnalysisLevel
+from cldk.analysis.commons.bounds import DEFAULT_PAGE_SIZE, check_page_size, edge_page
+from cldk.analysis.commons.graphs import flow_path, shortest_walks, slice_resolved
+from cldk.analysis.commons.levels import ANALYZER_LEVELS, LEVEL_NAMES, analyzer_level
+from cldk.analysis.commons.results import Diagnostic, EdgePage, FlowPaths, Slice, SliceNode
+from cldk.analysis.java.backend import (
+    CDG_ORDER,
+    CFG_ORDER,
+    CRUD_UNAVAILABLE,
+    DDG_ORDER,
+    VIA,
+    CallingLines,
+    CRUDRow,
+    JavaAnalysisBackend,
+    duplicate_type_name,
+    java_body_node_id,
+    unhomed_endpoint,
+)
 from cldk.models.java import JGraphEdges
-from cldk.models.java.models import JAnalysis, JApplication, JBodyNode, JCallable, JCallableParameter, JCallSite, JComment, JCompilationUnit, JField, JMethodDetail, JType
+from cldk.models.java.models import (
+    JAnalysis,
+    JApplication,
+    JBodyNode,
+    JCallable,
+    JCallableParameter,
+    JCallSite,
+    JCdgEdge,
+    JCfgEdge,
+    JComment,
+    JCompilationUnit,
+    JDdgEdge,
+    JField,
+    JMethodDetail,
+    JType,
+)
 from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
-from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
+from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException, CodeanalyzerUsageException
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +205,7 @@ class JCodeanalyzer(JavaAnalysisBackend):
         self._report_analyzer_diagnostics(analyzer_level(analysis_level))
         self.application: JApplication = self.analysis.application
         self._call_graph: nx.DiGraph | None = None
+        self._sdg_cache: Any = None
         self._index()
 
     # -----[ driving the analyzer ]-----
@@ -361,6 +392,159 @@ class JCodeanalyzer(JavaAnalysisBackend):
         4,006 of daytrader8's are resolved at ``-a 1``), so an unresolved call site here is that
         site, never the level."""
         return True
+
+    # =====================================================================================
+    # The dataflow surface (leg 3b, Task 2) -- over the v2 models.
+    #
+    # THIS BACKEND ANSWERS INTERPROCEDURALLY, out of the same five lists ``--emit neo4j`` projects
+    # as ``J_DDG`` / ``J_CDG`` / ``J_SUMMARY`` / ``J_PARAM_IN`` / ``J_PARAM_OUT``:
+    #
+    #   JCallable.ddg / .cdg / .summary   endpoints are LOCAL body keys -> joined by java_body_node_id
+    #   JApplication.param_in / .param_out  endpoints are ALREADY global ids (checked on the fixture)
+    #
+    # So the index it lacks it can build, and the answer it gives is the graph's answer rather than
+    # a narrower intraprocedural one dressed up as complete. Building it walks every callable once
+    # and is cached for the life of the backend; the Neo4j backend pushes the same traversal into
+    # Cypher instead.
+    # =====================================================================================
+    #: The analyzer level at which ``cfg``/``cdg``/``ddg`` first exist (``-a 3``); ``summary`` and
+    #: the param lattice arrive at 4. One floor for all of them because they go dark together as
+    #: far as this surface is concerned: at level 2 and below there is no body graph at all.
+    _DATAFLOW_LEVEL = ANALYZER_LEVELS[AnalysisLevel.program_dependency_graph]
+
+    #: The SDG index, built on first use and cached for the life of the backend. A class-level
+    #: default so an instance built through ``object.__new__`` (the seam the offline suites use)
+    #: reads it before ``__init__`` has run.
+    _sdg_cache: Any = None
+
+    def _require_dataflow(self) -> None:
+        """See :meth:`JavaAnalysisBackend._require_dataflow`. Raises instead of returning empty: at
+        a shallower level an empty answer would mean "not analysed" while looking exactly like "no
+        dependence", and a caller cannot tell those apart (D7)."""
+        level = analyzer_level(self.analysis_level)
+        if level < self._DATAFLOW_LEVEL:
+            raise CodeanalyzerUsageException(
+                f"control and data flow need analysis_level='program_dependency_graph' or deeper "
+                f"(analyzer level {self._DATAFLOW_LEVEL}); this analysis was built at "
+                f"'{LEVEL_NAMES[level]}' (analyzer level {level}), where codeanalyzer-java emits no cfg/cdg/ddg at all. "
+                "Returning an empty result would be indistinguishable from a callable that has no dependence, "
+                "so this raises instead. Rebuild with CLDK.java(..., analysis_level='system_dependency_graph')."
+            )
+
+    def _graphs_of(self, name: str, in_class: str | None, page_size: int) -> Tuple[str, JCallable]:
+        """The ``(J-1 key, callable)`` ``name`` resolves to, once this analysis is deep enough.
+
+        ``page_size`` is validated **first**, before the level guard and before resolution, so a
+        malformed argument is a ``ValueError`` before anything else — the order the Neo4j backend
+        applies too, so the two cannot answer one bad call with different exceptions."""
+        check_page_size(page_size)
+        self._require_dataflow()
+        key = self.resolve_callable(name, in_class=in_class).callable
+        return key, self._addressing.by_key[key].callable
+
+    def get_cfg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[JCfgEdge]:
+        """One page of control flow within one callable (see :meth:`JavaAnalysisBackend.get_cfg`).
+
+        ``JCallable.cfg`` keys its endpoints by the *local* body key (``"66:9"``, ``"@entry"``);
+        :func:`~cldk.analysis.java.backend.java_body_node_id` joins them to the callable id to give
+        the same global spelling the graph writes on ``:JBodyNode.id``, so an endpoint from this
+        backend is the one the Neo4j backend returns and the one :meth:`get_source` accepts. The
+        join happens *before* the sort, because the order is over the ids a caller sees."""
+        key, c = self._graphs_of(callable, in_class, page_size)
+        edges = [JCfgEdge(src=java_body_node_id(c.id, e.src), dst=java_body_node_id(c.id, e.dst), kind=e.kind) for e in c.cfg or []]
+        return edge_page(JCfgEdge, key, edges, CFG_ORDER, page_size, cursor)
+
+    def get_cdg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[JCdgEdge]:
+        """One page of control dependence within one callable (see :meth:`JavaAnalysisBackend.get_cdg`)."""
+        key, c = self._graphs_of(callable, in_class, page_size)
+        edges = [JCdgEdge(src=java_body_node_id(c.id, e.src), dst=java_body_node_id(c.id, e.dst)) for e in c.cdg or []]
+        return edge_page(JCdgEdge, key, edges, CDG_ORDER, page_size, cursor)
+
+    def get_ddg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[JDdgEdge]:
+        """One page of data dependence within one callable (see :meth:`JavaAnalysisBackend.get_ddg`).
+
+        A **self-loop** (``e.src == e.dst``) is carried through like any other edge — there is no
+        pattern here that could drop one, which is the whole difference from the doubled-containment
+        Cypher of python-sdk#349."""
+        key, c = self._graphs_of(callable, in_class, page_size)
+        edges = [JDdgEdge(src=java_body_node_id(c.id, e.src), dst=java_body_node_id(c.id, e.dst), var=e.var, prov=list(e.prov or [])) for e in c.ddg or []]
+        return edge_page(JDdgEdge, key, edges, DDG_ORDER, page_size, cursor)
+
+    # -----[ the SDG, built once ]-----
+    def _sdg(self) -> Tuple[Dict[str, Dict[str, Dict[str, list]]], Dict[str, Tuple[str, int]]]:
+        """``(adjacency, {body-node id: (kind, first line)})`` over the application's SDG, built once.
+
+        ``adjacency`` is ``{"forward": {src: {dst: [label]}}, "backward": {dst: {src: [label]}}}`` —
+        both directions, because a backward slice is not derivable from a forward index without
+        inverting it, and inverting it per call is the same work done repeatedly. A ``label`` is
+        ``(relationship type, var, prov)``: what a path hop has to report, and what the graph carries
+        on the corresponding relationship. It is a **list** per ``(src, dst)`` pair because parallel
+        edges are ordinary — one statement feeding one argument on several variables is several
+        distinct paths — and collapsing them would merge several pieces of evidence into one.
+        """
+        if self._sdg_cache is None:
+            forward: Dict[str, Dict[str, list]] = {}
+            backward: Dict[str, Dict[str, list]] = {}
+            nodes: Dict[str, Tuple[str, int]] = {}
+
+            def link(src: str, dst: str, label: tuple) -> None:
+                forward.setdefault(src, {}).setdefault(dst, []).append(label)
+                backward.setdefault(dst, {}).setdefault(src, []).append(label)
+
+            for _, c in self._callables.values():
+                for key, node in (c.body or {}).items():
+                    nodes[java_body_node_id(c.id, key)] = (node.kind, node.start_line)
+                for rel, edges in (("J_DDG", c.ddg), ("J_CDG", c.cdg), ("J_SUMMARY", c.summary)):
+                    for e in edges or []:
+                        link(java_body_node_id(c.id, e.src), java_body_node_id(c.id, e.dst), (rel, getattr(e, "var", None), tuple(getattr(e, "prov", None) or ())))
+            # Endpoints here are already global (the analyzer's L4 overlay resolved them), so they
+            # are used as-is: joining them again would mint ids that name nothing.
+            for rel, edges in (("J_PARAM_IN", self.application.param_in), ("J_PARAM_OUT", self.application.param_out)):
+                for e in edges or []:
+                    link(e.src, e.dst, (rel, None, ()))
+            self._sdg_cache = ({"forward": forward, "backward": backward}, nodes)
+        return self._sdg_cache
+
+    def _reach(self, ref: str, direction: str, depth: int | None) -> set:
+        """The set of node ids reachable from ``ref`` in at most ``depth`` hops. Level by level
+        rather than a plain stack, because ``depth`` is a hop budget and a depth-first walk cannot
+        count hops without revisiting."""
+        edges = self._sdg()[0][direction]
+        seen, frontier, hops = {ref}, [ref], 0
+        while frontier and (depth is None or hops < depth):
+            nxt = [d for src in frontier for d in edges.get(src, ()) if d not in seen]
+            seen.update(nxt)
+            frontier = nxt
+            hops += 1
+        return seen
+
+    def _value_slice(self, root: SliceNode, *, backward: bool, depth: int | None, max_nodes: int) -> Slice:
+        """See :meth:`JavaAnalysisBackend._value_slice`. The whole closure is computed and then cut,
+        because ``total`` has to be the size of the whole slice for the cap to be reportable."""
+        nodes = self._sdg()[1]
+        seen = self._reach(root.ref, "backward" if backward else "forward", depth)
+        found = [self._body_slice_node(ref, *nodes[ref]) for ref in sorted(seen) if ref in nodes]
+        return Slice(nodes=found[:max_nodes], roots=[root], resolved=slice_resolved([root]), total=len(found))
+
+    def _value_paths(self, a: SliceNode, b: SliceNode, depth: int | None, max_paths: int) -> FlowPaths:
+        """See :meth:`JavaAnalysisBackend._value_paths`."""
+        adjacency, nodes = self._sdg()
+        walks = shortest_walks(adjacency["forward"], a.ref, b.ref, depth, max_paths + 1, via=VIA)
+        described = {ref: self._body_slice_node(ref, *nodes[ref]) for walk in walks for ref, _ in walk if ref in nodes}
+        described[a.ref] = a
+        paths = [flow_path([described[a.ref]] + [described[ref] for ref, _ in walk], [label for _, label in walk], via=VIA) for walk in walks[:max_paths]]
+        return FlowPaths(paths=paths, complete=len(walks) <= max_paths)
+
+    def _value_reaches(self, src: str, dsts: Sequence[str], depth: int | None) -> bool:
+        """See :meth:`JavaAnalysisBackend._value_reaches`."""
+        return not self._reach(src, "forward", depth).isdisjoint(set(dsts) - {src})
+
+    @property
+    def _ports_carry_dependence(self) -> bool:
+        """See :meth:`JavaAnalysisBackend._ports_carry_dependence` — asked of the payload's own
+        ``formal_in`` vertices, which is free once :meth:`_sdg` is built."""
+        adjacency, nodes = self._sdg()
+        return any(kind == "formal_in" and adjacency["forward"].get(ref) for ref, (kind, _) in nodes.items())
 
     # -----[ application / whole-program ]-----
     def get_application_view(self) -> JApplication:

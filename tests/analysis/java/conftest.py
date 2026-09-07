@@ -97,3 +97,30 @@ class FakeDriver:
 @pytest.fixture
 def fake_driver() -> FakeDriver:
     return FakeDriver()
+
+
+def pytest_configure(config):
+    config.addinivalue_line("markers", "timed: the test asserts on a wall clock; coverage is paused around its call")
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_call(item):
+    """Pause the coverage tracer around a ``timed`` test's call -- when there is one to pause.
+
+    The same hook ``tests/analysis/python/conftest.py`` and its TypeScript twin carry, and for the
+    same measured reason: leg 1.5 saw about five seconds of tracer overhead on one large accessor,
+    so a wall-clock assertion run under instrumentation measures the tracer, not the query.
+    pytest-cov's own ``no_cover`` marker does the same, but its hook (through 7.1.0) dereferences
+    ``cov_controller`` unguarded, and under ``--no-cov`` that is ``None``. This checks for the
+    plugin *and* a live controller.
+    """
+    cov = item.config.pluginmanager.get_plugin("_cov")
+    controller = getattr(cov, "cov_controller", None)
+    if item.get_closest_marker("timed") and controller is not None:
+        controller.pause()
+        try:
+            yield
+        finally:
+            controller.resume()
+    else:
+        yield

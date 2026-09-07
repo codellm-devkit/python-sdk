@@ -22,7 +22,7 @@ and ``get_method_parameters`` is annotated with what it always returned
 (``List[JCallableParameter]``, a latent 1.x annotation bug). A change to this list is a public-API
 change and must be deliberate; the query surface (3b) extends it.
 
-Leg 3b Task 1 adds the six addressing **methods** below, plus the ``has_resolution_edges``
+Leg 3b Task 2 adds the thirteen dataflow accessors; Task 1 added the six addressing **methods** below, plus the ``has_resolution_edges``
 **property** — which is why :data:`SURFACE` is checked against the functions and the property is
 pinned separately: ``inspect.isfunction`` does not see a property, and spelling it as a method to
 make it visible here would be a different public API from Python's.
@@ -57,6 +57,23 @@ SURFACE = {
     "get_comment_in_file": "(self, file_path: 'str') -> 'List[JComment]'",
     "get_comments_in_a_class": "(self, qualified_class_name: 'str') -> 'List[JComment]'",
     "get_comments_in_a_method": "(self, qualified_class_name: 'str', method_signature: 'str') -> 'List[JComment]'",
+    # -- the dataflow surface (leg 3b, Task 2); Python's signatures, keyword-for-keyword, with
+    # Java's edge models. ``slice_forward``, ``paths_between`` and the two ``flows_to_*`` predicates
+    # refuse on today's analyzer output (the L4 port lattice carries no dependence edge); their
+    # signatures are frozen here all the same, because the refusal is about the data.
+    "get_cfg": "(self, callable: 'str', *, in_class: 'str | None' = None, page_size: 'int' = 10000, cursor: 'str | None' = None) -> 'EdgePage[JCfgEdge]'",
+    "get_cdg": "(self, callable: 'str', *, in_class: 'str | None' = None, page_size: 'int' = 10000, cursor: 'str | None' = None) -> 'EdgePage[JCdgEdge]'",
+    "get_ddg": "(self, callable: 'str', *, in_class: 'str | None' = None, page_size: 'int' = 10000, cursor: 'str | None' = None) -> 'EdgePage[JDdgEdge]'",
+    "slice_backward": "(self, src: 'str', *, within: 'str', depth: 'int | None' = 5, max_nodes: 'int' = 10000) -> 'Slice'",
+    "slice_forward": "(self, src: 'str', *, within: 'str', depth: 'int | None' = 5, max_nodes: 'int' = 10000) -> 'Slice'",
+    "backward_cone": "(self, sinks: 'Sequence[str]', *, depth: 'int | None' = 5, max_nodes: 'int' = 10000) -> 'Slice'",
+    "reaches": "(self, src: 'str', dst: 'str', *, depth: 'int | None' = None) -> 'bool'",
+    "callers_of": "(self, name: 'str', *, in_class: 'str | None' = None, in_module: 'str | None' = None) -> 'List[SliceNode]'",
+    "callees_of": "(self, name: 'str', *, in_class: 'str | None' = None, in_module: 'str | None' = None) -> 'List[SliceNode]'",
+    "paths_between": "(self, src: 'str', dst: 'str', *, src_within: 'str', dst_within: 'str', depth: 'int | None' = None, max_paths: 'int' = 10) -> 'FlowPaths'",
+    "call_paths_between": "(self, src: 'str', dst: 'str', *, depth: 'int | None' = None, max_paths: 'int' = 10) -> 'FlowPaths'",
+    "flows_to_call": "(self, src: 'str', callee: 'str', *, within: 'str', depth: 'int | None' = None) -> 'bool'",
+    "flows_to_argument": "(self, src: 'str', callee: 'str', arg: 'str', *, within: 'str', depth: 'int | None' = None) -> 'bool'",
     # -- the addressing surface (leg 3b, Task 1); Python's signatures, keyword-for-keyword.
     "describe": "(self, nodes: 'Sequence[object]') -> 'List[SliceNode]'",
     "get_source": "(self, node_id: 'str') -> 'str'",
