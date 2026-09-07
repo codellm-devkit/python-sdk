@@ -1488,7 +1488,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     _REACHES = (
         "MATCH (a:PyCallable {{signature:$a}}) WHERE a.id STARTS WITH $prefix "
         "MATCH (a) ((x:PyCallable)-[:PY_CALLS]->(y:PyCallable) WHERE x.id STARTS WITH $prefix){{1,{depth}}} (m:PyCallable) "
-        "WITH DISTINCT m WHERE m.signature = $b RETURN count(m) > 0 AS ok"
+        "WITH DISTINCT m WHERE m.id STARTS WITH $prefix AND m.signature = $b RETURN count(m) > 0 AS ok"
     )
 
     def reaches(self, src: str, dst: str, *, depth: int | None = None) -> bool:

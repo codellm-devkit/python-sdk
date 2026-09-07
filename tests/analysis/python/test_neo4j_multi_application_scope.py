@@ -506,3 +506,24 @@ def test_the_overview_projection_is_only_ever_appended_to_a_scoped_match():
     for before in uses:
         statement = before[before.rindex("self._run(") :]
         assert _is_scoped(statement), f"an unscoped MATCH feeds the overview projection: {statement[-200:]!r}"
+
+
+def test_the_reachability_walk_scopes_all_three_of_its_positions():
+    """``_REACHES`` binds three node positions, and every one must carry the application prefix.
+
+    A quantified path pattern binds the anchor, the repeated hop, and the node the walk lands on.
+    Consecutive repetitions bind ``x`` to the previous ``y``, so predicating ``x`` covers the anchor
+    and every interior node -- but **not** the last one, which is only ever a ``y``. That node is
+    ``m``, and it was unpredicated: the statement as a whole carried a prefix, so the per-statement
+    audit above judged it scoped while its final node was free to be another application's.
+
+    This is the gap a per-variable audit closes. TypeScript and Java have one; Python does not yet
+    (python-sdk#363), so this pins the one statement where the difference was measurable.
+    """
+    statement = _class_level_statements()["_REACHES"]
+    for position in ("a", "x", "m"):
+        assert f"{position}.id STARTS WITH $prefix" in statement, f"_REACHES leaves {position!r} unscoped"
+    assert "y.id STARTS WITH $prefix" not in statement, (
+        "predicating both hop endpoints checks every interior node twice; measured 623.9s against "
+        "3.2s on a 5,000-node cyclic graph for the same answer"
+    )
