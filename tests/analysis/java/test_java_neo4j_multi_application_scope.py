@@ -262,7 +262,12 @@ def _tokens(pattern: str) -> List[Tuple[str, Any]]:
     return out
 
 
-def _match(pattern: str, rows: List[Dict[str, Any]], params: Dict[str, Any], optional: bool) -> List[Dict[str, Any]]:
+def _match(pattern: str, rows: List[Dict[str, Any]], params: Dict[str, Any], optional: bool, where: str = "") -> List[Dict[str, Any]]:
+    """``where`` is the clause that belongs to *this* ``MATCH``, and it is a parameter rather than a
+    following clause for one reason: an ``OPTIONAL MATCH … WHERE p`` filters the optional half and
+    then still yields the null row, where a free-standing ``WHERE p`` would delete the row outright.
+    Applying it here is the difference between "this call resolves to nothing" and "this body node
+    does not exist"."""
     tokens = _tokens(pattern)
     new_vars = [t[0] for kind, t in tokens if kind == "node"] + [t[0] for kind, t in tokens if kind == "hop" and t[0]]
     out: List[Dict[str, Any]] = []
@@ -288,6 +293,8 @@ def _match(pattern: str, rows: List[Dict[str, Any]], params: Dict[str, Any], opt
             else:
                 rvar, rels, back, var_len = t
                 cur = [{**b, "_next": n, **({rvar: e} if rvar else {})} for b in cur for n, e in _walk(b[prev_var], rels, back, var_len)]
+        if where:
+            cur = _where(where, cur, params)
         if cur:
             out += cur
         elif optional:
@@ -298,6 +305,8 @@ def _match(pattern: str, rows: List[Dict[str, Any]], params: Dict[str, Any], opt
 def _where(clause: str, rows: List[Dict[str, Any]], params: Dict[str, Any]) -> List[Dict[str, Any]]:
     def ok(b: Dict[str, Any]) -> bool:
         for m in _COND.finditer(clause):
+            if any(b.get(v) is None for v in (m.group(1), m.group(6), m.group(8)) if v):
+                return False  # a predicate on an unbound (optional) variable is null, never true
             if m.group(1):
                 actual = GRAPH.nodes[b[m.group(1)]][1].get(m.group(2))
                 op, expected = m.group(3), _value(m.group(4), params, b)
@@ -390,13 +399,19 @@ def fake_cypher(query: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Evaluate one read statement against :data:`GRAPH` -- honestly (see the module docstring)."""
     rows: List[Dict[str, Any]] = [{}]
     clauses = re.split(r"(?<!STARTS)(?<!OPTIONAL) (?=MATCH |OPTIONAL MATCH |WHERE |WITH |UNWIND |RETURN )", query.strip())
-    for clause in clauses:
+    pending = ""  # a WHERE already consumed by the OPTIONAL MATCH it belongs to
+    for index, clause in enumerate(clauses):
         kw, _, body = clause.partition(" ")
+        following = clauses[index + 1] if index + 1 < len(clauses) else ""
+        if pending:
+            pending = ""
+            continue
         if kw == "UNWIND":
             source, _, var = body.partition(" AS ")
             rows = [{**row, var: value} for row in rows for value in _value(source.strip(), params, row)]
         elif kw == "OPTIONAL":
-            rows = _match(body[len("MATCH ") :], rows, params, optional=True)
+            pending = following[len("WHERE ") :] if following.startswith("WHERE ") else ""
+            rows = _match(body[len("MATCH ") :], rows, params, optional=True, where=pending)
         elif kw == "MATCH":
             rows = _match(body, rows, params, optional=False)
         elif kw == "WHERE":
@@ -529,6 +544,9 @@ def test_the_addressing_surface_answers_from_this_application_only():
     assert found.module.module_name == "shared"
     assert found.body is not None and found.body.kind == "call"
     assert found.body.id == f"can://java/{APP_A}/{SHARED_MODULE}/Widget/{METHOD_SIG}@7:12"
+    # What the call resolves to is read through ``J_RESOLVES_TO``, whose target is a node like any
+    # other and carries the prefix predicate for the same reason every other endpoint does.
+    assert found.body.callee == f"can://java/{APP_A}/{OTHER_MODULE}/Helper/help()", "the callee came from application B"
     assert "alpha" in found.source and "beta" not in found.source
 
     node = backend.resolve_callable("render")
