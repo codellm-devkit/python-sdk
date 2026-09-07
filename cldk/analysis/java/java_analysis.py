@@ -47,12 +47,13 @@ See Also:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Tuple, Set, Union
+from typing import Dict, List, Sequence, Tuple, Set, Union
 import networkx as nx
 
 from tree_sitter import Tree
 
 from cldk.analysis.commons.backend_config import CodeAnalyzerConfig, JavaBackend, Neo4jConnectionConfig, cache_subdir
+from cldk.analysis.commons.results import LocateResult, SliceNode
 from cldk.analysis.commons.treesitter import TreesitterJava
 from cldk.models.java import JCallable
 from cldk.models.java import JApplication
@@ -1258,3 +1259,169 @@ class JavaAnalysis:
             :meth:`get_all_comments`: For all comment types.
         """
         return self.backend.get_all_docstrings()
+
+    # =====================================================================================
+    # The addressing surface (leg 3b, Task 1). Every signature is
+    # :class:`~cldk.analysis.python.python_analysis.PythonAnalysis`'s, keyword-for-keyword.
+    # =====================================================================================
+    def locate(self, path: str, line: int) -> LocateResult:
+        """Resolve a source position to its enclosing callable, with the source in hand.
+
+        The single most-needed query for triaging a scanner alert: an alert arrives as
+        ``file:line`` and this resolves it to the enclosing callable in one call, rather than
+        ``get_method``, falling back to ``get_callers``, falling back to scanning the symbol table
+        by hand. Four outcomes stay distinguishable — see
+        :class:`~cldk.analysis.commons.results.LocateResult`: inside a callable (``callable`` set,
+        plus ``body`` when a body node is that precise), at real module scope (``module_scope``
+        diagnostic), in the gap between two callables (also module scope, never snapped to the
+        nearest callable), or in a file the analysis has no module for (``file_not_in_graph``).
+
+        There is no ``col`` parameter: the Neo4j graph projects only ``start_line``/``end_line`` on
+        ``:JCallable`` and ``:JBodyNode``, so a column would work in process and be silently inert
+        over the graph.
+
+        Args:
+            path: The file path. Normalised against the backend's module keys, so a ``./``-prefixed
+                or absolute path resolves rather than reading back as ``file_not_in_graph``.
+            line: The 1-based line number.
+
+        Returns:
+            A :class:`~cldk.analysis.commons.results.LocateResult` carrying the innermost body
+            node, the enclosing callable, its owning type, its module, and the source slice — never
+            an ambiguous empty. ``module.module_name`` is the unit's **declared package** (J-2),
+            and ``source`` is the enclosing callable's text, which is the **body block** on the
+            ``analysis.json`` backend and the whole **declaration** over Neo4j (see
+            :meth:`get_source`). A module-scope result over Neo4j is ``""`` plus a
+            ``module_source_unavailable`` diagnostic: the graph carries no module text.
+
+        See Also:
+            :meth:`locate_many`: The bulk form — the point, not an optimisation.
+        """
+        return self.backend.locate(path, line)
+
+    def locate_many(self, positions: Sequence[Tuple[str, int]]) -> List[LocateResult]:
+        """Resolve many ``(path, line)`` positions in one round trip, in input order.
+
+        Args:
+            positions: The ``(path, line)`` pairs to resolve, e.g. from a scanner's alert list.
+
+        Returns:
+            One :class:`~cldk.analysis.commons.results.LocateResult` per input position, in the
+            same order.
+
+        See Also:
+            :meth:`locate`: The single-position form.
+        """
+        return self.backend.locate_many(positions)
+
+    def resolve_callable(self, name: str, *, in_class: str | None = None, in_module: str | None = None) -> SliceNode:
+        """Resolve a callable name to the one callable it names, in the caller's vocabulary.
+
+        The addressing step every name-taking accessor performs, exposed so a caller can perform it
+        once and keep the answer::
+
+            node = java.resolve_callable("cancelOrder(java.lang.Integer, boolean)", in_class="TradeDirect")
+            node.callable   # "…impl.direct.TradeDirect.cancelOrder(java.lang.Integer, boolean)"
+            node.file, node.line
+
+        ``name`` matches whole or as a dotted suffix, **and** against the signature with its
+        parameter tail cut, so ``"cancelOrder"`` names a method a caller has not typed the
+        parameters of; the tail-carrying spelling is what resolves one overload out of a pair
+        (J-3). ``in_class`` is a dotted suffix of the owning type's qualified name — which, for a
+        local or anonymous class, carries the callable that declares it (the J-1 erratum);
+        ``in_module`` is a repo-relative path suffix or a dotted spelling of the unit's **declared
+        package**, optionally qualified by a type it declares (J-2). Ambiguity raises with every
+        candidate; nothing is guessed.
+
+        Everything the analyzer emitted as a callable is addressable (J-6): an initializer
+        (``<clinit>$0()``) resolves and behaves like a method, and an **implicit** callable
+        resolves with ``line=-1`` — it has no span at all, which is why :meth:`get_source` refuses
+        it by name rather than returning an empty string.
+
+        Raises:
+            AmbiguousName: More than one callable matched.
+            SelectorNotInGraph: Nothing matched — naming the argument that missed.
+        """
+        return self.backend.resolve_callable(name, in_class=in_class, in_module=in_module)
+
+    def resolve_value(self, name: str, *, within: str) -> SliceNode:
+        """Resolve a value name inside a callable — in Java, a parameter — to the position that
+        carries it.
+
+        The same resolution the dataflow accessors perform on their ``src``, exposed so a caller can
+        check what a name means before asking a question of it::
+
+            java.resolve_value("orderID", within="TradeDirect.cancelOrder").kind   # "parameter"
+
+        Raises:
+            AmbiguousName: ``within`` named more than one callable, or ``name`` more than one value.
+            SelectorNotInGraph: No such callable, or no such value in it.
+        """
+        return self.backend.resolve_value(name, within=within)
+
+    def get_source(self, node_id: str) -> str:
+        """Return the source text named by ``node_id`` — a callable, or one of its body nodes.
+
+        ``node_id`` is a callable's ``"<type fqn>.<signature>"`` name (what :meth:`resolve_callable`
+        returns in ``callable``), a callable's opaque id (what it returns in ``ref``), or the
+        body-node id :attr:`~cldk.analysis.commons.results.LocateResult.node_id` hands back, so a
+        statement or call site :meth:`locate` found can be re-fetched precisely. Passed back as
+        received, never composed.
+
+        **What comes back for a callable depends on the backend, and it is the graph's difference,
+        not this method's.** On the ``analysis.json`` backend it is the **body block**; over Neo4j
+        it is the whole **declaration**, which *ends with* that body block — the projection carries
+        one line range per callable and no ``body_span`` (upstream codeanalyzer-java#176). The
+        relation is exact and total, so a caller reading either can rely on it; it is recorded in
+        the lossiness table of ``docs/agent-api-reference.md`` and asserted by the live parity
+        suite. A **body node** likewise has text only on the ``analysis.json`` backend: the graph
+        carries none below callable granularity.
+
+        Args:
+            node_id: A callable's name or id, or an id from :meth:`locate` — passed back as
+                received, not composed.
+
+        Returns:
+            The source text, never an ambiguous empty string.
+
+        Raises:
+            KeyError: Nothing matches ``node_id``, or it names a node with no recoverable source —
+                an implicit callable (the analyzer emits it with no span and no body), or, over
+                Neo4j, a body node. The message names the reason.
+        """
+        return self.backend.get_source(node_id)
+
+    def describe(self, nodes: Sequence[object]) -> List[SliceNode]:
+        """Fill in ``source`` for these positions, in one round trip.
+
+        Addressing answers *where*; this answers *what*, and it is a second call because source is
+        the one field with no size ceiling. Takes anything carrying an address — slice nodes, a
+        ``locate()`` result — and gives back the same
+        :class:`~cldk.analysis.commons.results.SliceNode` shape with ``source`` filled.
+
+        Afterwards, ``source=None`` means exactly one thing: **this position exists and there is no
+        text for it.** A ref that names nothing raises instead.
+
+        Args:
+            nodes: The positions to hydrate. An empty sequence costs no round trip.
+
+        Returns:
+            The same positions, in the same order, with ``source`` filled where the backend has
+            text for them.
+
+        Raises:
+            KeyError: A ref names nothing in this application.
+            TypeError: An element carries no address to look up.
+        """
+        return self.backend.describe(nodes)
+
+    @property
+    def has_resolution_edges(self) -> bool:
+        """Whether call sites carry a resolved callee on this backend right now.
+
+        ``False`` means every empty ``callee_signature`` is explained by the attached graph
+        carrying no ``J_RESOLVES_TO`` edge for this application, not by individual call sites
+        failing to resolve. The ``analysis.json`` backend is unconditionally ``True``:
+        codeanalyzer-java resolves callees at every analysis level.
+        """
+        return self.backend.has_resolution_edges

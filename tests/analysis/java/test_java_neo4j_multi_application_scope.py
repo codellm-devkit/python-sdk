@@ -208,11 +208,20 @@ GRAPH = _build()
 # =====================================================================================
 _NODE = re.compile(r"\((\w*)(?::([\w|:]+))?(?: \{([^}]*)\})?\)")
 _HOP = re.compile(r"(<)?-\[(\w*)(?::([\w|]+))?(\*0\.\.)?\]-(>)?")
-_COND = re.compile(r"(\w+)\.(\w+) (STARTS WITH|IN|=|<>) (\$\w+|'[^']*')|(\$\w+) IN (\w+)\.(\w+)|(\w+)\.(\w+) IS NOT NULL")
+_COND = re.compile(r"(\w+)\.(\w+) (STARTS WITH|IN|=|<>) (\$\w+|'[^']*'|\w+)|(\$\w+) IN (\w+)\.(\w+)|(\w+)\.(\w+) IS NOT NULL")
 
 
-def _value(token: str, params: Dict[str, Any]) -> Any:
-    return params[token[1:]] if token.startswith("$") else token.strip("'")
+def _value(token: str, params: Dict[str, Any], row: Dict[str, Any] | None = None) -> Any:
+    """A literal, a parameter, or a variable bound earlier in the statement.
+
+    The third case is what ``UNWIND $prefixes AS p … WHERE b.id STARTS WITH p`` needs: the
+    right-hand side is a *row value*, not a parameter, and reading it as the literal string ``"p"``
+    would make the predicate vacuously false and the leak test vacuously green."""
+    if token.startswith("$"):
+        return params[token[1:]]
+    if row is not None and token in row:
+        return row[token]
+    return token.strip("'")
 
 
 def _node_ok(node_id: str, labels: str | None, props: str | None, params: Dict[str, Any]) -> bool:
@@ -291,7 +300,7 @@ def _where(clause: str, rows: List[Dict[str, Any]], params: Dict[str, Any]) -> L
         for m in _COND.finditer(clause):
             if m.group(1):
                 actual = GRAPH.nodes[b[m.group(1)]][1].get(m.group(2))
-                op, expected = m.group(3), _value(m.group(4), params)
+                op, expected = m.group(3), _value(m.group(4), params, b)
                 if not {
                     "STARTS WITH": lambda: str(actual).startswith(expected),
                     "IN": lambda: actual in expected,
@@ -380,10 +389,13 @@ def _return(clause: str, rows: List[Dict[str, Any]], params: Dict[str, Any]) -> 
 def fake_cypher(query: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Evaluate one read statement against :data:`GRAPH` -- honestly (see the module docstring)."""
     rows: List[Dict[str, Any]] = [{}]
-    clauses = re.split(r"(?<!STARTS)(?<!OPTIONAL) (?=MATCH |OPTIONAL MATCH |WHERE |WITH |RETURN )", query.strip())
+    clauses = re.split(r"(?<!STARTS)(?<!OPTIONAL) (?=MATCH |OPTIONAL MATCH |WHERE |WITH |UNWIND |RETURN )", query.strip())
     for clause in clauses:
         kw, _, body = clause.partition(" ")
-        if kw == "OPTIONAL":
+        if kw == "UNWIND":
+            source, _, var = body.partition(" AS ")
+            rows = [{**row, var: value} for row in rows for value in _value(source.strip(), params, row)]
+        elif kw == "OPTIONAL":
             rows = _match(body[len("MATCH ") :], rows, params, optional=True)
         elif kw == "MATCH":
             rows = _match(body, rows, params, optional=False)
@@ -399,6 +411,8 @@ def _responder(query: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
     A's -- the audit below judges spellings; this judges the values."""
     if "prefix" in params:
         assert params["prefix"].startswith(f"can://java/{APP_A}/"), f"$prefix bound to {params['prefix']!r}, outside application A's scope"
+    for value in params.get("prefixes") or ():
+        assert value.startswith(f"can://java/{APP_A}/"), f"$prefixes carries {value!r}, outside application A's scope"
     if "app" in params:
         assert params["app"] == APP_A, f"$app bound to {params['app']!r}"
     return fake_cypher(query, params)
@@ -505,6 +519,36 @@ def test_the_artifact_layer_is_reached_only_through_the_application_anchor():
     assert backend.get_config_uses() == [] and backend.get_unresolved_config_reads() == []
 
 
+def test_the_addressing_surface_answers_from_this_application_only():
+    """The leg-3b surface over the *one* statement it adds — the per-callable body-node fetch.
+    Both applications declare ``shared.Widget.render(java.lang.String)`` at the same path and the
+    same lines, so every answer here would be indistinguishable if the fetch leaked."""
+    backend = _backend()
+    found = backend.locate(SHARED_MODULE, 7)
+    assert found.callable is not None and found.callable.signature == METHOD_SIG
+    assert found.module.module_name == "shared"
+    assert found.body is not None and found.body.kind == "call"
+    assert found.body.id == f"can://java/{APP_A}/{SHARED_MODULE}/Widget/{METHOD_SIG}@7:12"
+    assert "alpha" in found.source and "beta" not in found.source
+
+    node = backend.resolve_callable("render")
+    assert node.callable == f"{CLASS_FQN}.{METHOD_SIG}"
+    assert node.ref.startswith(f"can://java/{APP_A}/")
+    assert "alpha" in backend.get_source(node.callable)
+    assert backend.resolve_value("alpha", within="Widget.render").ref == f"{node.ref}@formal_in:0"
+    # The graph carries no text below callable granularity: the position is found, its source is
+    # ``None`` -- never application B's, and never the enclosing declaration standing in for it.
+    assert backend.describe([found])[0].source is None
+
+
+def test_the_resolution_probe_is_scoped_to_this_application():
+    """``J_RESOLVES_TO`` exists in the fake database for both applications; the probe must ask
+    about A's, not the database's."""
+    backend = _backend()
+    assert backend.has_resolution_edges is True
+    assert any("J_RESOLVES_TO" in st and "$prefix" in st for st in backend._driver.statements)
+
+
 def test_docstrings_are_this_applications():
     backend = _backend()
     assert [c.content for c in backend.get_comments_in_a_method(CLASS_FQN, METHOD_SIG)] == ["alpha method doc"]
@@ -528,6 +572,15 @@ def test_a_module_row_that_is_not_a_type_is_refused_by_the_model():
 # The audit: every statement, class-level and inline, carries the application scope
 # =====================================================================================
 _SCOPED_VAR = re.compile(r"\b(\w+)\.id STARTS WITH \$prefix\b")
+#: The second scoped spelling: ``UNWIND $prefixes AS p … WHERE x.id STARTS WITH p``. It is the
+#: **narrower** one -- each element is a single callable's id prefix, which is itself inside the
+#: application prefix -- and it is what the per-callable body-node fetch issues. Adding
+#: ``AND x.id STARTS WITH $prefix`` to make it match the first spelling was measured and rejected:
+#: the planner then seeks the *broad* prefix and filters, 145.8 ms against 14.1 for one callable
+#: and 1,349.2 ms against 86.6 for eight, on ThingsBoard. So the audit learns the spelling rather
+#: than the statement carrying a predicate that costs 15x to satisfy it. What keeps the *values*
+#: honest is ``_responder``, which asserts every element of ``$prefixes`` is application A's.
+_UNWOUND_PREFIXES = re.compile(r"UNWIND \$prefixes AS (\w+)\b")
 _INTROSPECTION = re.compile(r"^\s*CALL (db|dbms)\.")
 
 #: Relationship types that cannot leave the application: each runs from the application node, a
@@ -575,6 +628,8 @@ def _unscoped_variables(statement: str) -> List[str]:
     they bind nothing, so no clause can read one.
     """
     prefixed = set(_SCOPED_VAR.findall(statement))
+    for unwound in _UNWOUND_PREFIXES.findall(statement):
+        prefixed |= set(re.findall(rf"\b(\w+)\.id STARTS WITH {unwound}\b", statement))
     inside: Dict[str, bool] = {}
     bound: List[str] = []
     for clause in _match_clauses(statement):
@@ -598,7 +653,7 @@ def _scope_kind(statement: str) -> str | None:
         return "introspection"
     if _unscoped_variables(statement):
         return None
-    return "prefix" if _SCOPED_VAR.search(statement) else "application"
+    return "prefix" if _SCOPED_VAR.search(statement) or _UNWOUND_PREFIXES.search(statement) else "application"
 
 
 def _class_level_statements() -> Dict[str, str]:

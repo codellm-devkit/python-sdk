@@ -161,6 +161,11 @@ class JNeo4jBackend(JavaAnalysisBackend):
     _ANALYZER_FLOOR = (3, 0, 1)
     #: Set by :meth:`_probe_schema`; the class-level ``None`` is for the ``object.__new__`` seam.
     _analyzer_version: Tuple[int, int, int] | None = None
+    #: The database's relationship types, read once by :meth:`_probe_schema` and reused by
+    #: :meth:`_probe_resolution_edges`; the class-level default is for the same seam.
+    _relationship_types: FrozenSet[str] = frozenset()
+    #: Set by :meth:`_probe_resolution_edges` (see :attr:`has_resolution_edges`).
+    _has_resolution_edges: bool = False
     _call_graph: nx.DiGraph | None = None
 
     def __init__(
@@ -192,6 +197,7 @@ class JNeo4jBackend(JavaAnalysisBackend):
         self._driver = driver
         self._session_obj: Any | None = None
         self._probe_schema()
+        self._has_resolution_edges = self._probe_resolution_edges()
         self._module_props: Dict[str, Dict[str, Any]] = self._load_modules()
         self._modules: List[str] = list(self._module_props)
         self._call_graph = None
@@ -239,6 +245,9 @@ class JNeo4jBackend(JavaAnalysisBackend):
         the floor, absent, or unreadable is refused, naming what was found.
         """
         found = {r["relationshipType"] for r in self._run("CALL db.relationshipTypes()")}
+        # Kept: :meth:`_probe_resolution_edges` asks whether ``J_RESOLVES_TO`` exists at all, and
+        # this statement has already answered that. One fingerprint, two questions, one round trip.
+        self._relationship_types = frozenset(found)
         missing = self._REQUIRED_RELATIONSHIP_TYPES - found
         if missing:
             raise GraphSchemaMismatch(expected=set(self._REQUIRED_RELATIONSHIP_TYPES), found=found, missing=missing)
@@ -263,6 +272,24 @@ class JNeo4jBackend(JavaAnalysisBackend):
                 message=f"The graph for application {self.application_name!r} {what}; this backend needs a graph emitted by codeanalyzer-java {floor} or newer.",
             )
         self._analyzer_version = version
+
+    def _probe_resolution_edges(self) -> bool:
+        """Whether **this application's** graph carries a single ``J_RESOLVES_TO`` edge, asked once
+        at attach (see :attr:`has_resolution_edges`).
+
+        The relationship-type check is free — :meth:`_probe_schema` already read the fingerprint —
+        and short-circuits the statement on a database that has no such edge anywhere. The
+        statement itself is scoped, because a database can hold several applications and one of
+        them lacking resolution is not a fact about another.
+
+        ``--emit neo4j`` always runs at full depth, so this is expected to be ``True`` on any graph
+        built the documented way (133,423 edges on the reference database); the probe is defensive
+        against a graph built some other way. It is information, not an error: unlike
+        :meth:`_probe_schema` it never raises.
+        """
+        if "J_RESOLVES_TO" not in self._relationship_types:
+            return False
+        return bool(self._run(f"MATCH (b:JBodyNode)-[:J_RESOLVES_TO]->() WHERE {_scoped('b')} RETURN b LIMIT 1", prefix=self._scope_prefix))
 
     def _load_modules(self) -> Dict[str, Dict[str, Any]]:
         """``file_key -> module properties`` for the application's modules."""
@@ -490,6 +517,68 @@ class JNeo4jBackend(JavaAnalysisBackend):
     @property
     def _types(self) -> Dict[str, JType]:
         return self._idx[0]
+
+    @property
+    def _file_of(self) -> Dict[str, str]:
+        return self._idx[1]
+
+    @property
+    def _callables(self) -> Dict[str, Tuple[JType, JCallable]]:
+        return self._idx[2]
+
+    # -----[ the addressing surface (leg 3b) — the three facts the shared implementation needs ]-----
+    #: The one statement leg 3b's Task 1 adds. Anchored on the **bare** ``:JBodyNode`` label and a
+    #: per-callable id prefix, which is the narrowest predicate on this surface.
+    #:
+    #: SEEK MEASURED, not ported (PROFILE, median of 5 with the first discarded, over the driver,
+    #: on ThingsBoard — 598,413 nodes, 496,821 of them body nodes):
+    #:
+    #:   8 callables / 4,004 body nodes:  bare :JBodyNode  86.6 ms, 16,024 db hits
+    #:                                    :JCanNode        86.8 ms, 20,028 db hits
+    #:                                    J_HAS_BODY_NODE 204.2 ms, 503,741 db hits
+    #:   1 callable / 617 body nodes:     bare :JBodyNode  13.53 ms, 2,469 db hits
+    #:                                    :JCanNode        13.56 ms, 3,086 db hits
+    #:
+    #: The bare label owns an id range index of its own (``j_body_node_id``), so it seeks; the
+    #: marker label seeks too and reads a quarter again as many db hits for the same rows, which is
+    #: leg 3a's finding on a narrower prefix rather than leg 2.5b's. The containment hop is the
+    #: outlier and the reason it is not used: ``:JCallable`` has **no** id index (only ``name`` and
+    #: the ``code``/``docstring`` fulltext), so anchoring on the callable scans the label.
+    #:
+    #: ``UNWIND`` rather than ``any(p IN $prefixes …)``: one indexed range seek per prefix, where
+    #: the ``any`` form plans as a label scan (the same trap :func:`_scoped` exists to avoid).
+    _BODY_NODES = "UNWIND $prefixes AS p MATCH (b:JBodyNode) WHERE b.id STARTS WITH p RETURN b.id AS id, b.kind AS kind, b.start_line AS s, b.end_line AS e"
+
+    def _body_nodes(self, callable_ids: Sequence[str]) -> Dict[str, Dict[str, JBodyNode]]:
+        """See :meth:`JavaAnalysisBackend._body_nodes` — read from the graph, which holds every
+        body node, rather than from the reconstruction, which rebuilds the ``call`` ones only.
+
+        Rows are grouped back onto their callables at the first ``@``, which is exact because a
+        Java ``can://`` id carries none (checked: 0 of daytrader8's 1,216 and ThingsBoard's 28,763
+        callables). That recovers the *callable*, which is all that is needed here; it does not
+        recover the local body key, and nothing tries to.
+        """
+        ids = list(dict.fromkeys(callable_ids))
+        if not ids:
+            return {}
+        out: Dict[str, Dict[str, JBodyNode]] = {}
+        for row in self._run(self._BODY_NODES, prefixes=[f"{i}@" for i in ids]):
+            node_id = row["id"]
+            out.setdefault(node_id.partition("@")[0], {})[node_id] = R.body_node({"kind": row["kind"], "start_line": row["s"], "end_line": row["e"]}, None)
+        return out
+
+    def _body_source(self, node: JBodyNode) -> str | None:
+        """See :meth:`JavaAnalysisBackend._body_source`. Always ``None``: ``:JBodyNode`` carries a
+        line range and no text, and ``:JModule`` carries no ``source`` to slice one out of, so this
+        projection has nothing below callable granularity. Substituting the enclosing callable's
+        declaration would be a wrong answer rather than a missing one."""
+        return None
+
+    @property
+    def has_resolution_edges(self) -> bool:
+        """See :meth:`JavaAnalysisBackend.has_resolution_edges`. Fixed at construction by
+        :meth:`_probe_resolution_edges`."""
+        return self._has_resolution_edges
 
     # -----[ application / whole-program ]-----
     def get_application_view(self) -> JApplication:

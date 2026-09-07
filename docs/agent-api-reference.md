@@ -152,13 +152,35 @@ on superset-frontend.
 
 ## Java — what attaches today
 
-Everything above and below this section is the **Python** surface. Java is one leg behind: leg 3a
-(this release) moved the Java layer onto canonical schema v2, and the query surface documented in
-the rest of this file — `locate` / `locate_many`, `resolve_callable`, `get_source`, `get_cfg` /
-`get_cdg` / `get_ddg`, `slice_backward` / `slice_forward`, `reaches`, `paths_between`,
-`flows_to_call` / `flows_to_argument`, `describe`, the entrypoint trio, the scoping keywords
-(`paths=` / `module=` / `roots=` / `depth=`) and the leaf accessors — **arrives for Java in leg 3b**
-(python-sdk#311). Calling those names on a `JavaAnalysis` today either does not exist or raises
+Everything above and below this section is the **Python** surface. Java is catching up: leg 3a moved
+the Java layer onto canonical schema v2, and leg 3b is landing the query surface documented in the
+rest of this file.
+
+**Landed for Java: the addressing surface** — `locate`, `locate_many`, `resolve_callable`,
+`resolve_value`, `get_source`, `describe` and `has_resolution_edges`, in Python's signatures,
+keyword-for-keyword, and answering identically on both Java backends. Three Java-specific rules
+apply to it, and each is a decision rather than an accident:
+
+- **`resolve_callable` matches the parameter tail too.** A Java callable is keyed by a signature
+  carrying its parameters, so `"cancelOrder"` matches on the name with the tail cut, two overloads
+  raise `AmbiguousName` listing the full signatures, and writing one of those signatures resolves it
+  exactly. No keyword can split an overload pair, and the error says so instead of suggesting one.
+- **`in_module=` takes the declared package, not a path-derived name.** `"com.ibm…​.impl.direct"`,
+  or that package plus a type it declares (`"…​.impl.direct.TradeDirect"`), or a repo-relative path
+  suffix. A dotted name derived from a Java *path* would be `src.main.java.com.ibm…`, which names
+  nothing; the SDK never derives one. `LocateResult.module.module_name` is the declared package for
+  the same reason.
+- **Everything the analyzer emits as a callable is addressable.** An initializer (`<clinit>$0()`)
+  resolves and behaves like a method. An **implicit** callable (a default constructor — 99 of
+  daytrader8's 1,216) resolves with `line=-1`, because the analyzer emits it with no span and no
+  body at all; `get_source` on one raises naming that, rather than returning `""`. An anonymous
+  class's qualified name carries the callable that declares it
+  (`p.PingManagedThread.doGet(…).$anon$0`), because `$anon$N` is numbered per declaring callable.
+
+**Still arriving in leg 3b** (python-sdk#311): `get_cfg` / `get_cdg` / `get_ddg`, `slice_backward` /
+`slice_forward`, `reaches`, `paths_between`, `flows_to_call` / `flows_to_argument`, the entrypoint
+trio, the scoping keywords (`paths=` / `module=` / `roots=` / `depth=`) and the leaf accessors.
+Calling those names on a `JavaAnalysis` today either does not exist or raises
 `NotImplementedError`; nothing silently answers half a question.
 
 ```python
@@ -217,6 +239,17 @@ single-file mode). Six things will mislead you if you don't know them:
   one exception is a `JCallableParameter`, which round-trips out of `:JCallable.parameters_json`
   with the analyzer's own columns *and* byte offsets; those offsets index a module `source` this
   backend does not carry, so they locate the parameter in the file on disk and nothing else.
+- **`get_source` inherits that difference, and so does `LocateResult.source`.** For a callable it is
+  the **body block** on the `analysis.json` backend and the whole **declaration** over Neo4j; the
+  relation is exact and total — the declaration *ends with* the body block — and asserted on all
+  1,117 body-bearing callables of daytrader8 by the live suite, so either text can be relied on for
+  what it is. For a **body node** (the statement or call site `locate` returns in `node_id`) there
+  is text only on the `analysis.json` backend: `:JBodyNode` carries a line range and no text, and
+  there is no module `source` to slice one out of, so `get_source` raises over Neo4j and `describe`
+  leaves `source=None` — never the enclosing declaration standing in for it. A **module-scope**
+  `locate` over Neo4j is `source=""` plus a `module_source_unavailable` diagnostic. A
+  `resolve_value` ref (a `formal_in` vertex) has no text on either backend: it is a dataflow
+  position, not a region of the file.
 - **Over Neo4j, `cfg`/`cdg`/`ddg`/`summary` are `None` and `param_in`/`param_out` are empty at
   every level**, and re-ingesting will not change that: `--emit neo4j` already forces level 4, so
   the analyzer computed them — this leg simply does not project them back out (leg 3b reads the

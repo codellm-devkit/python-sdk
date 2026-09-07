@@ -40,9 +40,9 @@ from pydantic import ValidationError
 
 from cldk.analysis.commons.levels import LEVEL_NAMES, analyzer_level
 from cldk.analysis.commons.results import Diagnostic
-from cldk.analysis.java.backend import CRUD_UNAVAILABLE, CallingLines, CRUDRow, JavaAnalysisBackend, duplicate_type_name, unhomed_endpoint
+from cldk.analysis.java.backend import CRUD_UNAVAILABLE, CallingLines, CRUDRow, JavaAnalysisBackend, duplicate_type_name, java_body_node_id, unhomed_endpoint
 from cldk.models.java import JGraphEdges
-from cldk.models.java.models import JAnalysis, JApplication, JCallable, JCallableParameter, JCallSite, JComment, JCompilationUnit, JField, JMethodDetail, JType
+from cldk.models.java.models import JAnalysis, JApplication, JBodyNode, JCallable, JCallableParameter, JCallSite, JComment, JCompilationUnit, JField, JMethodDetail, JType
 from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
 from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 
@@ -333,6 +333,34 @@ class JCodeanalyzer(JavaAnalysisBackend):
         """An ``@external/…`` endpoint (a call target outside the project). 3a keeps the 1.x
         callable-only graph and drops edges to them; ``get_external_symbols`` arrives in 3b."""
         return "@external/" in node_id or node_id in (self.application.external_symbols or {})
+
+    # -----[ the addressing surface (leg 3b) — the three facts the shared implementation needs ]-----
+    def _body_nodes(self, callable_ids: Sequence[str]) -> Dict[str, Dict[str, JBodyNode]]:
+        """See :meth:`JavaAnalysisBackend._body_nodes`. In memory already, so "one round trip" is
+        free here; the ids are composed the emitter's way (:func:`java_body_node_id`) so they are
+        the same strings the Neo4j backend reads off ``b.id``.
+
+        Which kinds are present is the *analysis level*, not this backend: at level 1 and 2 the
+        analyzer emits the ``call`` nodes only, and the whole vertex set from level 3."""
+        out: Dict[str, Dict[str, JBodyNode]] = {}
+        for callable_id in callable_ids:
+            found = self._callables.get(callable_id)
+            if found is not None and found[1].body:
+                out[callable_id] = {java_body_node_id(callable_id, key): node for key, node in found[1].body.items()}
+        return out
+
+    def _body_source(self, node: JBodyNode) -> str | None:
+        """See :meth:`JavaAnalysisBackend._body_source`. This backend holds the module's real text
+        and the analyzer's byte offsets, so a statement or call site slices out exactly (J-15)."""
+        return node.code or None
+
+    @property
+    def has_resolution_edges(self) -> bool:
+        """See :meth:`JavaAnalysisBackend.has_resolution_edges`. Unconditionally ``True``:
+        codeanalyzer-java writes ``callee_signature`` on a call node at every analysis level (all
+        4,006 of daytrader8's are resolved at ``-a 1``), so an unresolved call site here is that
+        site, never the level."""
+        return True
 
     # -----[ application / whole-program ]-----
     def get_application_view(self) -> JApplication:

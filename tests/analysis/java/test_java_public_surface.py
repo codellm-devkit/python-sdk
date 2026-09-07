@@ -21,6 +21,11 @@ Every public accessor's name and signature is pinned here, derived from the 1.x 
 and ``get_method_parameters`` is annotated with what it always returned
 (``List[JCallableParameter]``, a latent 1.x annotation bug). A change to this list is a public-API
 change and must be deliberate; the query surface (3b) extends it.
+
+Leg 3b Task 1 adds the six addressing **methods** below, plus the ``has_resolution_edges``
+**property** — which is why :data:`SURFACE` is checked against the functions and the property is
+pinned separately: ``inspect.isfunction`` does not see a property, and spelling it as a method to
+make it visible here would be a different public API from Python's.
 """
 
 import inspect
@@ -52,6 +57,13 @@ SURFACE = {
     "get_comment_in_file": "(self, file_path: 'str') -> 'List[JComment]'",
     "get_comments_in_a_class": "(self, qualified_class_name: 'str') -> 'List[JComment]'",
     "get_comments_in_a_method": "(self, qualified_class_name: 'str', method_signature: 'str') -> 'List[JComment]'",
+    # -- the addressing surface (leg 3b, Task 1); Python's signatures, keyword-for-keyword.
+    "describe": "(self, nodes: 'Sequence[object]') -> 'List[SliceNode]'",
+    "get_source": "(self, node_id: 'str') -> 'str'",
+    "locate": "(self, path: 'str', line: 'int') -> 'LocateResult'",
+    "locate_many": "(self, positions: 'Sequence[Tuple[str, int]]') -> 'List[LocateResult]'",
+    "resolve_callable": "(self, name: 'str', *, in_class: 'str | None' = None, in_module: 'str | None' = None) -> 'SliceNode'",
+    "resolve_value": "(self, name: 'str', *, within: 'str') -> 'SliceNode'",
     "get_compilation_units": "(self) -> 'List[JCompilationUnit]'",
     "get_constructors": "(self, qualified_class_name: 'str') -> 'Dict[str, JCallable]'",
     "get_entry_point_classes": "(self) -> 'Dict[str, JType]'",
@@ -102,8 +114,16 @@ def _public():
     return {n: f for n, f in inspect.getmembers(JavaAnalysis, inspect.isfunction) if not n.startswith("_")}
 
 
+#: The one public **property**. Python and TypeScript both spell it this way; Java matches.
+PROPERTIES = {"has_resolution_edges"}
+
+
 def test_the_public_surface_is_exactly_the_frozen_list():
     assert set(_public()) == set(SURFACE)
+
+
+def test_the_public_properties_are_exactly_the_frozen_list():
+    assert {n for n, v in vars(JavaAnalysis).items() if isinstance(v, property) and not n.startswith("_")} == PROPERTIES
 
 
 @pytest.mark.parametrize("name", sorted(SURFACE))
