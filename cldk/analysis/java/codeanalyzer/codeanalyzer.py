@@ -362,7 +362,7 @@ class JCodeanalyzer(JavaAnalysisBackend):
 
     def _is_external(self, node_id: str) -> bool:
         """An ``@external/…`` endpoint (a call target outside the project). 3a keeps the 1.x
-        callable-only graph and drops edges to them; ``get_external_symbols`` arrives in 3b."""
+        callable-only graph and drops edges to them."""
         return "@external/" in node_id or node_id in (self.application.external_symbols or {})
 
     # -----[ the addressing surface (leg 3b) — the three facts the shared implementation needs ]-----

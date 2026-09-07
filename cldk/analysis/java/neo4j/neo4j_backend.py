@@ -75,7 +75,7 @@ set claiming to be every comment); ``JCallable.body`` holds the ``call`` nodes o
 
 ``--emit neo4j`` always runs at level 4 with external calls forced, so this graph carries ``J_CALLS``
 edges to ``:JExternal`` targets that no ``analysis.json`` holds. :meth:`get_call_graph` keeps the 1.x
-callable-only graph and drops them (``get_external_symbols`` arrives in 3b).
+callable-only graph and drops them; :meth:`get_external_symbols` is what projects them.
 """
 
 from __future__ import annotations

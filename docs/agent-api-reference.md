@@ -273,11 +273,14 @@ What Java answers today is the 1.x accessor surface, on the v2 models: `get_symb
 `get_entry_point_classes` / `get_entry_point_methods`, `get_test_methods`, the comment and
 docstring accessors, and — new in 3a, from the generic backend ABC — `get_artifacts` /
 `get_dependencies` / `get_config_keys` (`get_config_uses` and `get_unresolved_config_reads` are
-`[]`: the Java analyzer emits neither). Still raising `NotImplementedError` until 3b:
-`get_imports`, `get_variables`, `get_class_hierarchy`, `get_methods_with_annotations`,
-`get_calling_lines`, `get_call_targets`, `get_service_entry_point_classes` /
-`get_service_entry_point_methods`, and `remove_all_comments` (which only ever worked in the removed
-single-file mode). These will mislead you if you don't know them — each is measured, and each names
+`[]`: the Java analyzer emits neither). **Nine accessors still raise `NotImplementedError`, and 3b
+did not retire them** — `get_imports`, `get_variables`, `get_class_hierarchy`,
+`get_methods_with_annotations`, `get_calling_lines`, `get_call_targets`,
+`get_service_entry_point_classes` / `get_service_entry_point_methods`, and `remove_all_comments`
+(which only ever worked in the removed single-file mode). Retiring them is a separate, deliberate
+change, not something to expect from the next release: see the **§4 erratum** in
+`docs/design/specs/2026-09-06-leg-3-java.md`, and
+`tests/analysis/java/test_java_public_surface.py`'s `RAISING`, which pins all nine. These will mislead you if you don't know them — each is measured, and each names
 its upstream issue where there is one:
 
 - **Call-graph nodes are strings** — `"<type fqn>.<signature>"` — not `(signature, klass)` tuples.
