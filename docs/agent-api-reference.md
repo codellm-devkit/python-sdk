@@ -202,7 +202,7 @@ accessors** — `get_callables_overview`, `get_method_bodies`, `get_decorated_ca
 `get_callsites_for`, `get_external_symbols`, `get_entrypoints` / `get_entrypoint_classes` /
 `get_entrypoint_coverage`, `get_artifacts` / `get_dependencies` / `get_config_keys` /
 `get_config_uses` / `get_unresolved_config_reads` / `get_config_readers`, and `get_interfaces` /
-`get_enums` / `get_enum_members` / `get_records`. Four rules:
+`get_enums` / `get_enum_members` / `get_records`. Five rules:
 
 - **`get_entrypoint_coverage` reports that there is no report.** codeanalyzer-java emits the
   entrypoint *marks* and nothing about the pass that made them: `analysis.json` carries no report
@@ -231,6 +231,12 @@ accessors** — `get_callables_overview`, `get_method_bodies`, `get_decorated_ca
 - **`get_config_keys` is keyed `"<artifact path>@key/<dotted key>"`,** artifact-relative rather than
   by the raw `can://artifact/<app>/…` id. Python and TypeScript still key by the id; aligning the
   three is python-sdk#346 and is deliberately not done piecemeal.
+- **`get_config_readers(key)` is `[]` for every key on Java, and so are `get_config_uses` and
+  `get_unresolved_config_reads`.** The Java wire carries no `config_uses` and no config-read
+  detector, so there is no code-to-config edge to resolve to a reading callable — the empty list is
+  "the analyzer emits no such edge", not "no callable reads this key". Do not read a Java `[]` here
+  as evidence about the code; `get_config_keys` (which is real) is what Java answers about
+  configuration. Python is where the "which code reads this key" question has an answer today.
 
 **Still absent for Java**: the scoping keywords (`get_symbol_table(paths=)`,
 `get_classes(module=)`, `get_call_graph(roots=, depth=)`). Calling those keywords raises

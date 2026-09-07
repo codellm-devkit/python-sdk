@@ -136,6 +136,10 @@ surface** (3b). Design records: `docs/design/specs/2026-09-06-leg-2.5-typescript
   call targets only under `--external-calls`, which `--emit neo4j` forces and a local run does not.
 - The Java graph carries a `switch` body-node kind, which is outside `SliceNode.KINDS` (that vocabulary is
   codeanalyzer-python's, and Python has no switch statement). It is reported as the analyzer spells it.
+- **Java's `get_config_readers(key)`, `get_config_uses()` and `get_unresolved_config_reads()` are `[]` for
+  every input**: the Java wire carries no code-to-config edges and no config-read detector, so there is
+  nothing to resolve to a reading callable. The empty list means the analyzer emits no such edge, not that
+  no code reads the key. `get_config_keys()` is the configuration accessor Java really answers.
 
 ## [v2.0.0-rc.2] - 2026-09-06
 Python legs 1, 1.5 and 1.6 of the CLDK 2.0 agent-facing query facade (see
