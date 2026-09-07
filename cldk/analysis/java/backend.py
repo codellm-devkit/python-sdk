@@ -1217,7 +1217,7 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         Each edge carries the variable it flows (``var``) and its evidence (``prov``).
 
         **Java's DDG has exactly two provenance tiers**, where Python has three and TypeScript one:
-        ``ssa`` (133,608 edges on the reference graph) and ``points-to`` (1,134).
+        ``ssa`` (324,959 edges on the reference graph) and ``points-to`` (1,134).
         :func:`~cldk.analysis.commons.results.prov_rank` ranks ``points-to`` least certain and
         ``ssa`` most, which is the ranking a caller comparing two hops' evidence reads; nothing here
         invents a third tier and nothing collapses the two.

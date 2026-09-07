@@ -1477,7 +1477,7 @@ class JavaAnalysis:
         """Return one page of the data dependence edges within one callable.
 
         Each edge names the variable it flows (``var``) and the evidence for it (``prov``), which in
-        Java is one of **two** tiers — ``ssa`` (133,608 edges on the reference graph) or
+        Java is one of **two** tiers — ``ssa`` (324,959 edges on the reference graph) or
         ``points-to`` (1,134). :func:`~cldk.analysis.commons.results.prov_rank` ranks ``points-to``
         least certain, which is what a caller weighing two hops reads. Arguments and failures are
         :meth:`get_cfg`'s.

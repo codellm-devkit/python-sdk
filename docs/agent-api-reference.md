@@ -199,7 +199,7 @@ Java-specific facts:
   (both still attachable), or any analysis run under `--l3-engine wala`. The check reads the data,
   never a version, so re-emitting the graph (or re-running the analyzer) is the whole fix. See the
   lossiness list below.
-- **The DDG has two provenance tiers**, `ssa` (133,608 edges) and `points-to` (1,134), against
+- **The DDG has two provenance tiers**, `ssa` (324,959 edges) and `points-to` (1,134), against
   Python's three and TypeScript's one. `points-to` ranks least certain.
 - **Self-loops are real edges and are returned.** The graph carries 978 `J_DDG` edges from a body
   node to itself (11 of `Log.printCollection`'s 20); the per-callable page is anchored on the
@@ -346,8 +346,9 @@ names its upstream issue where there is one:
   forward value verbs would have been the seed alone / `[]` / `False` *for every input, whatever
   the program does*. They raise there instead. 3.0.3 emits `@formal_in:k → use`,
   `return → @formal_out`, `statement → <call>/actual_in:i` and `<call>/actual_out → statement`:
-  measured on daytrader8 at `-a 4`, 5,079 `ddg` edges now cross in all four directions and
-  `formal_in` vertices with out-degree zero fall to 139 of 1,165 — parameters no statement reads,
+  measured on daytrader8 (the whole application, `analysis.json` and the re-emitted graph agreeing
+  edge for edge), 5,083 `ddg` edges now cross in all four directions and `formal_in` vertices with
+  out-degree zero fall to 139 of 1,166 — parameters no statement reads,
   which is why "every port is attached" is the wrong thing to assert. **A Neo4j graph emitted
   before 3.0.3 is still attachable (the floor is 3.0.1) and still refuses; re-emit it to lift the
   refusal.** `--l3-engine wala` has no `@entry` edges to mirror, so `formal_in` ports stay
@@ -362,8 +363,8 @@ names its upstream issue where there is one:
   never emitted as a body node — all `points-to`, over 38 distinct keys of the shape `<line>:0` —
   so the Neo4j graph reported 5,347 against `analysis.json`'s 5,434, the one place the two Java
   backends disagreed on an edge count. On 3.0.3 there are **0** dangling endpoints on the whole of
-  daytrader8 and the two backends agree; both suites assert that rather than tolerating a
-  difference.
+  daytrader8 and the two backends report the same 10,430 `ddg` edges, set for set; both suites
+  assert that rather than tolerating a difference.
 - **The graph carries a twelfth body-node kind, `switch`**, which is outside `SliceNode.KINDS` (3
   vertices in daytrader8 and 385 in ThingsBoard, carrying 71 and 3,561 `J_CDG` edges, at most 154
   out of any one). That list is codeanalyzer-python's vocabulary and Python has no switch statement. Dropping or renaming

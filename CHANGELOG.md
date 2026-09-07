@@ -72,13 +72,13 @@ surface** (3b). Design records: `docs/design/specs/2026-09-06-leg-2.5-typescript
   forward answer was empty whatever the program did. codeanalyzer-java 3.0.3 joins the two layers
   (codeanalyzer-java#227), and the SDK's guard reads the data rather than a version, so all four answer: a
   value can be followed out of a parameter, across call boundaries and into a callee's parameter, with each
-  hop labelled `data` / `argument` / `return` / `control`. Measured on daytrader8 at `-a 4`: 5,079 `ddg` edges
-  cross between the port lattice and the statement graph in all four directions, where there were none.
+  hop labelled `data` / `argument` / `return` / `control`. Measured on the whole of daytrader8: 5,083 `ddg`
+  edges cross between the port lattice and the statement graph in all four directions, where there were none.
   **To get this, re-analyse (or re-emit your Neo4j graph) with codeanalyzer-java 3.0.3**; an older graph stays
   attachable and keeps refusing, as does any analysis run under `--l3-engine wala`. The same release drops
   `ddg` edges whose endpoint was never emitted as a body node (codeanalyzer-java#228), so `get_ddg()` over
-  `analysis.json` and over Neo4j now report the same count — 0 dangling endpoints on daytrader8, against 87
-  of 5,434 before.
+  `analysis.json` and over Neo4j now report the same edges — 10,430 on daytrader8, set for set, against a
+  5,434/5,347 split before.
 - **Pins:** `codeanalyzer-java` 2.4.1 → 3.0.3, `codeanalyzer-typescript` 0.4.3 → 1.3.0.
 - **The Java analyzer ships as a wheel, not a jar in this repo.** The 35 MB checked-in jar, the Temurin download
   in `_jdk.py`, and the release workflow's jar injection are gone; no `JAVA_HOME` is read or set, and no JDK is
