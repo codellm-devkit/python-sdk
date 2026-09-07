@@ -29,11 +29,14 @@ make it visible here would be a different public API from Python's. Task 3 adds 
 entrypoint trio, the four bulk projections, ``get_external_symbols``, the artifact six and the four
 J-7 leaf accessors.
 
-**Nothing pre-existing moved.** In particular the eight 1.x ``NotImplementedError`` raisers listed
-in :data:`RAISING` are all still here and still raising: §4 of the spec proposes retiring them (and
-deleting ``get_service_entry_point_*``), but no task of the 3b plan carries that work, and the
-plan's own Global Constraints say this list "grows by exactly what it adds and changes no existing
-entry". Retiring them is therefore a separate, deliberate change.
+**Nothing pre-existing moved**, including the six of the 1.x ``NotImplementedError`` raisers that
+#366 implemented: ``get_imports``, ``get_variables``, ``get_class_hierarchy``,
+``get_methods_with_annotations``, ``get_call_targets`` and ``get_calling_lines`` answer now, at the
+signature they have always been published with (Java's own, which is neither Python's -- five of
+the six do not exist there -- nor TypeScript's, which spells three of them differently). What
+:data:`RAISING` still pins is the remainder: ``get_service_entry_point_*``, which §4 of the spec
+proposes deleting rather than implementing, and ``remove_all_comments``, whose single-file mode was
+removed in 2.0.
 """
 
 import inspect
@@ -142,18 +145,14 @@ SURFACE = {
 #: J-10: the 1.x constructor minus ``source_code``; everything else in place.
 CONSTRUCTOR = "(self, project_dir: 'str | Path | None', analysis_level: 'str', target_files: 'List[str] | None', eager_analysis: 'bool', backend: 'JavaBackend | None' = None) -> 'None'"
 
-#: The accessors that only raise ``NotImplementedError`` in 3a: the eight 1.x placeholders the
-#: plan keeps until 3b (#311), plus ``remove_all_comments``, which only ever worked in the removed
+#: What is left of the 1.x placeholders after #366 implemented six of the eight: the two
+#: ``get_service_entry_point_*`` accessors, which §4 of the spec proposes **deleting** rather than
+#: implementing (``get_entry_point_classes`` / ``get_entry_point_methods`` already answer, off the
+#: analyzer's own marks), plus ``remove_all_comments``, which only ever worked in the removed
 #: single-file mode and now says so instead of silently changing.
 RAISING = [
-    "get_call_targets",
-    "get_calling_lines",
-    "get_class_hierarchy",
-    "get_imports",
-    "get_methods_with_annotations",
     "get_service_entry_point_classes",
     "get_service_entry_point_methods",
-    "get_variables",
     "remove_all_comments",
 ]
 

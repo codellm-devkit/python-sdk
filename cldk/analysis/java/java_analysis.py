@@ -188,44 +188,49 @@ class JavaAnalysis:
             )
 
     def get_imports(self) -> List[str]:
-        """Return all import statements in the source code.
+        """Return every distinct import target of the project, sorted.
 
-        This method is intended to extract all import declarations from the
-        analyzed Java source code, including both single-type imports and
-        wildcard imports.
+        A **set**, not a per-file listing and not the file's import order: the Neo4j projection
+        aggregates every import of a module that resolves to the same target onto one edge, so the
+        order within a file is not recoverable there and a list that preserved it locally would be
+        one the two backends disagree about. The 1.x signature is a flat ``List[str]`` and never
+        carried the file an import belongs to either.
 
         Returns:
-            A list of import statement strings, each representing a fully
-            qualified import (e.g., ``"java.util.List"``, ``"java.io.*"``).
-
-        Raises:
-            NotImplementedError: This functionality is not yet implemented.
+            Fully qualified import targets (``"java.util.List"``, ``"java.io.*"``), sorted and
+            distinct. A wildcard keeps its ``.*``; static imports are not marked here.
 
         See Also:
-            :meth:`get_symbol_table`: For accessing compilation units which
-                contain import information.
+            :meth:`get_symbol_table`: per-file :class:`~cldk.models.java.models.JImport` records,
+                with spans and the static/wildcard flags.
         """
-        raise NotImplementedError("Support for this functionality has not been implemented yet.")
+        return self.backend.get_imports()
 
     def get_variables(self, **kwargs) -> Dict:
-        """Return all variables discovered in the source code.
-
-        This method is intended to extract variable declarations from the
-        analyzed code, including local variables, fields, and parameters.
+        """Return the local variables each callable declares.
 
         Args:
-            **kwargs: Implementation-specific filtering options.
+            **kwargs: The 1.x signature's filtering options, of which there are none. An unexpected
+                keyword raises :class:`TypeError` naming it, rather than being ignored: silently
+                dropping a filter returns an unfiltered answer that looks filtered.
 
         Returns:
-            An implementation-defined view of variables discovered in the code.
+            ``{"<type fqn>.<signature>": [JLocalVariable, ...]}`` — the J-1 call-graph key of
+            :meth:`get_call_graph`, and one entry per callable including those declaring nothing.
+            Fields and parameters are *not* folded in; they have their own accessors. Each list is
+            ordered by ``(start_line, name)``: the Neo4j projection carries a line-only span, so
+            two variables declared on one line have no order there to preserve.
 
         Raises:
-            NotImplementedError: This functionality is not yet implemented.
+            TypeError: An unexpected keyword argument was passed.
 
         See Also:
-            :meth:`get_fields`: For class-level field access (implemented).
+            :meth:`get_fields`: class-level fields.
+            :meth:`get_method_parameters`: a callable's parameters.
         """
-        raise NotImplementedError("Support for this functionality has not been implemented yet.")
+        if kwargs:
+            raise TypeError(f"get_variables() got an unexpected keyword argument {next(iter(kwargs))!r}; it takes no filtering options")
+        return self.backend.get_variables()
 
     def get_service_entry_point_classes(self, **kwargs) -> Dict[str, JType]:
         """Return all service entry-point classes.
@@ -339,19 +344,18 @@ class JavaAnalysis:
         extends and implements relationships.
 
         Returns:
-            Would return a ``networkx.DiGraph`` with classes as nodes and
-            edges representing inheritance (subclass -> superclass).
-
-        Raises:
-            NotImplementedError: This functionality is not yet implemented.
+            A ``networkx.DiGraph`` with one node per declared type (interfaces, enums, annotations
+            and records included) and an edge **subclass → supertype** carrying
+            ``type="EXTENDS"`` or ``type="IMPLEMENTS"`` — Java projects the two as separate
+            relationship types and this keeps them apart. A supertype outside the project is a node
+            too, spelled as the declaration wrote it.
 
         See Also:
             :meth:`get_sub_classes`: For finding subclasses of a specific class.
             :meth:`get_extended_classes`: For finding superclasses.
             :meth:`get_implemented_interfaces`: For interface implementations.
         """
-
-        raise NotImplementedError("Class hierarchy is not implemented yet.")
+        return self.backend.get_class_hierarchy()
 
     def is_parsable(self, source_code: str) -> bool:
         """Check if the given source code is valid Java syntax.
@@ -977,18 +981,21 @@ class JavaAnalysis:
                 should not be included.
 
         Returns:
-            Would return a dictionary mapping annotation names to lists of
-            method information dictionaries containing method details and
-            bodies.
+            A dictionary keyed by **the strings passed in**, each mapping to a list of
+            ``{"class", "signature", "method_name", "body"}`` dicts, sorted by
+            ``(class, signature)``. An annotation no callable carries is omitted. ``body`` is
+            :attr:`~cldk.models.java.models.JCallable.code`, which is the body block off
+            ``analysis.json`` and the whole declaration off the Neo4j projection — the same
+            documented model property :meth:`get_test_methods` hands back.
 
-        Raises:
-            NotImplementedError: This functionality is not yet implemented.
+            Matching reads the analyzer's own annotations rather than re-parsing source, so it
+            answers on a Neo4j-backed analysis, which carries no module source at all.
 
         See Also:
             :meth:`get_test_methods`: For finding test methods specifically.
+            :meth:`get_decorated_callables`: The projected form, whose J-5 marker rule this shares.
         """
-        # TODO: This call is missing some implementation. The logic currently resides in java_sitter but tree_sitter will no longer be option, rather it will be default and common. Need to implement this differently. Somthing like, self.commons.treesitter.get_methods_with_annotations(annotations)
-        raise NotImplementedError("Support for this functionality has not been implemented yet.")
+        return self.backend.get_methods_with_annotations(annotations)
 
     def get_test_methods(self) -> Dict[str, str]:
         """Return methods identified as test methods.
@@ -1032,15 +1039,15 @@ class JavaAnalysis:
             target_method_name: The name of the method to find calls to.
 
         Returns:
-            Would return a list of line numbers (integers) where calls occur.
-
-        Raises:
-            NotImplementedError: This functionality is not yet implemented.
+            Sorted, distinct **absolute file lines** of every call to a method of that name anywhere
+            in the project, read off ``get_call_graph()``'s ``calling_lines`` edge attribute. A full
+            signature is accepted and cut at its first ``(``; overloads share a name at a call site
+            and so cannot be separated here. Empty when nothing calls that name.
 
         See Also:
             :meth:`get_callers`: For finding caller methods instead of lines.
         """
-        raise NotImplementedError("Support for this functionality has not been implemented yet.")
+        return self.backend.get_calling_lines(target_method_name)
 
     def get_call_targets(self, declared_methods: dict) -> Set[str]:
         """Return call targets using simple name resolution.
@@ -1054,15 +1061,15 @@ class JavaAnalysis:
                 signatures to match against.
 
         Returns:
-            Would return a set of method names that are call targets.
-
-        Raises:
-            NotImplementedError: This functionality is not yet implemented.
+            The subset of ``declared_methods``' keys — cut to their simple names at the last
+            ``(``, so a signature-keyed dict such as :meth:`get_methods_in_class`'s can be passed
+            straight in — that some call site in the project actually writes. Simple-name matching
+            only: no overload resolution, no receiver typing, no hierarchy walk.
 
         See Also:
             :meth:`get_call_graph`: For full semantic call resolution.
         """
-        raise NotImplementedError("Support for this functionality has not been implemented yet.")
+        return self.backend.get_call_targets(declared_methods)
 
     def get_all_crud_operations(self) -> List[Dict[str, Union[JType, JCallable, List[JCRUDOperation]]]]:
         """Return all CRUD (Create, Read, Update, Delete) operations.
