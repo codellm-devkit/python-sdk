@@ -83,7 +83,7 @@ def test_probe_refuses_a_python_graph_naming_the_missing_java_types(fake_driver)
     assert "PY_CALLS" in str(e.value)
 
 
-@pytest.mark.parametrize("raw", ["3.0.0", "3.0.1", "3.0.3", "3.1.0"])
+@pytest.mark.parametrize("raw", ["3.0.0", "3.0.1", "3.0.2", "3.0.3", "3.1.0"])
 def test_probe_refuses_a_graph_below_the_analyzer_floor(fake_driver, raw):
     """Every generation below 3.1.1 is refused, naming the version found and the floor.
 

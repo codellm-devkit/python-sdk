@@ -38,6 +38,8 @@ relationship type the vocabulary probe looks for, so it attaches cleanly and the
 prefix-scoped statement with **zero rows** — a silent empty that reads as "this codebase has
 nothing". Refusing on the version stamp is the only thing between a caller and that.
 
+Java's floor moves furthest — 3.0.1 to 3.1.1 — because the intervening releases were already degraded for other reasons: a 3.0.x graph carries no config-read edges, no entrypoint report, and before 3.0.3 a port lattice joined to nothing. It was readable but answered three separate refusals; now it is one clear “re-emit” at attach.
+
 TypeScript's floor is **1.5.2 rather than 1.5.1**, the release that actually flipped the grammar,
 because 1.5.1 shipped with its internal version constant left at `1.5.0` and therefore stamps itself
 `1.5.0` on the graph. There is no version test that admits a 1.5.1 graph and refuses a genuine
