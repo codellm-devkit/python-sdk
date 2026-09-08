@@ -5,12 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v2.0.0-rc.3] - 2026-09-07
 
-Four legs of the 2.0 line: **TypeScript on schema v2** (2.5a) and **its query surface** (2.5b), and
-**Java on schema v2** (3a, with the analyzer wheel and honest degradation reporting) and **its query
-surface** (3b). Design records: `docs/design/specs/2026-09-06-leg-2.5-typescript.md` and
+TypeScript and Java now answer the same query surface Python has: addressing, per-callable control
+and data flow, slices, call-graph and value-flow predicates, entrypoints, and the repository-artifact
+layer — identically whether you read an `analysis.json` or an attached Neo4j graph, including on the
+paths where a backend has to refuse.
+
+Four legs of work: **TypeScript on schema v2** and its query surface, **Java on schema v2** (driven by
+the analyzer wheel, with degraded runs reported rather than silent) and its query surface. Design
+records: `docs/design/specs/2026-09-06-leg-2.5-typescript.md` and
 `docs/design/specs/2026-09-06-leg-3-java.md`.
+
+Both analyzers moved with it. **codeanalyzer-java 3.1.0** connects the level-4 port lattice, so Java's
+interprocedural value questions answer for the first time, and adds config-read provenance and the
+entrypoint report. **codeanalyzer-typescript 1.5.0** corrects source spans to UTF-8 byte offsets and
+gives declaration-merged names one id per facet, so a class and an interface of the same name are both
+reachable instead of one shadowing the other.
+
+Where a backend cannot answer, it says so and says why. Every such refusal is measured from the data in
+front of it, never from an analyzer version string, so a re-emitted graph starts answering on its own.
+What remains unanswerable is listed under **Known limitations** rather than returned as an empty
+result.
 
 ### Breaking
 
@@ -98,7 +114,7 @@ surface** (3b). Design records: `docs/design/specs/2026-09-06-leg-2.5-typescript
   value can be followed out of a parameter, across call boundaries and into a callee's parameter, with each
   hop labelled `data` / `argument` / `return` / `control`. Measured on the whole of daytrader8: 5,083 `ddg`
   edges cross between the port lattice and the statement graph in all four directions, where there were none.
-  **To get this, re-analyse (or re-emit your Neo4j graph) with codeanalyzer-java 3.0.3**; an older graph stays
+  **To get this, re-analyse (or re-emit your Neo4j graph) with the pinned analyzer**; an older graph stays
   attachable and keeps refusing, as does any analysis run under `--l3-engine wala`. The same release drops
   `ddg` edges whose endpoint was never emitted as a body node (codeanalyzer-java#228), so `get_ddg()` over
   `analysis.json` and over Neo4j now report the same edges — 10,430 on daytrader8, set for set, against a
@@ -113,7 +129,7 @@ surface** (3b). Design records: `docs/design/specs/2026-09-06-leg-2.5-typescript
   and still could not name the key. Measured on daytrader8: 13 resolved uses (all `["literal"]`) and 16
   unresolved reads — `["literal"]` at level 1, `["literal", "dataflow"]` at level 4; the graph collapses those
   16 into 8 edges, since `J_READS_CONFIG_UNRESOLVED` is discriminated by `(key, reason)` and carries no site.
-  **To get this, re-analyse (or re-emit your Neo4j graph) with codeanalyzer-java 3.1.0**; an older analysis
+  **To get this, re-analyse (or re-emit your Neo4j graph) with the pinned analyzer**; an older analysis
   keeps refusing, and the probe is measured from the data rather than from a version string — see the known
   limitation below for what it measures and why it cannot be the config layer's own absence.
 - **Pins:** `codeanalyzer-java` 2.4.1 → 3.1.0, `codeanalyzer-typescript` 0.4.3 → 1.5.0.
