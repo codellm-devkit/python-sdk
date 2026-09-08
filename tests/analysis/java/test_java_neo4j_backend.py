@@ -138,7 +138,7 @@ def test_the_graph_holds_more_than_one_application(backends):
     _, neo = backends
     others = neo._run("MATCH (a:JApplication) WHERE a.name <> $app RETURN a.name AS name", app=JAVA_APP)
     assert others, "the reference graph holds only one application; the scope audit's live half needs at least two"
-    assert neo._analyzer_version >= (3, 0, 1)
+    assert neo._analyzer_version >= (3, 1, 1)
 
 
 def test_attached_to_the_3_0_1_vocabulary(backends):

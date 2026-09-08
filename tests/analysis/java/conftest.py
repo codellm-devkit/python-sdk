@@ -85,7 +85,7 @@ class FakeDriver:
     a probe bound to any other ``$app`` gets "no such application", which is what makes the
     ``:JApplication {name}`` anchor testable by behaviour rather than by grepping the statement."""
 
-    def __init__(self, rel_types=V2_RELATIONSHIP_TYPES, responder=None, analyzer_version="3.0.1", application_name=None) -> None:
+    def __init__(self, rel_types=V2_RELATIONSHIP_TYPES, responder=None, analyzer_version="3.1.1", application_name=None) -> None:
         self.rel_types = set(rel_types)
         self.analyzer_version = analyzer_version
         self.application_name = application_name

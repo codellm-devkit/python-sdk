@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Breaking
+
+- **The Java Neo4j floor is `codeanalyzer-java` 3.1.1**, raised from 3.0.1. A graph emitted by 3.1.0
+  or earlier is refused at attach with `GraphSchemaMismatch` naming the version found and the floor.
+  **Migration:** re-emit with the pinned analyzer (`codeanalyzer-java --emit neo4j`); there is no
+  in-place upgrade.
+
+  3.0.1 is where the old `can://` grammar settled, so a 3.0.x graph is *readable* — but reading it is
+  not the same as answering on it. Such a graph has no config-read edges, no entrypoint report, and
+  before 3.0.3 a port lattice joined to nothing, so the surface degrades in three separate places
+  instead of once. 3.1.0 is refused for a different and harder reason: it predates the
+  `can://<app>/<lang>/…` identity grammar, so every prefix-scoped query would match nothing at all.
+  One clear refusal at attach is a better contract than a query surface that is quietly empty.
+
 ## [v2.0.0-rc.3] - 2026-09-07
 
 TypeScript and Java now answer the same query surface Python has: addressing, per-callable control
