@@ -5,9 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [v2.0.0-rc.4] - 2026-09-08
 
-### Changed — BREAKING (graph identity)
+One change, and it moves the identity of every node: the application segment of a `can://` id is
+now outermost, so a single `can://<app>/` prefix scopes a whole application across every language
+it is written in. That is what a polyglot repository needs in order to be one thing rather than
+several, and it is what the previous grammar could not express.
+
+It is breaking for anyone holding an emitted graph or a cached analysis. All three analyzers moved
+in step, the SDK pins them exactly, and each graph floor refuses the release immediately below it
+by name — because those releases attach cleanly and then answer nothing.
+
+### Breaking
 
 **The `can://` id grammar puts the application outermost**, and the SDK now reads and writes only
 that form, on all three backends:
