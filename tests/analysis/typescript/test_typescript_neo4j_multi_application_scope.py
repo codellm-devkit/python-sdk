@@ -783,6 +783,11 @@ _KEEPS_SCOPE = frozenset(
         "DECLARES_DEPENDENCY",
         "TS_RESOLVES_TO",
         "TS_USES_CONFIG",
+        # 1.4.0 (#368). Containment, in the id sense this set means by it: the edge runs from the
+        # `(:Application {id: $app_id})` anchor, and *both* target forms the emitter mints are
+        # minted under that anchor's own id -- an in-project `:TSCallable`, or the per-application
+        # import ghost `<app-id>/@external/<root>`. There is no cross-application target to reach.
+        "TS_READS_CONFIG_UNRESOLVED",
     }
 )
 
@@ -1331,6 +1336,12 @@ def test_the_audit_sees_every_inline_statement_too():
         "get_entrypoint_classes",
         "get_entrypoint_coverage",
         "get_config_readers",
+        # #368: the binding layer -- the probe that decides it, and the three accessors it gates
+        # (get_method_parameters issues no statement of its own; it reads get_method's).
+        "_carries_bindings",
+        "get_imports",
+        "get_all_exports",
+        "get_unresolved_config_reads",
     ):
         assert any(name.startswith(expected + "@") for name in inline), f"{expected}'s statement is not harvested"
 

@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, patch
 
 import networkx as nx
 import pytest
+import toml
 
 from cldk import CLDK
 from cldk.analysis import AnalysisLevel
@@ -437,6 +438,10 @@ def test_tsc_only_is_a_deprecated_no_op(typescript_application, typescript_analy
 
 def test_backend_keeps_the_envelope(ts_analysis):
     analysis = ts_analysis.backend.analysis
-    assert analysis.analyzer.version == "1.3.0"
+    # The pin, read rather than written down (the idiom tests/models/typescript uses): the fixture
+    # is regenerated with the pinned wheel, so a literal here is one more place a bump has to be
+    # remembered -- and #368 found this one stale.
+    pin = toml.load(Path(__file__).resolve().parents[3] / "pyproject.toml")["tool"]["backend-versions"]["codeanalyzer-typescript"]
+    assert analysis.analyzer.version == pin
     assert analysis.max_level == 4
     assert analysis.application is ts_analysis.get_application_view()

@@ -250,24 +250,33 @@ def test_locate_inside_an_anonymous_callable_names_it_by_signature(ts, modules):
 
 
 # ------------------------------------------------------------------------ declaration merging (#177)
-def test_a_declaration_merged_node_resolves_to_the_facet_its_kind_names_or_to_nothing(ts):
-    """cants mints one id for a value and a type of the same name, so ``MERGE`` collapses the two
-    onto one node carrying both labels and one ``kind`` (cants#177). The domain of
-    ``resolve_callable`` is the **kind**, not the label: a merged node whose kind is a callable kind
-    resolves as the callable it is, and one whose kind names a type facet is not reachable through a
-    callable accessor at all. A collision can therefore never resolve to the wrong facet — it
-    resolves to the right one, or it misses."""
-    type_labels = sorted(TYPE_LABEL_KINDS)
-    merged = cypher(
-        f"MATCH (x) WHERE {SCOPED} AND size([l IN labels(x) WHERE l IN $decl]) > 1 "
-        "RETURN x.id AS id, x.signature AS signature, x.name AS name, x.kind AS kind, labels(x) AS labels ORDER BY x.id",
-        decl=["TSCallable", "TSField", "TSModule", "TSExternal", *type_labels],
+def test_a_merged_declarations_callable_facet_resolves_and_a_type_only_one_misses(ts):
+    """cants#177, fixed in 1.5.0: a value and a type of the same name used to share one id, so
+    ``MERGE`` collapsed them onto one node carrying both labels and whichever ``kind`` was written
+    last, and one facet was simply lost. 1.5.0 mints **one id per facet** (the second suffixed
+    ``#interface`` / ``#type``), so a signature two declarations share now names two nodes.
+
+    The ruling on ``resolve_callable`` is unchanged and is what this pins: its domain is the
+    **kind**, not the signature. A signature with a callable facet resolves to that facet's own id
+    — never to the type facet sharing the signature — and one with no callable facet misses. What
+    changed is that the answer no longer depends on which declaration the emitter saw last.
+    """
+    decl = ["TSCallable", "TSField", "TSModule", "TSExternal", *sorted(TYPE_LABEL_KINDS)]
+    assert (
+        cypher(f"MATCH (x) WHERE {SCOPED} AND size([l IN labels(x) WHERE l IN $decl]) > 1 RETURN count(x) AS n", decl=decl)[0]["n"] == 0
+    ), "a node still carries two declaration labels; cants#177 has regressed"
+    shared = cypher(
+        f"MATCH (x) WHERE {SCOPED} AND x.signature IS NOT NULL AND size([l IN labels(x) WHERE l IN $decl]) > 0 "
+        "WITH x.signature AS signature, collect({id: x.id, kind: x.kind}) AS facets WHERE size(facets) > 1 "
+        "RETURN signature, facets ORDER BY signature",
+        decl=decl,
     )
-    assert merged, "this corpus carries no declaration-merged node; the ruling is untested by it"
-    for row in merged:
-        if row["kind"] in CALLABLE_KINDS:
-            assert "TSCallable" in row["labels"], "the emitter kept a callable kind on a node carrying no TSCallable label"
-            assert ts.resolve_callable(row["signature"]).ref == row["id"]
+    assert shared, "this corpus carries no declaration shared by two facets; the ruling is untested by it"
+    for row in shared:
+        callable_facets = [f for f in row["facets"] if f["kind"] in CALLABLE_KINDS]
+        if callable_facets:
+            assert len(callable_facets) == 1, f"{row['signature']} has two callable facets; resolve_callable would be ambiguous"
+            assert ts.resolve_callable(row["signature"]).ref == callable_facets[0]["id"]
         else:
             with pytest.raises(SelectorNotInGraph):
                 ts.resolve_callable(row["signature"])

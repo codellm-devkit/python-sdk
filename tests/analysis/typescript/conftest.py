@@ -91,9 +91,12 @@ def typescript_analysis_json() -> str:
 
 
 # --- a fake Neo4j driver, so TSNeo4jBackend can be constructed and probed in-process ---
-#: The relationship types codeanalyzer-typescript 1.2.0 projects (``schema.neo4j.json`` at the
+#: The relationship types the pinned codeanalyzer-typescript projects (``schema.neo4j.json`` at the
 #: tag) -- a healthy graph by default, so fixtures that do not care about the schema probe need
-#: not set ``rel_types`` themselves. ``main`` adds and removes none of them.
+#: not set ``rel_types`` themselves. Everything but the last three dates to 1.2.0 and is unchanged
+#: since; 1.4.0 *adds* the binding layer (#368) and renames nothing. The schema probe is a subset
+#: check over four required types, so the additions trip nothing -- they are here so an offline
+#: fake models the graph the pin actually emits.
 V2_RELATIONSHIP_TYPES = frozenset(
     {
         "TS_HAS_MODULE",
@@ -119,6 +122,9 @@ V2_RELATIONSHIP_TYPES = frozenset(
         "TS_PARAM_OUT",
         "TS_EXTENDS",
         "TS_IMPLEMENTS",
+        "TS_IMPORTS",
+        "TS_RE_EXPORTS",
+        "TS_READS_CONFIG_UNRESOLVED",
     }
 )
 
@@ -158,7 +164,7 @@ class FakeDriver:
     """Stands in for ``neo4j.GraphDatabase.driver``. ``analyzer_version=None`` means "no
     ``:Application`` with that id"."""
 
-    def __init__(self, rel_types=V2_RELATIONSHIP_TYPES, responder=None, analyzer_version="1.3.0") -> None:
+    def __init__(self, rel_types=V2_RELATIONSHIP_TYPES, responder=None, analyzer_version="1.4.0") -> None:
         self.rel_types = set(rel_types)
         self.analyzer_version = analyzer_version
         self.responder = responder

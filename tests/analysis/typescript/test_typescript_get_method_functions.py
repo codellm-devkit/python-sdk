@@ -25,6 +25,7 @@ backends (the local one via a mocked subprocess, the Neo4j one via a stubbed ``_
 parity test below is comparing apples to apples.
 """
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -290,20 +291,24 @@ def _neo4j_backend_with_stubbed_run(rows_by_call: dict) -> TSNeo4jBackend:
     return backend
 
 
-def _callable_props(c: TSCallable) -> dict:
-    """The ``:TSCallable`` node property shape (codeanalyzer-typescript 1.2.0 ``schema.neo4j.json``):
-    flat scalars, no parameters -- the projection does not carry them."""
-    return {"id": c.id, "kind": c.kind, "signature": c.signature, "name": c.name, "return_type": c.return_type, "start_line": c.start_line, "end_line": c.end_line, "code": ""}
+def _callable_props(c: TSCallable, *, bindings: bool = False) -> dict:
+    """The ``:TSCallable`` node property shape: flat scalars, plus -- on a graph emitted by
+    codeanalyzer-typescript 1.4.0 or newer (#368) -- ``parameters_json``, the parameter list
+    JSON-encoded verbatim. ``bindings=False`` is the 1.3.0 shape, which carries neither the
+    property nor anything else of the binding layer."""
+    props = {"id": c.id, "kind": c.kind, "signature": c.signature, "name": c.name, "return_type": c.return_type, "start_line": c.start_line, "end_line": c.end_line, "code": ""}
+    if bindings and c.parameters:
+        props["parameters_json"] = json.dumps([p.model_dump() for p in c.parameters])
+    return props
 
 
 SCOPE = (("p1", "can://typescript/t/"), ("p2", "can://javascript/t/"))
 
 
-@pytest.fixture
-def stub_neo4j_backend():
-    bar_props = _callable_props(_bar())
-    baz_props = _callable_props(_baz())
-    qux_props = _callable_props(_qux())
+def _stub_rows(*, bindings: bool):
+    bar_props = _callable_props(_bar(), bindings=bindings)
+    baz_props = _callable_props(_baz(), bindings=bindings)
+    qux_props = _callable_props(_qux(), bindings=bindings)
 
     has_method_query = f"MATCH (o:TSClass|TSInterface {{signature: $sig}}) WHERE {_scoped('o')} AND o.kind IN $kinds MATCH (o)-[:TS_HAS_METHOD]->(root:TSCallable {{name: $name}}) RETURN properties(root) AS p, labels(root) AS labels"
     exact_sig_query = (
@@ -320,7 +325,24 @@ def stub_neo4j_backend():
         (short_name_query, (("name", "baz"), ("sig_prefix", "src/mod.")) + SCOPE): [{"p": baz_props, "labels": ["CanNode", "TSCallable"]}],
         (short_name_query, (("name", "qux"), ("sig_prefix", "src/mod.")) + SCOPE): [{"p": qux_props, "labels": ["CanNode", "TSCallable"]}],
     }
-    return _neo4j_backend_with_stubbed_run(rows_by_call)
+    # The binding-layer probe (#368), answered from the data exactly as the real graph answers it:
+    # a 1.4.0 graph has a carrier to find, a 1.3.0 one has none and the statement returns no row,
+    # which is the shape a stubbed _run gives for every statement it was not seeded with.
+    if bindings:
+        rows_by_call[(TSNeo4jBackend._BINDINGS_PRESENT, SCOPE)] = [{"ok": True}]
+    return rows_by_call
+
+
+@pytest.fixture
+def stub_neo4j_backend():
+    """A graph from **before** 1.4.0: no ``parameters_json``, no binding layer at all."""
+    return _neo4j_backend_with_stubbed_run(_stub_rows(bindings=False))
+
+
+@pytest.fixture
+def stub_neo4j_backend_with_bindings():
+    """The same graph re-emitted by 1.4.0 or newer, carrying the binding layer."""
+    return _neo4j_backend_with_stubbed_run(_stub_rows(bindings=True))
 
 
 def test_neo4j_get_method_still_resolves_class_methods(stub_neo4j_backend):
@@ -347,13 +369,24 @@ def test_neo4j_get_method_resolves_namespace_nested_function_by_short_name(stub_
     assert method.signature == "src/mod.NS.qux"
 
 
-def test_neo4j_get_method_parameters_module_level_function(stub_neo4j_backend):
-    # The 1.2.0 projection carries no parameters on :TSCallable, so a *found* function cannot be
-    # answered -- it raises naming the gap rather than returning an empty list that would read as
-    # "takes no parameters" (the local backend answers ["x"] for the same fixture).
+def test_neo4j_get_method_parameters_refuses_a_graph_without_the_binding_layer(stub_neo4j_backend):
+    # #368's floor, measured from the data and never from a version string: a graph emitted before
+    # 1.4.0 carries no parameters_json anywhere, so a *found* function cannot be answered and the
+    # accessor refuses rather than return [] -- which would read as "takes no parameters", when
+    # the local backend answers ["x"] for the same fixture.
+    assert stub_neo4j_backend._carries_bindings is False
     assert stub_neo4j_backend.get_method("src/mod", "baz") is not None
-    with pytest.raises(CodeanalyzerExecutionException, match="no parameters for 'baz'"):
+    with pytest.raises(CodeanalyzerExecutionException, match="carries no binding layer"):
         stub_neo4j_backend.get_method_parameters("src/mod", "baz")
+
+
+def test_neo4j_get_method_parameters_answers_on_a_graph_with_the_binding_layer(stub_neo4j_backend_with_bindings):
+    """The other direction of the same decision: same rows, one carrier added, real answer."""
+    assert stub_neo4j_backend_with_bindings._carries_bindings is True
+    assert stub_neo4j_backend_with_bindings.get_method_parameters("src/mod", "baz") == ["x"]
+    # ...and a callable that genuinely takes none answers [] rather than refusing, because the
+    # question "does this graph carry parameters at all" was settled over the application.
+    assert stub_neo4j_backend_with_bindings.get_method_parameters("src/mod.Foo", "bar") == []
 
 
 def test_neo4j_get_method_genuine_miss_returns_none(stub_neo4j_backend):
@@ -364,15 +397,14 @@ def test_neo4j_get_method_genuine_miss_returns_none(stub_neo4j_backend):
 # -----[ backend parity ]-----
 
 
-def test_backend_parity_module_level_function(ts_analysis, stub_neo4j_backend):
+def test_backend_parity_module_level_function(ts_analysis, stub_neo4j_backend_with_bindings):
     local = ts_analysis.get_method("src/mod", "baz")
-    remote = stub_neo4j_backend.get_method("src/mod", "baz")
+    remote = stub_neo4j_backend_with_bindings.get_method("src/mod", "baz")
     assert local.signature == remote.signature
     assert local.name == remote.name
-    # Parameters are the one documented divergence: analysis.json carries them, the graph does not.
-    assert ts_analysis.get_method_parameters("src/mod", "baz") == ["x"]
-    with pytest.raises(CodeanalyzerExecutionException):
-        stub_neo4j_backend.get_method_parameters("src/mod", "baz")
+    # Parameters used to be the one documented divergence; 1.4.0 projects them, so this is parity.
+    assert ts_analysis.get_method_parameters("src/mod", "baz") == stub_neo4j_backend_with_bindings.get_method_parameters("src/mod", "baz") == ["x"]
+    assert [p.name for p in remote.parameters] == [p.name for p in local.parameters], "and they reach the rebuilt callable, not just the accessor"
 
 
 def test_backend_parity_namespace_nested_function(ts_analysis, stub_neo4j_backend):
