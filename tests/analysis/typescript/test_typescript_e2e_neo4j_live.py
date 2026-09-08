@@ -58,10 +58,10 @@ NEO4J_URI = os.environ.get("CLDK_TEST_NEO4J_URI")
 NEO4J_USER = os.environ.get("CLDK_TEST_NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.environ.get("CLDK_TEST_NEO4J_PASSWORD", "neo4j")
 APP_NAME = os.environ.get("CLDK_TEST_NEO4J_APP", "superset-frontend")
-APP_ID = f"can://typescript/{APP_NAME}"
-#: The two-prefix scope (TS-3), spelled here independently of the backend's helper on purpose.
-SCOPE = {"p1": f"can://typescript/{APP_NAME}/", "p2": f"can://javascript/{APP_NAME}/"}
-SCOPED = "(x.id STARTS WITH $p1 OR x.id STARTS WITH $p2)"
+APP_ID = f"can://{APP_NAME}"
+#: The application scope, spelled here independently of the backend's helper on purpose.
+SCOPE = {"p": f"can://{APP_NAME}/"}
+SCOPED = "(x.id STARTS WITH $p)"
 REQUIRED_RELATIONSHIP_TYPES = {"TS_HAS_MODULE", "TS_HAS_METHOD", "TS_HAS_BODY_NODE", "TS_CALLS"}
 
 
@@ -165,7 +165,7 @@ def test_symbol_table_keys_are_the_graphs_module_names_on_both_prefixes(analysis
     expected = {r["k"] for r in cypher("MATCH (:Application {id: $id})-[:TS_HAS_MODULE]->(m:TSModule) RETURN m.name AS k", id=APP_ID)}
     table = analysis.get_symbol_table()
     assert set(table) == expected and expected
-    js = {r["k"] for r in cypher("MATCH (:Application {id: $id})-[:TS_HAS_MODULE]->(m:TSModule) WHERE m.id STARTS WITH $p2 RETURN m.name AS k", id=APP_ID, **SCOPE)}
+    js = {r["k"] for r in cypher("MATCH (:Application {id: $id})-[:TS_HAS_MODULE]->(m:TSModule) WHERE m.id STARTS WITH $js RETURN m.name AS k", id=APP_ID, js=f"{SCOPE['p']}javascript/")}
     assert js and js <= set(table), "JavaScript modules are in scope (TS-3)"
     assert all(k.endswith((".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".d.ts")) for k in table)
 

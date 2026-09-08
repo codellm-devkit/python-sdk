@@ -58,8 +58,8 @@ from codeanalyzer.schema.py_schema import BodyNode, PyApplication, PyCallable, P
 from cldk.analysis.python.codeanalyzer.codeanalyzer import PyCodeanalyzer
 from cldk.analysis.python.neo4j.neo4j_backend import PyNeo4jBackend
 
-VALUEERROR_ID = "can://python/proj/@external/builtins.ValueError/__init__"
-KEY_ID = "can://python/proj/app.py/Store/key(self)"
+VALUEERROR_ID = "can://proj/@external/builtins.ValueError/__init__"
+KEY_ID = "can://proj/python/app.py/Store/key(self)"
 
 
 # =====================================================================================
@@ -153,8 +153,12 @@ def test_body_node_resolution_is_preferred_when_jedi_missed_it():
 
 
 def test_get_external_symbols_are_addressable_can_ids():
+    """Keyed by can-id, and by a **language-neutral** one: since 1.5.0 an external's home is
+    ``can://<app>/@external/…`` with no language segment at all, so a sibling analyzer over the
+    same repository names the same library symbol identically."""
     ext = _local_backend().get_external_symbols()
-    assert any(k.startswith("can://python/") and "@external" in k for k in ext)
+    assert any(k.startswith("can://") and "/@external/" in k for k in ext)
+    assert not any("/python/@external/" in k for k in ext)
 
 
 def test_get_external_symbols_empty_is_a_real_empty():
@@ -235,7 +239,7 @@ def test_neo4j_get_external_symbols_filters_by_id_prefix():
     assert ext[VALUEERROR_ID].module == "builtins.ValueError"
     query, params = run.call_args.args[0], run.call_args.kwargs
     assert "e.id STARTS WITH $prefix" in query
-    assert params["prefix"] == "can://python/app/@external/"
+    assert params["prefix"] == "can://app/@external/"
     assert "SET" not in query and "CREATE" not in query and "MERGE" not in query and "DELETE" not in query
 
 

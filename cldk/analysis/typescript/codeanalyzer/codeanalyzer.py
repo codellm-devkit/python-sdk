@@ -163,10 +163,14 @@ class TSCodeanalyzer(TSAnalysisBackend):
         self.analysis: TSAnalysis = self._init_codeanalyzer(analysis_level=analyzer_level(analysis_level))
         self.application: TSApplication = self.analysis.application
         #: The ``--app-name`` the analyzer stamped into every id, read back off the application's
-        #: own ``can://typescript/<app>`` id. Spelled the same as :attr:`TSNeo4jBackend.application_name`
+        #: own ``can://<app>`` id. Spelled the same as :attr:`TSNeo4jBackend.application_name`
         #: so a message naming the application reads identically whichever backend raised it -- and
         #: so no message has to embed a ``can://`` id to name it (E6).
-        self.application_name: str = self.application.id.rsplit("/", 1)[-1]
+        #:
+        #: The scheme is *stripped*, never split off: the root id is exactly ``can://<app>`` since
+        #: 1.5.1 put the application outermost, and an application legitimately named ``typescript``
+        #: makes any positional reading of the segments a coin flip.
+        self.application_name: str = self.application.id.removeprefix("can://")
         self._call_graph: nx.DiGraph | None = None
         self._index()
 
@@ -197,7 +201,7 @@ class TSCodeanalyzer(TSAnalysisBackend):
     def _argv(self, analysis_level: int, output_dir: Path | None) -> List[str]:
         """The 1.2.0 command line: ``-i <project> --app-name <project.name> -a <1..4> [-o <dir>
         --cache-dir <dir>] --skip-tests [--eager] [-t <file>]...``. The application name is what
-        the analyzer stamps into every ``can://typescript/<app>/...`` id."""
+        the analyzer stamps into every ``can://<app>/<lang>/...`` id."""
         project = Path(self.project_dir)
         args = self._get_codeanalyzer_exec() + ["-i", str(project), "--app-name", project.name, "-a", str(analysis_level)]
         if output_dir is not None:

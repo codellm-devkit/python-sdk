@@ -149,7 +149,7 @@ class FakeDriver:
         self,
         rel_types: set[str] | frozenset[str] = _V2_RELATIONSHIP_TYPES,
         responder: Callable[[str, dict], list[dict]] | None = None,
-        analyzer_version: str | None = "1.4.1",
+        analyzer_version: str | None = "1.5.0",
     ) -> None:
         self.rel_types: set[str] = set(rel_types)
         self.analyzer_version = analyzer_version
@@ -382,7 +382,7 @@ def _locate_callable_id(signature: str) -> str:
     """A stand-in for the analyzer's ``can://`` id. Only its shape matters here: a body node's graph
     ``id`` is ``<callable id>@<body key>``, which is what the Neo4j backend's innermost-node tie
     break splits on."""
-    return f"can://python/app/{_LOCATE_MODULE_PATH}/{signature}"
+    return f"can://app/python/{_LOCATE_MODULE_PATH}/{signature}"
 
 
 # -----[ the local backend's view: a real in-memory PyApplication ]-----
@@ -597,9 +597,10 @@ def live_analysis():
 
 @pytest.fixture(scope="session")
 def live_analyzer_version(live_analysis) -> str:
-    """The ``analyzer_version`` the live graph's ``:PyApplication`` carries (``"1.4.0"`` on 7688,
-    ``"1.4.1"`` on 7689) -- the key a count recorded against one emitter run is looked up by."""
-    rows = live_analysis.backend._run("MATCH (a:PyApplication {name: $app}) RETURN a.analyzer_version AS v", app=LIVE_NEO4J_APP)
+    """The ``analyzer_version`` the live graph's ``:PyApplication`` carries (``"1.5.0"`` on 7689) --
+    the key a count recorded against one emitter run is looked up by. Read off the root by its
+    ``can://<app>`` id, which is what the root merges on since 1.5.0."""
+    rows = live_analysis.backend._run("MATCH (a:PyApplication {id: $app_id}) RETURN a.analyzer_version AS v", app_id=f"can://{LIVE_NEO4J_APP}")
     return rows[0]["v"]
 
 

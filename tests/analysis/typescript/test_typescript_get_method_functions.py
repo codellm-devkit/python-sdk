@@ -60,7 +60,7 @@ from cldk.models.typescript import (
 #
 # call_graph: baz -> Foo.bar, NS.qux -> baz   (so both functions participate in a call edge)
 
-MOD = "can://typescript/t/src/mod.ts"
+MOD = "can://t/typescript/src/mod.ts"
 SPAN = TSSpan(start=(1, 1), end=(1, 1), bytes=(0, 0))
 
 
@@ -94,7 +94,7 @@ def _build_application() -> TSApplication:
         functions={"baz": _baz()},
     )
     return TSApplication(
-        id="can://typescript/t",
+        id="can://t",
         symbol_table={"src/mod.ts": module},
         call_graph=[
             TSCallEdge(src=f"{MOD}/baz", dst=f"{MOD}/Foo/bar", prov=["tsc"]),
@@ -238,7 +238,7 @@ def test_synthesized_entry_pointing_at_a_tree_callable_keys_on_its_signature(typ
 
 def test_named_residual_synthesized_node_keys_on_its_name(typescript_application, tmp_path, monkeypatch):
     app = _build_application()
-    residual = "can://typescript/t/@synthetic/cb"
+    residual = "can://t/typescript/@synthetic/cb"
     app.synthesized_callables = {residual: TSSynthesizedNode(id=residual, name="cb", path="src/mod.ts")}
     app.call_graph.append(TSCallEdge(src=f"{MOD}/Foo/bar", dst=residual, prov=["defuse"]))
     graph = _analysis_over(app, typescript_application, tmp_path, monkeypatch).get_call_graph()
@@ -248,7 +248,7 @@ def test_named_residual_synthesized_node_keys_on_its_name(typescript_application
 @pytest.mark.parametrize(
     "entry",
     [
-        pytest.param({"can://typescript/t/@synthetic/cb": TSSynthesizedNode(id="can://typescript/t/@synthetic/cb")}, id="residual-without-name"),
+        pytest.param({"can://t/typescript/@synthetic/cb": TSSynthesizedNode(id="can://t/typescript/@synthetic/cb")}, id="residual-without-name"),
         pytest.param({f"{MOD}/baz@9:9": TSSynthesizedNode(id=f"{MOD}/nowhere/<anon@9:9>")}, id="non-residual-unindexed-id"),
     ],
 )
@@ -302,7 +302,7 @@ def _callable_props(c: TSCallable, *, bindings: bool = False) -> dict:
     return props
 
 
-SCOPE = (("p1", "can://typescript/t/"), ("p2", "can://javascript/t/"))
+SCOPE = (("p", "can://t/"),)
 
 
 def _stub_rows(*, bindings: bool):

@@ -90,7 +90,7 @@ def cypher(query: str, **params: Any) -> List[Dict[str, Any]]:
         driver.close()
 
 
-SCOPED = "(x.id STARTS WITH $p1 OR x.id STARTS WITH $p2)"
+SCOPED = "(x.id STARTS WITH $p)"
 
 
 def _biggest(rel: str) -> Dict[str, Any]:
@@ -225,7 +225,7 @@ def test_max_nodes_caps_and_says_so(ts, a_parameter):
 def a_call_edge() -> Dict[str, Any]:
     """One callable→callable call edge, deterministically chosen."""
     rows = cypher(
-        f"MATCH (x:TSCallable)-[:TS_CALLS]->(t:TSCallable) WHERE {SCOPED} AND (t.id STARTS WITH $p1 OR t.id STARTS WITH $p2) "
+        f"MATCH (x:TSCallable)-[:TS_CALLS]->(t:TSCallable) WHERE {SCOPED} AND t.id STARTS WITH $p "
         "RETURN x.signature AS src, t.signature AS dst ORDER BY x.id, t.id LIMIT 1"
     )
     assert rows, "no callable-to-callable call edge on this application"
@@ -252,7 +252,7 @@ def test_callers_and_callees_agree_with_the_graphs_own_edges(ts, a_call_edge):
     expected = {
         r["ref"]
         for r in cypher(
-            "MATCH (s)-[:TS_CALLS]->(t:TSCallable {signature: $sig}) WHERE (s:TSCallable OR s:TSModule) AND (s.id STARTS WITH $p1 OR s.id STARTS WITH $p2) RETURN s.id AS ref",
+            "MATCH (s)-[:TS_CALLS]->(t:TSCallable {signature: $sig}) WHERE (s:TSCallable OR s:TSModule) AND s.id STARTS WITH $p RETURN s.id AS ref",
             sig=a_call_edge["dst"],
         )
     }

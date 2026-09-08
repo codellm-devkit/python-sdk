@@ -22,8 +22,8 @@ the expected deployment. A **signature** is not application-stamped -- two appli
 ``shared.Widget`` -- so every statement that matches by signature must also carry the application
 scope. On a 1.2.0 graph that scope is the ``can://`` id prefix and nothing else: there is no
 ``_module`` property (gone on ``main``, #166), and TypeScript's scope is **two** prefixes (TS-3),
-``can://typescript/<app>/`` and ``can://javascript/<app>/``, spelled as
-``x.id STARTS WITH $p1 OR x.id STARTS WITH $p2`` (measured: the ``any()`` form defeats the seek).
+``can://<app>/typescript/`` and ``can://<app>/javascript/``, spelled as
+``x.id STARTS WITH $p`` (measured: the ``any()`` form defeats the seek).
 
 Two nets, as in the Python twin:
 
@@ -84,13 +84,13 @@ def _build() -> _Graph:
     g = _Graph()
     for app, lang_mod, fn_name in ((APP_A, "a", "alpha"), (APP_B, "b", "beta")):
         app_id = g.node(
-            f"can://typescript/{app}",
+            f"can://{app}",
             ["Application", "TSApplication"],
             analyzer_version="1.2.0",
             entrypoint_frameworks=[f"{fn_name}-framework"],
             entrypoint_report_json=json.dumps({"frameworks_detected": [f"{fn_name}-framework"], "rulesets": ["shipped"], "unresolved": {f"{fn_name}.miss": 2}, "errors": []}),
         )
-        mod = g.node(f"can://typescript/{app}/{lang_mod}/mod.ts", ["TSModule"], kind="module", name=f"{lang_mod}/mod.ts", start_line=1, end_line=20)
+        mod = g.node(f"can://{app}/typescript/{lang_mod}/mod.ts", ["TSModule"], kind="module", name=f"{lang_mod}/mod.ts", start_line=1, end_line=20)
         g.edge(app_id, "TS_HAS_MODULE", mod)
         cls = g.node(
             f"{mod}/Widget",
@@ -119,11 +119,11 @@ def _build() -> _Graph:
         g.edge(call, "TS_RESOLVES_TO", inner)
         g.edge(method, "TS_CALLS", inner, weight=1, prov=["tsc"])
         ext = g.node(
-            f"can://typescript/{app}/@external/os/{'path' if app == APP_A else 'join'}", ["TSExternal"], kind="external", name="path" if app == APP_A else "join", module="os"
+            f"can://{app}/@external/os/{'path' if app == APP_A else 'join'}", ["TSExternal"], kind="external", name="path" if app == APP_A else "join", module="os"
         )
         g.edge(method, "TS_CALLS", ext, weight=1, prov=["import"])
         # The module-key collision: both applications declare src/index.ts.
-        shared = g.node(f"can://typescript/{app}/{SHARED_MODULE}", ["TSModule"], kind="module", name=SHARED_MODULE, start_line=1, end_line=9)
+        shared = g.node(f"can://{app}/typescript/{SHARED_MODULE}", ["TSModule"], kind="module", name=SHARED_MODULE, start_line=1, end_line=9)
         g.edge(app_id, "TS_HAS_MODULE", shared)
         fn = g.node(f"{shared}/{fn_name}_fn", ["TSCallable"], kind="function", signature=f"src/index.{fn_name}_fn", name=f"{fn_name}_fn", start_line=1, end_line=3, code="fn")
         g.edge(shared, "TS_DECLARES", fn)
@@ -134,14 +134,14 @@ def _build() -> _Graph:
         var = g.node(f"{shared}/{fn_name}_var", ["TSField"], kind="field", name=f"{fn_name}_var", start_line=8, end_line=8)
         g.edge(shared, "TS_HAS_FIELD", var)
     # One JavaScript module in application A only: the second prefix must be honoured (TS-3).
-    js = g.node(f"can://javascript/{APP_A}/a/legacy.js", ["TSModule"], kind="module", name="a/legacy.js", start_line=1, end_line=3)
-    g.edge(f"can://typescript/{APP_A}", "TS_HAS_MODULE", js)
+    js = g.node(f"can://{APP_A}/javascript/a/legacy.js", ["TSModule"], kind="module", name="a/legacy.js", start_line=1, end_line=3)
+    g.edge(f"can://{APP_A}", "TS_HAS_MODULE", js)
     legacy = g.node(f"{js}/legacy_fn", ["TSCallable"], kind="function", signature="a/legacy.legacy_fn", name="legacy_fn", start_line=1, end_line=2, code="legacy")
     g.edge(js, "TS_DECLARES", legacy)
     # Declaration-merged nodes (one id for two declarations, both labels, the last writer's kind):
     # a `const Option = () => …` + `interface Option {…}` whose interface fields hang off an arrow,
     # and a `type Gran = …` + a field `Gran` -- only in application A.
-    mod_a = f"can://typescript/{APP_A}/a/mod.ts"
+    mod_a = f"can://{APP_A}/typescript/a/mod.ts"
     merged = g.node(f"{mod_a}/Option", ["TSCallable", "TSInterface"], kind="arrow", signature="a/mod.Option", name="Option", start_line=11, end_line=12, code="() => 1")
     g.edge(mod_a, "TS_DECLARES", merged)
     g.edge(mod_a, "TS_DECLARES", merged)  # the emitter writes one edge per facet; MERGE keeps one
@@ -302,10 +302,10 @@ def _where(clause: str, rows: List[Dict[str, Any]], params: Dict[str, Any], opti
     exactly the "no callable contains this line" case ``locate`` reports as module scope.
 
     Disjunction is evaluated generically rather than pattern-matched one shape at a time: the
-    backend spells three of them -- the two-prefix application scope ``(x.id STARTS WITH $p1 OR
-    x.id STARTS WITH $p2)``, the resolver's ``(c.signature = $name OR c.signature ENDS WITH
-    $dotted)``, and ``describe``'s ``(c.id IN $refs OR c.signature IN $refs)`` -- and a special case
-    per shape is a harness that silently answers "no rows" the day a fourth appears.
+    backend spells two of them -- the resolver's ``(c.signature = $name OR c.signature ENDS WITH
+    $dotted)`` and ``describe``'s ``(c.id IN $refs OR c.signature IN $refs)`` -- and a special case
+    per shape is a harness that silently answers "no rows" the day a third appears. (The
+    application scope was a third until 1.5.1 collapsed it to a single ``STARTS WITH``.)
     """
 
     def ok(b: Dict[str, Any]) -> bool:
@@ -432,13 +432,13 @@ def fake_cypher(query: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
     raise AssertionError(f"statement has no RETURN: {query!r}")
 
 
-_A_PREFIXES = (f"can://typescript/{APP_A}/", f"can://javascript/{APP_A}/")
+_A_PREFIXES = (f"can://{APP_A}/",)
 
 
 def _responder(query: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
     """:func:`fake_cypher`, after asserting every prefix parameter bound at run time is one of
     application A's -- the audit below judges spellings; this judges the values."""
-    for name in ("prefix", "p1", "p2"):
+    for name in ("prefix", "p"):
         if name in params:
             assert params[name].startswith(_A_PREFIXES), f"${name} bound to {params[name]!r}, outside application A's scope"
     return fake_cypher(query, params)
@@ -453,14 +453,22 @@ def _backend() -> TSNeo4jBackend:
 # The fake graph is what a 1.2.0 graph is
 # =====================================================================================
 def test_the_fake_graph_carries_no_module_property():
+    """No ``_module``, and every ``can://`` node sits under **an application prefix** -- which is
+    all the scoping has left to stand on. Asserting a *language* prefix here (as this did while the
+    language was outermost) now over-asserts: a language-neutral ``@external`` ghost carries no
+    language segment at all, and it is still one of application A's nodes."""
     assert GRAPH.nodes and not any("_module" in props for _, props in GRAPH.nodes.values())
-    prefixes = tuple(f"can://{lang}/{app}/" for lang in ("typescript", "javascript") for app in (APP_A, APP_B))
+    prefixes = (f"can://{APP_A}/", f"can://{APP_B}/")
     assert all(nid.startswith(prefixes) for nid, (labels, _) in GRAPH.nodes.items() if "CanNode" in labels and "TSModule" not in labels or nid.count("/") > 3)
 
 
-def test_the_scope_is_two_prefixes():
+def test_the_scope_is_one_prefix():
+    """One prefix, and the two language namespaces are inside it rather than beside it. The two
+    that used to be here are still told apart in exactly one place -- ``_module_key``, which has
+    to strip the language segment to reach the file key -- and nothing is scoped on them."""
     backend = _backend()
-    assert backend._scope_prefixes == [f"can://typescript/{APP_A}/", f"can://javascript/{APP_A}/"]
+    assert backend._scope_prefix == f"can://{APP_A}/"
+    assert backend._language_prefixes == [f"can://{APP_A}/typescript/", f"can://{APP_A}/javascript/"]
     assert set(backend._modules) == {"a/mod.ts", SHARED_MODULE, "a/legacy.js"}
 
 
@@ -541,10 +549,10 @@ def test_call_graph_and_externals_are_application_scoped():
     assert set(graph.edges) == {(METHOD_SIG, "alpha.inner_fn"), (METHOD_SIG, "os.path")}
     assert graph.nodes["os.path"]["kind"] == "external"
     assert list(backend.get_external_symbols()) == ["os.path"], "application B's external (os.join) leaked"
-    assert backend.get_external_symbols()["os.path"].id == f"can://typescript/{APP_A}/@external/os/path"
+    assert backend.get_external_symbols()["os.path"].id == f"can://{APP_A}/@external/os/path"
     assert backend.get_calling_lines("alpha.inner_fn") == [5]
     assert backend.get_calling_lines("beta.inner_fn") == []
-    assert set(backend.get_synthesized_callables()) == {f"can://typescript/{APP_A}/{SHARED_MODULE}/alpha_fn/<anon@2:2>"}
+    assert set(backend.get_synthesized_callables()) == {f"can://{APP_A}/typescript/{SHARED_MODULE}/alpha_fn/<anon@2:2>"}
 
 
 def test_a_declaration_merged_node_is_the_facet_its_edge_and_labels_name_and_nothing_else():
@@ -564,7 +572,7 @@ def test_a_merged_node_whose_labels_name_no_single_facet_is_raised_as_a_defect()
     from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 
     backend = _backend()
-    parent = "can://typescript/app_a/x/y.ts"
+    parent = "can://app_a/typescript/x/y.ts"
     undecidable = {"id": f"{parent}/Z", "kind": "field", "name": "Z", "_labels": ["CanNode", "TSClass", "TSInterface"]}
     with pytest.raises(CodeanalyzerExecutionException, match=r"'Z' \(labels \['CanNode', 'TSClass', 'TSInterface'\], kind 'field'\).*one id for two declarations") as e:
         backend._declared(parent, {parent: [("TS_DECLARES", undecidable, {})]})
@@ -598,11 +606,11 @@ def test_locate_finds_the_innermost_callable_and_its_body_node():
     r = _backend().locate("a/mod.ts", 5)
     assert r.callable.signature == METHOD_SIG and r.type is not None and r.type.signature == CLASS_SIG
     assert r.body is not None and r.body.kind == "call"
-    assert r.body.id == f"can://typescript/{APP_A}/a/mod.ts/Widget/render@5:3"
+    assert r.body.id == f"can://{APP_A}/typescript/a/mod.ts/Widget/render@5:3"
     assert r.node_id == r.body.id
     # ``callee`` is a property on a TypeScript body node, so this backend fills it in -- unlike the
     # Python Neo4j backend, where callee resolution is a separate edge and the field stays None.
-    assert r.body.callee == f"can://typescript/{APP_A}/a/mod.ts/Widget/render@5:3".replace("@5:3", "/inner_fn")
+    assert r.body.callee == f"can://{APP_A}/typescript/a/mod.ts/Widget/render@5:3".replace("@5:3", "/inner_fn")
     # Line-only span: the projection carries no columns and no offsets.
     assert r.body.span.start == (5, 0) and r.body.span.bytes == (0, 0)
 
@@ -626,12 +634,12 @@ def test_locate_many_answers_in_input_order_including_the_misses():
 def test_resolve_callable_honours_the_javascript_prefix():
     n = _backend().resolve_callable("legacy_fn")
     assert n.callable == "a/legacy.legacy_fn" and n.file == "a/legacy.js"
-    assert n.ref == f"can://javascript/{APP_A}/a/legacy.js/legacy_fn"
+    assert n.ref == f"can://{APP_A}/javascript/a/legacy.js/legacy_fn"
 
 
 def test_resolve_callable_does_not_see_another_applications_colliding_signature():
     n = _backend().resolve_callable("Widget.render")
-    assert n.name == "alpha_method" and n.ref.startswith(f"can://typescript/{APP_A}/")
+    assert n.name == "alpha_method" and n.ref.startswith(f"can://{APP_A}/typescript/")
 
 
 def test_resolve_callable_takes_the_dotted_module_form():
@@ -660,16 +668,16 @@ def test_a_declaration_merged_node_resolves_only_to_the_facet_its_kind_names():
 def test_get_source_answers_for_a_callable_and_refuses_below_it():
     backend = _backend()
     assert backend.get_source(METHOD_SIG) == "alpha code"
-    assert backend.get_source(f"can://typescript/{APP_A}/a/mod.ts/Widget/render") == "alpha code"
+    assert backend.get_source(f"can://{APP_A}/typescript/a/mod.ts/Widget/render") == "alpha code"
     with pytest.raises(NotImplementedError):
-        backend.get_source(f"can://typescript/{APP_A}/a/mod.ts/Widget/render@5:3")
+        backend.get_source(f"can://{APP_A}/typescript/a/mod.ts/Widget/render@5:3")
     with pytest.raises(KeyError):
         backend.get_source("no.such.thing")
 
 
 def test_get_source_does_not_answer_with_another_applications_text():
     with pytest.raises(KeyError):
-        _backend().get_source(f"can://typescript/{APP_B}/b/mod.ts/Widget/render")
+        _backend().get_source(f"can://{APP_B}/typescript/b/mod.ts/Widget/render")
 
 
 def test_describe_hydrates_a_callable_and_leaves_a_body_node_textless():
@@ -716,10 +724,10 @@ def test_has_resolution_edges_is_probed_against_this_applications_edges():
 # =====================================================================================
 # The audit: every statement, class-level and inline, carries the application scope
 # =====================================================================================
-_MATCHES_BY_PREFIX = re.compile(r"\w+\.id STARTS WITH \$p1 OR \w+\.id STARTS WITH \$p2")
+_MATCHES_BY_PREFIX = re.compile(r"\w+\.id STARTS WITH \$p\b")
 _MATCHES_BY_SIGNATURE = re.compile(r"signature\s*[:=]\s*\$|\.signature IN \$")
 #: A ``can://`` id, or a **prefix of one**. ``$bp`` (leg 2.5b) is a resolved callable's own ``ref``
-#: plus ``@`` -- minted by ``resolve_callable``, which is itself two-prefix scoped -- so a body node
+#: plus ``@`` -- minted by ``resolve_callable``, which is itself application-scoped -- so a body node
 #: whose id starts with it is this application's by construction, exactly as one matched by a whole
 #: id is. It is the narrowest scope on this surface, not a missing one.
 _MATCHES_BY_ID = re.compile(r"\bid\s*:\s*\$|\.id IN \$|\.id = \$|\.id STARTS WITH \$bp\b")
@@ -737,14 +745,15 @@ _FRAGMENTS = {"_OVERVIEW_PROJECTION", "_SUBTREE"}
 _TEMPLATE_ARGS = {"{rel}": "TS_DDG", "{rels}": SDG_REL_PATTERN, "{depth}": "5", "{left}": "-", "{right}": "->"}
 
 #: Every parameter a ``STARTS WITH`` may bind that is an **application-stamped** id prefix, so the
-#: variable carrying it cannot match another application's node. ``$p1``/``$p2`` are the two-prefix
-#: application scope (TS-3); ``$bp`` is a resolved callable's own ``ref`` plus ``@``, minted by
-#: ``resolve_callable``, which is itself two-prefix scoped; ``pos.module_prefix`` is one module's
-#: own id plus ``/``, bound only for a key this application declares. Each is narrower than the
-#: application scope, never wider. A **single**-namespace prefix is deliberately not on this list:
-#: ``can://typescript/<app>/@external/`` is inside the application but drops every external a
-#: ``.js`` module owns, so it is a bug rather than a scope (leg 2.5b review, finding 9).
-_SCOPED_VAR = re.compile(r"\b(\w+)\.id STARTS WITH (?:\$(?:p1|p2|bp)|pos\.module_prefix)\b")
+#: variable carrying it cannot match another application's node. ``$p`` is the application scope
+#: (TS-3), one prefix since 1.5.1; ``$bp`` is a resolved callable's own ``ref`` plus ``@``, minted
+#: by ``resolve_callable``, which is itself application-scoped; ``pos.module_prefix`` is one
+#: module's own id plus ``/``, bound only for a key this application declares. Each is narrower
+#: than the application scope, never wider. A prefix reaching only *part* of the application is
+#: deliberately not on this list: ``can://<app>/typescript/`` is inside the application and drops
+#: every ``.js`` module and every language-neutral ghost, so it is a bug rather than a scope (leg
+#: 2.5b review, finding 9 -- which is what the two-prefix arrangement kept re-creating).
+_SCOPED_VAR = re.compile(r"\b(\w+)\.id STARTS WITH (?:\$(?:p|bp)|pos\.module_prefix)\b")
 
 #: A variable pinned to an id -- in the node pattern (``{id: $x}``) or in a ``WHERE``
 #: (``x.id = $y`` / ``x.id IN $ys``). A ``can://`` id embeds the application that minted it, so a
@@ -932,8 +941,8 @@ def _unscoped_variables(statement: str) -> List[str]:
 
     Judging per variable is the point, and it is the hardening Java's leg-3a review forced. A
     presence check ("does the text contain a prefix predicate?") passes
-    ``MATCH (s:TSCallable)-[:TS_CALLS]->(t:TSCallable {signature: $sig}) WHERE s.id STARTS WITH $p1
-    OR s.id STARTS WITH $p2``, which matches ``t`` by a signature two applications can both declare
+    ``MATCH (s:TSCallable)-[:TS_CALLS]->(t:TSCallable {signature: $sig}) WHERE s.id STARTS WITH
+    $p``, which matches ``t`` by a signature two applications can both declare
     and returns whichever the graph holds.
 
     A variable is inside when it carries a scoped ``STARTS WITH`` (:data:`_SCOPED_VAR`), when it is
@@ -1129,10 +1138,10 @@ def test_the_backend_reaches_the_server_only_through_the_harvested_surface(targe
 @pytest.mark.parametrize(
     "statement, leaks",
     [
-        ("MATCH (s:TSCallable)-[:TS_CALLS]->(t:TSCallable {signature: $sig}) WHERE (s.id STARTS WITH $p1 OR s.id STARTS WITH $p2) RETURN t.id", ["t"]),
+        ("MATCH (s:TSCallable)-[:TS_CALLS]->(t:TSCallable {signature: $sig}) WHERE (s.id STARTS WITH $p) RETURN t.id", ["t"]),
         ("MATCH (:Application {id: $app_id})-[:TS_HAS_MODULE]->(m:TSModule) MATCH (x:TSClass) RETURN x.id", ["x"]),
         ("MATCH (c:TSCallable) RETURN c.id", ["c"]),
-        ("MATCH (a) ((x:TSCallable)-[:TS_CALLS]->(y:TSCallable) WHERE (x.id STARTS WITH $p1 OR x.id STARTS WITH $p2)){1,5} (m:TSCallable) RETURN m.id", ["a", "m", "y"]),
+        ("MATCH (a) ((x:TSCallable)-[:TS_CALLS]->(y:TSCallable) WHERE (x.id STARTS WITH $p)){1,5} (m:TSCallable) RETURN m.id", ["a", "m", "y"]),
         # Leg 2.5b review, finding 1: the shape `_PATHS` shipped. Both ends are pinned by a
         # `can://` id, the audit reported nothing -- and every node between them was another
         # application's for the asking, over edge types `_KEEPS_SCOPE` deliberately excludes.
@@ -1144,7 +1153,7 @@ def test_the_backend_reaches_the_server_only_through_the_harvested_surface(targe
         # The shape `_CALL_PATHS` shipped: the interior predicate was a *label* filter with no
         # prefix conjunct, which is the leak the label hides.
         (
-            "MATCH (a:TSCallable {signature:$src}) WHERE (a.id STARTS WITH $p1 OR a.id STARTS WITH $p2) "
+            "MATCH (a:TSCallable {signature:$src}) WHERE (a.id STARTS WITH $p) "
             "MATCH p = allShortestPaths((a)-[:TS_CALLS*1..5]->(b:TSCallable)) WHERE all(n IN nodes(p) WHERE n:TSCallable) RETURN nodes(p) AS ns",
             ["b", "nodes(p)"],
         ),
@@ -1182,17 +1191,17 @@ def test_the_audit_rejects_a_statement_that_scopes_only_part_of_its_pattern(stat
 @pytest.mark.parametrize(
     "statement",
     [
-        "MATCH (s:TSCallable)-[:TS_CALLS]->(t:TSCallable) WHERE (s.id STARTS WITH $p1 OR s.id STARTS WITH $p2) AND (t.id STARTS WITH $p1 OR t.id STARTS WITH $p2) RETURN s.id",
+        "MATCH (s:TSCallable)-[:TS_CALLS]->(t:TSCallable) WHERE (s.id STARTS WITH $p) AND (t.id STARTS WITH $p) RETURN s.id",
         "MATCH (:Application {id: $app_id})-[:TS_HAS_MODULE]->(m:TSModule)-[:TS_HAS_FIELD]->(f:TSField) RETURN m.name",
-        "MATCH (o:TSClass)-[:TS_HAS_METHOD]->(c:TSCallable) WHERE (c.id STARTS WITH $p1 OR c.id STARTS WITH $p2) RETURN o.signature",
+        "MATCH (o:TSClass)-[:TS_HAS_METHOD]->(c:TSCallable) WHERE (c.id STARTS WITH $p) RETURN o.signature",
         "MATCH (c:CanNode:TSCallable {id: $id})-[:TS_DECORATED_BY]->(d:TSDecorator) RETURN d.name",
         "CALL db.relationshipTypes()",
         # The fix for finding 1: the interior predicate reaches every node the walk touches.
         "MATCH (a:CanNode:TSBodyNode {id:$src}) MATCH p = allShortestPaths((a)-[:TS_DDG*1..5]->(b:CanNode:TSBodyNode {id:$dst})) "
-        "WHERE all(n IN nodes(p) WHERE (n.id STARTS WITH $p1 OR n.id STARTS WITH $p2)) RETURN nodes(p) AS ns",
+        "WHERE all(n IN nodes(p) WHERE (n.id STARTS WITH $p)) RETURN nodes(p) AS ns",
         # A distance walked over containment needs no interior predicate: the child's id *is* the
         # parent's id extended, which is the whole reason `_KEEPS_SCOPE` exists.
-        "MATCH (root:TSClass) WHERE (root.id STARTS WITH $p1 OR root.id STARTS WITH $p2) MATCH (root)-[:TS_DECLARES|TS_HAS_METHOD*0..]->(n) RETURN n.id",
+        "MATCH (root:TSClass) WHERE (root.id STARTS WITH $p) MATCH (root)-[:TS_DECLARES|TS_HAS_METHOD*0..]->(n) RETURN n.id",
     ],
     ids=[
         "both-endpoints-prefixed",
@@ -1293,7 +1302,7 @@ def test_the_audit_sees_every_inline_statement_too():
     indirect = sorted({name.split("@")[0] for name, s in inline.items() if "<anchor>" in s or "<query>" in s})
     # ``_fetch``'s ``<anchor>`` is judged at every ``self._fetch(`` call site; ``_paths``' ``<query>``
     # is one of the two class-level path statements, both of which are harvested and judged in their
-    # own right (``_PATHS`` by an id point lookup, ``_CALL_PATHS`` by the two-prefix scope).
+    # own right (``_PATHS`` by an id point lookup, ``_CALL_PATHS`` by the application-prefix scope).
     assert indirect == ["_fetch", "_paths"], f"unjudged statements passed through a variable: {indirect}"
     for expected in (
         "_probe_schema",
@@ -1380,14 +1389,14 @@ def test_no_statement_names_retired_or_untargeted_vocabulary():
 
 
 def test_no_statement_spells_the_scope_with_any():
-    """``any(p IN $prefixes WHERE …)`` plans as a label scan; the two-prefix ``OR`` seeks."""
+    """``any(p IN $prefixes WHERE …)`` plans as a label scan; a bare ``STARTS WITH`` seeks."""
     assert [name for name, s in _every_statement().items() if "any(" in s and "STARTS WITH" in s] == []
 
 
 @pytest.mark.parametrize("name", sorted(_every_statement()))
 def test_every_statement_is_application_scoped_or_keyed_by_an_application_stamped_id(name):
     """Three ways a statement stays inside one application. A **signature** is not
-    application-stamped, so a statement matching by signature must carry the two-prefix scope. A
+    application-stamped, so a statement matching by signature must carry the application-prefix scope. A
     **can:// id** embeds the application, so a statement keyed only by id (``{id: $id}``) is scoped
     by construction. A statement anchored on ``(:Application {id: $app_id})`` walks out from the
     application node and cannot leave it."""
@@ -1411,7 +1420,7 @@ def test_the_overview_projection_is_only_ever_appended_to_a_scoped_match():
 
 def test_seek_labels_follow_the_measured_rule():
     """Measured on the superset graph (7690): a ``:TSCallable`` lookup by signature under the
-    two-prefix scope plans best on the bare label (7.9 ms; ``:CanNode`` turns it into a 44 ms
+    application-prefix scope plans best on the bare label (7.9 ms; ``:CanNode`` turns it into a 44 ms
     range-seek union), while an id-equality point lookup is a 1.5 ms unique-index seek only with
     ``:CanNode`` (a 9 ms label scan without). So: every prefix-scoped statement without an id
     equality never names ``:CanNode``; ``{id: $…}`` point lookups always do."""

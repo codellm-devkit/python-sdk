@@ -135,10 +135,12 @@ def backends():
 def test_the_graph_holds_more_than_one_application(backends):
     """The premise of every count below: a leak would show up as a *larger* answer, so a
     single-application database would make this suite prove nothing about scoping."""
+    from cldk.analysis.java.neo4j import JNeo4jBackend
+
     _, neo = backends
     others = neo._run("MATCH (a:JApplication) WHERE a.name <> $app RETURN a.name AS name", app=JAVA_APP)
     assert others, "the reference graph holds only one application; the scope audit's live half needs at least two"
-    assert neo._analyzer_version >= (3, 1, 1)
+    assert neo._analyzer_version >= JNeo4jBackend._ANALYZER_FLOOR
 
 
 def test_attached_to_the_3_0_1_vocabulary(backends):
@@ -170,7 +172,7 @@ def test_application_view_parity(backends):
     # the two views are pinned as they really are, so a change in either is deliberate.
     assert ref.application.external_symbols is None, "a plain -a run homes no out-of-project call target"
     assert len(neo.application.external_symbols) == 1195
-    assert all(key.startswith(f"can://java/{JAVA_APP}/@external/") for key in neo.application.external_symbols)
+    assert all(key.startswith(f"can://{JAVA_APP}/@external/") for key in neo.application.external_symbols)
     wire = lambda app: sorted((e.src, e.dst, tuple(e.prov), e.weight) for e in app.call_graph)
     assert wire(neo.application) == wire(ref.application), "the wire call graph is not byte-equal"
     assert len(neo.application.artifacts) == len(ref.application.artifacts)

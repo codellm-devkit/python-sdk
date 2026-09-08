@@ -518,7 +518,7 @@ def test_the_composition_matches_the_emitters_own_rule():
     Pin it against that function directly, so an upstream change to the grammar fails here rather
     than producing ids that silently name nothing."""
     for key in ("@entry", "@exit", "@formal_in:1", "@formal_out:0", "9:8", "12:16"):
-        assert body_node_id("can://python/app/m.py/C/f(self)", key) == _global_ordinal("can://python/app/m.py/C/f(self)", key)
+        assert body_node_id("can://app/python/m.py/C/f(self)", key) == _global_ordinal("can://app/python/m.py/C/f(self)", key)
 
 
 def test_a_captured_global_is_labelled_and_named_honestly(py_params):

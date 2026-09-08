@@ -279,7 +279,7 @@ def test_below_level_three_the_backend_refuses_rather_than_returning_empty(local
 # expressions into its ``ORDER BY``. The tests below are what stops that from being an assertion.
 # ----------------------------------------------------------------------------------------------
 HEAVY_CALLABLE = "addons.website.models.website.Website.configurator_apply"
-HEAVY_DDG_EDGES = 1_386_918
+HEAVY_DDG_EDGES = 1_387_081  # 1.5.0; was 1_386_918 on 1.4.1 — an emitter-run fact, like RECORDED
 
 
 @live_only
@@ -451,6 +451,10 @@ HEAVY_STATEMENT_SLICE = 195_785  # backward slice of any statement in configurat
 RECORDED = {
     "1.4.0": {"ddg_edges": 5_134_655, "heavy_forward_slice": 440_270, "depth_seed_unbounded": 195_790},
     "1.4.1": {"ddg_edges": 5_129_295, "heavy_forward_slice": 438_017, "depth_seed_unbounded": 195_263},
+    # 1.5.0 moved the id grammar to can://<app>/<lang>/..., which is a change of node *names*, not
+    # of the graph's shape. These still differ from 1.4.1 for the reason the paragraph above gives:
+    # a re-analysis resolves some calls differently, and the level-4 port vertices move with them.
+    "1.5.0": {"ddg_edges": 5_127_138, "heavy_forward_slice": 438_425, "depth_seed_unbounded": 194_946},
 }
 
 
@@ -1078,7 +1082,7 @@ def test_describe_raises_on_a_ref_that_names_nothing(live_analysis):
     a ``None`` to be discovered three layers later."""
     good = live_analysis.backward_cone([FLOW_TO]).nodes[0]
     with pytest.raises(KeyError):
-        live_analysis.describe([good, good.model_copy(update={"ref": "can://python/nope/nothing.py/nope"})])
+        live_analysis.describe([good, good.model_copy(update={"ref": "can://nope/python/nothing.py/nope"})])
 
 
 @live_only
@@ -1203,7 +1207,7 @@ def test_local_describe_fills_in_what_the_graph_cannot(slice_l4):
 def test_local_describe_raises_on_a_ref_that_names_nothing(slice_l4):
     node = slice_l4.callers_of("helper")[0]
     with pytest.raises(KeyError):
-        slice_l4.describe([node.model_copy(update={"ref": "can://python/nope/x.py/nope"})])
+        slice_l4.describe([node.model_copy(update={"ref": "can://nope/python/x.py/nope"})])
 
 
 def test_describe_refuses_something_with_no_address(slice_l4):
@@ -1375,14 +1379,14 @@ def test_local_describe_composes_with_callees_of(local_l4):
 def test_a_stale_ref_is_reported_by_position_not_by_ref(live_analysis):
     good = live_analysis.backward_cone([FLOW_TO]).nodes[0]
     with pytest.raises(KeyError) as e:
-        live_analysis.describe([good, good.model_copy(update={"ref": "can://python/nope/nothing.py/nope"})])
+        live_analysis.describe([good, good.model_copy(update={"ref": "can://nope/python/nothing.py/nope"})])
     assert "can://" not in str(e.value) and good.callable in str(e.value) and f"{good.file}:{good.line}" in str(e.value)
 
 
 def test_a_local_stale_ref_is_reported_by_position_not_by_ref(slice_l4):
     node = slice_l4.callers_of("helper")[0]
     with pytest.raises(KeyError) as e:
-        slice_l4.describe([node.model_copy(update={"ref": "can://python/nope/x.py/nope"})])
+        slice_l4.describe([node.model_copy(update={"ref": "can://nope/python/x.py/nope"})])
     assert "can://" not in str(e.value) and "src.pay.Portal.charge" in str(e.value)
 
 

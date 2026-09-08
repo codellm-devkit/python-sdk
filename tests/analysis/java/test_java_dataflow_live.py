@@ -166,11 +166,9 @@ def test_the_three_graphs_agree_edge_for_edge_on_the_busiest_callables(backends)
     endpoints it never emitted as nodes; on 3.0.3 it removes nothing, and it stays because it is
     what makes this comparison a statement about the projection rather than about the analyzer.
 
-    ``cfg`` and ``cdg`` are equal page for page, in order. ``ddg`` is equal **after removing the
-    graph's ``points-to`` edges the reference was never asked for** — see
-    :data:`DDG_POINTS_TO_ONLY_WITH_EXTERNAL_CALLS`. The removal is checked, not assumed: every edge
-    dropped here is asserted to be ``points-to``, and the surviving page must still equal the
-    reference's page in order, so a projection defect cannot hide behind it.
+    ``cfg``, ``cdg`` and ``ddg`` are equal page for page, in order. ``ddg`` needed a carve-out for
+    one release — 3.1.0 gated the ``points-to`` tier on ``--external-calls`` (#240) — and 3.1.1
+    removes the need for it.
     """
     ref, neo = backends
     keys = _with_bodies(ref, 40)
@@ -183,12 +181,6 @@ def test_the_three_graphs_agree_edge_for_edge_on_the_busiest_callables(backends)
             kept = [e for e in a.edges if e.src in anchored and e.dst in anchored]
             page, extra = list(b.edges), []
             assert len(page) == b.total, f"{accessor} {key}"
-            if accessor == "get_ddg":
-                # ``JDdgEdge`` is a pydantic model and not hashable, so membership is by tuple.
-                same = {(e.src, e.dst, e.var, tuple(e.prov)) for e in kept}
-                extra = [e for e in page if (e.src, e.dst, e.var, tuple(e.prov)) not in same]
-                assert all(e.prov == ["points-to"] for e in extra), f"{accessor} {key}: the graph carries an ssa edge the payload does not"
-                page = [e for e in page if (e.src, e.dst, e.var, tuple(e.prov)) in same]
             assert kept == page, f"{accessor} {key}"
             assert a.complete and b.complete
             seen += len(kept)
@@ -209,11 +201,10 @@ def test_the_three_graphs_agree_edge_for_edge_on_the_busiest_callables(backends)
 #: * 3.1.0 ``-a 4 --no-build --external-calls`` → 10,430 (1,134), **identical as a set** to the graph
 #: * 3.1.0 ``--emit neo4j --no-build``    → 10,430 (1,134)
 #:
-#: So the graph is a strict superset of the payload by exactly these edges, the payload has nothing
-#: the graph lacks, and asking the analyzer the *same* question reproduces the graph's set exactly.
-#: Reported upstream; the flag is documented as controlling only whether out-of-project call targets
-#: are homed as ``external_symbols``, not the intraprocedural dataflow.
-DDG_POINTS_TO_ONLY_WITH_EXTERNAL_CALLS = 276
+#: codeanalyzer-java 3.1.0 briefly made the ``points-to`` tier depend on ``--external-calls``, so a
+#: plain ``-a 4`` payload was 276 edges short of what ``--emit neo4j`` projected (#240). 3.1.1 fixes
+#: it and the two agree again, so this is the size they agree on rather than the size of a gap.
+DDG_EDGES_BOTH_BACKENDS = 10_430
 
 
 def test_the_two_backends_report_the_same_ddg_edge_for_edge(backends):
@@ -225,11 +216,12 @@ def test_the_two_backends_report_the_same_ddg_edge_for_edge(backends):
     edges could not be projected and the graph reported 5,347. 3.0.3 drops them
     (codeanalyzer-java#228), and this test asserted equality: 10,430 on both sides, set for set.
 
-    On **3.1.0** they are no longer equal, and the cause is not the projection: see
-    :data:`DDG_POINTS_TO_ONLY_WITH_EXTERNAL_CALLS` for the four-run measurement. The graph is a
-    strict superset by 276 ``points-to`` edges and by nothing else, so what is asserted is the
-    containment, its exact size, and that every edge in the gap is ``points-to`` — a regression in
-    either direction still fails here, and it fails naming what it is.
+    On **3.1.0** they stopped being equal: a plain ``-a 4`` lost the 276 ``points-to`` edges that
+    ``--emit neo4j`` kept, because that release accidentally made the tier depend on
+    ``--external-calls`` (codeanalyzer-java#240). This test carried the containment for one release.
+    **3.1.1 fixes it** — measured on the released wheel, a plain ``-a 4`` is back to 1,134
+    ``points-to`` edges — so equality is asserted again, set for set. A backend that drops or
+    invents an edge fails here either way.
     """
     ref, neo = backends
     from cldk.analysis.java.backend import java_body_node_id
@@ -240,11 +232,8 @@ def test_the_two_backends_report_the_same_ddg_edge_for_edge(backends):
         prefix=neo._scope_prefix,
     )
     graph = {(r["s"], r["d"], r["v"], tuple(r["p"] or ())) for r in rows}
-    assert (len(local), len(graph)) == (10154, 10430)
-    assert local - graph == set(), "the analyzer emitted a ddg edge the graph could not project"
-    gap = graph - local
-    assert len(gap) == DDG_POINTS_TO_ONLY_WITH_EXTERNAL_CALLS
-    assert {e[3] for e in gap} == {("points-to",)}, "the gap is the --external-calls points-to layer and nothing else"
+    assert local == graph, "the two backends disagree about the ddg, edge for edge"
+    assert len(local) == DDG_EDGES_BOTH_BACKENDS
     assert _dangling(ref) == [], "codeanalyzer-java#228 is back: a ddg endpoint that is not a body node"
 
 
@@ -466,11 +455,10 @@ def test_a_forward_slice_agrees_node_for_node_on_both_backends(backends):
     leg 3b could only assert backwards: the two walks over the joined lattice return the same
     ``resolved`` seed and the reference's nodes are all in the graph's slice, in order.
 
-    Not equality any more, and the reason is upstream rather than in either backend: the graph
-    carries 276 ``points-to`` edges the reference payload was never asked for
-    (:data:`DDG_POINTS_TO_ONLY_WITH_EXTERNAL_CALLS`), so a forward walk over it can reach further.
-    Containment is the assertion that survives that honestly — a node the *reference* reaches and
-    the graph does not is still a failure, which is the direction a projection defect shows up in.
+    Equality. It was containment for one release, because codeanalyzer-java 3.1.0 made the
+    ``points-to`` tier depend on ``--external-calls`` and the graph could reach further than the
+    payload (#240). 3.1.1 fixes that, and the tolerance carried a tripwire asserting the gap still
+    existed — which is what told us to restore this.
     """
     ref, neo = backends
     checked = wider = 0
@@ -486,7 +474,6 @@ def test_a_forward_slice_agrees_node_for_node_on_both_backends(backends):
             wider += a.total < b.total
             checked += 1
     assert checked > 15, f"only {checked} parameters compared"
-    assert wider, "no slice was wider over the graph -- the points-to gap this tolerance exists for is gone, so restore the equality"
 
 
 # ---- miss paths --------------------------------------------------------------------------------

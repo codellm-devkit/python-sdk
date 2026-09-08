@@ -384,7 +384,7 @@ def test_neo4j_scoped_prefetch_does_not_fetch_the_whole_application():
     with backend._bulk(["pkg/b.py"]):
         backend._children("class_methods", "sig", "unused")
     assert [s["mods"] for s in seen] == [["pkg/b.py"]]
-    assert [s["prefixes"] for s in seen] == [["can://python/app/pkg/b.py/"]], "the signature-keyed buckets narrow on per-module id prefixes"
+    assert [s["prefixes"] for s in seen] == [["can://app/python/pkg/b.py/"]], "the signature-keyed buckets narrow on per-module id prefixes"
 
 
 def test_neo4j_bulk_scope_is_the_application_by_default():
@@ -392,7 +392,7 @@ def test_neo4j_bulk_scope_is_the_application_by_default():
     with backend._bulk():
         backend._children("class_methods", "sig", "unused")
     assert seen[0]["mods"] == ["pkg/a.py", "pkg/b.py"]
-    assert seen[0]["prefixes"] == ["can://python/app/"], "the whole application is one prefix, not one per module"
+    assert seen[0]["prefixes"] == ["can://app/"], "the whole application is one prefix, not one per module"
 
 
 def test_neo4j_nested_bulk_keeps_the_outer_scope():
@@ -403,7 +403,7 @@ def test_neo4j_nested_bulk_keeps_the_outer_scope():
         with backend._bulk(["pkg/b.py"]):
             backend._children("class_methods", "sig", "unused")
     assert seen[0]["mods"] == ["pkg/a.py", "pkg/b.py"]
-    assert seen[0]["prefixes"] == ["can://python/app/"]
+    assert seen[0]["prefixes"] == ["can://app/"]
 
 
 def _rows_backend(rows: List[Dict[str, Any]], modules: List[str]) -> tuple[PyNeo4jBackend, List[Dict[str, Any]]]:

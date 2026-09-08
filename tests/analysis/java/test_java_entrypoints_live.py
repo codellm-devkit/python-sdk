@@ -151,7 +151,10 @@ def test_get_entrypoint_coverage_reads_the_report_off_a_real_graph(backends):
     are equal object for object rather than merely both non-empty."""
     ref, neo = backends
     props = neo._run("MATCH (a:JApplication {name: $app}) RETURN keys(a) AS k", app=JAVA_APP)[0]["k"]
-    assert sorted(props) == ["analyzer_name", "analyzer_version", "entrypoint_frameworks", "entrypoint_report_json", "name", "schema_version"]
+    # ``id`` joined this set with the can://<app>/<lang>/... grammar: the root merges on its
+    # own id now rather than on the free-text --app-name, so two same-named applications
+    # stop colliding. Asserted exactly, so a property appearing or vanishing is a failure.
+    assert sorted(props) == ["analyzer_name", "analyzer_version", "entrypoint_frameworks", "entrypoint_report_json", "id", "name", "schema_version"]
     for backend in (ref, neo):
         coverage = backend.get_entrypoint_coverage()
         assert isinstance(coverage, EntrypointCoverage)
@@ -201,7 +204,7 @@ def test_the_graph_homes_externals_and_the_local_run_was_never_asked(backends):
     ref, neo = backends
     external = neo.get_external_symbols()
     assert len(external) == DAYTRADER_EXTERNALS
-    assert all(nid.startswith(f"can://java/{JAVA_APP}/@external/") for nid in external)
+    assert all(nid.startswith(f"can://{JAVA_APP}/@external/") for nid in external)
     assert all(s.signature and s.kind for s in external.values())
     with pytest.raises(CodeanalyzerExecutionException) as excinfo:
         ref.get_external_symbols()

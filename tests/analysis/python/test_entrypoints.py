@@ -122,7 +122,7 @@ def test_entrypoints_query_filters_on_is_entrypoint_property():
         "signature": "svc.app.handler",
         "name": "handler",
         "decorators": [],
-        "id": "can://python/app/svc/app.py/handler",
+        "id": "can://app/python/svc/app.py/handler",
         "start_line": 1,
         "end_line": 2,
         "class_signature": None,
@@ -148,8 +148,8 @@ def test_entrypoints_parity_between_backends():
     local_sigs = {o.signature for o in _local_backend().get_entrypoints()}
 
     common = {"decorators": [], "start_line": 1, "end_line": 2}
-    row_handler = {"signature": "svc.app.handler", "name": "handler", "id": "can://python/app/svc/app.py/handler", "class_signature": None, **common}
-    row_run = {"signature": "svc.app.Service.run", "name": "run", "id": "can://python/app/svc/app.py/Service/run", "class_signature": "svc.app.Service", **common}
+    row_handler = {"signature": "svc.app.handler", "name": "handler", "id": "can://app/python/svc/app.py/handler", "class_signature": None, **common}
+    row_run = {"signature": "svc.app.Service.run", "name": "run", "id": "can://app/python/svc/app.py/Service/run", "class_signature": "svc.app.Service", **common}
     backend = _neo4j_backend()
     with patch.object(PyNeo4jBackend, "_run", side_effect=_run_keyed({"c.is_entrypoint = true": [row_handler, row_run]})):
         neo4j_sigs = {o.signature for o in backend.get_entrypoints()}
@@ -202,7 +202,7 @@ def test_entrypoint_classes_query_filters_on_is_entrypoint_property():
         "signature": "svc.views.AdminView",
         "name": "AdminView",
         "decorators": [],
-        "id": "can://python/app/svc/views.py/AdminView",
+        "id": "can://app/python/svc/views.py/AdminView",
         "start_line": 1,
         "end_line": 10,
     }
@@ -229,7 +229,7 @@ def test_entrypoint_classes_parity_between_backends():
         "signature": "svc.views.AdminView",
         "name": "AdminView",
         "decorators": [],
-        "id": "can://python/app/svc/views.py/AdminView",
+        "id": "can://app/python/svc/views.py/AdminView",
         "start_line": 1,
         "end_line": 10,
     }

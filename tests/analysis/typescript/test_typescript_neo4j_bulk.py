@@ -34,8 +34,11 @@ from cldk.analysis.typescript.neo4j.neo4j_backend import TSNeo4jBackend, _scoped
 from cldk.models.typescript import TSCallableOverview, TSCallsite
 
 APP = "test-app"
-PREFIX = f"can://typescript/{APP}/"
-SCOPE = {"p1": PREFIX, "p2": f"can://javascript/{APP}/"}
+PREFIX = f"can://{APP}/"
+#: What a *declared* node's id carries before its file key. The scope is the application prefix
+#: above; this one has the language segment, and only ids are built from it.
+CODE_PREFIX = f"{PREFIX}typescript/"
+SCOPE = {"p": PREFIX}
 OVERVIEW_MATCH = f"MATCH (c:TSCallable) WHERE {_scoped('c')} "
 
 
@@ -44,7 +47,7 @@ def _backend(modules=("src/models.ts", "src/util.ts", "src/controllers.ts")) -> 
     backend = object.__new__(TSNeo4jBackend)
     backend.application_name = APP
     backend._database = None
-    backend._module_ids = {m: f"{PREFIX}{m}" for m in modules}
+    backend._module_ids = {m: f"{CODE_PREFIX}{m}" for m in modules}
     backend._modules = list(modules)
     return backend
 
@@ -63,7 +66,7 @@ def _run_keyed(rows_by_fragment: dict):
 
 def _row(**over):
     row = {
-        "id": f"{PREFIX}src/models.ts/User/recordLogin",
+        "id": f"{CODE_PREFIX}src/models.ts/User/recordLogin",
         "signature": "src/models.User.recordLogin",
         "name": "recordLogin",
         "kind": "method",
@@ -101,7 +104,7 @@ def test_overview_builds_row_with_class_owner_and_derived_path():
 
 def test_overview_builds_row_with_interface_owner():
     backend = _backend()
-    row = _row(signature="src/models.Named.describe", name="describe", owner_signature="src/models.Named", owner_kind="interface", id=f"{PREFIX}src/models.ts/Named/describe")
+    row = _row(signature="src/models.Named.describe", name="describe", owner_signature="src/models.Named", owner_kind="interface", id=f"{CODE_PREFIX}src/models.ts/Named/describe")
     with patch.object(TSNeo4jBackend, "_run", side_effect=_run_keyed({OVERVIEW_MATCH: [row]})):
         overview = backend.get_callables_overview()
     assert overview[0].owner_kind == "interface"
@@ -112,7 +115,7 @@ def test_overview_namespace_or_module_owned_function_has_no_owner_leg_match():
     """RULING: namespace-owned (and module-level / nested) functions never match the TS_HAS_METHOD
     owner leg at all -- None/None falls straight out of the row."""
     backend = _backend()
-    row = _row(signature="src/util.StringUtil.slug", name="slug", kind="function", owner_signature=None, owner_kind=None, id=f"{PREFIX}src/util.ts/StringUtil/slug")
+    row = _row(signature="src/util.StringUtil.slug", name="slug", kind="function", owner_signature=None, owner_kind=None, id=f"{CODE_PREFIX}src/util.ts/StringUtil/slug")
     with patch.object(TSNeo4jBackend, "_run", side_effect=_run_keyed({OVERVIEW_MATCH: [row]})):
         overview = backend.get_callables_overview()
     assert overview[0].owner_signature is None
@@ -127,7 +130,7 @@ def test_overview_collects_decorator_names():
     assert overview[0].decorators == ["Get"]
 
 
-def test_overview_scopes_query_to_this_applications_two_prefixes():
+def test_overview_scopes_query_to_this_applications_prefix():
     captured = {}
 
     def _run(query, **params):
@@ -208,7 +211,7 @@ def test_decorated_callables_matches_marker_and_returns_overview():
         name="show",
         owner_signature="src/controllers.UserController",
         decorators=["Get"],
-        id=f"{PREFIX}src/controllers.ts/UserController/show",
+        id=f"{CODE_PREFIX}src/controllers.ts/UserController/show",
     )
     with patch.object(TSNeo4jBackend, "_run", side_effect=_run_keyed({"TS_DECORATED_BY]->(marker:TSDecorator)": [row]})):
         decorated = backend.get_decorated_callables(["Get"])
@@ -278,4 +281,4 @@ def test_callsites_for_query_shape_and_scope():
     assert "TS_RESOLVES_TO" in captured["query"]
     assert "coalesce(t.signature, t.module + '.' + t.name) AS callee" in captured["query"]
     assert captured["sigs"] == ["sig-a"]
-    assert captured["p1"] == PREFIX and captured["p2"] == SCOPE["p2"]
+    assert captured["p"] == PREFIX

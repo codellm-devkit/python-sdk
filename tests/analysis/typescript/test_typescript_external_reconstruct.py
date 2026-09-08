@@ -24,7 +24,7 @@ from cldk.analysis.typescript.neo4j import reconstruct as R
 from cldk.analysis.typescript.neo4j.neo4j_backend import TSNeo4jBackend
 from cldk.models.typescript import TSExternalNode, TSExternalSymbol
 
-APP_ID = "can://typescript/app"
+APP_ID = "can://app"
 
 
 def test_external_reconstructs_from_full_graph_props():
@@ -41,15 +41,18 @@ def test_external_reconstructs_with_empty_name_and_module():
     assert isinstance(sym, TSExternalNode)
 
 
-def test_get_external_symbols_keys_module_dot_name_and_scopes_by_both_namespace_prefixes():
-    """The scope is the **two** application prefixes plus the ``@external`` segment, not the
-    typescript prefix alone: an external a ``.js`` module owns is homed under
-    ``can://javascript/<app>/`` and a single-prefix reading dropped it silently (TS-3; leg 2.5b
-    review, finding 9). The third row is that external, and it must come back."""
+def test_get_external_symbols_keys_module_dot_name_and_scopes_by_the_application_prefix():
+    """The scope is the one **application** prefix plus the ``@external`` segment.
+
+    This used to be the two language prefixes, because an external a ``.js`` module owned was homed
+    under ``can://javascript/<app>/`` and a single-prefix reading dropped it silently (TS-3; leg
+    2.5b review, finding 9). 1.5.1 makes the ``@external`` home language-*neutral* --
+    ``can://<app>/@external/<module>/<name>``, no language segment at all -- so a
+    language-prefixed reading would now drop **every** external, and the one application prefix is exactly right."""
     rows = [
         {"p": {"id": f"{APP_ID}/@external/commander/parse", "name": "parse", "module": "commander", "kind": "external"}},
         {"p": {"id": f"{APP_ID}/@external/fs/readFileSync", "name": "readFileSync", "module": "fs", "kind": "external"}},
-        {"p": {"id": "can://javascript/app/@external/lodash/merge", "name": "merge", "module": "lodash", "kind": "external"}},
+        {"p": {"id": "can://app/@external/lodash/merge", "name": "merge", "module": "lodash", "kind": "external"}},
     ]
     captured = {}
 
@@ -65,5 +68,5 @@ def test_get_external_symbols_keys_module_dot_name_and_scopes_by_both_namespace_
     assert set(out) == {"commander.parse", "fs.readFileSync", "lodash.merge"}
     assert out["commander.parse"].module == "commander"
     assert out["commander.parse"].id == f"{APP_ID}/@external/commander/parse"
-    assert "(e:TSExternal) WHERE (e.id STARTS WITH $p1 OR e.id STARTS WITH $p2) AND e.id CONTAINS '/@external/'" in captured["query"]
-    assert (captured["p1"], captured["p2"]) == (f"{APP_ID}/", "can://javascript/app/")
+    assert "(e:TSExternal) WHERE (e.id STARTS WITH $p) AND e.id CONTAINS '/@external/'" in captured["query"]
+    assert captured["p"] == f"{APP_ID}/"

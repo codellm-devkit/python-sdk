@@ -68,7 +68,7 @@ class FakeSession:
         if "RETURN count(a) AS n, a.analyzer_version AS v" in query:
             v = self._driver.analyzer_version
             named = self._driver.application_name
-            if v is None or (named is not None and params.get("app") != named):
+            if v is None or (named is not None and params.get("app_id") != f"can://{named}"):
                 return [_FakeRecord({"n": 0, "v": None})]
             return [_FakeRecord({"n": 1, "v": v})]
         if self._driver.responder is not None:
@@ -81,9 +81,10 @@ class FakeSession:
 
 class FakeDriver:
     """Stands in for ``neo4j.GraphDatabase.driver``. ``analyzer_version=None`` means "no
-    ``:JApplication`` at all"; ``application_name``, when set, is the *only* name the graph holds --
-    a probe bound to any other ``$app`` gets "no such application", which is what makes the
-    ``:JApplication {name}`` anchor testable by behaviour rather than by grepping the statement."""
+    ``:JApplication`` at all"; ``application_name``, when set, is the *only* application the graph
+    holds -- a probe bound to any other ``$app_id`` gets "no such application", which is what makes
+    the ``:JApplication {id}`` anchor testable by behaviour rather than by grepping the
+    statement."""
 
     def __init__(self, rel_types=V2_RELATIONSHIP_TYPES, responder=None, analyzer_version="3.1.1", application_name=None) -> None:
         self.rel_types = set(rel_types)

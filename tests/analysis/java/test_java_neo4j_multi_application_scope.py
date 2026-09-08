@@ -21,8 +21,8 @@ The SDK attaches to a graph someone else deployed, and a database holding severa
 the expected deployment -- the leg-3 reference graph holds daytrader8 and ThingsBoard side by side.
 A **qualified name** is not application-stamped: two applications can declare ``shared.Widget`` in
 a file with the same repo-relative path. On a 3.0.1 graph the only scope is the ``can://`` id
-prefix and the ``:JApplication {name}`` anchor: there is no ``_module`` property anywhere, and Java
-has exactly **one** prefix, ``can://java/<app>/``, spelled by :func:`_scoped` as
+prefix and the ``:JApplication {id}`` anchor: there is no ``_module`` property anywhere, and Java
+has exactly **one** prefix, ``can://<app>/``, spelled by :func:`_scoped` as
 ``x.id STARTS WITH $prefix``.
 
 Two nets, as in the Python and TypeScript twins:
@@ -87,12 +87,12 @@ def _build() -> _Graph:
     g.node("Named", ["JAnnotation"], name="Named")
     g.node("java.util", ["JPackage"], name="java.util")
     for app, tag in ((APP_A, "alpha"), (APP_B, "beta")):
-        app_id = g.node(f"can://java/{app}", ["JApplication"], name=app, schema_version="2.0.0", analyzer_name="codeanalyzer-java", analyzer_version="3.0.1")
+        app_id = g.node(f"can://{app}", ["JApplication"], name=app, schema_version="2.0.0", analyzer_name="codeanalyzer-java", analyzer_version="3.1.1")
         # Both applications declare the same two repo-relative paths -- the key collision.
-        mod = g.node(f"can://java/{app}/{SHARED_MODULE}", ["JModule"], file_key=SHARED_MODULE, package="shared", content_hash=f"{tag}hash")
+        mod = g.node(f"can://{app}/java/{SHARED_MODULE}", ["JModule"], file_key=SHARED_MODULE, package="shared", content_hash=f"{tag}hash")
         g.edge(app_id, "J_HAS_MODULE", mod)
         g.edge(mod, "J_IMPORTS", "java.util", spellings=[f"java.util.{tag.title()}List"], is_static=None)
-        helper_mod = g.node(f"can://java/{app}/{OTHER_MODULE}", ["JModule"], file_key=OTHER_MODULE, package="shared", content_hash=f"{tag}helper")
+        helper_mod = g.node(f"can://{app}/java/{OTHER_MODULE}", ["JModule"], file_key=OTHER_MODULE, package="shared", content_hash=f"{tag}helper")
         g.edge(app_id, "J_HAS_MODULE", helper_mod)
 
         # shared.Widget in both applications, same qualified name, different members.
@@ -172,7 +172,7 @@ def _build() -> _Graph:
         g.edge(method, "J_HAS_BODY_NODE", entry)
         g.edge(method, "J_CALLS", helper, weight=1, prov=["declared", "rta"])
         ext = g.node(
-            f"can://java/{app}/@external/java.io.PrintStream/println{'A' if app == APP_A else 'B'}(java.lang.String)",
+            f"can://{app}/@external/java.io.PrintStream/println{'A' if app == APP_A else 'B'}(java.lang.String)",
             ["JSymbol", "JExternal"],
             kind="method",
             signature=f"println{'A' if app == APP_A else 'B'}(java.lang.String)",
@@ -182,7 +182,7 @@ def _build() -> _Graph:
 
         # The artifact layer: unprefixed labels, reached only through the application anchor.
         art = g.node(
-            f"can://artifact/{app}/pom.xml",
+            f"can://{app}/artifact/pom.xml",
             ["Artifact"],
             path="pom.xml",
             format="xml",
@@ -426,11 +426,11 @@ def _responder(query: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
     """:func:`fake_cypher`, after asserting every prefix parameter bound at run time is application
     A's -- the audit below judges spellings; this judges the values."""
     if "prefix" in params:
-        assert params["prefix"].startswith(f"can://java/{APP_A}/"), f"$prefix bound to {params['prefix']!r}, outside application A's scope"
+        assert params["prefix"].startswith(f"can://{APP_A}/"), f"$prefix bound to {params['prefix']!r}, outside application A's scope"
     for value in params.get("prefixes") or ():
-        assert value.startswith(f"can://java/{APP_A}/"), f"$prefixes carries {value!r}, outside application A's scope"
-    if "app" in params:
-        assert params["app"] == APP_A, f"$app bound to {params['app']!r}"
+        assert value.startswith(f"can://{APP_A}/"), f"$prefixes carries {value!r}, outside application A's scope"
+    if "app_id" in params:
+        assert params["app_id"] == f"can://{APP_A}", f"$app_id bound to {params['app_id']!r}"
     return fake_cypher(query, params)
 
 
@@ -440,18 +440,22 @@ def _backend() -> JNeo4jBackend:
 
 
 # =====================================================================================
-# The fake graph is what a 3.0.1 graph is
+# The fake graph is what a 3.1.1 graph is
 # =====================================================================================
 def test_the_fake_graph_carries_no_module_property_and_no_v1_vocabulary():
     assert GRAPH.nodes and not any("_module" in props for _, props in GRAPH.nodes.values())
     assert not any(rel in {"J_HAS_UNIT", "J_HAS_CALLABLE", "J_HAS_PARAMETER", "J_HAS_CALLSITE", "J_HAS_COMMENT"} for _, rel, _, _ in GRAPH.edges)
-    prefixes = tuple(f"can://java/{app}/" for app in (APP_A, APP_B))
+    prefixes = tuple(f"can://{app}/" for app in (APP_A, APP_B))
     assert all(nid.startswith(prefixes) for nid, (labels, _) in GRAPH.nodes.items() if "JCanNode" in labels)
 
 
-def test_the_scope_is_one_prefix_and_the_application_name():
+def test_the_scope_is_one_prefix_and_the_application_id():
+    """The *application* prefix, not the narrower ``can://<app>/java/`` code one: the ``@external``
+    ghosts sit outside the language segment since 3.1.1, and scoping on the code prefix would
+    return none of them."""
     backend = _backend()
-    assert backend._scope_prefix == f"can://java/{APP_A}/"
+    assert backend._scope_prefix == f"can://{APP_A}/"
+    assert backend._application_id == f"can://{APP_A}"
     assert backend.application_name == APP_A
     assert sorted(backend._modules) == [OTHER_MODULE, SHARED_MODULE]
 
@@ -550,15 +554,15 @@ def test_the_addressing_surface_answers_from_this_application_only():
     assert found.callable is not None and found.callable.signature == METHOD_SIG
     assert found.module.module_name == "shared"
     assert found.body is not None and found.body.kind == "call"
-    assert found.body.id == f"can://java/{APP_A}/{SHARED_MODULE}/Widget/{METHOD_SIG}@7:12"
+    assert found.body.id == f"can://{APP_A}/java/{SHARED_MODULE}/Widget/{METHOD_SIG}@7:12"
     # What the call resolves to is read through ``J_RESOLVES_TO``, whose target is a node like any
     # other and carries the prefix predicate for the same reason every other endpoint does.
-    assert found.body.callee == f"can://java/{APP_A}/{OTHER_MODULE}/Helper/help()", "the callee came from application B"
+    assert found.body.callee == f"can://{APP_A}/java/{OTHER_MODULE}/Helper/help()", "the callee came from application B"
     assert "alpha" in found.source and "beta" not in found.source
 
     node = backend.resolve_callable("render")
     assert node.callable == f"{CLASS_FQN}.{METHOD_SIG}"
-    assert node.ref.startswith(f"can://java/{APP_A}/")
+    assert node.ref.startswith(f"can://{APP_A}/")
     assert "alpha" in backend.get_source(node.callable)
     assert backend.resolve_value("alpha", within="Widget.render").ref == f"{node.ref}@formal_in:0"
     # The graph carries no text below callable granularity: the position is found, its source is
@@ -596,7 +600,7 @@ def test_external_symbols_are_this_applications_ghosts_only():
     backend = _backend()
     external = backend.get_external_symbols()
     assert [s.signature for s in external.values()] == ["printlnA(java.lang.String)"], "application B's external target leaked"
-    assert all(nid.startswith(f"can://java/{APP_A}/@external/") for nid in external)
+    assert all(nid.startswith(f"can://{APP_A}/@external/") for nid in external)
 
 
 def test_a_graph_that_homed_no_external_answers_an_empty_map(monkeypatch):
@@ -638,7 +642,7 @@ def test_a_module_row_that_is_not_a_type_is_refused_by_the_model():
     from cldk.analysis.java.neo4j import reconstruct as R
 
     with pytest.raises(ValidationError) as e:
-        R.type_({"id": "can://java/app_a/x/Y.java/Y", "name": "Y", "kind": "widget"}, decorators=[], fields={}, callables={}, types={}, enum_constants=[], record_components=[])
+        R.type_({"id": "can://app_a/java/x/Y.java/Y", "name": "Y", "kind": "widget"}, decorators=[], fields={}, callables={}, types={}, enum_constants=[], record_components=[])
     assert "kind" in str(e.value) and "can://" not in str(e.value)
 
 
@@ -747,7 +751,7 @@ def _unscoped_variables(statement: str) -> List[str]:
     """The node variables the statement binds that are **not** provably inside one application.
 
     A variable is inside when it carries ``id STARTS WITH $prefix`` (or the narrow ``UNWIND
-    $prefixes`` spelling), when it *is* the ``(:JApplication {name: $app})`` anchor, or when the
+    $prefixes`` spelling), when it *is* the ``(:JApplication {id: $app_id})`` anchor, or when the
     pattern reaches it from an inside variable over :data:`_KEEPS_SCOPE`. Judging per variable is
     the point: a presence check ("does the text contain a prefix predicate?") passes
     ``MATCH (s:JCallable)-[:J_CALLS]->(t:JCallable) WHERE s.id STARTS WITH $prefix``, which leaks
@@ -786,7 +790,7 @@ def _unscoped_variables(statement: str) -> List[str]:
                 rels = set((m.group(6) or "").split("|"))
                 continue
             var, labels, props = m.group(1) or f"_{m.start()}", m.group(2), m.group(3)
-            anchor = labels == "JApplication" and props == "name: $app"
+            anchor = labels == "JApplication" and props == "id: $app_id"
             here = var in prefixed or anchor or inside.get(var, False) or (previous and rels is not None and rels <= _KEEPS_SCOPE)
             if not var.startswith("_"):
                 bound.append(var)
@@ -954,7 +958,7 @@ def test_no_statement_names_retired_vocabulary():
     "statement, leaks",
     [
         ("MATCH (s:JCallable)-[:J_CALLS]->(t:JCallable) WHERE s.id STARTS WITH $prefix RETURN s.id", ["t"]),
-        ("MATCH (:JApplication {name: $app})-[:J_HAS_MODULE]->(m:JModule) MATCH (x:JType) RETURN x.id", ["x"]),
+        ("MATCH (:JApplication {id: $app_id})-[:J_HAS_MODULE]->(m:JModule) MATCH (x:JType) RETURN x.id", ["x"]),
         ("MATCH (c:JCallable) RETURN c.id", ["c"]),
     ],
     ids=["one-endpoint-of-two", "a-second-unanchored-match", "no-scope-at-all"],
@@ -970,7 +974,7 @@ def test_the_audit_rejects_a_statement_that_scopes_only_part_of_its_pattern(stat
     "statement",
     [
         "MATCH (s:JCallable)-[:J_CALLS]->(t:JCallable) WHERE s.id STARTS WITH $prefix AND t.id STARTS WITH $prefix RETURN s.id",
-        "MATCH (:JApplication {name: $app})-[:J_HAS_MODULE]->(m:JModule)-[r:J_IMPORTS]->() RETURN m.file_key",
+        "MATCH (:JApplication {id: $app_id})-[:J_HAS_MODULE]->(m:JModule)-[r:J_IMPORTS]->() RETURN m.file_key",
         "CALL db.relationshipTypes()",
     ],
     ids=["both-endpoints-prefixed", "walked-from-the-anchor", "introspection"],
@@ -1013,7 +1017,7 @@ def test_no_statement_spells_the_scope_with_any():
 @pytest.mark.parametrize("name", sorted(_every_statement()))
 def test_every_statement_is_application_scoped_or_anchored(name):
     """Two ways a node stays inside one application, judged **per bound variable**: the pattern
-    reaches it from an ``(:JApplication {name: $app})`` anchor, or it carries the
+    reaches it from an ``(:JApplication {id: $app_id})`` anchor, or it carries the
     ``id STARTS WITH $prefix`` predicate itself. A qualified name, a signature and a ``file_key``
     are all shared vocabulary, so neither can be skipped for one endpoint of two."""
     statement = _every_statement()[name]

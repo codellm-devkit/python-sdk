@@ -7,19 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Breaking
+### Changed — BREAKING (graph identity)
 
-- **The Java Neo4j floor is `codeanalyzer-java` 3.1.1**, raised from 3.0.1. A graph emitted by 3.1.0
-  or earlier is refused at attach with `GraphSchemaMismatch` naming the version found and the floor.
-  **Migration:** re-emit with the pinned analyzer (`codeanalyzer-java --emit neo4j`); there is no
-  in-place upgrade.
+**The `can://` id grammar puts the application outermost**, and the SDK now reads and writes only
+that form, on all three backends:
 
-  3.0.1 is where the old `can://` grammar settled, so a 3.0.x graph is *readable* — but reading it is
-  not the same as answering on it. Such a graph has no config-read edges, no entrypoint report, and
-  before 3.0.3 a port lattice joined to nothing, so the surface degrades in three separate places
-  instead of once. 3.1.0 is refused for a different and harder reason: it predates the
-  `can://<app>/<lang>/…` identity grammar, so every prefix-scoped query would match nothing at all.
-  One clear refusal at attach is a better contract than a query surface that is quietly empty.
+```
+before   can://<lang>/<app>/<file>/<type>/<callable-signature>
+after    can://<app>/<lang>/<file>/<type>/<callable-signature>
+```
+
+Two shared namespaces also changed shape, in every analyzer:
+
+- **externals are language-neutral** — `can://<app>/@external/<module>/<name>`, no language segment,
+  so sibling analyzers over the same repository name a library symbol identically;
+- **artifacts sit inside the application prefix** — `can://<app>/artifact/<path>`, so a destructive
+  push reclaims them instead of letting them accumulate.
+
+**Analyzer pins and graph floors moved together, and the floors are exact:**
+
+| backend | pin | Neo4j graph floor | refuses, by name |
+| --- | --- | --- | --- |
+| Python | `codeanalyzer-python==1.5.0` | 1.5.0 | 1.4.1 |
+| TypeScript | `codeanalyzer-typescript==1.5.2` | 1.5.2 | 1.5.0 and 1.5.1 |
+| Java | `codeanalyzer-java==3.1.1` | 3.1.1 | 3.1.0 |
+
+The floors are *exactly* the flip release, not "that release or newer with the older one tolerated".
+The releases immediately below each one are in the wild carrying the old grammar; each carries every
+relationship type the vocabulary probe looks for, so it attaches cleanly and then answers every
+prefix-scoped statement with **zero rows** — a silent empty that reads as "this codebase has
+nothing". Refusing on the version stamp is the only thing between a caller and that.
+
+Java's floor moves furthest — 3.0.1 to 3.1.1 — because the intervening releases were already degraded for other reasons: a 3.0.x graph carries no config-read edges, no entrypoint report, and before 3.0.3 a port lattice joined to nothing. It was readable but answered three separate refusals; now it is one clear “re-emit” at attach.
+
+TypeScript's floor is **1.5.2 rather than 1.5.1**, the release that actually flipped the grammar,
+because 1.5.1 shipped with its internal version constant left at `1.5.0` and therefore stamps itself
+`1.5.0` on the graph. There is no version test that admits a 1.5.1 graph and refuses a genuine
+old-grammar 1.5.0 one, so the floor sits at the first release whose stamp tells the truth.
+
+**Migration.** Re-emit every attached graph with the pinned analyzer, and **wipe the database
+first**: old and new ids do not collide, so a re-push onto an existing graph leaves a disconnected
+old copy that the new application-prefix delete cannot reach.
+
+### Changed
+
+- **TypeScript's Neo4j scoping is one prefix, not two.** With the language outermost the analyzer's
+  two namespaces were two disjoint top-level prefixes, and every scoped statement spelled them as an
+  `OR`; with the application outermost they are two children of `can://<app>/`. The dual-namespace
+  branching is removed rather than left dead — it is what produced a scoped lookup returning 40 rows
+  where 113 was right, and what left the now language-neutral `@external` ghosts outside both
+  prefixes. The two language prefixes survive in exactly one place, `TSNeo4jBackend._module_key`,
+  which has to strip the language segment to reach the file key beneath it; nothing is scoped on
+  them.
+- **The application root is matched by its `can://<app>` id** on all three backends
+  (`:PyApplication`, `:Application`, `:JApplication`). All three analyzers moved the root's merge key
+  to `id`; `name` survives as a display property and carries no uniqueness constraint any more.
+- The Python backend separates the **application** scope (`can://<app>/`, which every statement
+  carries — it has to admit the language-neutral `@external` ghosts) from the **code** prefix
+  (`can://<app>/python/`), which only `_module_key` uses to recover a repo-relative module key.
+  The Java backend makes the same split, for the same reason.
 
 ## [v2.0.0-rc.3] - 2026-09-07
 

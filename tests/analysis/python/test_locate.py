@@ -267,19 +267,18 @@ def test_locate_query_is_scoped_to_the_application(py, fake_driver):
 
 def test_locate_and_resolve_seek_the_pysymbol_index(py, fake_driver):
     """The per-module prefix seeks the unique ``:PySymbol(id)`` range index every served graph
-    carries (1.4.0 and 1.4.1 alike; measured on odoo, 40 positions: 381 -> 46 ms and 427 -> 53 ms).
-    The anchor is pinned as text because dropping the label loses the seek and never the answer --
-    a scan is a silent 8x, not a failure. ``resolve_callable`` names it for the same reason; both
-    are the same statement whatever generation the graph is."""
+    carries (measured on odoo, 40 positions: 381 -> 46 ms and 427 -> 53 ms). The anchor is pinned
+    as text because dropping the label loses the seek and never the answer -- a scan is a silent
+    8x, not a failure. ``resolve_callable`` names it for the same reason.
+
+    The second half of this test used to attach a 1.4.0 graph and assert it got the *same*
+    statement, because two generations were served. #376 raised the floor to 1.5.0 exactly (a
+    1.4.1 graph carries the old id grammar and would answer nothing), so there is only one served
+    generation left and nothing to compare it against; ``test_probe_serves_every_generation_from
+    _the_floor_up_silently`` is where the served range is pinned now."""
     py.locate("src/app.py", 21)
     assert "OPTIONAL MATCH (c:PyCallable:PySymbol) " in next(s for s in fake_driver.statements if "UNWIND $positions AS pos" in s)
     assert PyNeo4jBackend._RESOLVE_CALLABLE_QUERY.startswith("MATCH (c:PyCallable:PySymbol) WHERE c.id STARTS WITH $prefix")
-
-    fake_driver.statements.clear()
-    fake_driver.analyzer_version = "1.4.0"
-    old = PyNeo4jBackend._from_driver(fake_driver, application_name="app")
-    assert old.locate("src/app.py", 21).callable is not None
-    assert "OPTIONAL MATCH (c:PyCallable:PySymbol) " in next(s for s in fake_driver.statements if "UNWIND $positions AS pos" in s)
 
 
 def test_locate_scope_is_actually_honoured(py):

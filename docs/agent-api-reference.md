@@ -30,21 +30,24 @@ Attaching raises `GraphSchemaMismatch` if the graph was built by a different ana
 That is deliberate: the alternative is every query silently returning zero rows. If you see it,
 the graph needs re-ingesting — it is not a bug in your query.
 
-**Graph version floor: codeanalyzer-python 1.4.0.** The probe reads `:PyApplication.analyzer_version`
+**Graph version floor: codeanalyzer-python 1.5.0.** The probe reads `:PyApplication.analyzer_version`
 and the message names what it found and the floor. What attaching to each generation does:
 
 | graph emitted by | attach | behaviour |
 | --- | --- | --- |
-| < 1.4.0, or no `analyzer_version` | refused (`GraphSchemaMismatch`) | the `can://` id grammar every query scopes on does not exist there |
-| 1.4.0 | served, silent | identical results and plans (`locate` / `resolve_callable` seek the `:PySymbol(id)` index both generations carry); `get_entrypoint_coverage()` reports `entrypoint_report_unavailable` (the report was not projected yet) |
-| 1.4.1 and newer | served, silent | as 1.4.0, and the entrypoint report is read off the graph |
+| < 1.5.0, or no `analyzer_version` | refused (`GraphSchemaMismatch`) | the `can://<app>/…` id grammar every query scopes on does not exist there — a 1.4.x graph spells it `can://python/<app>/…`, so it would attach and then answer nothing |
+| 1.5.0 and newer | served, silent | the entrypoint report is read off the graph |
+
+**Migration from a 1.4.x graph:** re-emit with `codeanalyzer-python>=1.5.0 --emit neo4j`. Old and new
+ids do not collide, so **wipe the database first** — a re-push onto the existing graph leaves a
+disconnected old copy that the new application-prefix delete cannot reach.
 
 ---
 
 ## TypeScript
 
-Status: leg 2.5b (`codeanalyzer-typescript` 1.5.0 pinned; graphs emitted by 1.3.0 or newer
-served, with four accessors gated on the 1.4.0 binding layer — see the floor below). What attaches
+Status: leg 2.5b (`codeanalyzer-typescript` 1.5.2 pinned; graphs emitted by 1.5.2 or newer
+served — see the floor below). What attaches
 today is the **1.x accessor surface** — symbol table, classes / interfaces /
 enums / type aliases / namespaces, methods, fields, call graph, call sites, decorators, externals,
 synthesized callables, the four bulk accessors and the repository-artifact layer — on both backends.
@@ -87,37 +90,47 @@ ts = CLDK.typescript(project_path=None, backend=Neo4jConnectionConfig(
 ts = CLDK.typescript(project_path="/path/to/project", backend=TSCodeAnalyzerConfig())
 ```
 
-**Graph version floor: codeanalyzer-typescript 1.3.0.** The probe requires `TS_HAS_MODULE` /
+**Graph version floor: codeanalyzer-typescript 1.5.2.** The probe requires `TS_HAS_MODULE` /
 `TS_HAS_METHOD` / `TS_HAS_BODY_NODE` / `TS_CALLS`, then reads `analyzer_version` off
-`:Application {id: can://typescript/<app>}`.
+`:Application {id: can://<app>}`.
 
 | graph | attach |
 | --- | --- |
 | emitted by 0.4.x (`:Symbol` / `CALLS` / `HAS_CALLSITE`), a Python graph, an empty database | refused (`GraphSchemaMismatch`), naming the relationship types found and missing |
-| `analyzer_version` below 1.3.0 (a 1.2.0 graph included), unparsable, or no `:Application` with that id | refused, naming what was found and the floor |
-| 1.3.0 | served, silent — but `get_imports` / `get_exports` / `get_method_parameters` / `get_unresolved_config_reads` refuse (below) |
-| 1.4.0 and newer | served, silent; all four answer. 1.5.0 also fixes the one-line source truncation and the declaration-merge id collision below |
+| `analyzer_version` below 1.5.2 (1.2.0, 1.3.x, 1.4.0, 1.5.0 and 1.5.1 alike), unparsable, or no `:Application` with that id | refused, naming what was found and the floor |
+| 1.5.2 and newer | served, silent |
 
-A 1.2.0 graph carries none of the entrypoint marks and none of the per-callable graph vocabulary
-this surface reads, so it is refused rather than served with silent empties. **Migration:** re-emit
-with `codeanalyzer-typescript>=1.5.0 --emit neo4j` (which takes no `-a`: the emit is always full
-depth).
+Two different reasons sit behind that floor. A **1.2.0** graph carries none of the entrypoint marks
+and none of the per-callable graph vocabulary this surface reads. A **1.5.0** graph has all of that
+and still cannot be served: 1.5.1 moved the application to the outermost segment of the `can://`
+grammar, so 1.5.0's `can://typescript/<app>/…` ids match none of the application-prefix predicates
+every statement carries. The floor is **1.5.2 rather than 1.5.1** because 1.5.1 shipped with its
+internal version constant left at `1.5.0` and therefore *stamps itself 1.5.0*: there is no version
+test that admits a 1.5.1 graph and refuses a genuine 1.5.0 one, so the floor sits at the first
+release whose stamp tells the truth.
+
+**Migration:** re-emit with `codeanalyzer-typescript>=1.5.2 --emit neo4j` (which takes no `-a`: the
+emit is always full depth). **Wipe the database first** if it holds a pre-1.5.1 graph — old and new
+ids do not collide, so a re-push leaves a disconnected old copy the new prefix-scoped delete cannot
+reach.
 
 **The 1.4.0 binding layer, and how its absence is decided.** codeanalyzer-typescript 1.4.0
 ([#182](https://github.com/codellm-devkit/codeanalyzer-typescript/issues/182)) added `TS_IMPORTS` /
 `TS_RE_EXPORTS` edges, `:TSModule.exports_json`, `:TSCallable.parameters_json` and
 `TS_READS_CONFIG_UNRESOLVED`, which is what makes `get_imports`, `get_exports`,
-`get_method_parameters` and `get_unresolved_config_reads` answer over Neo4j. A **1.3.0 graph is
-still attachable** and carries none of it, so those four raise there rather than return an empty
-that would read as "imports nothing" / "takes no parameters" / "every read resolved". The decision
-is **measured from the application's own data** — one statement asking whether any of the three
-carriers is present — never from `analyzer_version`, so a re-emitted graph starts answering with no
-SDK change. It costs one query, on first use of one of the four, cached for the backend's life.
+`get_method_parameters` and `get_unresolved_config_reads` answer over Neo4j. Every graph the
+current floor admits carries it, so in practice those four always answer; the gate stays because
+the decision is **measured from the application's own data** — one statement asking whether any of
+the three carriers is present — never from `analyzer_version`. A graph that somehow lacks the layer
+makes those four raise rather than return an empty that would read as "imports nothing" / "takes no
+parameters" / "every read resolved", and a re-emitted graph starts answering with no SDK change. It
+costs one query, on first use of one of the four, cached for the backend's life.
 
-**JavaScript is in scope.** The analyzer ids `.js/.jsx/.mjs/.cjs` modules `can://javascript/<app>/…`
-beside `can://typescript/<app>/…`; every accessor reads both, and every Neo4j statement is scoped
-by the two prefixes. Path values are repo-relative module keys with their real extension
-(`src/pages/Home.tsx`).
+**JavaScript is in scope.** The analyzer ids `.js/.jsx/.mjs/.cjs` modules `can://<app>/javascript/…`
+beside `can://<app>/typescript/…`; every accessor reads both, and since 1.5.1 put the application
+outermost, one `can://<app>/` prefix scopes both namespaces (it used to be two, which is how a
+statement naming one of them came to answer for half the graph). Path values are repo-relative
+module keys with their real extension (`src/pages/Home.tsx`).
 
 **The call graph keeps TypeScript's endpoints.** A module (top-level code) can be a caller and a
 class (`new X()`) a callee; nodes carry `kind` ∈ `module | class | interface | enum | type_alias |
@@ -254,7 +267,7 @@ accessors** — `get_callables_overview`, `get_method_bodies`, `get_decorated_ca
   initializers carry a body block and *are* in the result; what they lack is a `declaration`, which
   is a different field (101 callables have no `declaration`, 99 have no `code`).
 - **`get_config_keys` is keyed `"<artifact path>@key/<dotted key>"`,** artifact-relative rather than
-  by the raw `can://artifact/<app>/…` id. Python and TypeScript still key by the id; aligning the
+  by the raw `can://<app>/artifact/…` id. Python and TypeScript still key by the id; aligning the
   three is python-sdk#346 and is deliberately not done piecemeal.
 - **`get_config_uses` / `get_config_readers` / `get_unresolved_config_reads` answer from
   codeanalyzer-java 3.1.0 on, and `prov` says how strong the evidence is.** 3.1.0 added the
@@ -293,7 +306,7 @@ java = CLDK.java(backend=Neo4jConnectionConfig(
     application_name="daytrader8"))
 ```
 
-**Analyzer floor: codeanalyzer-java 3.0.1** (the pin is `[tool.backend-versions]` in
+**Analyzer floor: codeanalyzer-java 3.1.1** (the pin is `[tool.backend-versions]` in
 `pyproject.toml` and is ahead of the floor; `--emit neo4j` always runs at level 4 and
 forces external calls). Attaching to a graph refuses rather than answering empty, and the message
 names what it found and the floor:
@@ -301,9 +314,16 @@ names what it found and the floor:
 | graph | attach |
 | --- | --- |
 | no `J_HAS_MODULE` / `J_HAS_METHOD` / `J_HAS_BODY_NODE` / `J_CALLS` (a pre-3.0.1 Java graph, a graph from another language's analyzer, an empty database) | refused — `GraphSchemaMismatch`, naming the missing types and the ones found |
-| no `:JApplication {name: <application_name>}` | refused — the name is the anchor every statement walks out from, so a wrong one would make every answer empty |
-| `analyzer_version` below 3.0.1, unreadable, or absent | refused |
-| 3.0.1 and newer | served, silent |
+| no `:JApplication {id: can://<application_name>}` | refused — that root is the anchor every statement walks out from, so a wrong application would make every answer empty |
+| `analyzer_version` below 3.1.1, unreadable, or absent | refused |
+| 3.1.1 and newer | served, silent |
+
+3.1.1 moved the application to the outermost segment of the `can://` grammar
+(`can://<app>/java/<file>/…`, was `can://java/<app>/…`) and made `@external` ids language-neutral
+(`can://<app>/@external/…`). A 3.1.0 graph has every relationship type and the right body-node
+shape, and still answers every prefix-scoped statement with zero rows, so it is refused rather than
+served. **Migration:** re-emit with `codeanalyzer-java>=3.1.1 --emit neo4j`, wiping the database
+first — old and new ids do not collide.
 
 Locally the same rule applies to the cache: an `analysis.json` with no `schema_version` (1.x
 output) is refused with a re-run message, not parsed into an empty application.
@@ -585,7 +605,7 @@ different strings and should drop the stripping. (Issue #320 covers the sibling 
 
 ```
 addons.account_payment.controllers.payment.PaymentPortal.invoice_transaction
-can://python/odoo-slim-19/@external/logging.Logger/info
+can://odoo-slim-19/@external/logging.Logger/info
 ```
 
 **Scope it.** 364,752 edges is not an answer to a question about one function.
@@ -673,10 +693,10 @@ classes on the same checkout. The number is a fact about the analyzer generation
 never about the application alone.
 
 So an empty `get_entrypoints()` means either "no entrypoints" or "the pass found nothing", and you
-cannot tell from the list. `get_entrypoint_coverage()` is how you ask. Over a Neo4j graph emitted
-by codeanalyzer-python 1.4.0 it reports `entrypoint_report_unavailable` — that graph does not carry
-the report — which is itself the answer: *you cannot trust the zero*. From 1.4.1 the graph carries
-it and the answer is the pass's own report, same as the local backend.
+cannot tell from the list. `get_entrypoint_coverage()` is how you ask. From 1.4.1 the graph carries
+the pass's own report and the answer is that report, same as the local backend; a graph that does
+not carry it reports `entrypoint_report_unavailable`, which is itself the answer — *you cannot
+trust the zero*. Every graph above the 1.5.0 floor carries it.
 
 Concluding "this application has no attack surface" from an empty list is the single worst mistake
 available in this API.

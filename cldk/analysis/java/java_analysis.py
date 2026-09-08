@@ -1839,7 +1839,7 @@ class JavaAnalysis:
         """Return every configuration key flattened out of a config-bearing artifact, keyed
         ``"<artifact repo-relative path>@key/<dotted key>"`` (``pom.xml@key/project.artifactId``).
 
-        That is the analyzer's own id with its ``can://artifact/<app>/`` prefix dropped: the
+        That is the analyzer's own id with its ``can://<app>/artifact/`` prefix dropped: the
         application name belongs to the run, not to the key, and ``can://`` ids stay off the public
         surface (E6). The full id is still on ``PyConfigKey.id``. Python and TypeScript key this by
         the raw id today; aligning the three is tracked as python-sdk#346 and is deliberately not

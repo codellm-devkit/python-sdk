@@ -94,7 +94,7 @@ def test_get_cfg_returns_the_callables_own_edges_with_global_endpoints(ts):
     assert page.total == 5 and len(page.edges) == 5
     assert page.complete and page.next_cursor is None
     for e in page.edges:
-        assert e.src.startswith("can://typescript/slim/") and e.dst.startswith("can://typescript/slim/")
+        assert e.src.startswith("can://slim/typescript/") and e.dst.startswith("can://slim/typescript/")
         assert e.kind in {"fallthrough", "true", "false", "switch_case", "loop_back", "exception", "return", "break", "continue", "yield", "await_resume"}
     assert page.edges == sorted(page.edges, key=lambda e: (e.src, e.dst, e.kind or ""))
 
