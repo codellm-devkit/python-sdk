@@ -69,7 +69,11 @@ DAYTRADER_ENTRYPOINT_TYPES = 66
 DAYTRADER_CALLABLES = 1216
 DAYTRADER_EXTERNALS = 1195
 SCALE_INTERFACES, SCALE_ENUMS, SCALE_RECORDS = 594, 192, 35
-SCALE_EXTERNALS = 2570
+#: 2,570 on a graph emitted by codeanalyzer-java 3.0.3; 3.1.0 adds one, and it is not a call target:
+#: ``@external/org.springframework.beans.factory.annotation.Value/value()``, the ghost callee of
+#: ThingsBoard's ``@Value`` config reads. ``J_READS_CONFIG_UNRESOLVED`` points at a ``:JExternal``,
+#: so a read the analyzer could not resolve now mints one even where nothing calls it.
+SCALE_EXTERNALS = 2571
 
 TB_MSG_TYPE = "org.thingsboard.server.common.data.msg.TbMsgType"
 TB_RECORD = "org.thingsboard.server.coapserver.TbCoapDtlsSessionKey"

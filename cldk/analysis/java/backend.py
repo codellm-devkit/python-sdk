@@ -1221,8 +1221,11 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         Raises:
             CodeanalyzerExecutionException: See :meth:`_config_overlay`.
         """
-        wanted, found = self._config_key_ids(key), {}
-        for use in self.get_config_uses(key) if wanted else []:
+        # Through :meth:`get_config_uses` rather than around it, so a key this application does not
+        # declare cannot skip the refusal: whether the overlay is there is not a fact about which
+        # key you asked for.
+        found: Dict[str, _Addressed] = {}
+        for use in self.get_config_uses(key):
             # ``src`` is a body-node id (``<callable id>@<line>:<col>``) or, for the other three
             # sources the schema allows, the declaration's own id. One lookup covers both: a
             # callable id carries no ``@`` of its own.

@@ -399,6 +399,13 @@ names its upstream issue where there is one:
   the kind would hide a real branch, so it is reported as the analyzer spells it — the same way
   TypeScript reports its own out-of-list vertices. Match on the string, don't assume the frozenset
   is exhaustive across languages.
+- **`get_ddg` over Neo4j carries `points-to` edges the local payload does not**, and it is the same
+  difference of what each source was asked. codeanalyzer-java 3.1.0 made the level-4 `points-to`
+  layer depend on `--external-calls` — forced on by `--emit neo4j`, never passed by the SDK's local
+  run — where 3.0.3 produced the same edges either way. On daytrader8 that is 276 edges of 10,430:
+  the graph is a strict superset, the payload has nothing the graph lacks, and running the analyzer
+  by hand with `-a 4 --external-calls` reproduces the graph's set exactly. `slice_forward` and the
+  other forward walks can therefore reach further over Neo4j. Reported upstream.
 - **`get_external_symbols` answers over Neo4j and raises locally**, and that is a difference of what
   each source was *asked*, not of policy. codeanalyzer-java emits `external_symbols` only under
   `--external-calls`, which is off by default and which `--emit neo4j` forces on — so the graph

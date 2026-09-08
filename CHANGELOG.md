@@ -194,6 +194,16 @@ surface** (3b). Design records: `docs/design/specs/2026-09-06-leg-2.5-typescript
   call targets only under `--external-calls`, which `--emit neo4j` forces and a local run does not.
 - The Java graph carries a `switch` body-node kind, which is outside `SliceNode.KINDS` (that vocabulary is
   codeanalyzer-python's, and Python has no switch statement). It is reported as the analyzer spells it.
+- **Java's `get_ddg()` over Neo4j carries 276 `points-to` edges (on daytrader8) that the same
+  analyzer's `analysis.json` does not, and that is a difference of what each source was asked.**
+  codeanalyzer-java 3.1.0 makes the level-4 `points-to` layer depend on `--external-calls`, which
+  `--emit neo4j` forces on and which the SDK's local run does not pass; 3.0.3 produced the same
+  10,430 edges either way. Measured on daytrader8, same tree, four runs: 3.0.3 `-a 4` → 10,430
+  (1,134 `points-to`); 3.1.0 `-a 4` → 10,154 (858); 3.1.0 `-a 4 --external-calls` → 10,430, set for
+  set identical to the graph; 3.1.0 `--emit neo4j` → 10,430. The graph is a strict superset and the
+  payload has nothing the graph lacks, so `slice_forward` and the other forward walks can reach
+  further over Neo4j. Reported upstream: the flag is documented as controlling only whether
+  out-of-project call targets are homed as `external_symbols`.
 - **The Java Neo4j projection still carries no comment nodes.** codeanalyzer-java 3.1.0 closes
   codeanalyzer-java#231's config-read and entrypoint-report halves and not its comment half: `:JComment` is a
   declared label with **zero** nodes on a graph emitted by it, and only a declaration's `docstring` reaches

@@ -349,7 +349,16 @@ def test_an_analysis_without_the_overlays_refuses_rather_than_answering_empty(an
         # Each backend's own seam: the in-memory one holds the application on an attribute, the
         # graph one behind the ``_application`` cache its ``application`` property reads.
         backend.__dict__["application" if isinstance(backend, JCodeanalyzer) else "_application"] = stripped
-        for call in (backend.get_config_uses, backend.get_unresolved_config_reads, lambda: backend.get_config_readers("maxUsers")):
+        calls = (
+            backend.get_config_uses,
+            lambda: backend.get_config_uses("maxUsers"),
+            backend.get_unresolved_config_reads,
+            lambda: backend.get_config_readers("maxUsers"),
+            # A key this application does not declare must refuse too: whether the overlay is
+            # there is not a fact about which key you asked for.
+            lambda: backend.get_config_readers("no.such.key"),
+        )
+        for call in calls:
             with pytest.raises(CodeanalyzerExecutionException) as excinfo:
                 call()
             message = str(excinfo.value)
