@@ -4,6 +4,16 @@ Generated from `tests/resources/java/application/daytrader8-1.2.zip` (unzipped t
 (`jdk4py`, Temurin 21.0.8), with `JAVA_HOME` unset. **Never hand-edit these files** — regenerate
 them when the pin moves.
 
+**Deliberately still 3.1.0, though the pin is 3.1.1 (python-sdk#376).** 3.1.1 changed only the
+`can://` id grammar — the application moved to the outermost segment and `@external` ids lost their
+language segment — and these fixtures drive the **local** backend, which never parses that grammar:
+an id is an opaque handle everywhere on that surface, so a 3.1.0 payload is still a valid input and
+the tests that spell `can://java/daytrader8/…` are asserting what *this fixture* holds. Regenerating
+`a4` would mean a whole-project Maven build of daytrader8 to re-create the `target/classes` its
+`--no-build` L4 pass reads, and regenerating only `a1` would leave the two fixtures on different
+grammars, which is worse than leaving both. The Neo4j side, where the grammar is load-bearing, is
+covered by the re-emitted reference graph on bolt://7691 instead.
+
 `a1/analysis.json` — the whole application at L1 (138 compilation units; 13.3 MB, pretty-printed by
 the analyzer):
 

@@ -201,7 +201,7 @@ def test_the_graph_homes_externals_and_the_local_run_was_never_asked(backends):
     ref, neo = backends
     external = neo.get_external_symbols()
     assert len(external) == DAYTRADER_EXTERNALS
-    assert all(nid.startswith(f"can://java/{JAVA_APP}/@external/") for nid in external)
+    assert all(nid.startswith(f"can://{JAVA_APP}/@external/") for nid in external)
     assert all(s.signature and s.kind for s in external.values())
     with pytest.raises(CodeanalyzerExecutionException) as excinfo:
         ref.get_external_symbols()

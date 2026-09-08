@@ -693,10 +693,10 @@ classes on the same checkout. The number is a fact about the analyzer generation
 never about the application alone.
 
 So an empty `get_entrypoints()` means either "no entrypoints" or "the pass found nothing", and you
-cannot tell from the list. `get_entrypoint_coverage()` is how you ask. Over a Neo4j graph emitted
-by codeanalyzer-python 1.4.0 it reports `entrypoint_report_unavailable` — that graph does not carry
-the report — which is itself the answer: *you cannot trust the zero*. From 1.4.1 the graph carries
-it and the answer is the pass's own report, same as the local backend.
+cannot tell from the list. `get_entrypoint_coverage()` is how you ask. From 1.4.1 the graph carries
+the pass's own report and the answer is that report, same as the local backend; a graph that does
+not carry it reports `entrypoint_report_unavailable`, which is itself the answer — *you cannot
+trust the zero*. Every graph above the 1.5.0 floor carries it.
 
 Concluding "this application has no attack surface" from an empty list is the single worst mistake
 available in this API.
