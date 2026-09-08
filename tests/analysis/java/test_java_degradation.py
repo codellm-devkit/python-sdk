@@ -47,7 +47,15 @@ LOGGER = "cldk.analysis.java.codeanalyzer.codeanalyzer"
 #: A ``PATH`` with no build tool on it, so the analyzer's auto-build cannot run. Set with
 #: ``monkeypatch`` for the duration of one test, so only the analyzer subprocess that test starts
 #: inherits it.
-NO_BUILD_TOOL_PATH = os.pathsep.join(("/usr/bin", "/bin", "/usr/sbin", "/sbin"))
+#: A ``PATH`` with no build tool on it. It has to be an **empty directory**, not a list of system
+#: ones: `/usr/bin` is free of Maven on a developer's macOS (Homebrew installs to `/opt/homebrew/bin`)
+#: and carries `/usr/bin/mvn` on a GitHub runner, so scrubbing to system directories asserts a fact
+#: about the host rather than establishing one. The analyzer resolves its JVM and jar by absolute
+#: path out of the wheel, so it needs nothing from `PATH` to run.
+def _no_build_tool_path(tmp_path) -> str:
+    empty = tmp_path / "empty-path"
+    empty.mkdir(exist_ok=True)
+    return str(empty)
 
 
 def _warnings(caplog) -> list[str]:
@@ -62,7 +70,7 @@ def test_l4_without_compiled_classes_reports_the_analyzers_own_words(test_fixtur
     shutil.copytree(test_fixture, project)
     shutil.rmtree(project / "target", ignore_errors=True)
     cache = tmp_path / "cache"
-    monkeypatch.setenv("PATH", NO_BUILD_TOOL_PATH)
+    monkeypatch.setenv("PATH", _no_build_tool_path(tmp_path))
     assert shutil.which("mvn") is None and shutil.which("gradle") is None
 
     with caplog.at_level(logging.WARNING, logger=LOGGER):
