@@ -195,9 +195,13 @@ class JNeo4jBackend(JavaAnalysisBackend):
     #: Relationship types every supported graph has; a graph missing any was emitted by another
     #: generation (a schema-v1 graph shares only ``J_CALLS``) and is refused at attach.
     _REQUIRED_RELATIONSHIP_TYPES: FrozenSet[str] = frozenset({"J_HAS_MODULE", "J_HAS_METHOD", "J_HAS_BODY_NODE", "J_CALLS"})
-    #: The oldest codeanalyzer-java whose graph this backend serves: 3.0.0 stamped contract 2.2.0,
-    #: 3.0.1 holds 2.0.0 — the ``can://`` id grammar and body-node shape every statement here reads.
-    _ANALYZER_FLOOR = (3, 0, 1)
+    #: The oldest codeanalyzer-java whose graph this backend serves. 3.0.1 is where the ``can://``
+    #: id grammar and body-node shape every statement here reads settled, and was the floor through
+    #: 2.0.0-rc.3. It is **3.1.0** now, which is the pinned analyzer: a 3.0.x graph is readable but
+    #: answers three separate refusals — no config-read edges, no entrypoint report, and (before
+    #: 3.0.3) a port lattice joined to nothing. One clear "re-emit" at attach is a better contract
+    #: than a surface that is silently three-quarters of itself.
+    _ANALYZER_FLOOR = (3, 1, 0)
     #: Set by :meth:`_probe_schema`; the class-level ``None`` is for the ``object.__new__`` seam.
     _analyzer_version: Tuple[int, int, int] | None = None
     #: The database's relationship types, read once by :meth:`_probe_schema` and reused by
