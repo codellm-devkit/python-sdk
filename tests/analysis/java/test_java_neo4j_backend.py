@@ -135,6 +135,8 @@ def backends():
 def test_the_graph_holds_more_than_one_application(backends):
     """The premise of every count below: a leak would show up as a *larger* answer, so a
     single-application database would make this suite prove nothing about scoping."""
+    from cldk.analysis.java.neo4j import JNeo4jBackend
+
     _, neo = backends
     others = neo._run("MATCH (a:JApplication) WHERE a.name <> $app RETURN a.name AS name", app=JAVA_APP)
     assert others, "the reference graph holds only one application; the scope audit's live half needs at least two"

@@ -151,7 +151,10 @@ def test_get_entrypoint_coverage_reads_the_report_off_a_real_graph(backends):
     are equal object for object rather than merely both non-empty."""
     ref, neo = backends
     props = neo._run("MATCH (a:JApplication {name: $app}) RETURN keys(a) AS k", app=JAVA_APP)[0]["k"]
-    assert sorted(props) == ["analyzer_name", "analyzer_version", "entrypoint_frameworks", "entrypoint_report_json", "name", "schema_version"]
+    # ``id`` joined this set with the can://<app>/<lang>/... grammar: the root merges on its
+    # own id now rather than on the free-text --app-name, so two same-named applications
+    # stop colliding. Asserted exactly, so a property appearing or vanishing is a failure.
+    assert sorted(props) == ["analyzer_name", "analyzer_version", "entrypoint_frameworks", "entrypoint_report_json", "id", "name", "schema_version"]
     for backend in (ref, neo):
         coverage = backend.get_entrypoint_coverage()
         assert isinstance(coverage, EntrypointCoverage)

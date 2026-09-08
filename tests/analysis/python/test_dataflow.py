@@ -279,7 +279,7 @@ def test_below_level_three_the_backend_refuses_rather_than_returning_empty(local
 # expressions into its ``ORDER BY``. The tests below are what stops that from being an assertion.
 # ----------------------------------------------------------------------------------------------
 HEAVY_CALLABLE = "addons.website.models.website.Website.configurator_apply"
-HEAVY_DDG_EDGES = 1_386_918
+HEAVY_DDG_EDGES = 1_387_081  # 1.5.0; was 1_386_918 on 1.4.1 — an emitter-run fact, like RECORDED
 
 
 @live_only
@@ -451,6 +451,10 @@ HEAVY_STATEMENT_SLICE = 195_785  # backward slice of any statement in configurat
 RECORDED = {
     "1.4.0": {"ddg_edges": 5_134_655, "heavy_forward_slice": 440_270, "depth_seed_unbounded": 195_790},
     "1.4.1": {"ddg_edges": 5_129_295, "heavy_forward_slice": 438_017, "depth_seed_unbounded": 195_263},
+    # 1.5.0 moved the id grammar to can://<app>/<lang>/..., which is a change of node *names*, not
+    # of the graph's shape. These still differ from 1.4.1 for the reason the paragraph above gives:
+    # a re-analysis resolves some calls differently, and the level-4 port vertices move with them.
+    "1.5.0": {"ddg_edges": 5_127_138, "heavy_forward_slice": 438_425, "depth_seed_unbounded": 194_946},
 }
 
 
