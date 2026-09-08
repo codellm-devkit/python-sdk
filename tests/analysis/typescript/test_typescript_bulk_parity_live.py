@@ -134,22 +134,14 @@ def ts_dual(typescript_application, tmp_path_factory):
     _teardown_application()
 
 
-#: codeanalyzer-typescript 1.3.0 projects ``:TSCallable.code`` one line short of the callable's
-#: own span: the graph text is the local text minus its final ``"\n}"`` (measured -- 544
-#: characters against 546 for ``src/index.main``, and ``graph == local.rsplit("\n", 1)[0]``
-#: exactly), while ``start_line``/``end_line`` are right. Filed as
-#: codellm-devkit/codeanalyzer-typescript#179; a caller gets *silently truncated source*, which
-#: is why it is also a row in ``docs/agent-api-reference.md``'s lossiness table and a known
-#: issue in the changelog rather than a note in a plan file.
+#: Four tests below used to carry a ``CODE_ONE_LINE_SHORT`` ``xfail(strict=True)``:
+#: codeanalyzer-typescript 1.3.0 and 1.4.0 projected ``:TSCallable.code`` one line short of the
+#: callable's own span (the graph text was the local text minus its final ``"\n}"``), so every
+#: source-text accessor truncated over Neo4j. 1.5.0 fixed it as part of cants#179, and the marks
+#: are gone rather than left behind: with the pin at 1.5.0 all four **XPASS(strict)**, which is
+#: what ``strict=True`` was there to make loud. The four are now ordinary parity assertions.
 #:
-#: ``strict=True`` is the point: the day the projection is fixed these must fail loudly as
-#: XPASS, not quietly start passing with the marks left behind.
-CODE_ONE_LINE_SHORT = pytest.mark.xfail(
-    strict=True,
-    reason="codeanalyzer-typescript#179: the Neo4j projection writes :TSCallable.code one line short of its span, so every source-text accessor truncates over Neo4j",
-)
-
-#: The same run's second projection gap, and a different one: the decorator call site
+#: The projection's second gap, and a different one: the decorator call site
 #: ``@Param("id")`` reaches the graph carrying only its lines and its resolved callee
 #: (``method_name=''``, empty ``argument_types``, ``return_type=None``, columns ``-1``) -- the
 #: call-site lossiness ``TSNeo4jBackend``'s module docstring already records.
@@ -167,7 +159,6 @@ def test_callables_overview_parity(ts_dual):
     assert ref_rows == neo_rows
 
 
-@CODE_ONE_LINE_SHORT
 def test_method_bodies_parity(ts_dual):
     ref, neo = ts_dual
     sigs = [o.signature for o in ref.get_callables_overview()]
@@ -277,7 +268,6 @@ def _positions(ref):
     return out + [("src/definitely-not-here.ts", 3)]
 
 
-@CODE_ONE_LINE_SHORT
 def test_locate_many_parity_over_every_callable_and_every_module(ts_dual):
     ref, neo = ts_dual
     positions = _positions(ref)
@@ -356,7 +346,6 @@ def test_resolve_value_parity_over_every_callable(ts_dual):
     assert seen, "the level-4 reference carried no formal_in vertex at all; this test proved nothing"
 
 
-@CODE_ONE_LINE_SHORT
 def test_get_source_parity_and_the_one_documented_divergence(ts_dual):
     ref, neo = ts_dual
     for o in ref.get_callables_overview():
@@ -376,7 +365,6 @@ def test_get_source_parity_and_the_one_documented_divergence(ts_dual):
         neo.get_source(body)
 
 
-@CODE_ONE_LINE_SHORT
 def test_describe_parity(ts_dual):
     ref, neo = ts_dual
     names = [o.signature for o in ref.get_callables_overview()]
@@ -389,13 +377,13 @@ def test_describe_parity(ts_dual):
 
 
 def test_the_addressing_miss_paths_name_the_same_subject_on_both_backends(ts_dual):
-    """The miss halves of ``get_source`` and ``describe``, deliberately *outside* the ``xfail`` that
-    covers the truncation those two accessors' success paths hit.
+    """The miss halves of ``get_source`` and ``describe``, split out from the success paths.
 
-    An ``xfail(strict=True)`` swallows every assertion in the test it marks, so a miss-path
-    divergence inside one would be invisible for exactly as long as codeanalyzer-typescript#179
-    stays open. This is where finding 2's fix is verified: the local backend used to name the
-    subject ``'can://typescript/application'`` where the graph named ``'application'``.
+    It was split out because an ``xfail(strict=True)`` swallows every assertion in the test it
+    marks, so while codeanalyzer-typescript#179 was open a miss-path divergence inside one would
+    have been invisible. #179 is fixed and the marks are gone, but the split stays: this is where
+    finding 2's fix is verified: the local backend used to name the subject
+    ``'can://typescript/application'`` where the graph named ``'application'``.
     """
     ref, neo = ts_dual
     a, b = _same_raise(lambda: ref.get_source("no.such.node"), lambda: neo.get_source("no.such.node"), "no.such.node")
@@ -642,13 +630,29 @@ def test_config_uses_and_readers_parity(ts_dual):
         assert {_overview_tuple(o) for o in ref.get_config_readers(key)} == {_overview_tuple(o) for o in neo.get_config_readers(key)}, key
 
 
-def test_unresolved_config_reads_is_the_one_documented_divergence(ts_dual):
-    """Not a parity failure but a recorded gap: the Neo4j projection carries no ``config_reads`` at
-    all, so that backend raises naming the gap rather than answering ``[]``, which would read as
-    "every read resolved". Asserted here so the day the projection gains them, this test fails and
-    the divergence is closed rather than forgotten."""
+def test_unresolved_config_reads_parity(ts_dual):
+    """Was the one documented divergence -- the projection carried no ``config_reads`` and that
+    backend refused rather than answer ``[]``. codeanalyzer-typescript 1.4.0 projects them
+    (``TS_READS_CONFIG_UNRESOLVED``, #368), so this is parity. The sample app matches no config
+    read at all, which makes both sides ``[]``: presence/absence is what the edge guarantees, and
+    a count divergence would only appear on a corpus whose sites collapse onto one edge."""
     ref, neo = ts_dual
-    assert ref.get_unresolved_config_reads() == []
-    with pytest.raises(Exception) as e:
-        neo.get_unresolved_config_reads()
-    assert "unresolved config reads" in str(e.value)
+    assert ref.get_unresolved_config_reads() == neo.get_unresolved_config_reads() == []
+
+
+def test_import_export_and_parameter_bindings_parity(ts_dual):
+    """The other three #368 accessors, over the same sample app on both backends.
+
+    Imports are compared on the facets the aggregate edge can carry: a ``TS_IMPORTS`` edge folds
+    every binding between a pair into sorted sets, so an alias, an ``import_kind`` and a span
+    survive only in ``analysis.json`` (see ``reconstruct.import_edge``). Exports and parameters
+    ride JSON-encoded properties and are compared whole.
+    """
+    ref, neo = ts_dual
+    binding = lambda d: {k: sorted((i.module, i.name, i.is_type_only) for i in v) for k, v in d.items()}
+    assert binding(ref.get_imports()) == binding(neo.get_imports())
+    assert any(v for v in ref.get_imports().values()), "the sample app imports something; an all-empty parity is vacuous"
+    assert ref.get_exports() == neo.get_exports()
+    params = lambda d: {sig: [p.name for p in c.parameters] for sig, c in d.items()}
+    assert params(ref.get_functions()) == params(neo.get_functions())
+    assert ref.get_method_parameters("src/services.UserService", "create") == neo.get_method_parameters("src/services.UserService", "create") == ["name", "role"]

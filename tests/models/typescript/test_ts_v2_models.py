@@ -30,6 +30,7 @@ import pytest
 import toml
 from pydantic import ValidationError
 
+from cldk.models.typescript.models import _iter_spanned
 from cldk.models.typescript import (
     TSAnalysis,
     TSApplication,
@@ -305,3 +306,29 @@ def test_1_3_0_stopped_emitting_a_decorator_qualified_name():
     for t in decorated:
         assert [d.name for d in t.decorators] == ["Controller"]
         assert all(d.qualified_name is None for d in t.decorators)
+
+
+def test_span_bytes_are_utf8_offsets_and_code_decodes_them():
+    """codeanalyzer-typescript 1.5.0's one breaking change (cants#179): ``span.bytes`` are UTF-8
+    byte offsets on every node at every level, so ``code`` must slice the encoded module, not the
+    string.
+
+    The fixture app carries em-dashes in comments, which is what makes this a real test rather
+    than a tautology: the assertion below counts how many nodes a *character* slice would have
+    got wrong, and fails if that count is zero — a corpus that went ASCII would make the whole
+    test vacuous without saying so.
+    """
+    a = _load(4)
+    checked = drifted = 0
+    for module in a.application.symbol_table.values():
+        if module.source.isascii():
+            continue
+        encoded = module.source.encode("utf-8")
+        for node in _iter_spanned(module):
+            start, end = node.span.bytes
+            expected = encoded[start:end].decode("utf-8")
+            assert node.code == expected, f"{node.span.bytes} in {module.id}"
+            checked += 1
+            drifted += module.source[start:end] != expected
+    assert checked, "no non-ASCII module in the fixture; this test proves nothing as written"
+    assert drifted, "every span in the non-ASCII modules starts before the first multi-byte character; the test cannot fail"

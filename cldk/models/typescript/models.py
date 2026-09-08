@@ -69,6 +69,9 @@ class _Spanned(_Base):
 
     span: TSSpan
     _source: Optional[str] = PrivateAttr(default=None)
+    #: The owning module's source encoded once as UTF-8, or ``None`` when that source is ASCII
+    #: (then a plain index is already the byte index). Threaded with ``_source``.
+    _source_bytes: Optional[bytes] = PrivateAttr(default=None)
 
     @property
     def start_line(self) -> int:
@@ -88,18 +91,25 @@ class _Spanned(_Base):
 
     @property
     def code(self) -> Optional[str]:
-        """The node's source text: ``module.source[span.bytes[0]:span.bytes[1]]``, sliced as
-        **characters**. ``None`` until the node has been validated as part of a :class:`TSModule`.
+        """The node's source text, ``module.source`` between the span's **UTF-8 byte** offsets.
+        ``None`` until the node has been validated as part of a :class:`TSModule`.
 
-        Caveat (codeanalyzer-typescript #174): the analyzer computes ``bytes`` as UTF-16 code-unit
-        offsets (JavaScript string indices). Python indexes code points, so on a file containing
-        astral characters (emoji, some CJK) the slice drifts after the first such character. The
-        Neo4j projection slices the same offsets as bytes and disagrees with both on non-ASCII
-        files. Both are documented lossiness until fixed upstream.
+        codeanalyzer-typescript 1.5.0 made ``span.bytes`` UTF-8 byte offsets on every node at every
+        level (cants#179, the release's one breaking change), which retires the three-way
+        disagreement this used to document: the analyzer emitted UTF-16 code units (cants#174),
+        Python sliced code points, and the Neo4j projection sliced bytes, so the three agreed only
+        on ASCII. Now there is one unit, and this decodes it the way
+        :meth:`~cldk.models.java.models.JCompilationUnit.slice` already did -- the module's text
+        encoded once when it is not ASCII, a plain index when it is, so an ASCII file pays nothing.
+        A graph-rebuilt node is unaffected either way: it carries its own ``code`` as ``_source``
+        with a character-counted span, and no ``_source_bytes``.
         """
         if self._source is None:
             return None
-        return self._source[self.span.bytes[0] : self.span.bytes[1]]
+        b0, b1 = self.span.bytes
+        if self._source_bytes is None:
+            return self._source[b0:b1]
+        return self._source_bytes[b0:b1].decode("utf-8")
 
 
 # ----------------------------------------------------------------------------------------------
@@ -111,6 +121,10 @@ class TSImport(_Base):
     """A TypeScript import binding (one entry per imported name)."""
 
     module: str
+    #: 1.4.0 additive: the project-relative module key ``module`` resolves to under the importer's
+    #: own program, from the compiler's own resolver. ``None`` when the specifier is external, a
+    #: builtin, or unresolvable -- and it is what the Neo4j projection homes ``TS_IMPORTS`` on.
+    resolved_module: Optional[str] = None
     name: str
     alias: Optional[str] = None
     is_type_only: bool = False
@@ -125,6 +139,9 @@ class TSExport(_Base):
     """A TypeScript export / re-export binding."""
 
     module: Optional[str] = None
+    #: 1.4.0 additive, as on :class:`TSImport`; set on re-exports only (a local ``export { x }``
+    #: names no other module).
+    resolved_module: Optional[str] = None
     name: str
     alias: Optional[str] = None
     is_type_only: bool = False
@@ -551,8 +568,11 @@ class TSModule(_Base):
     @model_validator(mode="after")
     def _thread_source(self) -> "TSModule":
         # Private attrs are not dumped, so model_dump/model_validate round-trips are unaffected.
+        # Encoded once per module rather than per node, and not at all for an ASCII file.
+        source_bytes = None if self.source.isascii() else self.source.encode("utf-8")
         for node in _iter_spanned(self):
             node._source = self.source
+            node._source_bytes = source_bytes
         return self
 
     @property
