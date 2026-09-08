@@ -163,9 +163,14 @@ def test_the_three_graphs_agree_edge_for_edge_on_the_busiest_callables(backends)
 
     ``get_ddg`` is compared on the edges whose endpoints the analyzer actually emitted as body
     nodes. That filter was load-bearing up to codeanalyzer-java 3.0.2, which emitted edges naming
-    endpoints it never emitted as nodes; on 3.0.3 it removes nothing (the next test asserts the two
-    sides are equal as *sets*), and it stays because it is what makes this comparison a statement
-    about the projection rather than about the analyzer.
+    endpoints it never emitted as nodes; on 3.0.3 it removes nothing, and it stays because it is
+    what makes this comparison a statement about the projection rather than about the analyzer.
+
+    ``cfg`` and ``cdg`` are equal page for page, in order. ``ddg`` is equal **after removing the
+    graph's ``points-to`` edges the reference was never asked for** — see
+    :data:`DDG_POINTS_TO_ONLY_WITH_EXTERNAL_CALLS`. The removal is checked, not assumed: every edge
+    dropped here is asserted to be ``points-to``, and the surviving page must still equal the
+    reference's page in order, so a projection defect cannot hide behind it.
     """
     ref, neo = backends
     keys = _with_bodies(ref, 40)
@@ -176,26 +181,55 @@ def test_the_three_graphs_agree_edge_for_edge_on_the_busiest_callables(backends)
         for accessor in ("get_cfg", "get_cdg", "get_ddg"):
             a, b = getattr(ref, accessor)(key), getattr(neo, accessor)(key)
             kept = [e for e in a.edges if e.src in anchored and e.dst in anchored]
-            assert kept == list(b.edges), f"{accessor} {key}"
-            assert len(kept) == b.total, f"{accessor} {key}"
+            page, extra = list(b.edges), []
+            assert len(page) == b.total, f"{accessor} {key}"
+            if accessor == "get_ddg":
+                # ``JDdgEdge`` is a pydantic model and not hashable, so membership is by tuple.
+                same = {(e.src, e.dst, e.var, tuple(e.prov)) for e in kept}
+                extra = [e for e in page if (e.src, e.dst, e.var, tuple(e.prov)) not in same]
+                assert all(e.prov == ["points-to"] for e in extra), f"{accessor} {key}: the graph carries an ssa edge the payload does not"
+                page = [e for e in page if (e.src, e.dst, e.var, tuple(e.prov)) in same]
+            assert kept == page, f"{accessor} {key}"
             assert a.complete and b.complete
             seen += len(kept)
     assert seen > 1000, f"the comparison covered only {seen} edges"
 
 
+#: The ``points-to`` edges the reference payload does not carry and the graph does, and **why that
+#: is a difference of what each source was asked rather than a projection gap** — the same shape as
+#: ``get_external_symbols``, measured the same way.
+#:
+#: Up to codeanalyzer-java 3.0.3 the two agreed exactly: a plain ``-a 4`` run and an ``--emit neo4j``
+#: run produced the same 10,430 ddg edges, set for set. **codeanalyzer-java 3.1.0 makes the level-4
+#: ``points-to`` layer depend on ``--external-calls``**, which ``--emit neo4j`` forces on and which
+#: the SDK's own local run does not pass. Measured on daytrader8, four runs of the same tree:
+#:
+#: * 3.0.3 ``-a 4 --no-build``            → 10,430 (1,134 ``points-to``)
+#: * 3.1.0 ``-a 4 --no-build``            → 10,154 (858 ``points-to``)
+#: * 3.1.0 ``-a 4 --no-build --external-calls`` → 10,430 (1,134), **identical as a set** to the graph
+#: * 3.1.0 ``--emit neo4j --no-build``    → 10,430 (1,134)
+#:
+#: So the graph is a strict superset of the payload by exactly these edges, the payload has nothing
+#: the graph lacks, and asking the analyzer the *same* question reproduces the graph's set exactly.
+#: Reported upstream; the flag is documented as controlling only whether out-of-project call targets
+#: are homed as ``external_symbols``, not the intraprocedural dataflow.
+DDG_POINTS_TO_ONLY_WITH_EXTERNAL_CALLS = 276
+
+
 def test_the_two_backends_report_the_same_ddg_edge_for_edge(backends):
-    """**The one place the two Java backends used to disagree, and it was the analyzer's.**
+    """**The one place the two Java backends disagree, and it is the analyzer's, twice over.**
 
     codeanalyzer-java up to 3.0.2 emitted ddg edges naming an endpoint it never emitted as a body
     node — 87 of daytrader8's 5,434, over 38 distinct keys all of the shape ``<line>:0``, all on
     ``points-to`` edges — and the Neo4j emitter materialises nodes from the ``body{}`` map, so those
     edges could not be projected and the graph reported 5,347. 3.0.3 drops them
-    (codeanalyzer-java#228).
+    (codeanalyzer-java#228), and this test asserted equality: 10,430 on both sides, set for set.
 
-    So this asserts the equality rather than the difference: **10,430 ddg edges on both sides, set
-    for set**, with 0 dangling endpoints in the payload. The subtraction stays in both directions —
-    a dangling endpoint coming back fails here, and it fails naming what it is rather than as an
-    off-by-87 in an edge count.
+    On **3.1.0** they are no longer equal, and the cause is not the projection: see
+    :data:`DDG_POINTS_TO_ONLY_WITH_EXTERNAL_CALLS` for the four-run measurement. The graph is a
+    strict superset by 276 ``points-to`` edges and by nothing else, so what is asserted is the
+    containment, its exact size, and that every edge in the gap is ``points-to`` — a regression in
+    either direction still fails here, and it fails naming what it is.
     """
     ref, neo = backends
     from cldk.analysis.java.backend import java_body_node_id
@@ -206,9 +240,11 @@ def test_the_two_backends_report_the_same_ddg_edge_for_edge(backends):
         prefix=neo._scope_prefix,
     )
     graph = {(r["s"], r["d"], r["v"], tuple(r["p"] or ())) for r in rows}
-    assert (len(local), len(graph)) == (10430, 10430)
-    assert graph - local == set(), "the graph carries a ddg edge the analyzer's own payload does not"
+    assert (len(local), len(graph)) == (10154, 10430)
     assert local - graph == set(), "the analyzer emitted a ddg edge the graph could not project"
+    gap = graph - local
+    assert len(gap) == DDG_POINTS_TO_ONLY_WITH_EXTERNAL_CALLS
+    assert {e[3] for e in gap} == {("points-to",)}, "the gap is the --external-calls points-to layer and nothing else"
     assert _dangling(ref) == [], "codeanalyzer-java#228 is back: a ddg endpoint that is not a body node"
 
 
@@ -269,12 +305,14 @@ def test_paging_agrees_across_backends(backends):
 
 
 def test_the_two_provenance_tiers_are_the_only_ones(backends):
-    """Java's DDG has ``ssa`` and ``points-to`` and nothing else — 324,959 and 1,134 edges across
-    the whole database. Neither backend may invent a third or collapse the two."""
+    """Java's DDG has ``ssa`` and ``points-to`` and nothing else — 324,952 and 1,134 edges across
+    the whole database (the ``ssa`` figure was 324,959 on a graph emitted by codeanalyzer-java
+    3.0.3; 3.1.0 emits seven fewer, all in ThingsBoard). Neither backend may invent a third or
+    collapse the two."""
     _, neo = backends
     rows = neo._run("MATCH ()-[r:J_DDG]->() RETURN r.prov AS prov, count(*) AS n ORDER BY n DESC")
     assert {tuple(r["prov"]) for r in rows} == {("ssa",), ("points-to",)}
-    assert dict((tuple(r["prov"]), r["n"]) for r in rows) == {("ssa",): 324959, ("points-to",): 1134}
+    assert dict((tuple(r["prov"]), r["n"]) for r in rows) == {("ssa",): 324952, ("points-to",): 1134}
 
 
 def test_the_body_node_kind_vocabulary_is_what_the_graph_holds(backends):
@@ -426,18 +464,29 @@ def test_a_value_crosses_three_call_boundaries_on_both_backends(backends):
 def test_a_forward_slice_agrees_node_for_node_on_both_backends(backends):
     """``slice_forward`` was refused on Java until codeanalyzer-java 3.0.3, so this is the direction
     leg 3b could only assert backwards: the two walks over the joined lattice return the same
-    nodes, the same ``total`` and the same ``resolved``."""
+    ``resolved`` seed and the reference's nodes are all in the graph's slice, in order.
+
+    Not equality any more, and the reason is upstream rather than in either backend: the graph
+    carries 276 ``points-to`` edges the reference payload was never asked for
+    (:data:`DDG_POINTS_TO_ONLY_WITH_EXTERNAL_CALLS`), so a forward walk over it can reach further.
+    Containment is the assertion that survives that honestly — a node the *reference* reaches and
+    the graph does not is still a failure, which is the direction a projection defect shows up in.
+    """
     ref, neo = backends
-    checked = 0
+    checked = wider = 0
     for key in _with_bodies(ref, 15):
         for parameter in ref._addressing.by_key[key].callable.parameters:
             if not parameter.name:
                 continue
             a = ref.slice_forward(parameter.name, within=key, depth=None)
             b = neo.slice_forward(parameter.name, within=key, depth=None)
-            assert a.nodes == b.nodes and a.total == b.total and a.resolved == b.resolved, f"{key} {parameter.name}"
+            assert a.resolved == b.resolved, f"{key} {parameter.name}"
+            assert {n.ref for n in a.nodes} <= {n.ref for n in b.nodes}, f"{key} {parameter.name}: the graph's slice is missing a node the payload reaches"
+            assert a.total <= b.total, f"{key} {parameter.name}"
+            wider += a.total < b.total
             checked += 1
     assert checked > 15, f"only {checked} parameters compared"
+    assert wider, "no slice was wider over the graph -- the points-to gap this tolerance exists for is gone, so restore the equality"
 
 
 # ---- miss paths --------------------------------------------------------------------------------

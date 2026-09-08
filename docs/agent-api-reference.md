@@ -227,16 +227,18 @@ accessors** — `get_callables_overview`, `get_method_bodies`, `get_decorated_ca
 `get_config_uses` / `get_unresolved_config_reads` / `get_config_readers`, and `get_interfaces` /
 `get_enums` / `get_enum_members` / `get_records`. Five rules:
 
-- **`get_entrypoint_coverage` reports that there is no report.** codeanalyzer-java emits the
-  entrypoint *marks* and nothing about the pass that made them: `analysis.json` carries no report
-  key and the `:JApplication` anchor carries only `name` / `schema_version` / `analyzer_name` /
-  `analyzer_version` — unlike codeanalyzer-python 1.4.1 and codeanalyzer-typescript 1.5.0, which
-  both project one. So it answers with `diagnostics=[entrypoint_report_unavailable]` and empty
-  fields that are explicitly *not* coverage. It is not synthesised from the `is_entrypoint`
-  booleans: a count of syntactically-marked callables is not a coverage record. The marks
-  themselves are real and unambiguous — 133 callables and 66 types of daytrader8's 1,216 and 149,
-  1,501 callables and 904 types of ThingsBoard's — and `get_entrypoints` /
-  `get_entrypoint_classes` return those.
+- **`get_entrypoint_coverage` reads the report from codeanalyzer-java 3.1.0 on.** 3.1.0
+  (codeanalyzer-java#235) emits the entrypoint pass's own coverage record — `entrypoint_report` on
+  `analysis.json`, `entrypoint_report_json` on the `:JApplication` anchor, parsed back into the same
+  model — so the four fields agree with codeanalyzer-python and codeanalyzer-typescript and the two
+  Java backends are lossless against each other. On daytrader8: `frameworks_detected`
+  `["jakarta", "jaxrs", "spring"]` of five `rulesets` run, nothing unresolved, no errors. **A 3.0.x
+  analysis carries no report**, and both a cached `analysis.json` and an attached 3.0.x graph are
+  still servable, so that answers `diagnostics=[entrypoint_report_unavailable]` with empty fields
+  that are explicitly *not* coverage. It is never synthesised from the `is_entrypoint` booleans: a
+  count of syntactically-marked callables is not a coverage record. The marks themselves are real
+  and unambiguous — 133 callables and 66 types of daytrader8's 1,216 and 149, 1,501 callables and
+  904 types of ThingsBoard's — and `get_entrypoints` / `get_entrypoint_classes` return those.
 - **A marker matches an annotation by simple name.** `get_decorated_callables(["Test"])`,
   `["@Test"]` and `["org.junit.Test"]` are the same query: the Java wire carries an annotation's
   simple name, so both sides are compared on the segment after the last `.` with a leading `@`
@@ -254,12 +256,25 @@ accessors** — `get_callables_overview`, `get_method_bodies`, `get_decorated_ca
 - **`get_config_keys` is keyed `"<artifact path>@key/<dotted key>"`,** artifact-relative rather than
   by the raw `can://artifact/<app>/…` id. Python and TypeScript still key by the id; aligning the
   three is python-sdk#346 and is deliberately not done piecemeal.
-- **`get_config_readers(key)` is `[]` for every key on Java, and so are `get_config_uses` and
-  `get_unresolved_config_reads`.** The Java wire carries no `config_uses` and no config-read
-  detector, so there is no code-to-config edge to resolve to a reading callable — the empty list is
-  "the analyzer emits no such edge", not "no callable reads this key". Do not read a Java `[]` here
-  as evidence about the code; `get_config_keys` (which is real) is what Java answers about
-  configuration. Python is where the "which code reads this key" question has an answer today.
+- **`get_config_uses` / `get_config_readers` / `get_unresolved_config_reads` answer from
+  codeanalyzer-java 3.1.0 on, and `prov` says how strong the evidence is.** 3.1.0 added the
+  code-to-config layer in two tiers, and the SDK surfaces the tier rather than flattening it:
+  `prov == ["literal"]` is a string literal at the call site (codeanalyzer-java#233);
+  `"dataflow"` means the key was reached over the L3 DDG / the L4 call graph (#237) — a derived
+  answer, weaker than a literal, and one that widens with the analysis level rather than replacing
+  the literal tier. On a `PyConfigRead` the list is every tier *attempted* before giving up, so
+  `["literal", "dataflow"]` there means the dataflow tier ran too and still could not name the key.
+  Measured on daytrader8: 13 resolved uses, all `["literal"]`; 16 unresolved reads (the
+  `System.getenv` calls), `["literal"]` at level 1 and `["literal", "dataflow"]` at level 4.
+  **A 3.0.x analysis has no detector at all, and the three accessors raise rather than answer `[]`**
+  — "this application reads no configuration" and "nothing looked" are different facts. The probe is
+  measured from the data, never from a version string, but it is *not* the config layer's own
+  absence: the analyzer writes `config_uses` / `config_reads_unresolved` only when non-empty, and
+  the graph declares `J_USES_CONFIG` / `J_READS_CONFIG_UNRESOLVED` as relationship types only once
+  an edge exists, so both would refuse a clean 3.1.0 analysis that genuinely reads nothing. The
+  witness is the sibling overlay from the same release — 3.1.0 writes an entrypoint report on every
+  run and 3.0.x writes none of the three. `get_config_keys` is unaffected and answers at every
+  generation.
 
 **Still absent for Java**: the scoping keywords (`get_symbol_table(paths=)`,
 `get_classes(module=)`, `get_call_graph(roots=, depth=)`). Calling those keywords raises
@@ -301,8 +316,8 @@ What Java answers today is the 1.x accessor surface, on the v2 models: `get_symb
 `get_call_graph_json` / `get_callers` / `get_callees` / `get_class_call_graph`,
 `get_entry_point_classes` / `get_entry_point_methods`, `get_test_methods`, the comment and
 docstring accessors, and — new in 3a, from the generic backend ABC — `get_artifacts` /
-`get_dependencies` / `get_config_keys` (`get_config_uses` and `get_unresolved_config_reads` are
-`[]`: the Java analyzer emits neither). Six more joined them in #366 — `get_imports`,
+`get_dependencies` / `get_config_keys` / `get_config_uses` / `get_unresolved_config_reads` (the
+last two from codeanalyzer-java 3.1.0; they raise on an older analysis rather than answer `[]`). Six more joined them in #366 — `get_imports`,
 `get_variables`, `get_class_hierarchy`, `get_methods_with_annotations`, `get_call_targets` and
 `get_calling_lines`, all at their published 1.x signatures, answering identically on both backends
 and issuing no new Cypher. Note what each one is: `get_imports()` is the project's **distinct
@@ -398,6 +413,13 @@ names its upstream issue where there is one:
   the kind would hide a real branch, so it is reported as the analyzer spells it — the same way
   TypeScript reports its own out-of-list vertices. Match on the string, don't assume the frozenset
   is exhaustive across languages.
+- **`get_ddg` over Neo4j carries `points-to` edges the local payload does not**, and it is the same
+  difference of what each source was asked. codeanalyzer-java 3.1.0 made the level-4 `points-to`
+  layer depend on `--external-calls` — forced on by `--emit neo4j`, never passed by the SDK's local
+  run — where 3.0.3 produced the same edges either way. On daytrader8 that is 276 edges of 10,430:
+  the graph is a strict superset, the payload has nothing the graph lacks, and running the analyzer
+  by hand with `-a 4 --external-calls` reproduces the graph's set exactly. `slice_forward` and the
+  other forward walks can therefore reach further over Neo4j. Reported upstream.
 - **`get_external_symbols` answers over Neo4j and raises locally**, and that is a difference of what
   each source was *asked*, not of policy. codeanalyzer-java emits `external_symbols` only under
   `--external-calls`, which is off by default and which `--emit neo4j` forces on — so the graph
@@ -685,7 +707,12 @@ directly, where `PyConfigUseEdge` gives you `{src, dst, prov}` ids you would hav
 `PyConfigRead` carries `reason`, so an unresolved read tells you *why* it could not be resolved
 rather than just vanishing.
 
-This layer is identical across Python, Java and TypeScript — the queries port unchanged.
+This layer is identical across Python, Java and TypeScript — the queries port unchanged. Two
+language notes: Java keys `get_config_keys()` artifact-relatively rather than by the `can://` id
+(python-sdk#346), and Java's three code-to-config accessors need **codeanalyzer-java 3.1.0** — on an
+older analysis they raise rather than answer `[]`, since "reads no configuration" and "nothing
+looked" are different facts. `prov` is where the evidence lives on all three: `["literal"]` is a
+literal at the call site, `"dataflow"` a key reached over the DDG or the call graph.
 
 ---
 

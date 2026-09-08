@@ -36,6 +36,11 @@ V2_RELATIONSHIP_TYPES = frozenset(
         "DEFINES_CONFIG",
         "DECLARES_DEPENDENCY",
         "LOCKS",
+        # codeanalyzer-java 3.1.0's code-to-config layer (codeanalyzer-java#233/#237). In the
+        # default set because the fake driver stands in for a graph emitted by the pinned analyzer;
+        # a test that wants a 3.0.x-shaped graph subtracts them.
+        "J_USES_CONFIG",
+        "J_READS_CONFIG_UNRESOLVED",
     }
 )
 

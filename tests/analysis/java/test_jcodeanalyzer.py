@@ -15,7 +15,7 @@
 ################################################################################
 
 """
-Test Cases for JCodeanalyzer (codeanalyzer-java 3.0.3, schema v2). The analyzer subprocess is
+Test Cases for JCodeanalyzer (codeanalyzer-java 3.1.0, schema v2). The analyzer subprocess is
 mocked; ``analysis_json`` is daytrader8 at ``-a 1`` (no call graph), ``analysis_json_a4`` the
 four-file ``-a 4`` slice (247 call edges).
 """
@@ -103,7 +103,7 @@ def test_unknown_level_raises_instead_of_defaulting(test_fixture, analysis_json)
 def test_envelope_and_application_are_kept(test_fixture, analysis_json):
     analyzer, _ = _analyzer(analysis_json, project_dir=test_fixture)
     assert analyzer.analysis.schema_version == "2.0.0"
-    assert analyzer.analysis.analyzer.version == "3.0.3"
+    assert analyzer.analysis.analyzer.version == "3.1.0"
     assert analyzer.analysis.max_level == 1
     assert analyzer.application is analyzer.analysis.application
     assert analyzer.application.id == "can://java/daytrader8"

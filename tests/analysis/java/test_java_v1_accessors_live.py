@@ -73,7 +73,7 @@ DIRECT = "com.ibm.websphere.samples.daytrader.impl.direct"
 TRADE_DIRECT = f"{DIRECT}.TradeDirect"
 PING_SERVLET = "com.ibm.websphere.samples.daytrader.web.prims.PingServlet"
 
-#: Measured on the reference graph (daytrader8, codeanalyzer-java 3.0.3), 2026-09-07.
+#: Measured on the reference graph (daytrader8, codeanalyzer-java 3.1.0), 2026-09-07.
 DT_IMPORTS = 268
 DT_CALLABLES = 1216
 DT_DECLARING_LOCALS, DT_LOCALS = 235, 854

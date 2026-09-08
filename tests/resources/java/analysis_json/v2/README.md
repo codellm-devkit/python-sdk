@@ -1,5 +1,5 @@
 Generated from `tests/resources/java/application/daytrader8-1.2.zip` (unzipped to `<daytrader8>` =
-`sample.daytrader8-1.2/`) by **codeanalyzer-java 3.0.3** — the pinned `codeanalyzer-java` wheel (the
+`sample.daytrader8-1.2/`) by **codeanalyzer-java 3.1.0** — the pinned `codeanalyzer-java` wheel (the
 `cldk[java]` extra), run as `codeanalyzer_java.command()`: the wheel's own jar on the JVM it bundles
 (`jdk4py`, Temurin 21.0.8), with `JAVA_HOME` unset. **Never hand-edit these files** — regenerate
 them when the pin moves.
@@ -24,14 +24,46 @@ earlier by a whole-project `-a 4` run of the analyzer on the unpruned tree (the 
 
     java -jar codeanalyzer.jar -i <daytrader8-pruned> -a 4 --no-build --app-name daytrader8 -o a4 -c <scratch>/fx-cache-a4
 
-Measured on the committed files: `a1` has `schema_version 2.0.0`, `analyzer.version 3.0.3`,
+Measured on the committed files: `a1` has `schema_version 2.0.0`, `analyzer.version 3.1.0`,
 `max_level 1`, 138 symbol-table keys, no `call_graph`/`param_in`/`param_out` keys at all, 235
-artifacts. `a4` has `max_level 4`, 4 symbol-table keys, `call_graph` 247 edges, `param_in` 258,
-`param_out` 97, 2,358 `ddg` edges (2,038 `ssa`, 320 with `prov == ["points-to"]`), 76 `summary`
-edges, 235 artifacts, and both `cancelOrder` overloads on `TradeDirect`
-(`cancelOrder(java.lang.Integer, boolean)`, `cancelOrder(java.sql.Connection, java.lang.Integer)`).
-Artifact text (default `--artifact-text`, 256 KiB cap) is included in both; the four
-`jmeter_files/*.jmx` are the largest entries.
+artifacts, 149 types and 1,216 callables (133 of them `is_entrypoint`, in 66 `is_entrypoint_class`
+types). `a4` has `max_level 4`, 4 symbol-table keys, 128 callables, `call_graph` 247 edges,
+`param_in` 258, `param_out` 97, 2,358 `ddg` edges (2,038 `ssa`, 320 with `prov == ["points-to"]`,
+20 self-loops), 1,570 `cfg`, 1,258 `cdg`, 76 `summary` edges, 235 artifacts, and both `cancelOrder`
+overloads on `TradeDirect` (`cancelOrder(java.lang.Integer, boolean)`,
+`cancelOrder(java.sql.Connection, java.lang.Integer)`). Artifact text (default `--artifact-text`,
+256 KiB cap) is included in both; the four `jmeter_files/*.jmx` are the largest entries.
+
+**The 3.1.0 overlays, and what each fixture carries of them.** Both carry `entrypoint_report`
+(`a1`: `frameworks_detected ["jakarta", "jaxrs", "spring"]`; `a4`: `["jakarta"]`; both with the
+same five `rulesets`, nothing unresolved, no errors) and `entrypoint_frameworks` on every callable
+and type — non-empty on exactly the marked ones, 133 callables and 66 types in `a1`, 13 callables
+and no type in `a4`. `a1` carries **13** `config_uses` (every one `prov == ["literal"]`, all in
+`TradeWebContextListener.contextInitialized`, over 11 distinct `daytrader.properties` keys) and
+**16** `config_reads_unresolved` (all `reason "undefined-key"`, the `System.getenv` reads, `prov
+["literal"]` — level 1 has no DDG for the dataflow tier to run over; the same reads carry
+`["literal", "dataflow"]` at level 4). `a4` carries **neither key at all**: its pruned tree reads no
+configuration, and the analyzer writes those two only when non-empty. That is the measurement the
+SDK's overlay probe rests on — an absent `config_uses` cannot mean "this analyzer had no detector",
+so the probe is the entrypoint report's presence instead (`cldk/analysis/java/backend.py`,
+`CONFIG_OVERLAY_UNAVAILABLE`).
+
+## What the 3.1.0 regeneration moved
+
+Both files were regenerated with the commands above when the pin moved from 3.0.3 to 3.1.0
+(python-sdk#369, analyzer-side codeanalyzer-java#233 / #235 / #237). Measured by loading the old and
+new copies and comparing them structurally: **both are identical to their 3.0.3 copies apart from
+the `analyzer.version` stamp and the additive fields** — `entrypoint_report`, `config_uses` and
+`config_reads_unresolved` on the application, `entrypoint_frameworks` on every type and callable.
+Every figure published above and below this section was re-measured on the new files and none of
+them moved: 138 units / 149 types / 1,216 callables / 235 artifacts in `a1`, and `a4`'s whole
+dataflow structure (2,358 `ddg`, 2,038 `ssa`, 320 `points-to`, 20 self-loops, 1,570 `cfg`, 1,258
+`cdg`, 76 `summary`, 247 `call_graph`, 258 `param_in`, 97 `param_out`), as well as the signature
+table further down (154 / 0 / 45 of 45 for `a1`, 8 / 4 / 4 of 5 for `a4`).
+
+Note that the new fields make a 3.1.0 payload **unparsable by the pre-#369 models**, which are
+`extra="forbid"`: the graph contract stays at 2.0.0 and the wire is additive, but the SDK's mirror
+had to grow the five fields before it could read one.
 
 ## What the 3.0.3 regeneration moved
 

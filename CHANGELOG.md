@@ -103,7 +103,20 @@ surface** (3b). Design records: `docs/design/specs/2026-09-06-leg-2.5-typescript
   `ddg` edges whose endpoint was never emitted as a body node (codeanalyzer-java#228), so `get_ddg()` over
   `analysis.json` and over Neo4j now report the same edges — 10,430 on daytrader8, set for set, against a
   5,434/5,347 split before.
-- **Pins:** `codeanalyzer-java` 2.4.1 → 3.0.3, `codeanalyzer-typescript` 0.4.3 → 1.5.0.
+- **Java's code-to-config layer and entrypoint report now answer.** codeanalyzer-java 3.1.0 adds both, so
+  `get_config_uses()`, `get_config_readers(key)` and `get_unresolved_config_reads()` return real edges instead
+  of `[]`, and `get_entrypoint_coverage()` returns the pass's own record instead of
+  `entrypoint_report_unavailable`. **The two config tiers are surfaced, not flattened:** `prov == ["literal"]`
+  is a string literal at the call site (codeanalyzer-java#233), `"dataflow"` is a key reached over the L3 DDG
+  or the L4 call graph (#237) — a derived answer, weaker evidence, and it widens with the analysis level. On a
+  `PyConfigRead` the list is every tier *attempted*, so `["literal", "dataflow"]` means the dataflow tier ran
+  and still could not name the key. Measured on daytrader8: 13 resolved uses (all `["literal"]`) and 16
+  unresolved reads — `["literal"]` at level 1, `["literal", "dataflow"]` at level 4; the graph collapses those
+  16 into 8 edges, since `J_READS_CONFIG_UNRESOLVED` is discriminated by `(key, reason)` and carries no site.
+  **To get this, re-analyse (or re-emit your Neo4j graph) with codeanalyzer-java 3.1.0**; an older analysis
+  keeps refusing, and the probe is measured from the data rather than from a version string — see the known
+  limitation below for what it measures and why it cannot be the config layer's own absence.
+- **Pins:** `codeanalyzer-java` 2.4.1 → 3.1.0, `codeanalyzer-typescript` 0.4.3 → 1.5.0.
 - **The Java analyzer ships as a wheel, not a jar in this repo.** The 35 MB checked-in jar, the Temurin download
   in `_jdk.py`, and the release workflow's jar injection are gone; no `JAVA_HOME` is read or set, and no JDK is
   downloaded. The published wheel drops from about 35 MB to 320 KB.
@@ -191,16 +204,35 @@ surface** (3b). Design records: `docs/design/specs/2026-09-06-leg-2.5-typescript
   site from the one statement containing it, not from the reaching definition of that argument, so on a
   reached call site every argument answers `True` together. Paths are complete; per-argument precision is not
   what the analyzer promises.
-- **Java has no entrypoint report**, so `get_entrypoint_coverage()` returns `entrypoint_report_unavailable`
-  rather than fabricated coverage. `get_entrypoints()` and `get_entrypoint_classes()` carry the real marks.
+- **Java's entrypoint report and code-to-config layer need codeanalyzer-java 3.1.0.** On an older analysis —
+  a cached `analysis.json` is reused whatever wrote it, and a 3.0.x Neo4j graph is still attachable, the floor
+  being 3.0.1 — `get_entrypoint_coverage()` returns `entrypoint_report_unavailable` rather than fabricated
+  coverage, and `get_config_uses()` / `get_config_readers()` / `get_unresolved_config_reads()` raise rather
+  than answer `[]`. The probe is one fact measured from the data: 3.1.0 writes an entrypoint report on every
+  run and 3.0.x writes none of the three overlays. It deliberately is **not** the config layer's own absence,
+  which is ambiguous — the analyzer writes `config_uses` / `config_reads_unresolved` only when non-empty, and
+  the graph declares `J_USES_CONFIG` / `J_READS_CONFIG_UNRESOLVED` only once an edge exists, so a clean 3.1.0
+  analysis of a project that reads no configuration carries neither and must still answer. `get_entrypoints()`
+  and `get_entrypoint_classes()` carry the real marks at every generation, as does `get_config_keys()`.
 - **Java's `get_external_symbols()` answers over Neo4j and raises locally**: the analyzer homes out-of-project
   call targets only under `--external-calls`, which `--emit neo4j` forces and a local run does not.
 - The Java graph carries a `switch` body-node kind, which is outside `SliceNode.KINDS` (that vocabulary is
   codeanalyzer-python's, and Python has no switch statement). It is reported as the analyzer spells it.
-- **Java's `get_config_readers(key)`, `get_config_uses()` and `get_unresolved_config_reads()` are `[]` for
-  every input**: the Java wire carries no code-to-config edges and no config-read detector, so there is
-  nothing to resolve to a reading callable. The empty list means the analyzer emits no such edge, not that
-  no code reads the key. `get_config_keys()` is the configuration accessor Java really answers.
+- **Java's `get_ddg()` over Neo4j carries 276 `points-to` edges (on daytrader8) that the same
+  analyzer's `analysis.json` does not, and that is a difference of what each source was asked.**
+  codeanalyzer-java 3.1.0 makes the level-4 `points-to` layer depend on `--external-calls`, which
+  `--emit neo4j` forces on and which the SDK's local run does not pass; 3.0.3 produced the same
+  10,430 edges either way. Measured on daytrader8, same tree, four runs: 3.0.3 `-a 4` → 10,430
+  (1,134 `points-to`); 3.1.0 `-a 4` → 10,154 (858); 3.1.0 `-a 4 --external-calls` → 10,430, set for
+  set identical to the graph; 3.1.0 `--emit neo4j` → 10,430. The graph is a strict superset and the
+  payload has nothing the graph lacks, so `slice_forward` and the other forward walks can reach
+  further over Neo4j. Reported upstream: the flag is documented as controlling only whether
+  out-of-project call targets are homed as `external_symbols`.
+- **The Java Neo4j projection still carries no comment nodes.** codeanalyzer-java 3.1.0 closes
+  codeanalyzer-java#231's config-read and entrypoint-report halves and not its comment half: `:JComment` is a
+  declared label with **zero** nodes on a graph emitted by it, and only a declaration's `docstring` reaches
+  the graph. So `remove_all_comments` keeps raising, and the file-keyed comment accessors keep refusing over
+  Neo4j while the javadoc-only ones narrow, exactly as before.
 
 ## [v2.0.0-rc.2] - 2026-09-06
 Python legs 1, 1.5 and 1.6 of the CLDK 2.0 agent-facing query facade (see

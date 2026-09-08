@@ -19,7 +19,8 @@ at the 3.0.1 floor, schema v2 (the pin itself is ``[tool.backend-versions]`` in 
 
 The wire is one containment tree: ``JAnalysis{analyzer, application}`` →
 ``JApplication{symbol_table{path → JCompilationUnit}, call_graph, param_in, param_out, artifacts,
-dependencies}`` → ``JCompilationUnit{types{name → JType}}`` → ``JType{fields{}, callables{signature →
+dependencies, config_uses, config_reads_unresolved, entrypoint_report}`` →
+``JCompilationUnit{types{name → JType}}`` → ``JType{fields{}, callables{signature →
 JCallable}, types{}}`` → ``JCallable{body{}, cfg, cdg, ddg, summary, types{}}``. Every node carries a
 ``can://`` ``id`` and a ``kind``; a unit carries its full ``source`` once and every node's text is a
 slice of it. Gson omits ``null`` fields, so an absent key is a ``None``/empty default here.
@@ -404,6 +405,11 @@ class JCallable(_Node):
     is_implicit: bool = False
     comments: List[JComment] = []
     is_entrypoint: bool = False
+    #: The entrypoint rulesets that marked this callable (``["jakarta"]``, ``["spring"]``, …), from
+    #: codeanalyzer-java 3.1.0 (codeanalyzer-java#235). ``[]`` on an unmarked callable *and* on a
+    #: payload from an older analyzer; :meth:`~cldk.analysis.java.backend.JavaAnalysisBackend.get_entrypoint_coverage`
+    #: is where that distinction is drawn, off :attr:`JApplication.entrypoint_report`.
+    entrypoint_frameworks: List[str] = []
     metrics: Optional[JMetrics] = None
     refs: Optional[JRefs] = None
     local_variables: List[JLocalVariable] = []
@@ -508,6 +514,8 @@ class JType(_Node):
     decorators: List[JDecorator] = []
     type_parameters: List[JTypeParameter] = []
     is_entrypoint_class: bool = False
+    #: As :attr:`JCallable.entrypoint_frameworks`, for a type marked in its own right.
+    entrypoint_frameworks: List[str] = []
     enum_constants: List[JEnumConstant] = []
     record_components: List[JRecordComponent] = []
     fields: Dict[str, JField] = {}
@@ -774,6 +782,50 @@ class JDependency(_Base):
     prov: List[str] = []
 
 
+class JEntrypointReport(_Base):
+    """Coverage and failure record for the entrypoint pass (codeanalyzer-java#235, 3.1.0).
+
+    The same four fields Python and TypeScript already carry (``PyEntrypointReport`` /
+    ``TSEntrypointReport``), so :class:`~cldk.analysis.commons.results.EntrypointCoverage` reads
+    one shape across the three languages."""
+
+    frameworks_detected: List[str] = []
+    rulesets: List[str] = []
+    unresolved: Dict[str, int] = {}
+    errors: List[str] = []
+
+
+class JConfigUse(_Base):
+    """One code-to-config edge: a config read whose key closed on a declared :class:`JConfigKey`.
+
+    ``src`` is the reading call's body-node id (``<callable id>@<line>:<col>``), ``dst`` the matched
+    key's id. ``prov`` names the **tier** that resolved it and is the reason this is not flattened:
+    ``["literal"]`` is a string literal at the call site (codeanalyzer-java#233); ``"dataflow"``
+    means the key was reached over the L3 DDG / L4 call graph (codeanalyzer-java#237) — weaker
+    evidence, and monotone with the analysis level. Python's ``PyConfigUseEdge`` verbatim."""
+
+    src: str
+    dst: str
+    prov: List[str] = []
+
+
+class JConfigRead(_Base):
+    """One config read whose key closed on no declared key — first class, so a read nobody can
+    trace stays as visible as one that resolves.
+
+    ``key`` is the literal text when it *was* a literal that matches no declared key
+    (``reason="undefined-key"``) and ``None`` when it never closed on one (``reason="non-literal"``);
+    ``prov`` lists every tier that was **attempted** before giving up, so ``["literal", "dataflow"]``
+    means the dataflow tier ran too and still could not name the key. Python's ``PyConfigRead``
+    verbatim."""
+
+    site: str
+    callee: str
+    key: Optional[str] = None
+    reason: str = "non-literal"
+    prov: List[str] = []
+
+
 class JApplication(_Base):
     """The application root. ``call_graph``/``param_in``/``param_out`` are absent below the level
     that computes them — empty here, never ``None``.
@@ -793,6 +845,14 @@ class JApplication(_Base):
     param_out: List[JParamEdge] = []
     artifacts: Dict[str, JArtifact] = {}
     dependencies: List[JDependency] = []
+    #: The three 3.1.0 overlays, and the one place in this file where ``None`` and ``[]`` are
+    #: *different answers*: ``None`` is "this payload predates the pass" (codeanalyzer-java 3.0.x
+    #: emits none of these keys at all) and an empty list/report is "the pass ran and found
+    #: nothing". The accessors refuse on the first and answer on the second, measured here rather
+    #: than from an analyzer version string — the same ruling as the port probe.
+    config_uses: Optional[List[JConfigUse]] = None
+    config_reads_unresolved: Optional[List[JConfigRead]] = None
+    entrypoint_report: Optional[JEntrypointReport] = None
 
     def model_post_init(self, __context: Any) -> None:
         for path, unit in self.symbol_table.items():

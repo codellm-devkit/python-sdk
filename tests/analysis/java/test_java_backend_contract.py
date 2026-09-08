@@ -38,9 +38,28 @@ def test_java_contract_parameterises_the_generic_abc():
     assert JavaAnalysisBackend.N == "J"
 
 
+#: The two generic methods :class:`JavaAnalysisBackend` answers **itself** rather than leaving
+#: abstract, and why that is not the stub the test below forbids: the code-to-config layer is read
+#: off the canonical :class:`JApplication`, which :class:`JNeo4jBackend` rebuilds from the graph
+#: (overlays included) and :class:`JCodeanalyzer` holds off the wire — so one implementation serves
+#: both sources, and the refusal on a pre-3.1.0 analysis cannot come to differ between them.
+#: :func:`test_the_config_layer_is_answered_once_for_both_backends` pins that it stays one.
+ANSWERED_ON_THE_CONTRACT = {"get_config_uses", "get_unresolved_config_reads"}
+
+
 def test_generic_methods_are_all_abstract_on_the_java_contract():
     """Inheriting the generic ABC must not quietly satisfy any of its methods with a stub."""
-    assert set(GENERIC_METHODS) <= JavaAnalysisBackend.__abstractmethods__
+    assert set(GENERIC_METHODS) - ANSWERED_ON_THE_CONTRACT <= JavaAnalysisBackend.__abstractmethods__
+
+
+def test_the_config_layer_is_answered_once_for_both_backends():
+    """The exemption is only sound while it really is one implementation: concrete on the contract,
+    and overridden by neither backend."""
+    for name in ANSWERED_ON_THE_CONTRACT:
+        shared = getattr(JavaAnalysisBackend, name)
+        assert not getattr(shared, "__isabstractmethod__", False), f"{name} is abstract on the contract, so the exemption is stale"
+        for backend in BACKENDS:
+            assert getattr(backend, name) is shared, f"{backend.__name__} overrides {name}: the two backends can now disagree about it"
 
 
 @pytest.mark.parametrize("backend", BACKENDS)
