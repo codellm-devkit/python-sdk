@@ -9,16 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Breaking
 
-- **The Java Neo4j floor is `codeanalyzer-java` 3.1.0**, raised from 3.0.1. A graph emitted by 3.0.x
-  is refused at attach with `GraphSchemaMismatch` naming the version found and the floor.
+- **The Java Neo4j floor is `codeanalyzer-java` 3.1.1**, raised from 3.0.1. A graph emitted by 3.1.0
+  or earlier is refused at attach with `GraphSchemaMismatch` naming the version found and the floor.
   **Migration:** re-emit with the pinned analyzer (`codeanalyzer-java --emit neo4j`); there is no
   in-place upgrade.
 
-  3.0.1 is where the `can://` id grammar settled, so a 3.0.x graph is *readable* — but reading it is
+  3.0.1 is where the old `can://` grammar settled, so a 3.0.x graph is *readable* — but reading it is
   not the same as answering on it. Such a graph has no config-read edges, no entrypoint report, and
   before 3.0.3 a port lattice joined to nothing, so the surface degrades in three separate places
-  instead of once. One clear refusal at attach is a better contract than a query surface that is
-  quietly three-quarters of itself.
+  instead of once. 3.1.0 is refused for a different and harder reason: it predates the
+  `can://<app>/<lang>/…` identity grammar, so every prefix-scoped query would match nothing at all.
+  One clear refusal at attach is a better contract than a query surface that is quietly empty.
 
 ## [v2.0.0-rc.3] - 2026-09-07
 

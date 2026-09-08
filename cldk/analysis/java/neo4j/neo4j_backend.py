@@ -201,7 +201,7 @@ class JNeo4jBackend(JavaAnalysisBackend):
     #: answers three separate refusals — no config-read edges, no entrypoint report, and (before
     #: 3.0.3) a port lattice joined to nothing. One clear "re-emit" at attach is a better contract
     #: than a surface that is silently three-quarters of itself.
-    _ANALYZER_FLOOR = (3, 1, 0)
+    _ANALYZER_FLOOR = (3, 1, 1)
     #: Set by :meth:`_probe_schema`; the class-level ``None`` is for the ``object.__new__`` seam.
     _analyzer_version: Tuple[int, int, int] | None = None
     #: The database's relationship types, read once by :meth:`_probe_schema` and reused by

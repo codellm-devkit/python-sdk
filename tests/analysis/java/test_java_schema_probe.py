@@ -83,7 +83,7 @@ def test_probe_refuses_a_python_graph_naming_the_missing_java_types(fake_driver)
     assert "PY_CALLS" in str(e.value)
 
 
-@pytest.mark.parametrize("raw", ["3.0.0", "3.0.1", "3.0.2", "3.0.3"])
+@pytest.mark.parametrize("raw", ["3.0.0", "3.0.1", "3.0.2", "3.0.3", "3.1.0"])
 def test_probe_refuses_every_graph_below_the_floor(fake_driver, raw):
     """The floor is **3.1.0**, the pinned analyzer, and the refusal names the version found and the
     floor.
@@ -94,7 +94,7 @@ def test_probe_refuses_every_graph_below_the_floor(fake_driver, raw):
     nothing. Three separate refusals scattered across the surface is a worse contract than one
     "re-emit" at attach, which is why raising the floor is a feature and not a regression."""
     fake_driver.analyzer_version = raw
-    with pytest.raises(GraphSchemaMismatch, match=rf"{raw}.*3\.1\.0 or newer"):
+    with pytest.raises(GraphSchemaMismatch, match=rf"{raw}.*3\.1\.1 or newer"):
         JNeo4jBackend._from_driver(fake_driver, application_name="daytrader8")
 
 
@@ -112,12 +112,12 @@ def test_probe_refuses_when_the_version_cannot_be_read(fake_driver, raw, found):
     because serving it would be the silent-empty defect with no signal -- and the message says
     which of the three it found."""
     fake_driver.analyzer_version = raw
-    with pytest.raises(GraphSchemaMismatch, match="3.1.0 or newer") as e:
+    with pytest.raises(GraphSchemaMismatch, match="3.1.1 or newer") as e:
         JNeo4jBackend._from_driver(fake_driver, application_name="daytrader9")
     assert found in str(e.value)
 
 
-@pytest.mark.parametrize("raw", ["3.1.0", "3.1.1", "3.2.0", "4.0.0"])
+@pytest.mark.parametrize("raw", ["3.1.1", "3.1.2", "3.2.0", "4.0.0"])
 def test_probe_serves_every_generation_from_the_floor_up_silently(fake_driver, caplog, raw):
     fake_driver.analyzer_version = raw
     with caplog.at_level(logging.INFO, logger="cldk.analysis.java.neo4j.neo4j_backend"):
