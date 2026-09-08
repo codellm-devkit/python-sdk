@@ -56,7 +56,7 @@ def test_probe_is_scoped_to_this_applications_modules(fake_driver):
     assert len(probe_calls) == 1
     query, params = probe_calls[0]
     assert "s.id STARTS WITH $prefix" in query
-    assert params["prefix"] == "can://python/app/"
+    assert params["prefix"] == "can://app/"
 
 
 def test_probe_does_not_raise_on_a_legitimate_empty_result(fake_driver):

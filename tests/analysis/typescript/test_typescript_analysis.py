@@ -92,14 +92,14 @@ def test_phantom_external_nodes(ts_analysis):
     assert "(builtin).log" in ext
     assert ext["(builtin).log"].module == "(builtin)"
     assert ext["(builtin).log"].name == "log"
-    assert ext["(builtin).log"].id == "can://typescript/slim/@external/(builtin)/log"
+    assert ext["(builtin).log"].id == "can://slim/@external/(builtin)/log"
 
     graph = ts_analysis.get_call_graph()
     assert graph.has_edge("src/index.main", "(builtin).log")
     data = graph.get_edge_data("src/index.main", "(builtin).log")
     assert data["type"] == "CALL_DEP"
     assert data["provenance"] == ("import",)
-    assert graph.nodes["(builtin).log"] == {"id": "can://typescript/slim/@external/(builtin)/log", "kind": "external"}
+    assert graph.nodes["(builtin).log"] == {"id": "can://slim/@external/(builtin)/log", "kind": "external"}
     assert graph.nodes["src/index.main"]["kind"] == "callable"
     # internal callers can be found via callees
     callees = ts_analysis.get_callees("src/index.main")
@@ -111,7 +111,7 @@ def test_call_graph_keeps_module_callers_and_tags_kinds(ts_analysis):
     dropped by Python's rule; a one-line filter recovers Python's shape."""
     graph = ts_analysis.get_call_graph()
     assert graph.has_edge("src/index.ts", "src/index.main")
-    assert graph.nodes["src/index.ts"] == {"id": "can://typescript/slim/src/index.ts", "kind": "module"}
+    assert graph.nodes["src/index.ts"] == {"id": "can://slim/typescript/src/index.ts", "kind": "module"}
     kinds = {attrs["kind"] for _, attrs in graph.nodes(data=True)}
     assert kinds == {"module", "callable", "external"}
     callable_only = graph.subgraph(n for n, a in graph.nodes(data=True) if a["kind"] == "callable")
@@ -227,7 +227,7 @@ def test_exports_and_variables_are_parsed(typescript_application, typescript_ana
     models = data["application"]["symbol_table"]["src/models.ts"]
     models["exports"].append({"name": "User", "module": None, "alias": None, "is_type_only": False, "export_kind": "named"})
     models["fields"]["DEFAULT_ROLE"] = {
-        "id": "can://typescript/slim/src/models.ts/DEFAULT_ROLE",
+        "id": "can://slim/typescript/src/models.ts/DEFAULT_ROLE",
         "kind": "field",
         "name": "DEFAULT_ROLE",
         "type": "Role",

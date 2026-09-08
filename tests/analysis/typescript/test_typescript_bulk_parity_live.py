@@ -246,7 +246,7 @@ def _same_raise(ref_call, neo_call, subject):
 
     ``subject`` is required and asserted (leg 2.5b review, finding 2). The docstring promised it
     from the start and the body only ever checked the type, which is how ``get_source``'s two miss
-    messages came to name two different things -- ``'can://typescript/application'`` locally against
+    messages came to name two different things -- ``'can://application/typescript'`` locally against
     ``'application'`` over Neo4j -- with this harness green. What a caller reads is the message; a
     parity harness that never reads one cannot see a message diverge.
     """
@@ -383,12 +383,12 @@ def test_the_addressing_miss_paths_name_the_same_subject_on_both_backends(ts_dua
     marks, so while codeanalyzer-typescript#179 was open a miss-path divergence inside one would
     have been invisible. #179 is fixed and the marks are gone, but the split stays: this is where
     finding 2's fix is verified: the local backend used to name the subject
-    ``'can://typescript/application'`` where the graph named ``'application'``.
+    ``'can://application/typescript'`` where the graph named ``'application'``.
     """
     ref, neo = ts_dual
     a, b = _same_raise(lambda: ref.get_source("no.such.node"), lambda: neo.get_source("no.such.node"), "no.such.node")
     assert str(a) == str(b), "the two backends name different subjects for the same miss"
-    stale = SliceNode(file="x.ts", line=1, callable="x", kind="callable", name="x", ref="can://typescript/nope/x")
+    stale = SliceNode(file="x.ts", line=1, callable="x", kind="callable", name="x", ref="can://nope/typescript/x")
     # The subject is the readable position, never ``stale.ref`` -- a ``describe`` miss names the
     # node the caller can see (``x (x.ts:1)``) and keeps the ``can://`` id out of the message (E6).
     _same_raise(lambda: ref.describe([stale]), lambda: neo.describe([stale]), "x (x.ts:1)")

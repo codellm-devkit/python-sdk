@@ -83,11 +83,20 @@ def test_probe_refuses_a_python_graph_naming_the_missing_java_types(fake_driver)
     assert "PY_CALLS" in str(e.value)
 
 
-def test_probe_refuses_a_3_0_0_graph(fake_driver):
-    """3.0.0 has the vocabulary but stamped contract 2.2.0 with a different body-node id grammar;
-    3.0.1 is the floor (J-9), and the refusal names both the version found and the floor."""
-    fake_driver.analyzer_version = "3.0.0"
-    with pytest.raises(GraphSchemaMismatch, match=r"3\.0\.0.*3\.0\.1 or newer"):
+@pytest.mark.parametrize("raw", ["3.0.0", "3.0.1", "3.0.3", "3.1.0"])
+def test_probe_refuses_a_graph_below_the_analyzer_floor(fake_driver, raw):
+    """Every generation below 3.1.1 is refused, naming the version found and the floor.
+
+    Two of these are the ones that matter, and both declare every relationship type the fingerprint
+    asks for, so the fingerprint passes and the version stamp is the only signal:
+
+    * ``3.0.0`` -- the vocabulary is there but it stamped contract 2.2.0 with a different body-node
+      id grammar (J-9, the reason 3.0.1 was the floor).
+    * ``3.1.0`` -- **the release immediately below the floor**, and the one the floor exists for.
+      Its ids are ``can://java/<app>/…``: the application prefix every statement here scopes on
+      matches none of them, so it attaches cleanly and answers everything with zero rows."""
+    fake_driver.analyzer_version = raw
+    with pytest.raises(GraphSchemaMismatch, match=rf"{raw}.*3\.1\.1 or newer"):
         JNeo4jBackend._from_driver(fake_driver, application_name="daytrader8")
 
 
@@ -101,17 +110,19 @@ def test_probe_refuses_a_3_0_0_graph(fake_driver):
     ids=["absent-application", "garbage-version", "empty-version"],
 )
 def test_probe_refuses_when_the_version_cannot_be_read(fake_driver, raw, found):
-    """No ``:JApplication`` with that name, or a version that is not one, is *unknown* -- refused,
+    """No ``:JApplication`` with that id, or a version that is not one, is *unknown* -- refused,
     because serving it would be the silent-empty defect with no signal -- and the message says
     which of the three it found."""
     fake_driver.analyzer_version = raw
-    with pytest.raises(GraphSchemaMismatch, match="3.0.1 or newer") as e:
+    with pytest.raises(GraphSchemaMismatch, match="3.1.1 or newer") as e:
         JNeo4jBackend._from_driver(fake_driver, application_name="daytrader9")
     assert found in str(e.value)
 
 
-@pytest.mark.parametrize("raw", ["3.0.1", "3.0.2", "3.0.3", "3.1.0", "4.0.0"])
+@pytest.mark.parametrize("raw", ["3.1.1", "3.1.2", "3.2.0", "4.0.0"])
 def test_probe_serves_every_generation_from_the_floor_up_silently(fake_driver, caplog, raw):
+    """The other direction of the floor: 3.1.1 -- the release that put the application outermost --
+    is served, and so is anything above it."""
     fake_driver.analyzer_version = raw
     with caplog.at_level(logging.INFO, logger="cldk.analysis.java.neo4j.neo4j_backend"):
         backend = JNeo4jBackend._from_driver(fake_driver, application_name="daytrader8")
@@ -119,16 +130,18 @@ def test_probe_serves_every_generation_from_the_floor_up_silently(fake_driver, c
     assert not caplog.records, [r.getMessage() for r in caplog.records]
 
 
-def test_probe_anchors_on_the_application_name(fake_driver):
-    """The 3.0.1 anchor is ``:JApplication {name}`` -- keyed by name, not by a ``can://`` id, and
-    bound as a parameter. The fake answers the version *only* for the name it was told the graph
-    holds, so a probe that matched on anything else -- an id, a file key, no key at all -- would
-    attach to ``other-app`` instead of refusing it."""
+def test_probe_anchors_on_the_application_id(fake_driver):
+    """The 3.1.1 anchor is ``:JApplication {id: can://<app>}`` -- the root's own merge key, bound as
+    a parameter (``name`` survives as a display property and carries no uniqueness constraint any
+    more). The fake answers the version *only* for the application it was told the graph holds, so a
+    probe that matched on anything else -- a name, a file key, no key at all -- would attach to
+    ``other-app`` instead of refusing it."""
     fake_driver.application_name = "my-app"
     JNeo4jBackend._from_driver(fake_driver, application_name="my-app")
     with pytest.raises(GraphSchemaMismatch, match="has no :JApplication node"):
         JNeo4jBackend._from_driver(fake_driver, application_name="other-app")
-    assert not any("can://" in s for s in fake_driver.statements)
+    probe = next(s for s in fake_driver.statements if "analyzer_version" in s)
+    assert "(a:JApplication {id: $app_id})" in probe and "{name:" not in probe
 
 
 def test_attach_does_not_reconstruct_the_application(fake_driver):

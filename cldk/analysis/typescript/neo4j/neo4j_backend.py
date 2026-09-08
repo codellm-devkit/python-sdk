@@ -15,7 +15,8 @@
 ################################################################################
 
 """Neo4j-backed TypeScript analysis backend (read-only Cypher client) on the codeanalyzer-typescript
-schema-v2 graph vocabulary -- 1.2.0's ``can://`` grammar, through the 1.4.0 pin.
+schema-v2 graph vocabulary -- 1.2.0's ``can://`` grammar with the application moved outermost in
+1.5.1, through the 1.5.2 pin.
 
 A drop-in alternative to :class:`TSCodeanalyzer`: the same query surface, every method answered by
 Cypher over a live graph that ``codeanalyzer-typescript --emit neo4j`` populated out of band. This
@@ -24,7 +25,7 @@ class never writes and needs neither the analyzer binary nor the sources.
 **The graph it reads** (``schema.neo4j.json``; the vocabulary below dates to the 1.2.0 tag and
 1.4.0 renames nothing, only adding the binding layer :attr:`TSNeo4jBackend._carries_bindings` asks
 about):
-``:Application {id: can://typescript/<app>}`` anchors the application and stamps
+``:Application {id: can://<app>}`` anchors the application and stamps
 ``analyzer_version``; every project node carries a ``can://`` ``id`` under the merge label
 ``CanNode`` -- ``TSModule`` (``name`` holds the file key), ``TSClass``/``TSInterface``/``TSEnum``/
 ``TSTypeAlias``/``TSNamespace``, ``TSCallable`` (all seven kinds; anonymous ones also
@@ -34,22 +35,30 @@ about):
 resolving over ``TS_RESOLVES_TO``.
 
 **Scope (TS-3).** A signature is not application-stamped, so every statement that could match
-another application's node carries the two-prefix predicate :func:`_scoped` spells --
-``can://typescript/<app>/`` and ``can://javascript/<app>/`` -- or is keyed by an id that embeds the
-application, or walks out from the ``:Application`` anchor. There is no ``_module`` property to
-fall back on (retired on ``main``, #166).
+another application's node carries the prefix predicate :func:`_scoped` spells --
+``can://<app>/`` -- or is keyed by an id that embeds the application, or walks out from the
+``:Application`` anchor. There is no ``_module`` property to fall back on (retired on ``main``,
+#166).
+
+**One prefix, not two (1.5.1).** The analyzer owns two language namespaces, and while the language
+was the outermost segment they were two disjoint top-level prefixes that every scoped statement
+had to spell as an ``OR``. With the application outermost they are two children of
+``can://<app>/`` -- ``can://<app>/typescript/…`` and ``can://<app>/javascript/…`` -- so one prefix
+covers both, and so do the language-neutral ``can://<app>/@external/…`` ghosts and
+``can://<app>/artifact/…`` nodes that the two-prefix reading never covered at all. The dual
+namespace survives in exactly one place, :meth:`TSNeo4jBackend._module_key`, which has to strip the
+language segment to reach the file key underneath it and therefore has to know which of the two it
+is looking at.
 
 **Seek labels (measured on the superset graph).** What decides the anchor is how narrow the
-predicate is, not what shape it has. Statements scoped by the two *application* prefixes -- nearly
-every node -- anchor on the specific label alone (``:TSCallable``): 11,085 callables scan in ~8 ms,
-and ``:CanNode`` turns the two-prefix predicate into a slower range-seek union (``resolve_callable``
-re-measured this at 24-28 ms bare against 44-51 ms on ``:CanNode``). Id-equality point lookups
-anchor on ``:CanNode:<Label>``: the ``CanNode.id`` uniqueness constraint makes them a 1.5 ms
-unique-index seek instead of a label scan. So does a **per-module** prefix, which is the same
-narrowness by another route: ``locate_many`` over 40 positions costs 346-358 ms on ``:TSCallable``
-and 97-102 ms on ``:CanNode:TSCallable`` (3.5x, same 113 rows). ``:TSCanNode`` was faster still
-there and is refused on correctness -- it is the per-namespace marker, so it drops every
-``can://javascript/<app>/`` module.
+predicate is, not what shape it has. Statements scoped by the *application* prefix -- nearly every
+node -- anchor on the specific label alone (``:TSCallable``): 11,085 callables scan in ~8 ms, and
+``:CanNode`` turns the prefix predicate into a slower range seek (``resolve_callable`` re-measured
+this at 24-28 ms bare against 44-51 ms on ``:CanNode``). Id-equality point lookups anchor on
+``:CanNode:<Label>``: the ``CanNode.id`` uniqueness constraint makes them a 1.5 ms unique-index
+seek instead of a label scan. So does a **per-module** prefix, which is the same narrowness by
+another route: ``locate_many`` over 40 positions costs 346-358 ms on ``:TSCallable`` and
+97-102 ms on ``:CanNode:TSCallable`` (3.5x, same 113 rows).
 
 **Round trips.** A declaration's whole containment subtree is fetched in one statement
 (``_SUBTREE``: a variable-length walk over the containment types from the anchored roots), so a
@@ -188,10 +197,14 @@ logger = logging.getLogger(__name__)
 
 
 def _scoped(var: str) -> str:
-    """The application-scope predicate for node variable ``var``, spelled once so it cannot drift:
-    the two id prefixes as an ``OR`` (which plans as a seek union), never ``any(p IN $prefixes …)``
-    (which plans as a label scan). Bound from :attr:`TSNeo4jBackend._scope_params`."""
-    return f"({var}.id STARTS WITH $p1 OR {var}.id STARTS WITH $p2)"
+    """The application-scope predicate for node variable ``var``, spelled once so it cannot drift.
+
+    One prefix since 1.5.1 moved the application outermost. It used to be an ``OR`` over the
+    analyzer's two language namespaces, which is what made a scoped statement that spelled only one
+    of them answer for half the graph; now they are both inside ``can://<app>/`` and there is
+    nothing to get half right. Bound from :attr:`TSNeo4jBackend._scope_params`.
+    """
+    return f"({var}.id STARTS WITH $p)"
 
 
 def _vertex(var: str, *, escape: bool = False) -> str:
@@ -237,19 +250,28 @@ class TSNeo4jBackend(TSAnalysisBackend):
         neo4j_username / neo4j_password: Credentials (read-only is sufficient).
         neo4j_database: Database name (None ⇒ server default).
         application_name: The ``--app-name`` the graph was emitted with; the anchor is
-            ``:Application {id: can://typescript/<application_name>}`` on both namespaces.
+            ``:Application {id: can://<application_name>}``.
     """
 
     #: Relationship types every supported graph has; a graph missing any was emitted by another
     #: generation (0.4.3 has none of them) and is refused at attach.
     _REQUIRED_RELATIONSHIP_TYPES: FrozenSet[str] = frozenset({"TS_HAS_MODULE", "TS_HAS_METHOD", "TS_HAS_BODY_NODE", "TS_CALLS"})
-    #: The oldest codeanalyzer-typescript whose graph this backend serves. 1.2.0 introduced the
-    #: ``can://`` id grammar and the body-node shape every statement here reads; the floor is
-    #: **1.3.0** because that release is the first whose L4 port lattice is wired to the statement
-    #: DDG (cants#169), whose body nodes and parameters carry ``id`` (#165) and which retired
-    #: ``_module`` (#166) -- the three facts the query surface is built on. A 1.2.0 graph has the
-    #: vocabulary but answers those statements with silent empties, so it is refused, not served.
-    _ANALYZER_FLOOR = (1, 3, 0)
+    #: The oldest codeanalyzer-typescript whose graph this backend serves. **1.5.2 exactly**, not
+    #: "1.3.0 or newer": 1.5.1 moved the application to the outermost segment of the ``can://``
+    #: grammar every statement here scopes on, and 1.5.0 -- which is in the wild -- emits the old
+    #: ``can://<lang>/<app>/…`` one. Everything the older floor was about is still required and
+    #: still true here (1.2.0's id grammar and body-node shape; 1.3.0's L4 port lattice wired to
+    #: the statement DDG, cants#169; ``id`` on body nodes and parameters, #165; ``_module``
+    #: retired, #166), but a 1.5.0 graph now has every one of those and *still* answers every
+    #: scoped statement with zero rows, because the prefix no longer matches. Refusing it by
+    #: version is the only thing between a caller and that silent empty.
+    #:
+    #: The floor is 1.5.2 rather than 1.5.1 -- the release that actually flipped the grammar --
+    #: because 1.5.1 shipped with ``ANALYZER_VERSION`` left at ``"1.5.0"`` (cants#f3e2ada), so the
+    #: string it stamps on ``:Application.analyzer_version`` is indistinguishable from the
+    #: old-grammar release's. There is no version test that admits a 1.5.1 graph and refuses a
+    #: 1.5.0 one, so the floor sits at the first release whose stamp tells the truth.
+    _ANALYZER_FLOOR = (1, 5, 2)
     #: Every relationship type the attached database declares, recorded by :meth:`_probe_schema`.
     #: A type absent from it is absent from the graph, so an accessor that can only be answered
     #: over that type raises naming the gap instead of returning an empty the caller would read as
@@ -301,19 +323,27 @@ class TSNeo4jBackend(TSAnalysisBackend):
     # -----[ scope ]-----
     @property
     def _app_id(self) -> str:
-        return f"can://typescript/{self.application_name}"
+        """``can://<app>`` -- the ``:Application`` anchor's id, and the root of every id below it."""
+        return f"can://{self.application_name}"
 
     @property
-    def _scope_prefixes(self) -> List[str]:
-        """``can://typescript/<app>/`` and ``can://javascript/<app>/`` (TS-3); the trailing slash
-        keeps ``app`` from matching ``app-b``."""
-        return [f"can://typescript/{self.application_name}/", f"can://javascript/{self.application_name}/"]
+    def _scope_prefix(self) -> str:
+        """``can://<app>/`` (TS-3): one prefix covering both language namespaces, the ``@external``
+        ghosts and the artifacts. The trailing slash keeps ``app`` from matching ``app-b``."""
+        return f"{self._app_id}/"
 
     @property
     def _scope_params(self) -> Dict[str, str]:
-        """The parameters :func:`_scoped` binds."""
-        p1, p2 = self._scope_prefixes
-        return {"p1": p1, "p2": p2}
+        """The parameter :func:`_scoped` binds."""
+        return {"p": self._scope_prefix}
+
+    @property
+    def _language_prefixes(self) -> List[str]:
+        """``can://<app>/typescript/`` and ``can://<app>/javascript/`` -- the only place the two
+        namespaces are still told apart, and only because :meth:`_module_key` has to strip the
+        language segment to reach the file key under it. Nothing is *scoped* on these: a scoped
+        statement naming one of two prefixes is the bug this pair used to cause."""
+        return [f"{self._app_id}/typescript/", f"{self._app_id}/javascript/"]
 
     @cached_property
     def _module_set(self) -> FrozenSet[str]:
@@ -324,7 +354,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
         module keys (F4) -- never split, never guessed. A miss reloads the keys once (the graph is
         not ours; a re-emit may have added a module) and then raises."""
         for _ in range(2):
-            for prefix in self._scope_prefixes:
+            for prefix in self._language_prefixes:
                 if node_id.startswith(prefix):
                     try:
                         return module_key_of(node_id, prefix, self._module_set)
@@ -627,10 +657,10 @@ class TSNeo4jBackend(TSAnalysisBackend):
         """The application's external *symbols* -- ``<app-id>/@external/<module>/<name>``, what
         ``analysis.json``'s ``external_symbols`` holds -- keyed ``"<module>.<name>"``. An external is
         homed on the application whichever module called it, so the application scope plus the
-        ``@external`` segment is the scope. The scope is the **two** prefixes (TS-3), not the
-        typescript one alone: superset-frontend homes all 3,171 of its externals under
-        ``can://typescript/``, but nothing in the id grammar stops a ``.js`` caller's external
-        landing under ``can://javascript/``, and a single-prefix reading would drop it silently.
+        ``@external`` segment is the scope. Since 1.5.1 an external id carries **no language
+        segment at all** (``can://<app>/@external/<module>/<name>``), so the one application prefix
+        is exactly right -- and it is what the old two-language-prefix reading could never express:
+        a language-neutral id matched neither namespace.
         The graph also holds one nameless ``:TSExternal`` per *package* (``@external/<module>``, the
         target of ``TS_PROVIDES`` / ``TS_UNRESOLVED_IMPORT``); those are not symbols and are not
         returned here."""
@@ -1204,10 +1234,13 @@ class TSNeo4jBackend(TSAnalysisBackend):
     #     index is a full range walk and the 11,085-node label scan wins: 24-28 ms on
     #     ``(c:TSCallable)`` against 44-51 ms on ``(c:CanNode:TSCallable)``, across four names.
     #
-    # ``:TSCanNode`` was measured faster still on locate (37.9/35.5 ms) and is refused on
-    # CORRECTNESS: it is the per-namespace marker, so it drops every ``can://javascript/<app>/``
-    # module -- 40 rows where the right answer is 113. Java's leg-3a ruling is not ported here, and
-    # neither is 2.5a's, unexamined.
+    # ``:TSCanNode`` was measured faster still on locate (37.9/35.5 ms) and was refused on
+    # CORRECTNESS while it was the per-*namespace* marker: it dropped every javascript module --
+    # 40 rows where the right answer is 113. 1.5.1 makes ``TSCanNode`` ride every ``can://`` node
+    # the analyzer owns (``JSCanNode`` survives as a secondary consumer filter), so that objection
+    # is gone; the anchor is left on ``:CanNode:TSCallable`` because the measurement above is the
+    # one that was taken, and re-anchoring on an unmeasured label is not an optimisation. Java's
+    # leg-3a ruling is not ported here, and neither is 2.5a's, unexamined.
     # =====================================================================================
     #: Both layers of containment in one statement, so the whole resolution is one round trip: the
     #: **callable** by line containment over its own ``start_line``/``end_line`` (present at every
@@ -1642,7 +1675,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
     #: callables for hydration -- collecting the *nodes* rather than their ids would put the whole
     #: closure in the transaction.
     #:
-    #: **Every node on the walk carries the two-prefix predicate, not just its far end.** An SDG
+    #: **Every node on the walk carries the application-prefix predicate, not just its far end.** An SDG
     #: edge runs between two application-owned nodes -- which is exactly why the SDG types are
     #: absent from the audit's ``_KEEPS_SCOPE`` -- so an *interior* body node is no more provably
     #: this application's than a far endpoint is, on a graph this SDK did not emit. The path is
@@ -1828,7 +1861,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
     #: ``allShortestPaths`` is a bidirectional BFS. ``$cap`` is ``max_paths + 1`` so one extra row
     #: reports the truncation, rather than a second traversal for a number the caller cannot act on.
     #:
-    #: ``all(n IN nodes(p) …)`` puts the two-prefix predicate on **every** node of the path, not
+    #: ``all(n IN nodes(p) …)`` puts the application-prefix predicate on **every** node of the path, not
     #: only on the two the ids pin: the SDG types are deliberately outside the audit's
     #: ``_KEEPS_SCOPE``, so an interior node reached over one is not provably this application's.
     _PATHS = (
@@ -1843,7 +1876,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
 
     #: The same query over the call graph. The ``all()`` predicate carries **both** halves of what
     #: :attr:`_REACHES` puts on each of its hops: ``n:TSCallable`` keeps a module or a ghost off the
-    #: *interior* of a path, and the two-prefix predicate keeps another application's callable off
+    #: *interior* of a path, and the application-prefix predicate keeps another application's callable off
     #: it -- ``TS_CALLS`` runs between two application-owned nodes, so the label alone lets a walk
     #: leave the application on any hop but the first and the last. Same edge set as
     #: :attr:`_REACHES`, so the paths cannot disagree with the boolean that summarises them; Neo4j
@@ -1890,8 +1923,8 @@ class TSNeo4jBackend(TSAnalysisBackend):
 
     #: ``WITH DISTINCT m`` before the membership test is what makes this a pruning BFS instead of a
     #: trail enumeration. Both **endpoints** are pinned by an application-stamped id -- ``$src`` is
-    #: a ``ref`` minted by :meth:`resolve_value` and ``$dsts`` are ids collected by the two-prefix
-    #: scoped :attr:`_CALLEE_VALUES` -- so the ``all(n IN nodes(p) …)`` is what the endpoints do not
+    #: a ``ref`` minted by :meth:`resolve_value` and ``$dsts`` are ids collected by the
+    #: application-scoped :attr:`_CALLEE_VALUES` -- so the ``all(n IN nodes(p) …)`` is what the endpoints do not
     #: give: the same interior predicate :attr:`_SLICE` and :attr:`_PATHS` carry, for the same
     #: reason (an SDG edge joins two application-owned nodes).
     _VALUE_REACHES = (

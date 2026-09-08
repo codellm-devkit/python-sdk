@@ -1078,7 +1078,7 @@ def test_describe_raises_on_a_ref_that_names_nothing(live_analysis):
     a ``None`` to be discovered three layers later."""
     good = live_analysis.backward_cone([FLOW_TO]).nodes[0]
     with pytest.raises(KeyError):
-        live_analysis.describe([good, good.model_copy(update={"ref": "can://python/nope/nothing.py/nope"})])
+        live_analysis.describe([good, good.model_copy(update={"ref": "can://nope/python/nothing.py/nope"})])
 
 
 @live_only
@@ -1203,7 +1203,7 @@ def test_local_describe_fills_in_what_the_graph_cannot(slice_l4):
 def test_local_describe_raises_on_a_ref_that_names_nothing(slice_l4):
     node = slice_l4.callers_of("helper")[0]
     with pytest.raises(KeyError):
-        slice_l4.describe([node.model_copy(update={"ref": "can://python/nope/x.py/nope"})])
+        slice_l4.describe([node.model_copy(update={"ref": "can://nope/python/x.py/nope"})])
 
 
 def test_describe_refuses_something_with_no_address(slice_l4):
@@ -1375,14 +1375,14 @@ def test_local_describe_composes_with_callees_of(local_l4):
 def test_a_stale_ref_is_reported_by_position_not_by_ref(live_analysis):
     good = live_analysis.backward_cone([FLOW_TO]).nodes[0]
     with pytest.raises(KeyError) as e:
-        live_analysis.describe([good, good.model_copy(update={"ref": "can://python/nope/nothing.py/nope"})])
+        live_analysis.describe([good, good.model_copy(update={"ref": "can://nope/python/nothing.py/nope"})])
     assert "can://" not in str(e.value) and good.callable in str(e.value) and f"{good.file}:{good.line}" in str(e.value)
 
 
 def test_a_local_stale_ref_is_reported_by_position_not_by_ref(slice_l4):
     node = slice_l4.callers_of("helper")[0]
     with pytest.raises(KeyError) as e:
-        slice_l4.describe([node.model_copy(update={"ref": "can://python/nope/x.py/nope"})])
+        slice_l4.describe([node.model_copy(update={"ref": "can://nope/python/x.py/nope"})])
     assert "can://" not in str(e.value) and "src.pay.Portal.charge" in str(e.value)
 
 

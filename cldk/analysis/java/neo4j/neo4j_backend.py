@@ -21,9 +21,10 @@ A drop-in alternative to :class:`~cldk.analysis.java.codeanalyzer.JCodeanalyzer`
 surface, answered over a live graph that ``codeanalyzer-java --emit neo4j`` populated out of band.
 This class never writes and needs neither the analyzer JAR, a JDK, nor the project sources.
 
-**The graph it reads** (``schema.neo4j.json`` at the 3.0.1 tag, contract ``2.0.0``, verified
-against the reference graph): ``:JApplication`` is keyed by **``name``** and stamps
-``analyzer_version``; every project-owned node carries a ``can://java/<app>/…`` ``id`` and the
+**The graph it reads** (``schema.neo4j.json`` at the 3.1.1 tag, contract ``2.0.0``, verified
+against the reference graph): ``:JApplication`` is keyed by **``id``** (``can://<app>``; ``name``
+survives as a display property with no uniqueness constraint) and stamps
+``analyzer_version``; every project-owned node carries a ``can://<app>/java/…`` ``id`` and the
 marker label ``:JCanNode``. ``:JModule`` holds the repo-relative path in ``file_key``;
 ``:JType``/``:JCallable``/``:JExternal`` share the merge label ``:JSymbol`` and are told apart by
 their own label plus ``kind``; ``:JField``, ``:JVariable``, ``:JEnumConstant``,
@@ -36,10 +37,19 @@ pre-3.0.1 (schema v1) vocabulary this backend used to read (``:JCompilationUnit`
 ``J_HAS_CALLABLE``, ``:JParameter``, ``:JCallSite``, ``:JComment``, the CRUD labels) exists — a
 graph that still speaks it is refused at attach by :meth:`_probe_schema` (J-9).
 
-**Scope.** Java has exactly one id namespace, so the application scope is the single prefix
-``can://java/<app>/`` that :func:`_scoped` spells, or the ``:JApplication {name: $app}`` anchor a
-statement walks out from. Nothing else distinguishes two applications in one database: a module
-``file_key``, a qualified class name and a method signature are all shared vocabulary.
+**Scope.** The application scope is the single prefix ``can://<app>/`` that :func:`_scoped`
+spells, or the ``:JApplication {id: $app_id}`` anchor a statement walks out from. Nothing else
+distinguishes two applications in one database: a module ``file_key``, a qualified class name and a
+method signature are all shared vocabulary.
+
+3.1.1 put the **application outermost** and the language inside it (``can://<app>/java/<file>/…``),
+so the scope is deliberately the *application* prefix rather than the narrower ``can://<app>/java/``
+one. Two of the shared namespaces sit outside the language segment and inside the application:
+``@external`` ghosts (``can://<app>/@external/<binary-type>/<signature>``, language-neutral in every
+analyzer since 3.1.1) and artifacts (``can://<app>/artifact/<path>``). Scoping on the language
+prefix would return no external symbols at all, silently. Nothing is over-admitted by the wider
+prefix: a sibling analyzer's nodes over the same repository share it but carry no ``J*`` label, and
+every statement here pins one.
 
 **Seek labels.** Every statement anchors on the bare specific label; ``:JCanNode`` is used
 nowhere. Not because the bare label always seeks — ``:JCallable`` owns no id index at all (only a
@@ -48,7 +58,7 @@ label scan — but because of what the statements here actually are. The two pre
 fan out over relationships from every matched callable, and measured on ThingsBoard the traversal
 dominates: swapping the anchor moves the wall clock by under 1% while ``:JCanNode`` adds a quarter
 again as many db hits (5.65M against 4.55M on the call sites, 1.89M against 0.73M on the call
-edges). Everything else is anchored on ``(:JApplication {name: $app})`` and never scans at all.
+edges). Everything else is anchored on ``(:JApplication {id: $app_id})`` and never scans at all.
 ``:JCanNode``'s own index is not a constraint and spans 615,329 nodes, so where it *is* the only
 seek it still loses — 118 ms against 24 on a whole-application prefix; it wins only a per-module
 prefix, which no statement here issues. See ``test_no_statement_anchors_on_the_marker_label`` and
@@ -188,16 +198,22 @@ class JNeo4jBackend(JavaAnalysisBackend):
         neo4j_username / neo4j_password: Credentials (read-only is sufficient).
         neo4j_database: Database name (None ⇒ server default).
         application_name: The ``--app-name`` the graph was emitted with; the anchor is
-            ``:JApplication {name: <application_name>}`` and the id prefix is
-            ``can://java/<application_name>/``.
+            ``:JApplication {id: can://<application_name>}`` and the id prefix is
+            ``can://<application_name>/``.
     """
 
     #: Relationship types every supported graph has; a graph missing any was emitted by another
     #: generation (a schema-v1 graph shares only ``J_CALLS``) and is refused at attach.
     _REQUIRED_RELATIONSHIP_TYPES: FrozenSet[str] = frozenset({"J_HAS_MODULE", "J_HAS_METHOD", "J_HAS_BODY_NODE", "J_CALLS"})
-    #: The oldest codeanalyzer-java whose graph this backend serves: 3.0.0 stamped contract 2.2.0,
-    #: 3.0.1 holds 2.0.0 — the ``can://`` id grammar and body-node shape every statement here reads.
-    _ANALYZER_FLOOR = (3, 0, 1)
+    #: The oldest codeanalyzer-java whose graph this backend serves. **3.1.1 exactly**, not
+    #: "3.0.1 or newer": 3.1.1 moved the application to the outermost segment of the ``can://``
+    #: grammar every statement here scopes on, and 3.1.0 — which is in the wild — emits the old
+    #: ``can://java/<app>/…`` one. A 3.1.0 graph carries every relationship type
+    #: :meth:`_probe_schema` looks for and the contract-2.0.0 body-node shape, so it attaches
+    #: cleanly and then answers every prefix-scoped statement with zero rows. Refusing it by version
+    #: is the only thing between a caller and that silent empty. (3.0.0 stamped contract 2.2.0;
+    #: 3.0.1 holds 2.0.0 — the body-node shape every statement here reads.)
+    _ANALYZER_FLOOR = (3, 1, 1)
     #: Set by :meth:`_probe_schema`; the class-level ``None`` is for the ``object.__new__`` seam.
     _analyzer_version: Tuple[int, int, int] | None = None
     #: The database's relationship types, read once by :meth:`_probe_schema` and reused by
@@ -243,9 +259,19 @@ class JNeo4jBackend(JavaAnalysisBackend):
 
     # -----[ scope ]-----
     @property
+    def _application_id(self) -> str:
+        """``can://<app>`` — the ``:JApplication`` root's own merge key since 3.1.1."""
+        return f"can://{self.application_name}"
+
+    @property
     def _scope_prefix(self) -> str:
-        """``can://java/<app>/`` — the trailing slash keeps ``app`` from matching ``app-b``."""
-        return f"can://java/{self.application_name}/"
+        """``can://<app>/`` — the trailing slash keeps ``app`` from matching ``app-b``.
+
+        The *application* prefix, not the narrower ``can://<app>/java/`` code one: an ``@external``
+        ghost and an artifact both sit inside the application and outside the language segment (see
+        the module docstring's **Scope**), and ``_external_rows`` would return nothing at all under
+        the code prefix."""
+        return f"{self._application_id}/"
 
     # -----[ lifecycle ]-----
     def close(self) -> None:
@@ -290,7 +316,7 @@ class JNeo4jBackend(JavaAnalysisBackend):
         missing = self._REQUIRED_RELATIONSHIP_TYPES - found
         if missing:
             raise GraphSchemaMismatch(expected=set(self._REQUIRED_RELATIONSHIP_TYPES), found=found, missing=missing)
-        rows = self._run("OPTIONAL MATCH (a:JApplication {name: $app}) RETURN count(a) AS n, a.analyzer_version AS v", app=self.application_name)
+        rows = self._run("OPTIONAL MATCH (a:JApplication {id: $app_id}) RETURN count(a) AS n, a.analyzer_version AS v", app_id=self._application_id)
         present = bool(rows and rows[0].get("n"))
         raw = rows[0].get("v") if rows else None
         version = _semver(raw)
@@ -333,7 +359,7 @@ class JNeo4jBackend(JavaAnalysisBackend):
     def _load_modules(self) -> Dict[str, Dict[str, Any]]:
         """``file_key -> module properties`` for the application's modules."""
         rows = self._run(
-            "MATCH (:JApplication {name: $app})-[:J_HAS_MODULE]->(m:JModule) RETURN m.file_key AS k, properties(m) AS p ORDER BY m.file_key", app=self.application_name
+            "MATCH (:JApplication {id: $app_id})-[:J_HAS_MODULE]->(m:JModule) RETURN m.file_key AS k, properties(m) AS p ORDER BY m.file_key", app_id=self._application_id
         )
         return {r["k"]: r["p"] for r in rows}
 
@@ -347,7 +373,7 @@ class JNeo4jBackend(JavaAnalysisBackend):
     #: hop because a field is itself an annotation target (``J_ANNOTATED_BY`` runs from a type, a
     #: callable *or* a field), so it has to be reachable as a parent.
     _SUBTREE = (
-        "MATCH (:JApplication {name: $app})-[:J_HAS_MODULE]->(root:JModule) "
+        "MATCH (:JApplication {id: $app_id})-[:J_HAS_MODULE]->(root:JModule) "
         "MATCH (root)-[:J_DECLARES|J_HAS_METHOD|J_HAS_FIELD*0..]->(par)"
         "-[r:J_DECLARES|J_HAS_METHOD|J_HAS_FIELD|J_DECLARES_VAR|J_HAS_ENUM_CONSTANT|J_HAS_RECORD_COMPONENT|J_ANNOTATED_BY]->(n) "
         "RETURN par.id AS pk, type(r) AS rel, properties(n) AS p, properties(r) AS e, labels(n) AS labels "
@@ -355,7 +381,7 @@ class JNeo4jBackend(JavaAnalysisBackend):
     )
 
     def _subtree_rows(self) -> Dict[str, List[_Child]]:
-        rows = self._run(self._SUBTREE, app=self.application_name)
+        rows = self._run(self._SUBTREE, app_id=self._application_id)
         children: Dict[str, List[_Child]] = defaultdict(list)
         for r in rows:
             children[r["pk"]].append((r["rel"], {**r["p"], "_labels": r["labels"]}, r["e"] or {}))
@@ -377,8 +403,8 @@ class JNeo4jBackend(JavaAnalysisBackend):
 
     def _import_rows(self) -> Dict[str, List[Dict[str, Any]]]:
         rows = self._run(
-            "MATCH (:JApplication {name: $app})-[:J_HAS_MODULE]->(m:JModule)-[r:J_IMPORTS]->() RETURN m.file_key AS k, properties(r) AS e ORDER BY m.file_key",
-            app=self.application_name,
+            "MATCH (:JApplication {id: $app_id})-[:J_HAS_MODULE]->(m:JModule)-[r:J_IMPORTS]->() RETURN m.file_key AS k, properties(r) AS e ORDER BY m.file_key",
+            app_id=self._application_id,
         )
         out: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
         for r in rows:
@@ -406,10 +432,10 @@ class JNeo4jBackend(JavaAnalysisBackend):
 
     def _artifact_rows(self) -> List[Dict[str, Any]]:
         return self._run(
-            "MATCH (:JApplication {name: $app})-[:HAS_ARTIFACT]->(a:Artifact) "
+            "MATCH (:JApplication {id: $app_id})-[:HAS_ARTIFACT]->(a:Artifact) "
             "OPTIONAL MATCH (a)-[:DEFINES_CONFIG]->(ck:ConfigKey) "
             "RETURN properties(a) AS p, collect(properties(ck)) AS cks",
-            app=self.application_name,
+            app_id=self._application_id,
         )
 
     def _overlay_rows(self) -> Tuple[JEntrypointReport | None, List[JConfigUse], List[JConfigRead]]:
@@ -428,26 +454,27 @@ class JNeo4jBackend(JavaAnalysisBackend):
 
         Both endpoints of ``J_USES_CONFIG`` carry the scope, and each carries a different one,
         because the edge is the one place the two id spaces meet: the **key** is anchored through
-        the artifact layer (``can://artifact/<app>/…``, which no ``$prefix`` predicate matches) and
-        the **source** by the code prefix, since the schema roots that edge on a body node, a
+        the artifact layer (``can://<app>/artifact/…``, reached only by walking out from the
+        application anchor) and the **source** by the id prefix, since the schema roots that edge
+        on a body node, a
         callable, a field or a type — none of which the application anchor reaches in one hop.
         ``J_READS_CONFIG_UNRESOLVED`` runs from the anchor itself and carries no ``site``, which is
         the lossiness :meth:`~cldk.analysis.java.backend.JavaAnalysisBackend.get_unresolved_config_reads`
         states.
         """
-        rows = self._run("MATCH (a:JApplication {name: $app}) RETURN properties(a) AS p", app=self.application_name)
+        rows = self._run("MATCH (a:JApplication {id: $app_id}) RETURN properties(a) AS p", app_id=self._application_id)
         raw = rows[0]["p"].get("entrypoint_report_json") if rows else None
         if raw is None:
             return None, [], []
         uses = self._run(
-            "MATCH (:JApplication {name: $app})-[:HAS_ARTIFACT]->(:Artifact)-[:DEFINES_CONFIG]->(ck:ConfigKey)<-[u:J_USES_CONFIG]-(src) "
+            "MATCH (:JApplication {id: $app_id})-[:HAS_ARTIFACT]->(:Artifact)-[:DEFINES_CONFIG]->(ck:ConfigKey)<-[u:J_USES_CONFIG]-(src) "
             f"WHERE {_scoped('src')} RETURN src.id AS src, ck.id AS dst, u.prov AS prov ORDER BY src.id, ck.id",
-            app=self.application_name,
+            app_id=self._application_id,
             prefix=self._scope_prefix,
         )
         reads = self._run(
-            "MATCH (:JApplication {name: $app})-[u:J_READS_CONFIG_UNRESOLVED]->(ghost) RETURN properties(u) AS p, ghost.id AS callee ORDER BY u.key, ghost.id",
-            app=self.application_name,
+            "MATCH (:JApplication {id: $app_id})-[u:J_READS_CONFIG_UNRESOLVED]->(ghost) RETURN properties(u) AS p, ghost.id AS callee ORDER BY u.key, ghost.id",
+            app_id=self._application_id,
         )
         return (
             JEntrypointReport.model_validate_json(raw),
@@ -457,9 +484,9 @@ class JNeo4jBackend(JavaAnalysisBackend):
 
     def _dependency_rows(self) -> List[Dict[str, Any]]:
         return self._run(
-            "MATCH (:JApplication {name: $app})-[:HAS_ARTIFACT]->(a:Artifact)-[r:DECLARES_DEPENDENCY]->(p:Package) "
+            "MATCH (:JApplication {id: $app_id})-[:HAS_ARTIFACT]->(a:Artifact)-[r:DECLARES_DEPENDENCY]->(p:Package) "
             "RETURN properties(r) AS rel, properties(p) AS pkg, a.id AS declared_in ORDER BY p.name",
-            app=self.application_name,
+            app_id=self._application_id,
         )
 
     # -----[ the containment tree ]-----
@@ -536,7 +563,7 @@ class JNeo4jBackend(JavaAnalysisBackend):
             R.thread_code(unit, self._projected_code(children, module_id))
             symbol_table[key] = unit
         return JApplication(
-            id=f"can://java/{self.application_name}",
+            id=self._application_id,
             symbol_table=symbol_table,
             call_graph=[JCallGraphEdge(src=r["src"], dst=r["dst"], prov=list(r["prov"] or []), weight=r["weight"] or 1) for r in self._call_edge_rows()],
             # ``{}`` and never ``None``: ``--emit neo4j`` forces ``--external-calls``, so a graph
@@ -663,7 +690,7 @@ class JNeo4jBackend(JavaAnalysisBackend):
     #:
     #: **An ``@external`` target is a ``callee``.** ``--emit neo4j`` forces ``--external-calls``, so
     #: 2,283 of daytrader8's 4,006 call sites resolve to a ``:JExternal`` whose id is
-    #: application-scoped (``can://java/daytrader8/@external/…``). The contract is "the id of what it
+    #: application-scoped (``can://daytrader8/@external/…``). The contract is "the id of what it
     #: resolves to", and that id is one: :meth:`get_external_symbols` keys its map by exactly these
     #: strings, so the caller already has the vocabulary to look one up. Withholding it would mint
     #: the ``None`` that means "never resolved" for a call that plainly did.
@@ -1248,7 +1275,7 @@ class JNeo4jBackend(JavaAnalysisBackend):
         """Every configuration key flattened out of the config-bearing artifacts, keyed
         ``"<artifact repo-relative path>@key/<dotted key>"`` (``pom.xml@key/project.artifactId``).
 
-        That key is the analyzer's own id with its ``can://artifact/<app>/`` prefix dropped: the
+        That key is the analyzer's own id with its ``can://<app>/artifact/`` prefix dropped: the
         application name belongs to the run, not to the key, so keying by the raw id made the two
         backends share **zero** keys whenever the graph was emitted under a different ``--app-name``
         than the local run passes (the SDK passes the project directory's name). ``can://`` ids also

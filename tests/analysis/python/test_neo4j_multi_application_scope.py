@@ -69,7 +69,7 @@ METHOD_SIG = "shared.Widget.render"
 
 def _node(module: str, key: str, **props: Any) -> Dict[str, Any]:
     """A fixture node the way codeanalyzer-python 1.4.1 emits it: the application and the module
-    live in the ``id`` (``can://python/<app>/<file_key>/...``) and nowhere else -- there is no
+    live in the ``id`` (``can://<app>/python/<file_key>/...``) and nowhere else -- there is no
     ``_module`` property, which is exactly what the fake server has to be able to scope without."""
     return {"id": f"{module_id(_APP_OF[module], module)}/{key}", **props}
 
@@ -152,7 +152,7 @@ _CLASSES: List[Dict[str, Any]] = [
 _SOURCE_NODES: Dict[str, List[Dict[str, Any]]] = {
     "PyCallable": list(_CHILDREN["class_methods"][1].values()),
     "PyBodyNode": list(_CHILDREN["callable_callsites"][1].values()),
-    "PyExternal": [{"id": f"can://python/{app}/@external/os/path", "name": "path", "module": "os"} for app in (APP_A, APP_B)],
+    "PyExternal": [{"id": f"can://{app}/@external/os/path", "name": "path", "module": "os"} for app in (APP_A, APP_B)],
 }
 
 #: The three spellings of the application scope a statement may carry: the whole application
@@ -268,7 +268,7 @@ def test_the_fake_graph_carries_no_module_property():
     returning nothing on a real graph."""
     nodes = [c for _, by_module in _CHILDREN.values() for c in by_module.values()] + _CLASSES + list(_SHARED_FUNCTIONS.values())
     assert nodes and not any("_module" in n for n in nodes)
-    assert all(n["id"].startswith(("can://python/app_a/", "can://python/app_b/")) for n in nodes)
+    assert all(n["id"].startswith(("can://app_a/python/", "can://app_b/python/")) for n in nodes)
 
 
 def test_per_parent_path_does_not_leak_another_applications_children():
@@ -426,10 +426,10 @@ def _inline_statements() -> Dict[str, str]:
 
 #: The four ways a statement stays inside one application. ``introspection`` is the server, not
 #: the data (``CALL db.relationshipTypes()``, ``CALL dbms.components()``); ``application`` walks out
-#: from ``(:PyApplication {name: $app})`` and cannot leave it; ``prefix`` and ``id`` are the two
+#: from ``(:PyApplication {id: $app_id})`` and cannot leave it; ``prefix`` and ``id`` are the two
 #: ``can://``-stamped forms the docstring below explains. Anything else is unscoped.
 _INTROSPECTION = re.compile(r"^\s*CALL (db|dbms)\.")
-_ANCHORED_ON_THE_APPLICATION = re.compile(r"\(\w*:PyApplication \{name: \$app\}\)")
+_ANCHORED_ON_THE_APPLICATION = re.compile(r"\(\w*:PyApplication \{id: \$app_id\}\)")
 
 
 def _scope_kind(statement: str) -> str | None:
@@ -482,11 +482,11 @@ def test_every_statement_is_application_scoped_or_keyed_by_an_application_stampe
     A **signature** is not application-stamped: two applications in one database can declare the
     same one, so any statement that matches a node by signature must also carry the application
     scope -- ``.id STARTS WITH $prefix`` (or, on a narrowed bulk fetch, the per-module prefixes).
-    A body-node or ghost **id** embeds the application (``can://python/<app>/…``) and the emitter
+    A body-node or ghost **id** embeds the application (``can://<app>/python/…``) and the emitter
     only ever links nodes from its own run, so a statement keyed *only* by id is scoped by
     construction and may omit the predicate -- ``_SLICE``, ``_PATHS`` and ``_VALUE_REACHES`` do,
     for the measured cost of testing 195,784 reached nodes against a list. A statement anchored
-    on ``(:PyApplication {name: $app})`` walks out from the application node and cannot leave it
+    on ``(:PyApplication {id: $app_id})`` walks out from the application node and cannot leave it
     (the module list, artifacts, config keys, the entrypoint report). A statement keyed by none
     of these would be unscoped and fails here -- class-level and inline alike.
     """

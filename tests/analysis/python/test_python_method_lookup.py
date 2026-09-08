@@ -204,7 +204,7 @@ def test_get_all_callers_missing_method_stays_false_empty():
 # same as a live graph's own query text produces.
 # ----------------------------------------------------------------------------------------------
 def test_get_all_callees_external_target_survives_as_external_keyed_node_neo4j():
-    external_id = "can://python/test_app/@external/builtins.print"
+    external_id = "can://test_app/@external/builtins.print"
     modules = {MODULE_NAME: {"file_key": "pkg/mod.py", "functions": [{"name": "entry", "signature": ENTRY_SIG, "path": "pkg/mod.py"}]}}
     call_edges = [(ENTRY_SIG, None, external_id)]
 

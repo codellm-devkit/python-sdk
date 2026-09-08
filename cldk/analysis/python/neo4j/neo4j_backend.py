@@ -47,10 +47,15 @@ Identity model (must match the in-memory backend; see ``codeanalyzer/neo4j/proje
   constant ``CALL_DEP`` type;
 * class inheritance is ``(:PyClass)-[:PY_EXTENDS]->(:PyClass)`` (plus a ``base_classes`` property);
 * every node the analyzer emits for an application — module, class, callable, body node and
-  ``@external`` ghost — carries an id under ``can://python/<app>/``, so a single database may hold
+  ``@external`` ghost — carries an id under ``can://<app>/``, so a single database may hold
   several applications; every statement here is scoped to this backend's application by that id
-  prefix. (1.4.0 graphs also stamped a ``_module`` provenance property on project-owned nodes;
-  1.4.1 retired it, and nothing here reads it.)
+  prefix. The application is the **outermost** segment as of 1.5.0 and the language sits inside it
+  (``can://<app>/python/<file>/…``), so the code scope and the application scope are two different
+  prefixes: ``@external`` ghosts are language-neutral (``can://<app>/@external/<mod>/<name>``) and
+  artifacts sit at ``can://<app>/artifact/<path>``, both inside the application prefix but outside
+  the ``python`` one. Every ``Py*``-labelled statement is scoped on the application prefix; only
+  :meth:`_module_key`, which has to strip the language to reach the file key, uses
+  :attr:`_code_prefix`.
 
 In-memory dict keys this backend reproduces exactly (the projection stores nodes by ``signature``
 only, so the keys are rebuilt from node properties): ``module.types`` / a class's own ``types`` →
@@ -341,11 +346,14 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     # (:meth:`_bounded_call_rows`), so an older server keeps serving every other accessor.
     _QUANTIFIED_PATH_MIN_SERVER = (5, 9)
 
-    #: The oldest codeanalyzer-python whose graph this backend serves. 1.4.0 introduced the
-    #: ``can://`` id grammar every statement here scopes on; 1.4.1 dropped the ``_module`` property
-    #: this backend once read. Both generations carry the ``:PySymbol(id)`` index the point lookups
-    #: seek, so they are served identically -- results and cost alike (see :meth:`_probe_schema`).
-    _ANALYZER_FLOOR = (1, 4, 0)
+    #: The oldest codeanalyzer-python whose graph this backend serves. **1.5.0 exactly**, not
+    #: "1.4.0 or newer": 1.5.0 moved the application to the outermost segment of the ``can://``
+    #: grammar every statement here scopes on, and 1.4.1 -- which is in the wild -- emits the old
+    #: ``can://python/<app>/…`` one. A 1.4.1 graph carries every relationship type
+    #: :meth:`_probe_schema` looks for and the ``:PySymbol(id)`` index the point lookups seek, so
+    #: it attaches cleanly and then answers every scoped statement with zero rows. Refusing it by
+    #: version is the only thing between a caller and that silent empty.
+    _ANALYZER_FLOOR = (1, 5, 0)
 
     def _probe_schema(self) -> None:
         """Verify the connected graph's vocabulary once, at connection time, and record the
@@ -373,12 +381,12 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         # exist and every statement would come back empty; refusing here is what keeps that from
         # reading as "no callables". An absent application has no version either, and is refused
         # for the same reason.
-        rows = self._run("MATCH (a:PyApplication {name: $app}) RETURN a.analyzer_version AS v", app=self.application_name)
+        rows = self._run("MATCH (a:PyApplication {id: $app_id}) RETURN a.analyzer_version AS v", app_id=self._application_id)
         raw = rows[0].get("v") if rows else None
         version = _semver(raw)
         floor = ".".join(map(str, self._ANALYZER_FLOOR))
         if version is None or version < self._ANALYZER_FLOOR:
-            what = f"was emitted by codeanalyzer-python {raw}" if version else (f"reports analyzer_version {raw!r}" if raw else "carries no analyzer_version (no :PyApplication with that name, or one emitted before the property existed)")
+            what = f"was emitted by codeanalyzer-python {raw}" if version else (f"reports analyzer_version {raw!r}" if raw else "carries no analyzer_version (no :PyApplication with that id, or one emitted before the property existed)")
             raise GraphSchemaMismatch(
                 expected=set(self._REQUIRED_RELATIONSHIP_TYPES),
                 found=found,
@@ -463,16 +471,41 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     _prefetch_prefixes: List[str] | None = None
 
     @property
-    def _scope_prefix(self) -> str:
-        """The application scope every statement carries: ``can://python/<app>/``.
+    def _application_id(self) -> str:
+        """``can://<app>`` -- the ``:PyApplication`` root's own merge key since 1.5.0 (it used to
+        merge on ``name``, which carries no uniqueness constraint any more)."""
+        return application_id(self.application_name)
 
-        Every node the analyzer emits for this application -- module, class, callable, body node
-        and ``@external`` ghost alike -- has an id under this prefix, and nothing from any other
-        application does. The trailing slash is load-bearing: without it ``odoo-slim-19`` would
-        also match ``odoo-slim-19-b``. Derived, not stored, so a backend built through the
+    @property
+    def _scope_prefix(self) -> str:
+        """The application scope every statement carries: ``can://<app>/``.
+
+        Every node the analyzer emits for this application -- module, class, callable, body node,
+        ``@external`` ghost and artifact alike -- has an id under this prefix, and nothing from any
+        other application does. The trailing slash is load-bearing: without it ``odoo-slim-19``
+        would also match ``odoo-slim-19-b``. Derived, not stored, so a backend built through the
         ``object.__new__`` seam the unit tests use has it too.
+
+        It stays the *application* prefix rather than the narrower :attr:`_code_prefix` because
+        the statements that carry it have to admit ``@external`` ghosts, which no longer sit under
+        the language segment: ``_bounded_call_rows`` anchors its roots on it, ``_CALLEES`` returns
+        them, and narrowing to ``can://<app>/python/`` would silently drop every external from the
+        call graph. Nothing is over-admitted by the wider prefix -- a sibling analyzer's nodes over
+        the same repository share it but carry no ``Py*`` label, and every statement here pins one.
         """
-        return application_id(self.application_name) + "/"
+        return self._application_id + "/"
+
+    @property
+    def _code_prefix(self) -> str:
+        """``can://<app>/python/`` -- what a *declared* node's id carries before its file key.
+
+        The one place the language segment matters. :meth:`_module_key` strips this to recover the
+        repo-relative module key, so it cannot use :attr:`_scope_prefix`: that would leave
+        ``python/odoo/tools/mail.py`` to match against a key set spelling ``odoo/tools/mail.py``,
+        and every row would raise. Built from the analyzer's own :func:`module_id` (with an empty
+        file key) so the segment is never spelled twice.
+        """
+        return module_id(self.application_name, "")
 
     #: The codeanalyzer-python generation that emitted this application, set by
     #: :meth:`_probe_schema` (which refuses anything below :attr:`_ANALYZER_FLOOR`). The class-level
@@ -498,13 +531,13 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         miss is a genuine defect and is raised as such, without the id (E6).
         """
         try:
-            return module_key_of(node_id, self._scope_prefix, self._module_set)
+            return module_key_of(node_id, self._code_prefix, self._module_set)
         except KeyError:
             pass
         self._modules = self._load_module_keys()
         self.__dict__.pop("_module_set", None)  # drop the cached frozenset; rebuilt on next read
         try:
-            return module_key_of(node_id, self._scope_prefix, self._module_set)
+            return module_key_of(node_id, self._code_prefix, self._module_set)
         except KeyError:
             raise CodeanalyzerExecutionException(
                 f"A node of application {self.application_name!r} belongs to none of the {len(self._module_set)} module keys the graph "
@@ -565,8 +598,8 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     def _load_module_keys(self) -> List[str]:
         """The application's module ``file_key``s — the scope key for every other query."""
         rows = self._run(
-            "MATCH (:PyApplication {name: $app})-[:PY_HAS_MODULE]->(m:PyModule) RETURN m.file_key AS k",
-            app=self.application_name,
+            "MATCH (:PyApplication {id: $app_id})-[:PY_HAS_MODULE]->(m:PyModule) RETURN m.file_key AS k",
+            app_id=self._application_id,
         )
         return [r["k"] for r in rows]
 
@@ -856,7 +889,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         has 5,307 outgoing ``PY_CALLS`` edges on this graph, 5,108 of them landing on another ghost. The leak is traversal **through** the ghost layer *inside*
         this one application — a two-hop budget spent walking ghost-to-ghost instead of through the
         application's own callables — not a hop into a neighbouring application: every ghost id
-        embeds the application name (``can://python/odoo-slim-19/@external/IPython/start_ipython``),
+        embeds the application name (``can://odoo-slim-19/@external/IPython/start_ipython``),
         so a ghost is not in fact shared. Pinning every hop's *source* to ``:PyCallable`` by label
         (a ghost's id sits under the same prefix, so the prefix alone would admit it) makes
         the traversed edge set exactly :meth:`_call_rows`'s, so a ghost is still reached (it is a
@@ -921,9 +954,9 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         result: Dict[str, PyModule] = {}
         with self._bulk(keys):  # every module's children in eleven queries, not 45 per module
             for r in self._run(
-                "MATCH (:PyApplication {name: $app})-[:PY_HAS_MODULE]->(m:PyModule) "
+                "MATCH (:PyApplication {id: $app_id})-[:PY_HAS_MODULE]->(m:PyModule) "
                 "WHERE $paths IS NULL OR m.file_key IN $paths RETURN properties(m) AS p",
-                app=self.application_name,
+                app_id=self._application_id,
                 paths=keys,
             ):
                 mod = self._module_full(r["p"])
@@ -946,8 +979,8 @@ class PyNeo4jBackend(PythonAnalysisBackend):
 
     def get_python_module(self, file_path: str) -> PyModule | None:
         rows = self._run(
-            "MATCH (:PyApplication {name: $app})-[:PY_HAS_MODULE]->(m:PyModule {file_key: $fk}) RETURN properties(m) AS p LIMIT 1",
-            app=self.application_name,
+            "MATCH (:PyApplication {id: $app_id})-[:PY_HAS_MODULE]->(m:PyModule {file_key: $fk}) RETURN properties(m) AS p LIMIT 1",
+            app_id=self._application_id,
             fk=str(file_path),
         )
         return self._module_full(rows[0]["p"]) if rows else None
@@ -1453,7 +1486,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         a second copy would be a second place for the node vocabulary to drift.
 
         **Not scoped by the application prefix,** unlike the per-callable accessors. A body-node id is stamped
-        with its application (``can://python/<app>/…``) and the emitter only ever links nodes from
+        with its application (``can://<app>/…``) and the emitter only ever links nodes from
         its own run, so the traversal cannot leave the application it started in; adding
         ``m.id STARTS WITH $prefix`` would cost a string-prefix test on every one of 195,784 reached
         nodes to re-establish something the ids already guarantee. The seed is app-scoped by
@@ -1738,7 +1771,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         """
         # ``properties(a)`` rather than ``a.entrypoint_report_json``: a 1.4.0 graph has no such
         # property key at all, and naming one statically makes the server log a warning per call.
-        rows = self._run("MATCH (a:PyApplication {name: $app}) RETURN properties(a) AS p", app=self.application_name)
+        rows = self._run("MATCH (a:PyApplication {id: $app_id}) RETURN properties(a) AS p", app_id=self._application_id)
         raw = rows[0]["p"].get("entrypoint_report_json") if rows else None
         if raw is not None:
             r = PyEntrypointReport.model_validate_json(raw)
@@ -1809,10 +1842,10 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     def get_artifacts(self) -> Dict[str, PyArtifact]:
         result: Dict[str, PyArtifact] = {}
         for r in self._run(
-            "MATCH (:PyApplication {name: $app})-[:HAS_ARTIFACT]->(a:Artifact) "
+            "MATCH (:PyApplication {id: $app_id})-[:HAS_ARTIFACT]->(a:Artifact) "
             "OPTIONAL MATCH (a)-[:DEFINES_CONFIG]->(ck:ConfigKey) "
             "RETURN properties(a) AS p, collect(properties(ck)) AS cks",
-            app=self.application_name,
+            app_id=self._application_id,
         ):
             art = R.artifact(r["p"], config_keys=[R.config_key(p) for p in r["cks"]])
             result[art.path] = art
@@ -1820,7 +1853,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
 
     def get_dependencies(self, *, direct_only: bool = False, ecosystem: str | None = None, declared_in: str | None = None) -> List[PyDependency]:
         conditions: list[str] = []
-        params: Dict[str, Any] = {"app": self.application_name}
+        params: Dict[str, Any] = {"app_id": self._application_id}
         if direct_only:
             conditions.append("r.direct = true")
         if ecosystem is not None:
@@ -1831,7 +1864,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             params["declared_in"] = declared_in
         where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
         query = (
-            "MATCH (:PyApplication {name: $app})-[:HAS_ARTIFACT]->(a:Artifact)-[r:DECLARES_DEPENDENCY]->(p:Package)"
+            "MATCH (:PyApplication {id: $app_id})-[:HAS_ARTIFACT]->(a:Artifact)-[r:DECLARES_DEPENDENCY]->(p:Package)"
             + where
             + " RETURN properties(r) AS rel, p.name AS name, p.ecosystem AS ecosystem, a.id AS declared_in"
         )
@@ -1840,9 +1873,9 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     def get_config_keys(self) -> Dict[str, PyConfigKey]:
         result: Dict[str, PyConfigKey] = {}
         for r in self._run(
-            "MATCH (:PyApplication {name: $app})-[:HAS_ARTIFACT]->(:Artifact)-[:DEFINES_CONFIG]->(ck:ConfigKey) "
+            "MATCH (:PyApplication {id: $app_id})-[:HAS_ARTIFACT]->(:Artifact)-[:DEFINES_CONFIG]->(ck:ConfigKey) "
             "RETURN properties(ck) AS p",
-            app=self.application_name,
+            app_id=self._application_id,
         ):
             ck = R.config_key(r["p"])
             result[ck.id] = ck
@@ -1879,9 +1912,9 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         #     reads," never a false negative -- unlike finding 1's entrypoint_report, which the
         #     graph doesn't carry at all.
         rows = self._run(
-            "MATCH (:PyApplication {name: $app})-[u:PY_READS_CONFIG_UNRESOLVED]->(ghost:PyExternal) "
+            "MATCH (:PyApplication {id: $app_id})-[u:PY_READS_CONFIG_UNRESOLVED]->(ghost:PyExternal) "
             "RETURN properties(u) AS p, ghost.id AS callee",
-            app=self.application_name,
+            app_id=self._application_id,
         )
         return [R.unresolved_config_read(r["p"], callee=r["callee"]) for r in rows]
 
@@ -1935,7 +1968,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     # ``_RESOLVE_CALLABLE_QUERY`` 19 -> 210 ms), and 1.4.0 graphs have no such label at all.
     _LOCATE_QUERY = (
         "UNWIND $positions AS pos "
-        "OPTIONAL MATCH (:PyApplication {name: $app})-[:PY_HAS_MODULE]->(m:PyModule {file_key: pos.path}) "
+        "OPTIONAL MATCH (:PyApplication {id: $app_id})-[:PY_HAS_MODULE]->(m:PyModule {file_key: pos.path}) "
         "WITH pos, m "
         "OPTIONAL MATCH (c:PyCallable:PySymbol) "
         "WHERE c.id STARTS WITH pos.module_prefix "
@@ -2091,7 +2124,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         # selects the module's own callables and nothing under a longer key sharing the spelling.
         rows = self._run(
             self._LOCATE_QUERY,
-            app=self.application_name,
+            app_id=self._application_id,
             positions=[
                 {"idx": i, "path": key, "module_prefix": module_id(self.application_name, key) + "/", "line": line}
                 for i, (key, (_, line)) in enumerate(zip(keys, positions))

@@ -57,7 +57,7 @@ from cldk.models.python import (
 
 # -----[ shared identifiers -- both renderings below are built from these, not re-typed ]-----
 _APP = "app"
-_ART1_ID = f"can://artifact/{_APP}/pyproject.toml"
+_ART1_ID = f"can://{_APP}/artifact/pyproject.toml"
 _ART1_PATH = "pyproject.toml"
 _ART1_FORMAT = "toml"
 _ART1_ROLES = ["dependency-manifest"]
@@ -65,7 +65,7 @@ _ART1_SIZE = 128
 _ART1_SHA = "aaa111"
 _ART1_SOURCE = '[project]\nname = "app"\ndependencies = ["flask>=2.0,<3"]\n'
 
-_ART2_ID = f"can://artifact/{_APP}/.env"
+_ART2_ID = f"can://{_APP}/artifact/.env"
 _ART2_PATH = ".env"
 _ART2_FORMAT = "properties"
 _ART2_ROLES = ["config"]
@@ -192,7 +192,7 @@ _CONNECT_OVERVIEW_ROW = {
     "signature": "src.db.connect",
     "name": "connect",
     "decorators": [],
-    "id": f"can://python/{_APP}/{_MODULE_PATH}/connect",  # what get_config_readers projects; path is derived
+    "id": f"can://{_APP}/python/{_MODULE_PATH}/connect",  # what get_config_readers projects; path is derived
     "start_line": 5,
     "end_line": 11,
     "class_signature": None,
@@ -335,7 +335,7 @@ def test_dependencies_ecosystem_filter(py):
 
 def test_dependencies_declared_in_filter(py):
     assert [d.name for d in py.get_dependencies(declared_in=_ART1_ID)] == [_DEP_NAME]
-    assert py.get_dependencies(declared_in="can://artifact/app/nonexistent.toml") == []
+    assert py.get_dependencies(declared_in="can://app/artifact/nonexistent.toml") == []
 
 
 # =====================================================================================

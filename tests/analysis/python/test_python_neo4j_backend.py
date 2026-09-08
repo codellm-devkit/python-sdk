@@ -43,7 +43,7 @@ These assert that :class:`PyNeo4jBackend` answers every query **identically** to
 answering about the same analysis and every difference below would be noise:
 
 * The project is created in a directory *named* ``APP_NAME``. The in-memory backend derives the
-  application segment of every ``can://python/<app>/…`` id from the project directory's name,
+  application segment of every ``can://<app>/python/…`` id from the project directory's name,
   while the emitter is told ``app_name=APP_NAME`` — give them different names and every id in the
   graph disagrees with every id in memory for a reason that has nothing to do with the projection.
 * The graph is emitted at ``analysis_level=2``, matching the reference's ``"call_graph"``.
@@ -205,7 +205,7 @@ _PURGE = (
 #     :ConfigKey         93   hangs off :Artifact by DEFINES_CONFIG
 #
 # All four are addressable by one rule rather than a second traversal to keep in sync: the emitter
-# mints their ids under ``can://python/<app>/`` or ``can://artifact/<app>/``, so the application
+# mints their ids under ``can://<app>/python/`` or ``can://<app>/artifact/``, so the application
 # name is *in the key*. That is also why this cannot reach a neighbour: another application's nodes
 # carry its own name in the same position, and the trailing slash stops ``odoo-slim-19`` matching
 # ``odoo-slim-19-b``.
@@ -236,8 +236,8 @@ def _purge_application() -> None:
             session.run(_PURGE, app=APP_NAME).consume()
             session.run(
                 _PURGE_UNANCHORED,
-                py=f"can://python/{APP_NAME}/",
-                artifact=f"can://artifact/{APP_NAME}/",
+                py=f"can://{APP_NAME}/python/",
+                artifact=f"can://{APP_NAME}/artifact/",
             ).consume()
     finally:
         driver.close()

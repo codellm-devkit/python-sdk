@@ -75,10 +75,12 @@ NEO4J_URI = os.environ.get("CLDK_TEST_NEO4J_WRITE_URI")
 NEO4J_USER = os.environ.get("CLDK_TEST_NEO4J_WRITE_USER")
 NEO4J_PASSWORD = os.environ.get("CLDK_TEST_NEO4J_WRITE_PASSWORD")
 APP_NAME = "application"
-#: Every node the emitter writes for APP_NAME lives under one of these two prefixes (TS-3); the
-#: teardown deletes exactly that, plus the application anchor, and nothing else on the server.
-APP_PREFIXES = (f"can://typescript/{APP_NAME}/", f"can://javascript/{APP_NAME}/")
-APP_ID = f"can://typescript/{APP_NAME}"
+#: Every node the emitter writes for APP_NAME lives under this one prefix; the teardown deletes
+#: exactly that, plus the application anchor, and nothing else on the server. It was two prefixes
+#: (one per language namespace) while the language was the outermost segment; the application
+#: prefix now covers both, and also the ``@external`` ghosts and artifacts the pair never reached.
+APP_PREFIXES = (f"can://{APP_NAME}/",)
+APP_ID = f"can://{APP_NAME}"
 
 
 def _neo4j_reachable() -> bool:
@@ -118,9 +120,8 @@ def _teardown_application() -> None:
     try:
         with driver.session() as session:
             session.run(
-                "MATCH (n) WHERE n.id STARTS WITH $p1 OR n.id STARTS WITH $p2 OR n.id = $app_id DETACH DELETE n",
-                p1=APP_PREFIXES[0],
-                p2=APP_PREFIXES[1],
+                "MATCH (n) WHERE n.id STARTS WITH $p OR n.id = $app_id DETACH DELETE n",
+                p=APP_PREFIXES[0],
                 app_id=APP_ID,
             )
     finally:

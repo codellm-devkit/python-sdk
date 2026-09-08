@@ -164,7 +164,7 @@ class FakeDriver:
     """Stands in for ``neo4j.GraphDatabase.driver``. ``analyzer_version=None`` means "no
     ``:Application`` with that id"."""
 
-    def __init__(self, rel_types=V2_RELATIONSHIP_TYPES, responder=None, analyzer_version="1.4.0") -> None:
+    def __init__(self, rel_types=V2_RELATIONSHIP_TYPES, responder=None, analyzer_version="1.5.2") -> None:
         self.rel_types = set(rel_types)
         self.analyzer_version = analyzer_version
         self.responder = responder

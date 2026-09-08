@@ -145,7 +145,7 @@ def test_the_facade_reaches_the_artifacts(ts):
 
 def test_the_facade_reaches_the_dependencies_and_its_filters(ts):
     assert ts.get_dependencies() == []
-    assert ts.get_dependencies(direct_only=True) == ts.get_dependencies(ecosystem="npm") == ts.get_dependencies(declared_in="can://artifact/slim/package.json") == []
+    assert ts.get_dependencies(direct_only=True) == ts.get_dependencies(ecosystem="npm") == ts.get_dependencies(declared_in="can://slim/artifact/package.json") == []
 
 
 def test_the_facade_reaches_the_config_keys(ts):
@@ -173,7 +173,7 @@ def _anchor_backend(properties: dict) -> TSNeo4jBackend:
 
     def responder(query, params):
         if "properties(a) AS p" in query:
-            return [{"p": {"id": "can://typescript/app", "name": "app", **properties}}]
+            return [{"p": {"id": "can://app", "name": "app", **properties}}]
         return []
 
     return TSNeo4jBackend._from_driver(FakeDriver(responder=responder), application_name="app")

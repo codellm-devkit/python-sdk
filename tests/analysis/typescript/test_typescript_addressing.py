@@ -40,7 +40,7 @@ from cldk.utils.exceptions import AmbiguousName, SelectorNotInGraph
 
 #: The ids the 1.3.0 fixture mints for the two positions ``locate`` is asserted on. Read off the
 #: fixture, passed back as opaque handles — never composed by the caller (E6).
-SHOW = "can://typescript/slim/src/controllers.ts/UserController/show"
+SHOW = "can://slim/typescript/src/controllers.ts/UserController/show"
 
 
 def _fake_run_writing_output(payload: str):
@@ -87,7 +87,7 @@ def test_locate_finds_the_callable_its_type_module_and_the_statement_at_the_line
     assert r.body.id == f"{SHOW}@20:18" and r.node_id == r.body.id
     assert isinstance(r.body.span, Span) and r.body.span.start == (20, 18)
     # 1.3.0 resolves this call, and the local analyzer puts the callee on the node itself.
-    assert r.body.callee == "can://typescript/slim/src/services.ts/UserService/create"
+    assert r.body.callee == "can://slim/typescript/src/services.ts/UserService/create"
     assert r.source.startswith("@Get") and "return user.describe();" in r.source
 
 
@@ -261,7 +261,7 @@ def test_describe_of_nothing_costs_nothing(ts):
 
 
 def test_describe_raises_on_a_ref_that_names_nothing(ts):
-    stale = SliceNode(file="src/controllers.ts", line=1, callable="x", kind="callable", name="x", ref="can://typescript/slim/nope")
+    stale = SliceNode(file="src/controllers.ts", line=1, callable="x", kind="callable", name="x", ref="can://slim/typescript/nope")
     with pytest.raises(KeyError):
         ts.describe([stale])
 

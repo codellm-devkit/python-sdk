@@ -229,7 +229,7 @@ class JCodeanalyzer(JavaAnalysisBackend):
     def _argv(self, analysis_level: int, output_dir: Path | None) -> List[str]:
         """The 3.0.x command line: ``-i <project> -a <1..4> [-o <dir> -c <dir>/cache -v] --app-name
         <project.name> [-t <file>]...``. The application name is what the analyzer stamps into every
-        ``can://java/<app>/...`` id; without ``-o`` the analyzer prints the JSON to stdout.
+        ``can://<app>/java/...`` id; without ``-o`` the analyzer prints the JSON to stdout.
 
         ``-v`` ("print logs to console") rides along with ``-o`` because the analyzer's log is the
         only place it declares that a capability it was asked for did not run (#341) — and only
@@ -827,7 +827,7 @@ class JCodeanalyzer(JavaAnalysisBackend):
         """Every configuration key flattened out of the config-bearing artifacts, keyed
         ``"<artifact repo-relative path>@key/<dotted key>"`` (``pom.xml@key/project.artifactId``).
 
-        That key is the analyzer's own id with its ``can://artifact/<app>/`` prefix dropped: the
+        That key is the analyzer's own id with its ``can://<app>/artifact/`` prefix dropped: the
         application name belongs to the run, not to the key, so keying by the raw id made the two
         backends share **zero** keys whenever the graph was emitted under a different ``--app-name``
         than the local run passes (the SDK passes the project directory's name). ``can://`` ids also

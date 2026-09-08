@@ -23,7 +23,7 @@ whose responses the tests themselves supply. That harness cannot fail when the S
 property the emitter never writes: the fake happily returns whatever the test put there. The leg
 shipped a test asserting on a ``:PyModule.source`` property that does not exist, and two more
 places where the SDK read absent properties, all of which passed review. This module is the
-counterweight: no fakes, no fixtures we author — a real ``codeanalyzer-python`` 1.4.0 graph of a
+counterweight: no fakes, no fixtures we author — a real ``codeanalyzer-python`` 1.5.0 graph of a
 real 2,364-file application, queried over Bolt through the public facade.
 
 Running it
@@ -92,8 +92,12 @@ NEO4J_USER = os.environ.get("CLDK_TEST_NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.environ.get("CLDK_TEST_NEO4J_PASSWORD", "neo4j")
 APP_NAME = os.environ.get("CLDK_TEST_NEO4J_APP", "odoo-slim-19")
 #: The application's id prefix -- the scope every SDK statement carries, and the scope this
-#: suite's own fixture-derivation Cypher carries too, since a 1.4.1 graph has no ``_module``.
-APP_PREFIX = f"can://python/{APP_NAME}/"
+#: suite's own fixture-derivation Cypher carries too, since the graph has no ``_module``. The
+#: *code* prefix (the language segment included): every declared node's id carries it before
+#: its file key, which is what ``module_key_of`` strips. The SDK's own scope is one segment
+#: wider (``can://<app>/``, so the language-neutral ``@external`` ghosts are inside it); every
+#: statement below pins a ``:Py*`` label, so the narrower prefix selects the same rows.
+APP_PREFIX = f"can://{APP_NAME}/python/"
 
 # The four relationship types PyNeo4jBackend._probe_schema insists on. Duplicated here on purpose:
 # a test that imports the constant it is checking cannot catch the constant changing.
@@ -685,7 +689,7 @@ def test_get_dependencies_filters_actually_narrow(analysis, cypher):
     assert len(narrowed) < len(all_deps), "declared_in did not narrow"
     assert all(d.declared_in == manifests[0]["id"] for d in narrowed)
 
-    assert analysis.get_dependencies(declared_in="can://artifact/nope/nope.txt") == []
+    assert analysis.get_dependencies(declared_in="can://nope/artifact/nope.txt") == []
 
     ecosystems = {d.ecosystem for d in all_deps}
     one_eco = sorted(ecosystems)[0]
@@ -778,12 +782,11 @@ def test_get_unresolved_config_reads_returns_real_edges(analysis, cypher):
 def test_entrypoints_faithfully_report_what_the_graph_says(analysis, cypher):
     """**Not** an assertion that Odoo has entrypoints.
 
-    What the graph flags depends on the analyzer generation. The 1.4.0 graph has ``is_entrypoint``
-    ``FALSE`` on all 15,549 callables and all 1,656 classes: the pass shipped no Odoo rules, on a
-    framework built entirely from HTTP routes (upstream under-detection, python-sdk#177). The
-    1.4.1 graph flags 534 callables and 94 classes (#182/#185: ``@http.route`` methods and
-    ``http.Controller`` subclasses). Neither number is this suite's to demand. What the SDK owes
-    the caller is fidelity — exactly as many entrypoints as the graph flags, no more and no fewer.
+    What the graph flags depends on the analyzer generation — the 1.4.1 graph flagged 534 callables
+    and 94 classes (#182/#185: ``@http.route`` methods and ``http.Controller`` subclasses), and a
+    later pass may flag a different number. That number is not this suite's to demand. What the SDK
+    owes the caller is fidelity — exactly as many entrypoints as the graph flags, no more and no
+    fewer.
     """
     flagged_callables = cypher("MATCH (c:PyCallable) WHERE c.is_entrypoint = true RETURN count(c) AS c")[0]["c"]
     flagged_classes = cypher("MATCH (c:PyClass) WHERE c.is_entrypoint = true RETURN count(c) AS c")[0]["c"]
@@ -796,51 +799,37 @@ def test_entrypoint_coverage_is_the_graphs_report_or_says_why_it_cannot_tell(ana
     """Whether a caller can trust ``get_entrypoints() == []`` depends on the analyzer generation.
 
     From 1.4.1 (#182) ``:PyApplication`` carries the pass's own report, and the answer is that
-    report verbatim — the same fields the local backend returns. A 1.4.0 graph never carried it,
-    and there the diagnostic is the only thing standing between a caller and concluding, from an
-    empty list, that this application has no attack surface: empty coverage fields mean *unknown*,
-    not *none*. Which branch runs is read off the graph, so this is the back-compat gate on 7688
-    and the parity check on 7689.
+    report verbatim — the same fields the local backend returns. The floor is 1.5.0, so every graph
+    that attaches carries it; the ``entrypoint_report_unavailable`` diagnostic the backend can still
+    emit is exercised offline, where a graph without the property can be constructed.
     """
     row = cypher("MATCH (a:PyApplication {name: $n}) RETURN a.analyzer_version AS v, a.entrypoint_report_json AS j", n=APP_NAME)[0]
     coverage = analysis.get_entrypoint_coverage()
-    if row["v"] == "1.4.0":
-        assert [d.code for d in coverage.diagnostics] == ["entrypoint_report_unavailable"]
-        assert "entrypoint_report" in coverage.diagnostics[0].message
-        # The clean-looking empties are exactly what the diagnostic is there to qualify.
-        assert coverage.frameworks_detected == []
-        assert coverage.rulesets == []
-    else:
-        assert coverage.diagnostics == [], f"a {row['v']} graph carries the report; the diagnostic is stale"
-        assert coverage.model_dump(exclude={"diagnostics"}) == json.loads(row["j"])
-        assert coverage.frameworks_detected, "the 1.4.1 pass detects Odoo; an empty list here is a regression, not a clean run"
+    assert coverage.diagnostics == [], f"a {row['v']} graph carries the report; the diagnostic is stale"
+    assert coverage.model_dump(exclude={"diagnostics"}) == json.loads(row["j"])
+    assert coverage.frameworks_detected, "the entrypoint pass detects Odoo; an empty list here is a regression, not a clean run"
 
 
 def test_entrypoint_report_presence_matches_the_analyzer_generation(cypher):
-    """Ground truth for the branch above: 1.4.0 projected no report anywhere; 1.4.1 writes
-    ``entrypoint_frameworks`` and ``entrypoint_report_json`` onto ``:PyApplication``, the latter
-    being the analyzer's own ``PyEntrypointReport`` with all four fields — nothing is dropped."""
+    """Ground truth for the test above: from 1.4.1 the projection writes ``entrypoint_frameworks``
+    and ``entrypoint_report_json`` onto ``:PyApplication``, the latter being the analyzer's own
+    ``PyEntrypointReport`` with all four fields — nothing is dropped."""
     rows = cypher("MATCH (a:PyApplication {name: $n}) RETURN properties(a) AS p", n=APP_NAME)
     assert rows, f"application {APP_NAME!r} vanished"
     props = rows[0]["p"]
-    entrypoint_props = {p for p in props if "entrypoint" in p}
-    if props["analyzer_version"] == "1.4.0":
-        assert not entrypoint_props, f"the 1.4.0 projection now carries {entrypoint_props}; the diagnostic branch is stale"
-    else:
-        assert entrypoint_props == {"entrypoint_frameworks", "entrypoint_report_json"}
-        report = json.loads(props["entrypoint_report_json"])
-        assert set(report) == {"frameworks_detected", "rulesets", "unresolved", "errors"}
-        assert report["frameworks_detected"] == props["entrypoint_frameworks"]
+    assert {p for p in props if "entrypoint" in p} == {"entrypoint_frameworks", "entrypoint_report_json"}
+    report = json.loads(props["entrypoint_report_json"])
+    assert set(report) == {"frameworks_detected", "rulesets", "unresolved", "errors"}
+    assert report["frameworks_detected"] == props["entrypoint_frameworks"]
 
 
 # =====================================================================================
 # The analyzer-version probe (leg 1.6, F2), on whichever generation this graph is
 # =====================================================================================
 def test_attach_is_silent_on_every_served_generation(cypher, caplog):
-    """A 1.4.0 graph and a 1.4.1 graph are served identically -- same id grammar, same
-    ``:PySymbol(id)`` index behind the point lookups -- so attaching logs nothing on either. The
-    version is read off the graph and recorded in the failure, so the same test is the back-compat
-    gate on 7688 and the check on 7689; the ``:PySymbol`` anchor behind the seek is pinned in ``test_locate.py``."""
+    """Attaching to a served generation logs nothing. The version is read off the graph and
+    recorded in the failure, so the test names whichever generation this graph is; the
+    ``:PySymbol`` anchor behind the seek is pinned in ``test_locate.py``."""
     version = cypher("MATCH (a:PyApplication {name: $n}) RETURN a.analyzer_version AS v", n=APP_NAME)[0]["v"]
     with caplog.at_level(logging.INFO, logger="cldk.analysis.python.neo4j.neo4j_backend"):
         facade = CLDK.python(backend=Neo4jConnectionConfig(uri=NEO4J_URI, username=NEO4J_USER, password=NEO4J_PASSWORD, application_name=APP_NAME))
@@ -851,7 +840,7 @@ def test_attach_is_silent_on_every_served_generation(cypher, caplog):
 def test_attaching_to_an_absent_application_is_refused_not_served_empty():
     """The version probe doubles as the "is this application even here" check: no ``:PyApplication``
     of that name means no version, and unknown is refused rather than served as silent empties."""
-    with pytest.raises(GraphSchemaMismatch, match="1.4.0 or newer"):
+    with pytest.raises(GraphSchemaMismatch, match="1.5.0 or newer"):
         CLDK.python(backend=Neo4jConnectionConfig(uri=NEO4J_URI, username=NEO4J_USER, password=NEO4J_PASSWORD, application_name="definitely-not-an-application-here"))
 
 
@@ -866,7 +855,7 @@ def test_get_external_symbols_is_non_empty_and_application_scoped(analysis, cyph
     assert len(externals) == expected
 
     # :PyExternal has no `_module`, so scoping rides on the id prefix instead — check it holds.
-    prefix = f"can://python/{APP_NAME}/@external/"
+    prefix = f"can://{APP_NAME}/@external/"
     assert all(key.startswith(prefix) for key in externals)
     assert all(key == sym.id for key, sym in externals.items())
     assert all(sym.name for sym in externals.values())
@@ -1325,7 +1314,7 @@ def ghost_chain(cypher) -> Dict[str, str]:
 def test_a_ghost_is_reached_but_never_traversed_through(analysis, ghost_chain):
     """The ghost rule (leg 1.5, kept by leg 1.6 F5) asserted on the live predicates.
 
-    Every ghost's id sits under the application prefix -- ``can://python/<app>/@external/...`` --
+    Every ghost's id sits under the application prefix -- ``can://<app>/@external/...`` --
     so a prefix predicate alone would admit it as a hop *source* and ``reaches`` would answer
     ``True`` through it, contradicting ``get_call_graph``, which both backends build from
     declared-callable-origin edges only. The chain here is chosen so the source calls **no**
@@ -1380,7 +1369,7 @@ def test_describe_hydrates_callables_and_is_honest_about_the_rest(analysis, cros
     values = analysis.slice_forward(crossing_flow["src_value"], within=crossing_flow["src_callable"], depth=None).nodes
     assert all(n.source is None for n in analysis.describe(values)), "no text below callable granularity"
     with pytest.raises(KeyError):
-        analysis.describe([cone.nodes[0].model_copy(update={"ref": "can://python/absent/nothing.py/nothing"})])
+        analysis.describe([cone.nodes[0].model_copy(update={"ref": "can://absent/python/nothing.py/nothing"})])
 
 
 def test_describe_is_one_round_trip_whatever_it_is_handed(analysis, crossing_flow, count_round_trips):

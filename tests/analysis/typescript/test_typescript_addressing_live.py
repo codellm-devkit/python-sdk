@@ -79,7 +79,7 @@ def cypher(query: str, **params: Any) -> List[Dict[str, Any]]:
         driver.close()
 
 
-SCOPED = "(x.id STARTS WITH $p1 OR x.id STARTS WITH $p2)"
+SCOPED = "(x.id STARTS WITH $p)"
 
 
 @pytest.fixture(scope="module")
@@ -97,7 +97,9 @@ def a_method() -> Dict[str, Any]:
 
 
 def module_key_of(node_id: str, modules: List[str]) -> str:
-    for prefix in (SCOPE["p1"], SCOPE["p2"]):
+    # The application prefix plus the language segment: the scope is one prefix, but the file key
+    # sits *under* the language, so recovering it still has to know which of the two it is.
+    for prefix in (f"{SCOPE['p']}typescript/", f"{SCOPE['p']}javascript/"):
         if node_id.startswith(prefix):
             parts = node_id[len(prefix) :].split("/")
             for n in range(len(parts), 0, -1):
