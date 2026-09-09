@@ -216,11 +216,15 @@ def _path_backends():
 @pytest.mark.parametrize("P", ["PY", "J", "TS"])
 def test_via_case_reproduces_each_backends_constant(P):
     """Byte-identical, because a changed ``CASE`` arm changes which word a hop is reported under and
-    a changed ``ORDER BY`` term changes which paths ``max_paths`` keeps."""
+    a changed ``ORDER BY`` term changes which paths ``max_paths`` keeps.
+
+    Task 3 replaced the backends' own ``_VIA_CASE``/``_PATH_ORDER`` attributes with calls to these
+    same functions, so there is no longer a second copy of the string to compare against -- the
+    fragment now only exists once, inside the backend's surviving ``_PATHS``."""
     from cldk.analysis.commons.graphs import via_case
 
     backend = dict(_path_backends())[P]
-    assert via_case(P) == backend._VIA_CASE
+    assert via_case(P) in backend._PATHS
 
 
 @pytest.mark.parametrize("P", ["PY", "J", "TS"])
@@ -228,7 +232,7 @@ def test_path_order_reproduces_each_backends_constant(P):
     from cldk.analysis.commons.graphs import path_order
 
     backend = dict(_path_backends())[P]
-    assert path_order(P) == backend._PATH_ORDER
+    assert path_order(P) in backend._PATHS
 
 
 def test_the_three_constants_differ_only_in_the_relationship_prefix():
