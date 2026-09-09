@@ -238,11 +238,18 @@ def test_sdg_path_query_reproduces_the_backends_paths(P, backend):
 @pytest.mark.parametrize("P, backend", BACKENDS)
 def test_the_generated_template_still_formats(P, backend):
     """The result is a `.format()` template, not a finished statement: the runners pass `rels` and
-    `depth`. If the lift ever emitted a literal brace it would raise here rather than at runtime."""
+    `depth`.
+
+    **Corrected while implementing.** An earlier draft asserted the formatted statement contains no
+    braces. It must contain single ones — Cypher map literals need them, so `{{id:$src}}` resolving
+    to `{id:$src}` is the point. The property worth asserting is that no *doubled* brace survives,
+    which would mean an unresolved escape and a statement the server would reject.
+    """
     from cldk.analysis.commons.graphs import sdg_rel_pattern
 
     out = sdg_path_query(P, **PATHS_ARGS[P]).format(rels=sdg_rel_pattern(P), depth="")
-    assert "{" not in out and "}" not in out.replace("{{", "").replace("}}", "")
+    assert "{{" not in out and "}}" not in out, "an escape survived formatting"
+    assert "{id:$src}" in out and "{id:$dst}" in out
 ```
 
 - [ ] **Step 2: Run it to make sure it fails**
@@ -289,8 +296,23 @@ def sdg_path_query(P: str, *, node_label: str, endpoint_scope: str = "", interio
 
 - [ ] **Step 4: Run the tests and make sure they pass**
 
-Run: `uv run --all-groups pytest tests/analysis/commons/test_lifted_helpers.py -v`
-Expected: 13 passed.
+Run: `uv run --all-groups pytest tests/analysis/commons/test_lifted_helpers.py -q --no-cov`
+Expected: 29 passed.
+
+Add one test the first draft of this plan did not have, because the equality assertions do not cover
+it: **which** backend scopes what.
+
+```python
+def test_the_scope_predicates_are_written_where_the_backend_writes_them():
+    py, j, ts = (sdg_path_query(P, **PATHS_ARGS[P]) for P in ("PY", "J", "TS"))
+    assert "STARTS WITH" not in py, "Python's path statement is scoped by id, deliberately"
+    assert j.count("STARTS WITH $prefix") == 3, "Java scopes both endpoints and the interior"
+    assert ts.count("STARTS WITH $p") == 1, "TypeScript scopes the interior only"
+```
+
+Byte-equality would still pass if someone changed both the generator and the arguments together.
+This fails with a reason instead, which matters because Python's omission is a measured decision and
+not a gap.
 
 The `.replace('n.', 'a.')` on `endpoint_scope` is the one fragile line: it assumes the fragment
 names the node variable as `n.`. Only Java supplies one and it does. If a future backend supplies a
