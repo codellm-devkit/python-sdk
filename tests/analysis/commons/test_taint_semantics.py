@@ -41,6 +41,31 @@ def test_a_node_cut_removes_a_whole_callable():
     assert [len(w) for w in walks] == [3]
 
 
+PARALLEL = {"a": {"b": [("PY_DDG", "tainted", ["ssa"]), ("PY_DDG", "clean", ["ssa"])]}}
+
+
+def test_a_sanitized_parallel_edge_is_not_reported_as_evidence():
+    """The mirror of ``test_a_sanitized_shortest_route_does_not_hide_a_clean_longer_one``, and the
+    two only make sense read together: that test guards the BFS half against a false *refutation*
+    (a sanitized short route hiding a clean long one); this one guards the DFS replay half against a
+    false *confirmation*. Parallel edges between one pair are ordinary (see ``shortest_walks``'s own
+    docstring: "one statement feeding one argument on several variables is several distinct paths"),
+    so a var-sanitizer can cut one label of a pair and not its sibling. The clean label alone keeps
+    ``dist[b]`` at 1 no matter which pass filters, so a BFS-only filter cannot fail this case -- only
+    the replay's own filter keeps the sanitized label out of the walk it emits as taint evidence.
+    """
+    walks = shortest_walks(PARALLEL, "a", "b", None, 10, via=VIA, allow_edge=lambda rel, var: var != "tainted")
+    assert [lab[1] for w in walks for _, lab in w] == ["clean"]
+
+
+def test_a_cut_source_yields_no_walk():
+    """A source inside a cut callable yields no walk at all -- checked against ``src`` up front,
+    since ``src`` is never itself a ``steps()`` destination for the BFS/DFS filtering to catch. Also
+    covers ``dst`` for free: ``b`` is only ever reached as a destination, so this graph's one walk
+    disappearing when either endpoint is disallowed exercises both."""
+    assert shortest_walks(ADJ, "a", "b", None, 10, via=VIA, allow_node=lambda n: n != "a") == []
+
+
 def _pair(a="a", b="b"):
     return (a, b)
 
