@@ -117,7 +117,7 @@ from typing import Any, Dict, FrozenSet, Iterable, List, Sequence, Tuple
 import networkx as nx
 
 from cldk.analysis.commons.bounds import DEFAULT_PAGE_SIZE, EdgeOrder, check_page_size, cursor_params, encode_cursor, keyset_where
-from cldk.analysis.commons.graphs import flow_path, slice_resolved
+from cldk.analysis.commons.graphs import flow_path, sdg_path_query, slice_resolved
 from cldk.analysis.commons.results import EdgePage, FlowPaths, Slice, SliceNode
 from cldk.analysis.java.backend import (
     CDG_ORDER,
@@ -891,12 +891,6 @@ class JNeo4jBackend(JavaAnalysisBackend):
         return Slice(nodes=nodes, roots=[root], resolved=slice_resolved([root]), total=row["total"])
 
     # -----[ paths and the flow predicate ]-----
-    #: The caller's word for a hop, computed in Cypher so the ORDER BY below sorts by the same
-    #: vocabulary :func:`~cldk.analysis.commons.graphs.hop_sort_key` sorts by. Ordering by the raw
-    #: ``type(rel)`` instead would be just as deterministic and a *different* order, so the two
-    #: backends would truncate ``max_paths`` to different witnesses.
-    _VIA_CASE = "CASE type(relationships(p)[i]) " + " ".join(f"WHEN '{rel}' THEN '{word}'" for rel, word in VIA.items()) + " ELSE type(relationships(p)[i]) END"
-
     #: One string per path, ordered exactly as Python would order the tuple ``hop_sort_key`` builds.
     #: ``U+0001`` is the separator rather than ``|`` for one reason: string comparison agrees with
     #: field-by-field comparison **only** when the separator sorts below every character a field can
@@ -915,11 +909,7 @@ class JNeo4jBackend(JavaAnalysisBackend):
     #: 22.5 MB daytrader8 ``-a 4`` payload (6,984 ``cfg``, 4,416 ``cdg`` and 5,434 ``ddg`` edges,
     #: every one with a distinct key within its callable). If an analyzer ever emits one, the fix
     #: is a fourth component both backends can compute, not an ``elementId`` only one of them has.
-    _PATH_ORDER = (
-        "reduce(k = '', i IN range(0, length(p) - 1) | k + " + _VIA_CASE + " + '\\u0001' + coalesce(relationships(p)[i].var, '') "
-        "+ '\\u0001' + nodes(p)[i + 1].id + '\\u0001' + elementId(relationships(p)[i]) + '\\u0001')"
-    )
-
+    #:
     #: ``allShortestPaths`` and not a plain variable-length match: a variable-length pattern
     #: enumerates *trails*, which does not terminate on a real dependence graph, while
     #: ``allShortestPaths`` is a bidirectional BFS. ``$cap`` is ``max_paths + 1`` so one extra row
@@ -930,13 +920,13 @@ class JNeo4jBackend(JavaAnalysisBackend):
     #: application's nodes and come back. Leg 2.5b found exactly that leak twice in its own path
     #: enumerators; Neo4j inlines an ``all()`` node predicate into the shortest-path search itself,
     #: so it is a correctness win at no cost.
-    _PATHS = (
-        "MATCH (a:JBodyNode {{id:$src}}) WHERE a.id STARTS WITH $prefix "
-        "MATCH (b:JBodyNode {{id:$dst}}) WHERE b.id STARTS WITH $prefix "
-        "MATCH p = allShortestPaths((a)-[:{rels}*1..{depth}]->(b)) WHERE all(n IN nodes(p) WHERE n.id STARTS WITH $prefix) "
-        "WITH p, " + _PATH_ORDER + " AS key ORDER BY length(p), key LIMIT $cap "
-        "RETURN [n IN nodes(p) | {{ref: n.id, kind: n.kind, line: n.start_line}}] AS ns, "
-        "[e IN relationships(p) | {{via: type(e), var: e.var, prov: e.prov}}] AS rs"
+    _PATHS = sdg_path_query(
+        "J",
+        node_label="JBodyNode",
+        endpoint_scope="n.id STARTS WITH $prefix",
+        interior_scope="n.id STARTS WITH $prefix",
+        projection="ref: n.id, kind: n.kind, line: n.start_line",
+        rel_var="e",
     )
 
     def _value_paths(self, a: SliceNode, b: SliceNode, depth: int | None, max_paths: int) -> FlowPaths:

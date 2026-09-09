@@ -133,7 +133,7 @@ from cldk.analysis.commons.bounds import (
     encode_cursor,
     keyset_where,
 )
-from cldk.analysis.commons.graphs import cone_sinks, flow_path, slice_resolved
+from cldk.analysis.commons.graphs import cone_sinks, flow_path, path_order, sdg_path_query, slice_resolved
 from cldk.analysis.commons.keys import body_key_column, module_key_of, resolve_module_key
 from cldk.analysis.commons.resolve import CallableCandidate, resolve_callable_signature, resolve_value_name, resolve_within
 from cldk.analysis.commons.results import (
@@ -1840,22 +1840,12 @@ class TSNeo4jBackend(TSAnalysisBackend):
         return [self._call_vertex(r["v"]) for r in self._run(self._CALLEES, sig=sig, callable_kinds=sorted(CALLABLE_KINDS), **self._scope_params)]
 
     # -----[ paths and flow predicates ]-----
-    #: The caller's word for a hop, computed in Cypher so the ORDER BY below sorts by the same
-    #: vocabulary :func:`~cldk.analysis.commons.graphs.hop_sort_key` sorts by. Ordering by the raw
-    #: ``type(r)`` instead would be just as deterministic and a *different* order, so the two
-    #: backends would truncate ``max_paths`` to different witnesses.
-    _VIA_CASE = "CASE type(relationships(p)[i]) " + " ".join(f"WHEN '{rel}' THEN '{word}'" for rel, word in VIA.items()) + " ELSE type(relationships(p)[i]) END"
-
     #: One string per path, ordered exactly as Python would order the tuple ``hop_sort_key`` builds.
     #: ``U+0001`` is the separator rather than ``|`` for one reason: string comparison agrees with
     #: field-by-field comparison **only** when the separator sorts below every character a field can
     #: hold, and ``|`` (0x7C) sorts *above* every lowercase letter. ``elementId`` is the last field
     #: of each hop and breaks the tie between parallel relationships a caller cannot tell apart.
-    _PATH_ORDER = (
-        "reduce(k = '', i IN range(0, length(p) - 1) | k + " + _VIA_CASE + " + '\\u0001' + coalesce(relationships(p)[i].var, '') "
-        "+ '\\u0001' + nodes(p)[i + 1].id + '\\u0001' + elementId(relationships(p)[i]) + '\\u0001')"
-    )
-
+    #:
     #: ``allShortestPaths`` and not a plain variable-length match: a variable-length pattern
     #: enumerates *trails*, which does not terminate on a real dependence graph, while
     #: ``allShortestPaths`` is a bidirectional BFS. ``$cap`` is ``max_paths + 1`` so one extra row
@@ -1864,14 +1854,13 @@ class TSNeo4jBackend(TSAnalysisBackend):
     #: ``all(n IN nodes(p) …)`` puts the application-prefix predicate on **every** node of the path, not
     #: only on the two the ids pin: the SDG types are deliberately outside the audit's
     #: ``_KEEPS_SCOPE``, so an interior node reached over one is not provably this application's.
-    _PATHS = (
-        "MATCH (a:CanNode:TSBodyNode {{id:$src}}) MATCH (b:CanNode:TSBodyNode {{id:$dst}}) "
-        "MATCH p = allShortestPaths((a)-[:{rels}*1..{depth}]->(b)) WHERE all(n IN nodes(p) WHERE " + _scoped("n") + ") "
-        "WITH p, " + _PATH_ORDER + " AS key ORDER BY length(p), key LIMIT $cap "
-        "RETURN [n IN nodes(p) | {{ref: n.id, kind: n.kind, of: n.of, line: n.start_line, "
+    _PATHS = sdg_path_query(
+        "TS",
+        node_label="CanNode:TSBodyNode",
+        interior_scope=_scoped("n"),
+        projection="ref: n.id, kind: n.kind, of: n.of, line: n.start_line, "
         "callable: head([(c:TSCallable)-[:TS_HAS_BODY_NODE]->(n) | c.signature]), "
-        "c_line: head([(c:TSCallable)-[:TS_HAS_BODY_NODE]->(n) | c.start_line])}}] AS ns, "
-        "[r IN relationships(p) | {{via: type(r), var: r.var, prov: r.prov}}] AS rs"
+        "c_line: head([(c:TSCallable)-[:TS_HAS_BODY_NODE]->(n) | c.start_line])",
     )
 
     #: The same query over the call graph. The ``all()`` predicate carries **both** halves of what
@@ -1885,7 +1874,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
         "MATCH (a:TSCallable {{signature:$src}}) WHERE " + _scoped("a") + " "
         "MATCH (b:TSCallable {{signature:$dst}}) WHERE " + _scoped("b") + " "
         "MATCH p = allShortestPaths((a)-[:TS_CALLS*1..{depth}]->(b)) WHERE all(n IN nodes(p) WHERE n:TSCallable AND " + _scoped("n") + ") "
-        "WITH p, " + _PATH_ORDER + " AS key ORDER BY length(p), key LIMIT $cap "
+        "WITH p, " + path_order("TS") + " AS key ORDER BY length(p), key LIMIT $cap "
         "RETURN [n IN nodes(p) | " + _vertex("n", escape=True) + "] AS ns, "
         "[r IN relationships(p) | {{via: type(r), var: null, prov: null}}] AS rs"
     )
