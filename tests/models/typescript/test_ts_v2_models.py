@@ -224,11 +224,32 @@ def test_1x_shaped_document_is_rejected():
         TSApplication.model_validate(v1)
 
 
-def test_unknown_field_is_rejected():
+def test_an_unknown_field_is_ignored_and_a_v1_payload_is_still_refused():
+    """#386 relaxed the mirrors to ``extra="ignore"``, and this test carries both halves of what that
+    changed and did not change.
+
+    ``file_path`` is a **retired 1.x** key. It used to make the payload fail; now it is dropped, which
+    is the cost of the relaxation stated plainly — a stale or misspelled wire key reads as a missing
+    feature rather than an error.
+
+    What relaxation does **not** touch is required-field validation, and that is the guard actually
+    doing the version work: the test above feeds a whole v1 payload and it is still refused, because
+    it *lacks* fields v2 requires rather than carrying extra ones. So "a 1.x analysis.json is refused,
+    not parsed" survives #386 intact. Asserting that here keeps the two mechanisms from being
+    confused for each other the next time someone weighs this policy.
+    """
     raw = json.loads((FIXTURES / "a1" / "analysis.json").read_text(encoding="utf-8"))
-    raw["application"]["symbol_table"][next(iter(raw["application"]["symbol_table"]))]["file_path"] = "x"
+    key = next(iter(raw["application"]["symbol_table"]))
+    raw["application"]["symbol_table"][key]["file_path"] = "x"
+
+    a = TSAnalysis.model_validate(raw)
+    module = a.application.symbol_table[key]
+    assert not hasattr(module, "file_path")
+    assert "file_path" not in module.model_dump()
+    assert module.model_extra in (None, {})
+
     with pytest.raises(ValidationError):
-        TSAnalysis.model_validate(raw)
+        TSAnalysis.model_validate({"schema_version": "2.0.0", "language": "typescript"})
 
 
 def test_unknown_type_kind_is_rejected():
@@ -240,9 +261,11 @@ def test_unknown_type_kind_is_rejected():
 
 
 def test_every_type_kind_accepts_the_1_3_0_entrypoint_fields():
-    # TS-8: both fields are declared on the shared ``_Type`` base, so a 1.3.0 payload that stamps
-    # them on any of the five kinds validates under ``extra="forbid"`` before the pin moves --
-    # declaring them on ``TSClass`` alone would fail validation on the other four.
+    # TS-8: both fields are declared on the shared ``_Type`` base, so a payload that stamps them on
+    # any of the five kinds is read on all five. Under the old ``extra="forbid"`` this was enforced by
+    # validation failing on the other four; since #386 relaxed the mirrors to ``ignore``, a field
+    # declared on ``TSClass`` alone would be *dropped* on the rest rather than raising -- so the
+    # positive assertions below are now what catches it, and they must stay positive for that reason.
     span = {"start": (1, 1), "end": (2, 1), "bytes": (0, 4)}
     entrypoint = {"framework": "express", "route": "/x", "http_methods": ["GET"]}
     for cls, kind in ((TSClass, "class"), (TSInterface, "interface"), (TSEnum, "enum"), (TSTypeAlias, "type_alias"), (TSNamespace, "namespace")):
@@ -253,11 +276,16 @@ def test_every_type_kind_accepts_the_1_3_0_entrypoint_fields():
         assert cls.model_validate({k: v for k, v in raw.items() if k not in ("is_entrypoint", "entrypoints")}).is_entrypoint is None, kind
 
 
-def test_the_pinned_generation_parses_with_nothing_widened():
+def test_the_pinned_generation_carries_the_fields_this_leg_declared():
     """The 1.3.0 bump moved no model (leg 2.5b, Task 0).
 
-    Every fixture is 1.3.0 output and every model is ``extra="forbid"``, so a field 1.3.0 added
-    that 2.5a had not pre-declared would be a ``ValidationError`` here, not a silent pass. What
+    **What this test proves changed with #386.** It used to rest on ``extra="forbid"``: every model
+    rejected extras, so merely parsing a fixture proved no field had appeared that the models had not
+    pre-declared. Since the mirrors are ``extra="ignore"``, parsing proves nothing of the kind — an
+    undeclared field is dropped in silence. So the assertions below carry the whole test now, and they
+    are positive on purpose: each one names a field and demands its value, which is the only remaining
+    way to notice it went missing. Adding a field to the fixtures without declaring it here will pass
+    silently, and that is the accepted cost of #386 rather than an oversight in this test. What
     1.3.0 added over 1.2.0 in this corpus: ``application.entrypoint_report`` (**required** on the
     application in 1.3.0's ``schema.ts``, kept optional here because the graph-backed application
     view carries the report as a JSON string on the anchor instead), ``is_entrypoint`` /
@@ -265,7 +293,7 @@ def test_the_pinned_generation_parses_with_nothing_widened():
     L4 port lattice wired into the statement DDG.
     """
     for level in (1, 2, 3, 4):
-        a = _load(level)  # extra="forbid": this line is the assertion
+        a = _load(level)  # since #386 this line only parses; the assertions below are the test
         report = a.application.entrypoint_report
         assert report is not None, f"a{level} carries no entrypoint_report"
         assert report.rulesets == ["shipped"]
@@ -332,3 +360,52 @@ def test_span_bytes_are_utf8_offsets_and_code_decodes_them():
             drifted += module.source[start:end] != expected
     assert checked, "no non-ASCII module in the fixture; this test proves nothing as written"
     assert drifted, "every span in the non-ASCII modules starts before the first multi-byte character; the test cannot fail"
+
+
+# ----------------------------------------------------------------------------------------------
+# #386: the mirrors ignore what they do not declare. The projections do not.
+# ----------------------------------------------------------------------------------------------
+
+
+def test_the_schema_mirrors_ignore_unknown_fields_and_drop_them():
+    """The models accept a field they do not declare, and — the half worth asserting — **discard** it.
+
+    This is the policy #386 chose over ``extra="forbid"``, and the trade is deliberate: forbidding
+    made an additive analyzer release fail the whole payload rather than the one field it added
+    (codeanalyzer-java 3.1.2's ``var`` cost 2515 validation errors on daytrader8 before
+    ``JParamEdge`` declared it). What it gives up is that a new field no longer announces itself, so
+    a caller reaching for analyzer data the SDK does not model finds nothing rather than an error.
+    That is written down here rather than left to be discovered.
+
+    ``ignore`` and not ``allow``: the value must not survive into ``model_extra`` or a dump, because
+    several tests assert properties *of* dumps (E6's ``"can://" not in ...model_dump_json()``), and a
+    field the SDK does not model must not be able to change what a dump contains.
+    """
+    from cldk.models.java.models import JParamEdge
+    from cldk.models.typescript.models import TSParamEdge
+
+    for model in (TSParamEdge, JParamEdge):
+        assert model.model_config.get("extra") == "ignore", model.__name__
+        e = model.model_validate({"src": "a", "dst": "b", "var": "v", "field_from_a_future_release": 1})
+        assert e.var == "v", "a declared field is still read"
+        assert not hasattr(e, "field_from_a_future_release")
+        assert "field_from_a_future_release" not in e.model_dump()
+        assert e.model_extra in (None, {}), "extra=ignore must not retain it; extra=allow would"
+
+
+def test_the_sdk_authored_projections_still_forbid_extras():
+    """Scope of #386: the mirrors relaxed, the projections did not, and the difference is not arbitrary.
+
+    A projection is constructed by this SDK from graph rows and is never validated from an
+    ``analysis.json`` — nothing in the codebase calls ``model_validate`` on one. So strictness there
+    catches *our* typo'd keyword argument, not the analyzer's additions, and relaxing it would give up
+    a real guard for no uptake benefit.
+    """
+    from pydantic import ValidationError
+
+    from cldk.models.java.projections import JCallableOverview, JClassOverview
+
+    for model in (JCallableOverview, JClassOverview):
+        assert model.model_config.get("extra") == "forbid", model.__name__
+    with pytest.raises(ValidationError):
+        JClassOverview(qualified_name="a.B", name="B", kind="class", path="a/B.java", start_line=1, end_line=2, nope=1)

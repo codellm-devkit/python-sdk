@@ -31,7 +31,8 @@ the fact in another shape (``start_line`` over ``span``, ``code`` over ``source`
 ``classes``/``interfaces``/… maps over the unified ``types``). What the wire no longer carries
 (``path``, ``accessed_symbols``, ``local_variables``, ``code_start_line``) is gone, not faked.
 
-``extra="forbid"`` is intentional: drift between the analyzer's JSON and these models fails
+``extra="ignore"`` since #386: an additive analyzer release is consumable without an SDK edit, at the
+cost of the drift detector — an unmodelled field is dropped silently rather than failing
 loudly. The fields the next analyzer release (1.3.0) is known to add are already declared
 ``Optional`` so that pin bump changes no model.
 """
@@ -45,7 +46,26 @@ from typing_extensions import Annotated, Literal
 
 
 class _Base(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    #: ``ignore``, not ``forbid`` (#386). An additive analyzer release used to fail the whole payload
+    #: rather than the one field it added: codeanalyzer-java 3.1.2's ``var`` on ``param_in``/
+    #: ``param_out`` produced 2515 validation errors on daytrader8 until ``JParamEdge`` declared it,
+    #: for a change that was backward compatible by construction. Uptake should not require an SDK
+    #: edit before anything parses.
+    #:
+    #: What this gives up is the drift detector. ``forbid`` was what surfaced that ``var`` within
+    #: seconds of the pin bump; under ``ignore`` the same addition is absorbed silently and the first
+    #: symptom is a wrong answer from something reading a field the SDK never learned. The intended
+    #: replacement is a comparison against each analyzer's published schema in ``codeanalyzer-schema``
+    #: — reporting what is unmodelled instead of refusing to parse — which is tracked separately.
+    #:
+    #: ``ignore`` rather than ``allow`` on purpose: ``allow`` keeps unknown fields in ``model_extra``
+    #: and so widens ``model_dump_json()`` with whatever the analyzer emitted, and several tests
+    #: assert properties *of* dumps (E6's ``"can://" not in ...model_dump_json()``). A field the SDK
+    #: does not model must not be able to change what a dump contains.
+    #:
+    #: A declared field is therefore the only way a value is reachable. Relaxing this does not make
+    #: the explicit ones redundant — it makes them load-bearing.
+    model_config = ConfigDict(extra="ignore")
 
 
 # ----------------------------------------------------------------------------------------------
@@ -417,7 +437,7 @@ class _Type(_Spanned):
     is_ambient: bool = False
     # 1.3.0 additive, on *every* type kind (TS-8): the analyzer stamps the entrypoint tier on
     # whatever declaration a ruleset matched, so an interface, enum, type alias or namespace can
-    # carry it too. Declaring it only on TSClass would fail ``extra="forbid"`` on those four the
+    # carry it too. Declaring it only on TSClass would have failed the old ``extra="forbid"`` on those four the
     # day the pin moves -- exactly the breakage TS-8 exists to prevent.
     entrypoints: Optional[List[TSEntrypoint]] = None
     is_entrypoint: Optional[bool] = None

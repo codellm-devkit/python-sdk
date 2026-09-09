@@ -71,9 +71,11 @@ dataflow structure (2,358 `ddg`, 2,038 `ssa`, 320 `points-to`, 20 self-loops, 1,
 `cdg`, 76 `summary`, 247 `call_graph`, 258 `param_in`, 97 `param_out`), as well as the signature
 table further down (154 / 0 / 45 of 45 for `a1`, 8 / 4 / 4 of 5 for `a4`).
 
-Note that the new fields make a 3.1.0 payload **unparsable by the pre-#369 models**, which are
-`extra="forbid"`: the graph contract stays at 2.0.0 and the wire is additive, but the SDK's mirror
-had to grow the five fields before it could read one.
+Note that the new fields made a 3.1.0 payload **unparsable by the pre-#369 models**, which were
+`extra="forbid"` at the time: the graph contract stays at 2.0.0 and the wire is additive, but the
+SDK's mirror had to grow the five fields before it could read one. Since #386 the mirrors are
+`extra="ignore"`, so an additive release no longer fails to parse -- it is consumable immediately,
+and an undeclared field is simply unreachable until someone declares it.
 
 ## What the 3.0.3 regeneration moved
 

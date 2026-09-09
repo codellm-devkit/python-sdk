@@ -31,7 +31,8 @@ Measured on `a4`: `param_in` went from 5 of 31 edges carrying `var` to 31 of 31,
 model needed widening, because `TSParamEdge` had already declared `var` as optional. The sibling
 analyzers shipped the same fix in lockstep (codeanalyzer-python 1.5.1 / #196, codeanalyzer-java
 3.1.2 / #250), and Java's did need a model widening: `JParamEdge` had only `src`/`dst`, so every
-param edge failed `extra="forbid"` until the field was added.
+param edge failed validation until the field was added — the mirrors were `extra="forbid"` then, and
+are `extra="ignore"` since #386, so an addition like this one is now absorbed silently instead.
 
 Why it mattered: the schemas had declared the property since the L4 layer landed and the projections
 wrote nothing, so a consumer predicate on `var` was `null` on every edge crossing a call boundary.
