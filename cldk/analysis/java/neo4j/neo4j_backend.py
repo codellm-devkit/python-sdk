@@ -891,13 +891,9 @@ class JNeo4jBackend(JavaAnalysisBackend):
         return Slice(nodes=nodes, roots=[root], resolved=slice_resolved([root]), total=row["total"])
 
     # -----[ paths and the flow predicate ]-----
-    #: One string per path, ordered exactly as Python would order the tuple ``hop_sort_key`` builds.
-    #: ``U+0001`` is the separator rather than ``|`` for one reason: string comparison agrees with
-    #: field-by-field comparison **only** when the separator sorts below every character a field can
-    #: hold, and ``|`` (0x7C) sorts *above* every lowercase letter. ``elementId`` is the last field
-    #: of each hop and breaks the tie between parallel relationships a caller cannot tell apart.
+    #: See :func:`~cldk.analysis.commons.graphs.path_order`.
     #:
-    #: **The per-callable graph orders do not have this tie-break, and that asymmetry is deliberate
+    #: **The per-callable graph orders do not have that tie-break, and that asymmetry is deliberate
     #: but not free.** ``CFG_ORDER``/``CDG_ORDER``/``DDG_ORDER`` (``cldk/analysis/java/backend.py``)
     #: end at ``coalesce(kind,'')`` / ``dst`` / ``coalesce(prov,[])`` — no ``elementId``, because
     #: the key has to be *the same key the in-memory backend sorts by*, and there is no element id
@@ -910,11 +906,6 @@ class JNeo4jBackend(JavaAnalysisBackend):
     #: every one with a distinct key within its callable). If an analyzer ever emits one, the fix
     #: is a fourth component both backends can compute, not an ``elementId`` only one of them has.
     #:
-    #: ``allShortestPaths`` and not a plain variable-length match: a variable-length pattern
-    #: enumerates *trails*, which does not terminate on a real dependence graph, while
-    #: ``allShortestPaths`` is a bidirectional BFS. ``$cap`` is ``max_paths + 1`` so one extra row
-    #: reports the truncation, rather than a second traversal for a number the caller cannot act on.
-    #:
     #: ``all(n IN nodes(p) WHERE …)`` is the **interior** scope, and it is not optional: without it
     #: only the two endpoints carry the application prefix and a path could route through another
     #: application's nodes and come back. Leg 2.5b found exactly that leak twice in its own path
@@ -923,8 +914,8 @@ class JNeo4jBackend(JavaAnalysisBackend):
     _PATHS = sdg_path_query(
         "J",
         node_label="JBodyNode",
-        endpoint_scope="n.id STARTS WITH $prefix",
-        interior_scope="n.id STARTS WITH $prefix",
+        endpoint_scope=_scoped,
+        interior_scope=_scoped,
         projection="ref: n.id, kind: n.kind, line: n.start_line",
         rel_var="e",
     )

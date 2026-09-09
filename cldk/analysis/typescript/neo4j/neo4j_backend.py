@@ -1840,16 +1840,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
         return [self._call_vertex(r["v"]) for r in self._run(self._CALLEES, sig=sig, callable_kinds=sorted(CALLABLE_KINDS), **self._scope_params)]
 
     # -----[ paths and flow predicates ]-----
-    #: One string per path, ordered exactly as Python would order the tuple ``hop_sort_key`` builds.
-    #: ``U+0001`` is the separator rather than ``|`` for one reason: string comparison agrees with
-    #: field-by-field comparison **only** when the separator sorts below every character a field can
-    #: hold, and ``|`` (0x7C) sorts *above* every lowercase letter. ``elementId`` is the last field
-    #: of each hop and breaks the tie between parallel relationships a caller cannot tell apart.
-    #:
-    #: ``allShortestPaths`` and not a plain variable-length match: a variable-length pattern
-    #: enumerates *trails*, which does not terminate on a real dependence graph, while
-    #: ``allShortestPaths`` is a bidirectional BFS. ``$cap`` is ``max_paths + 1`` so one extra row
-    #: reports the truncation, rather than a second traversal for a number the caller cannot act on.
+    #: See :func:`~cldk.analysis.commons.graphs.path_order`.
     #:
     #: ``all(n IN nodes(p) …)`` puts the application-prefix predicate on **every** node of the path, not
     #: only on the two the ids pin: the SDG types are deliberately outside the audit's
@@ -1857,7 +1848,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
     _PATHS = sdg_path_query(
         "TS",
         node_label="CanNode:TSBodyNode",
-        interior_scope=_scoped("n"),
+        interior_scope=_scoped,
         projection="ref: n.id, kind: n.kind, of: n.of, line: n.start_line, "
         "callable: head([(c:TSCallable)-[:TS_HAS_BODY_NODE]->(n) | c.signature]), "
         "c_line: head([(c:TSCallable)-[:TS_HAS_BODY_NODE]->(n) | c.start_line])",
