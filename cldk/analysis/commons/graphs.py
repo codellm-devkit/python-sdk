@@ -240,6 +240,71 @@ def sdg_path_query(P: str, *, node_label: str, endpoint_scope: Callable[[str], s
     )
 
 
+def sdg_taint_query(P: str, *, node_label: str, endpoint_scope: Callable[[str], str] | None = None, interior_scope: Callable[[str], str] | None = None, projection: str, rel_var: str = "r") -> str:
+    """The multi-source, multi-sink shortest-path statement behind ``taint()``.
+
+    Differs from :func:`sdg_path_query` in four ways, each load-bearing:
+
+    * ``$srcs`` / ``$dsts`` are lists, not a single ``$src`` / ``$dst``, so m sources against n
+      sinks is one round trip and one traversal per pair rather than m*n statements.
+    * A sanitizer cut lives **inside** the pattern -- ``$cut_callables`` (a list of ``can://``
+      prefixes; a body-node id *is* ``<callable id>@<local key>``, so cutting a callable is a
+      prefix test and needs no join) and ``$cut_vars`` (a list of variable names) -- rather than
+      being applied to the rows a first, unfiltered match returns. Measured on Neo4j 5.26.30: an
+      ``all()`` over ``relationships(p)`` inlines into the ``ShortestPath`` operator, so the search
+      itself returns the shortest *unsanitized* path. Filtering afterwards would report no flow for
+      a source whose shortest paths are all sanitized and whose next one is not -- a false
+      refutation, which in this design closes a live security alert. The predicate has to stay in
+      an inlinable form: a subquery or an aggregate here reintroduces the exhaustive fallback,
+      which is trail enumeration and does not terminate on a real dependence graph.
+    * ``coalesce({rel_var}.var, '')`` is mandatory, and for three reasons that all still hold even
+      though the emitter has improved: ``CDG`` and ``SUMMARY`` carry no properties at all;
+      ``PARAM_IN``/``PARAM_OUT`` are written by the emitter as ``prune({{"var": e.var}})``, so the
+      key is simply absent whenever the formal has none; and both Neo4j backends attach to graphs
+      emitted below the current floor, where measurement found ``PY_PARAM_IN`` 0 of 4 and
+      ``PY_PARAM_OUT`` 0 of 6 carrying ``var`` at all (a floor-raising codeanalyzer-python 1.5.1 /
+      java 3.1.2 / typescript 1.5.3 measured 4 of 4 and 6 of 6 -- better, not universal, and no
+      floor-raise touches ``CDG``/``SUMMARY``, which carry no properties by construction). A bare
+      ``{rel_var}.var <> $v`` is ``null`` on any hop missing the property, ``all()`` over a ``null``
+      term is ``null``, and the path is silently excluded -- the same false-refutation failure mode
+      as above, reached a different way.
+
+      **The empty string must never be a legal member of ``$cut_vars``.** ``coalesce`` maps a null
+      ``var`` to ``''``, so if ``''`` reached ``$cut_vars`` the predicate would read as "cut every
+      hop whose var is null" -- which, given the paragraph above, is most control, summary and
+      pre-1.5.1 param hops in the application. One malformed sanitizer would silently sever most of
+      the graph and turn found flows into confident refutations. This function does not enforce
+      the rejection; a caller upstream of it must.
+    * The cap is **per pair** -- ``collect(p)[0..$cap]`` after an ordered ``WITH a, b`` -- rather
+      than a flat ``LIMIT``, because with one sink and forty sources a flat cap lets one prolific
+      pair starve the other thirty-nine, and in triage the per-source witness is the answer.
+
+    Returns ``a.id AS src`` and ``b.id AS dst`` alongside the path projection, so a caller can tell
+    which source reached which sink -- the m*n batching above is only useful if the grouping survives
+    it.
+
+    Same injection points as :func:`sdg_path_query` -- ``node_label``, ``endpoint_scope``,
+    ``interior_scope``, ``projection``, ``rel_var`` -- and the same ``.format()`` template still
+    carrying ``{rels}`` and ``{depth}``.
+    """
+    a_scope = f" AND {endpoint_scope('a')}" if endpoint_scope else ""
+    b_scope = f" AND {endpoint_scope('b')}" if endpoint_scope else ""
+    interior = f" AND all(n IN nodes(p) WHERE {interior_scope('n')})" if interior_scope else ""
+    return (
+        f"MATCH (a:{node_label}) WHERE a.id IN $srcs{a_scope} "
+        f"MATCH (b:{node_label}) WHERE b.id IN $dsts{b_scope} "
+        "MATCH p = allShortestPaths((a)-[:{rels}*1..{depth}]->(b)) "
+        "WHERE all(n IN nodes(p) WHERE NOT any(q IN $cut_callables WHERE n.id STARTS WITH q))"
+        + interior + " "
+        f"AND all({rel_var} IN relationships(p) WHERE NOT coalesce({rel_var}.var, '') IN $cut_vars) "
+        "WITH a, b, p, " + path_order(P) + " AS key ORDER BY length(p), key "
+        "WITH a, b, collect(p)[0..$cap] AS ps "
+        "UNWIND ps AS p "
+        f"RETURN a.id AS src, b.id AS dst, [n IN nodes(p) | {{{{{projection}}}}}] AS ns, "
+        f"[{rel_var} IN relationships(p) | {{{{via: type({rel_var}), var: {rel_var}.var, prov: {rel_var}.prov}}}}] AS rs"
+    )
+
+
 def hop_sort_key(hops: Sequence[PathHop]) -> Tuple:
     """The order two paths are compared in, in the caller's *own* vocabulary.
 

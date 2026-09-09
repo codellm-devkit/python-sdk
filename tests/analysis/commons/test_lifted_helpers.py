@@ -307,3 +307,54 @@ PATHS_DIGESTS = {"PY": "c1ea290360d42460", "J": "236a302937bcd98a", "TS": "a7109
 def test_the_generated_statement_has_not_drifted(P):
     backend = dict(_path_backends())[P]
     assert hashlib.sha256(backend._PATHS.encode()).hexdigest()[:16] == PATHS_DIGESTS[P], backend._PATHS
+
+
+# ----------------------------------------------------------------------------------------------
+# Leg 4b, Task 3: sdg_taint_query() -- the multi-source, multi-sink statement behind taint().
+# ----------------------------------------------------------------------------------------------
+
+
+def test_the_taint_query_is_null_safe_and_caps_per_pair():
+    """Three properties, each of which has a specific failure mode if absent."""
+    from cldk.analysis.commons.graphs import sdg_taint_query
+
+    q = sdg_taint_query("PY", node_label="PyBodyNode", projection="ref: n.id")
+    assert "coalesce(r.var, '')" in q, "a bare r.var <> $v refutes every interprocedural flow"
+    assert "collect(p)[0..$cap]" in q, "a flat LIMIT lets one prolific pair starve the rest"
+    assert "a.id IN $srcs" in q and "b.id IN $dsts" in q, "taint is m x n in one statement"
+    assert "allShortestPaths" in q, "a variable-length pattern enumerates trails and will not finish"
+
+
+def test_the_taint_query_groups_by_pair():
+    """The result must say which source reached which sink; a caller cannot recover it otherwise."""
+    from cldk.analysis.commons.graphs import sdg_taint_query
+
+    q = sdg_taint_query("PY", node_label="PyBodyNode", projection="ref: n.id")
+    assert "a.id AS src" in q and "b.id AS dst" in q
+
+
+def test_the_taint_query_uses_callables_not_string_replace():
+    """The scope injection points are callables, mirroring ``sdg_path_query`` -- a textual
+    ``.replace('n.', 'a.')`` would corrupt any fragment containing ``fn.`` (-> ``fa.``)."""
+    from cldk.analysis.commons.graphs import sdg_taint_query
+
+    q = sdg_taint_query(
+        "J",
+        node_label="JBodyNode",
+        endpoint_scope=lambda v: f"{v}.id STARTS WITH $prefix",
+        interior_scope=lambda v: f"{v}.id STARTS WITH $prefix",
+        projection="ref: n.id",
+        rel_var="e",
+    )
+    assert q.count("STARTS WITH $prefix") == 3
+    assert "AND a.id STARTS WITH $prefix" in q
+    assert "AND b.id STARTS WITH $prefix" in q
+
+
+def test_the_taint_query_still_formats():
+    from cldk.analysis.commons.graphs import sdg_rel_pattern, sdg_taint_query
+
+    q = sdg_taint_query("PY", node_label="PyBodyNode", projection="ref: n.id")
+    out = q.format(rels=sdg_rel_pattern("PY"), depth="")
+    assert "{{" not in out and "}}" not in out, "an escape survived formatting"
+    assert out.count("allShortestPaths") == 1
