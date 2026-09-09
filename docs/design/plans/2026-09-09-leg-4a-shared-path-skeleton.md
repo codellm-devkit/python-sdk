@@ -93,11 +93,21 @@ def test_path_order_reproduces_the_backends_constant(P, backend):
     assert path_order(P) == backend._PATH_ORDER
 
 
-def test_the_three_backends_agreed_before_the_lift():
-    """The premise of lifting these two rather than parameterising them: all three were already
-    identical. If this ever fails, one backend diverged and the lift is hiding it."""
-    assert len({b._VIA_CASE for _, b in BACKENDS}) == 1
-    assert len({b._PATH_ORDER for _, b in BACKENDS}) == 1
+def test_the_three_constants_differ_only_in_the_relationship_prefix():
+    """What is and is not shared, stated exactly.
+
+    **Corrected while implementing.** An earlier draft of this plan asserted the three constants were
+    byte-identical. They are not: three distinct values each, because every CASE arm names its own
+    language's relationship types (``J_DDG`` at 244 characters against ``PY_DDG`` at 250). What was
+    triplicated is the *expression*; the result was always per-language, which is exactly why the
+    lifted forms take ``P`` and are functions rather than constants. A divergence beyond the prefix
+    fails here rather than being absorbed into a parameter silently.
+    """
+    assert len({via_case(P) for P, _ in BACKENDS}) == 3
+    assert len({path_order(P) for P, _ in BACKENDS}) == 3
+    for P in ("J", "TS"):
+        assert via_case(P).replace(f"{P}_", "PY_") == via_case("PY")
+        assert path_order(P).replace(f"{P}_", "PY_") == path_order("PY")
 ```
 
 - [ ] **Step 2: Run it to make sure it fails**
@@ -138,10 +148,18 @@ def path_order(P: str) -> str:
 
 - [ ] **Step 4: Run the tests and make sure they pass**
 
-Run: `uv run --all-groups pytest tests/analysis/commons/test_lifted_helpers.py -v`
-Expected: 7 passed.
+Run: `uv run --all-groups pytest tests/analysis/commons/test_lifted_helpers.py -q --no-cov`
+Expected: 22 passed.
 
-If `test_path_order_reproduces_the_backends_constant` fails, diff the two strings character by
+**Pass `--no-cov`.** One test file exercises ~42% of the package against a 50% `--cov-fail-under`
+floor, so the run reports `FAIL Required test coverage of 50% not reached` on top of a green suite.
+That is the floor, not a failure.
+
+Also register both names in this file's existing `LIFTED` table (the
+`cldk.analysis.commons.graphs` list), so the "lives in commons, and `python.backend` re-exports the
+same object" audit covers them alongside their siblings.
+
+If `test_path_order_reproduces_each_backends_constant` fails, diff the two strings character by
 character — the likely cause is the implicit string concatenation in the original spanning two
 source lines with a space between `") "` and `"+ '\\u0001'"`. Reproduce it exactly; do not
 "tidy" the spacing.
