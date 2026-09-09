@@ -671,8 +671,17 @@ class TaintResult(FlowPaths):
             not ``None``.
         roots: What each selector matched, so a conclusion is auditable rather than asserted.
         resolved: The human-readable form of ``roots``, via ``slice_resolved``.
-        unresolved: The frontier ledger. Each diagnostic names the pair it affects, so a caller can
-            tell which of forty sources was blocked rather than only that one was.
+        unresolved: The frontier ledger. Each entry is a ``Diagnostic`` with ``code
+            ="unresolved_dispatch"`` (already in the closed vocabulary; no widening needed) and the
+            affected pair named in ``message`` prose — the same convention every other diagnostic in
+            this SDK follows (e.g. the Neo4j backend's ``module_scope`` message). ``Diagnostic`` has
+            no structured field for a pair today, so this is a human-readable explanation, not
+            something to compute with: the pair→diagnostic association ``exhausted`` needs is tracked
+            internally by the implementation before each ``Diagnostic`` is built, never recovered by
+            parsing ``message`` back out — that would resurrect the derivation this stored field
+            exists to avoid. A caller that needs the association programmatically wants an additive
+            ``subject`` field on ``Diagnostic``, which widens a published model contract
+            (``docs/agent-api-reference.md``) and should be requested rather than assumed here.
     """
 
     exhausted: list[tuple[str, str]]
