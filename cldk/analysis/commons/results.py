@@ -640,3 +640,42 @@ class FlowPaths(BoundedResult):
 
     def _items(self) -> list:
         return self.paths
+
+
+class TaintResult(FlowPaths):
+    """Which of the requested (source, sink) pairs flow, which were searched to exhaustion, and what
+    stopped the rest.
+
+    A subclass of :class:`FlowPaths` rather than a new shape: the witnesses *are* flow paths, each
+    already carrying ``weakest``, and ``complete`` already means "were all the witnesses returned".
+    Three fields are added and nothing is redefined.
+
+    **What ``exhausted`` claims.** A pair is listed when all three hold: the call passed
+    ``depth=None``, the search found no path for it, and no :attr:`unresolved` diagnostic implicates
+    it. That is a claim about **the emitted graph plus the ledger, and never about the program** —
+    which is why the field is named for the search rather than for the conclusion. The step from
+    "exhausted" to "this alert is a false positive" is the caller's, deliberately: the DDG's
+    ``points-to`` edges over-approximate, which is the safe direction for an absence claim, but the
+    call structure *under*-approximates wherever dispatch is unresolved, so a missing call edge means
+    a real flow can exist with no path in the graph. Absence of path bounds the program only where the
+    frontier was fully resolved, and :attr:`unresolved` is what enumerates where it was not.
+
+    **Why it is stored rather than derived.** It is computable — ``all_pairs − pairs_with_paths −
+    pairs_with_unresolved`` when ``depth is None``, and ``∅`` otherwise — and that is the reason not
+    to: the load-bearing answer must not be a subtraction the caller can get wrong, and a subtraction
+    with a mode switch in front of it is worse than one without.
+
+    Attributes:
+        exhausted: The ``(source, sink)`` pairs searched to exhaustion with a clean ledger, named by
+            the same strings the caller passed — never a ``can://`` id. Empty whenever ``depth`` was
+            not ``None``.
+        roots: What each selector matched, so a conclusion is auditable rather than asserted.
+        resolved: The human-readable form of ``roots``, via ``slice_resolved``.
+        unresolved: The frontier ledger. Each diagnostic names the pair it affects, so a caller can
+            tell which of forty sources was blocked rather than only that one was.
+    """
+
+    exhausted: list[tuple[str, str]]
+    roots: list[SliceNode]
+    resolved: str
+    unresolved: list[Diagnostic]
