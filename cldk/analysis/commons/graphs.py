@@ -201,6 +201,49 @@ def path_order(P: str) -> str:
     )
 
 
+def sdg_path_query(P: str, *, node_label: str, endpoint_scope: str = "", interior_scope: str = "", projection: str, rel_var: str = "r") -> str:
+    """The shortest-path statement every Neo4j backend issues for ``paths_between``.
+
+    ``allShortestPaths`` and not a plain variable-length match. A variable-length pattern enumerates
+    *trails*, the shape that does not terminate on a real dependence graph (killed at 600 s on odoo);
+    ``allShortestPaths`` is a bidirectional BFS and answers the pathological cases in milliseconds --
+    0.08 s for an unreachable pair seeded in a 440,270-node forward cone. ``$cap`` is ``max_paths + 1``
+    at the call site, so one extra row reports the truncation rather than a second ``count(p)``
+    traversal for a number the caller cannot act on.
+
+    Five things differ between the three backends, and all five are parameters:
+
+    * ``node_label`` -- ``PyBodyNode`` / ``JBodyNode`` / ``CanNode:TSBodyNode``.
+    * ``endpoint_scope`` and ``interior_scope`` -- Cypher fragments over the node variable ``n``,
+      empty for a backend that does not write one. **Empty is not an oversight.** Python's statements
+      are keyed by a body-node ``id``, which embeds the application, and
+      ``tests/analysis/python/test_neo4j_multi_application_scope.py`` sanctions id-keying as one of
+      four scope kinds for a measured reason: the predicate there would mean testing 195,784 reached
+      nodes against a list. Java writes it anyway under a stricter rule -- the audit judges the
+      predicate that is *written*, not the graph that happens to be attached -- for a measured ~4%.
+      Two standards, each measured on its own corpus.
+    * ``projection`` -- the per-node map body without its braces. Python adds ``n.var``, TypeScript
+      also ``n.of``, Java neither, because Java recovers the owner from the id prefix instead of
+      joining a callable back.
+    * ``rel_var`` -- ``r`` everywhere but Java, which spells it ``e``. Inert, and a parameter only so
+      this generator can reproduce all three byte-identically instead of normalising one of them.
+
+    Returns a ``.format()`` template still carrying ``{rels}`` and ``{depth}``, so the runner methods
+    are unchanged.
+    """
+    a_scope = f" WHERE {endpoint_scope.replace('n.', 'a.')}" if endpoint_scope else ""
+    b_scope = f" WHERE {endpoint_scope.replace('n.', 'b.')}" if endpoint_scope else ""
+    interior = f" WHERE all(n IN nodes(p) WHERE {interior_scope})" if interior_scope else ""
+    return (
+        f"MATCH (a:{node_label} {{{{id:$src}}}}){a_scope} "
+        f"MATCH (b:{node_label} {{{{id:$dst}}}}){b_scope} "
+        "MATCH p = allShortestPaths((a)-[:{rels}*1..{depth}]->(b))" + interior + " "
+        "WITH p, " + path_order(P) + " AS key ORDER BY length(p), key LIMIT $cap "
+        f"RETURN [n IN nodes(p) | {{{{{projection}}}}}] AS ns, "
+        f"[{rel_var} IN relationships(p) | {{{{via: type({rel_var}), var: {rel_var}.var, prov: {rel_var}.prov}}}}] AS rs"
+    )
+
+
 def hop_sort_key(hops: Sequence[PathHop]) -> Tuple:
     """The order two paths are compared in, in the caller's *own* vocabulary.
 

@@ -246,3 +246,81 @@ def test_the_three_constants_differ_only_in_the_relationship_prefix():
     for P in ("J", "TS"):
         assert via_case(P).replace(f"{P}_", "PY_") == via_case("PY")
         assert path_order(P).replace(f"{P}_", "PY_") == path_order("PY")
+
+
+# ----------------------------------------------------------------------------------------------
+# Leg 4a, Task 2: the whole path statement.
+#
+# Five things differ between the three backends' ``_PATHS``, and all five are parameters: the node
+# label, the endpoint scope, the interior scope, the node projection, and -- found while writing
+# this -- the relationship variable, which Java spells ``e`` where the other two spell ``r``. That
+# last one is semantically inert; it is a parameter so this lift can be byte-identical rather than a
+# judgement call. Normalising it is a separate, arguable change.
+# ----------------------------------------------------------------------------------------------
+
+#: The arguments that reproduce each backend's statement, written out rather than derived: a
+#: derivation that produced the wrong string would also produce the wrong expectation.
+PATHS_ARGS = {
+    "PY": dict(
+        node_label="PyBodyNode",
+        projection="ref: n.id, kind: n.kind, var: n.var, line: n.start_line, "
+        "callable: head([(c:PyCallable)-[:PY_HAS_BODY_NODE]->(n) | c.signature]), "
+        "c_line: head([(c:PyCallable)-[:PY_HAS_BODY_NODE]->(n) | c.start_line])",
+    ),
+    "J": dict(
+        node_label="JBodyNode",
+        endpoint_scope="n.id STARTS WITH $prefix",
+        interior_scope="n.id STARTS WITH $prefix",
+        projection="ref: n.id, kind: n.kind, line: n.start_line",
+        rel_var="e",
+    ),
+    "TS": dict(
+        node_label="CanNode:TSBodyNode",
+        interior_scope="(n.id STARTS WITH $p)",
+        projection="ref: n.id, kind: n.kind, of: n.of, line: n.start_line, "
+        "callable: head([(c:TSCallable)-[:TS_HAS_BODY_NODE]->(n) | c.signature]), "
+        "c_line: head([(c:TSCallable)-[:TS_HAS_BODY_NODE]->(n) | c.start_line])",
+    ),
+}
+
+
+@pytest.mark.parametrize("P", ["PY", "J", "TS"])
+def test_sdg_path_query_reproduces_each_backends_paths(P):
+    """Byte-identical, and that is the whole safety property of this lift: these three statements are
+    shipped code on a release branch mid-rc, so anything but equality is a behaviour change."""
+    from cldk.analysis.commons.graphs import sdg_path_query
+
+    backend = dict(_path_backends())[P]
+    assert sdg_path_query(P, **PATHS_ARGS[P]) == backend._PATHS
+
+
+@pytest.mark.parametrize("P", ["PY", "J", "TS"])
+def test_the_generated_statement_still_formats(P):
+    """The result is a ``.format()`` template, not a finished statement -- the runners supply ``rels``
+    and ``depth``.
+
+    What formatting must leave behind is *single* braces: Cypher map literals need them, so
+    ``{{id:$src}}`` becoming ``{id:$src}`` is the point. What it must **not** leave is a doubled
+    brace, which would mean an escape the template never resolved and a statement the server would
+    reject.
+    """
+    from cldk.analysis.commons.graphs import sdg_path_query, sdg_rel_pattern
+
+    out = sdg_path_query(P, **PATHS_ARGS[P]).format(rels=sdg_rel_pattern(P), depth="")
+    assert "{{" not in out and "}}" not in out, "an escape survived formatting"
+    assert "{id:$src}" in out and "{id:$dst}" in out
+    assert out.count("allShortestPaths") == 1
+
+
+def test_the_scope_predicates_are_written_where_the_backend_writes_them():
+    """Not a restatement of the equality above: it pins *which* backend scopes what, so a future
+    edit that moved Python onto the prefix predicate would fail here with a reason rather than
+    silently changing a statement whose omission was measured and is sanctioned (see
+    tests/analysis/python/test_neo4j_multi_application_scope.py -- id-keying is a scope kind).
+    """
+    from cldk.analysis.commons.graphs import sdg_path_query
+
+    py, j, ts = (sdg_path_query(P, **PATHS_ARGS[P]) for P in ("PY", "J", "TS"))
+    assert "STARTS WITH" not in py, "Python's path statement is scoped by id, deliberately"
+    assert j.count("STARTS WITH $prefix") == 3, "Java scopes both endpoints and the interior"
+    assert ts.count("STARTS WITH $p") == 1, "TypeScript scopes the interior only"
