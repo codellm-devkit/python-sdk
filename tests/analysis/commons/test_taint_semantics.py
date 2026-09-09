@@ -1,5 +1,44 @@
 # tests/analysis/commons/test_taint_semantics.py
+from cldk.analysis.commons.graphs import shortest_walks, via_table
 from cldk.analysis.commons.results import Diagnostic, TaintResult
+
+VIA = via_table("PY")
+
+#: The shape that separates a correct filter from a plausible one: the SHORTEST route is sanitized
+#: and a LONGER one is clean. Filtering the replay alone returns nothing here.
+ADJ = {
+    "a": {"m": [("PY_DDG", "tainted", ["ssa"])], "n1": [("PY_DDG", "clean", ["ssa"])]},
+    "m": {"b": [("PY_DDG", "tainted", ["ssa"])]},
+    "n1": {"n2": [("PY_DDG", "clean", ["ssa"])]},
+    "n2": {"b": [("PY_DDG", "clean", ["ssa"])]},
+}
+
+
+def test_unfiltered_finds_the_short_route():
+    walks = shortest_walks(ADJ, "a", "b", None, 10, via=VIA)
+    assert [len(w) for w in walks] == [2]
+
+
+def test_a_sanitized_shortest_route_does_not_hide_a_clean_longer_one():
+    """The local twin of the inlining result: the search must find the shortest *satisfying* walk,
+    not filter the shortest walk. If this returns [], the predicate was applied to the replay only
+    and every local taint refutation is unsound."""
+    walks = shortest_walks(ADJ, "a", "b", None, 10, via=VIA, allow_edge=lambda rel, var: var != "tainted")
+    assert [len(w) for w in walks] == [3], "the clean 3-hop route was not found"
+
+
+def test_a_null_var_hop_is_not_cut_by_a_variable_sanitizer():
+    """PARAM_IN carries no var. A predicate that treats None as "not equal to anything" is fine; one
+    that treats it as unknown-and-therefore-excluded refutes every interprocedural flow."""
+    adj = {"a": {"p": [("PY_DDG", "clean", ["ssa"])]}, "p": {"q": [("PY_PARAM_IN", None, None)]}, "q": {"b": [("PY_DDG", "clean", ["ssa"])]}}
+    walks = shortest_walks(adj, "a", "b", None, 10, via=VIA, allow_edge=lambda rel, var: var != "tainted")
+    assert [len(w) for w in walks] == [3]
+
+
+def test_a_node_cut_removes_a_whole_callable():
+    """The callable-granular sanitizer: every body node under the callable's id prefix is cut."""
+    walks = shortest_walks(ADJ, "a", "b", None, 10, via=VIA, allow_node=lambda nid: not nid.startswith("m"))
+    assert [len(w) for w in walks] == [3]
 
 
 def _pair(a="a", b="b"):

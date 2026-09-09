@@ -273,7 +273,17 @@ def flow_path(nodes: Sequence[SliceNode], edges: Sequence[Tuple[str, "str | None
     return FlowPath(hops=[PathHop(frm=nodes[i], to=nodes[i + 1], via=via[rel], var=var, prov=list(prov or [])) for i, (rel, var, prov) in enumerate(edges)])
 
 
-def shortest_walks(edges: Mapping[str, Mapping[str, Sequence[tuple]]], src: str, dst: str, depth: int | None, limit: int, *, via: Mapping[str, str]) -> List[list]:
+def shortest_walks(
+    edges: Mapping[str, Mapping[str, Sequence[tuple]]],
+    src: str,
+    dst: str,
+    depth: int | None,
+    limit: int,
+    *,
+    via: Mapping[str, str],
+    allow_edge: Callable[[str, "str | None"], bool] | None = None,
+    allow_node: Callable[[str], bool] | None = None,
+) -> List[list]:
     """Up to ``limit`` shortest ``src``->``dst`` walks over ``edges``, in the documented order.
 
     The local backends' twin of the graph's ``allShortestPaths``, and only shortest walks for its
@@ -283,6 +293,17 @@ def shortest_walks(edges: Mapping[str, Mapping[str, Sequence[tuple]]], src: str,
     ``(relationship type, var, prov)``. A **list** per ``(src, dst)`` pair because parallel edges are
     ordinary -- one statement feeding one argument on several variables is several distinct paths --
     and collapsing them would merge several pieces of evidence into one.
+
+    ``allow_edge`` and ``allow_node`` are the taint sanitizer cut: ``allow_edge(relationship type,
+    var)`` keeps a label, ``allow_node(node id)`` keeps a node (checked against ``src`` itself too,
+    so a source inside a cut callable yields no walk at all). Both default to ``None``, meaning no
+    filtering, so every caller that predates taint is unaffected. **They must be applied before the
+    breadth-first pass computes ``dist``, not only in the depth-first replay** -- see :func:`steps`
+    below, which both passes call. Filtering the replay alone would leave ``dist`` describing the
+    unfiltered graph: a sanitized 2-hop route would still pin ``dist[dst]`` to 2, and a clean 3-hop
+    route would never be visited, returning no walk at all for a pair that genuinely flows -- a false
+    refutation the Neo4j backend does not share, because its planner inlines the predicate into the
+    shortest-path search itself.
 
     Two passes. The first is a breadth-first level walk keeping the hop count each node was *first*
     reached at; the second is a depth-first replay that only ever steps to a node whose recorded
@@ -300,12 +321,30 @@ def shortest_walks(edges: Mapping[str, Mapping[str, Sequence[tuple]]], src: str,
     a second place for the two backends of a language -- or the backends of two languages -- to
     drift on what "shortest, in order" means.
     """
+    if allow_node is not None and not allow_node(src):
+        return []
+
+    def steps(node: str):
+        """The ``(destination, labels)`` pairs the search may step to from ``node``, filtered.
+
+        Used by **both** passes, and that is the whole point: filtering only the depth-first replay
+        would leave the breadth-first ``dist`` describing the unfiltered graph (see the module
+        docstring above for why that is a false refutation, not a performance shortcut). Filtering
+        here instead makes ``dist`` the shortest *satisfying* distance.
+        """
+        for d, labels in edges.get(node, {}).items():
+            if allow_node is not None and not allow_node(d):
+                continue
+            kept = [lab for lab in labels if allow_edge is None or allow_edge(lab[0], lab[1])]
+            if kept:
+                yield d, kept
+
     dist, frontier, hops = {src: 0}, [src], 0
     while frontier and dst not in dist and (depth is None or hops < depth):
         hops += 1
         nxt = []
         for s in frontier:
-            for d in edges.get(s, ()):
+            for d, _ in steps(s):
                 if d not in dist:
                     dist[d] = hops
                     nxt.append(d)
@@ -319,7 +358,7 @@ def shortest_walks(edges: Mapping[str, Mapping[str, Sequence[tuple]]], src: str,
             if node == dst:
                 out.append(list(walked))
             return
-        options = sorted((via[rel], var or "", d, (rel, var, prov)) for d, labels in edges.get(node, {}).items() if dist.get(d) == len(walked) + 1 for rel, var, prov in labels)
+        options = sorted((via[rel], var or "", d, (rel, var, prov)) for d, labels in steps(node) if dist.get(d) == len(walked) + 1 for rel, var, prov in labels)
         for _, _, d, label in options:
             walked.append((d, label))
             walk(d, walked)
