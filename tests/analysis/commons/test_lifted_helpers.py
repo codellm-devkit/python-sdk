@@ -7,7 +7,7 @@ LIFTED = {
         "reject_bare_string", "check_selector", "encode_cursor", "decode_cursor", "keyset_where", "cursor_params",
         "edge_page", "EdgeOrder"],
     "cldk.analysis.commons.graphs": ["bounded_subgraph", "hop_sort_key", "slice_resolved", "cone_sinks",
-        "as_slice_node", "flow_path", "edge_sort_key", "sdg_rels", "sdg_rel_pattern", "via_table"],
+        "as_slice_node", "flow_path", "edge_sort_key", "sdg_rels", "sdg_rel_pattern", "via_table", "via_case", "path_order"],
     "cldk.analysis.commons.keys": ["resolve_module_key", "scope_paths", "call_graph_scope", "module_key_of", "module_dotted"],
 }
 
@@ -191,3 +191,58 @@ def test_every_in_memory_reaches_routes_through_the_shared_rule(module, owner):
     source = inspect.getsource(getattr(importlib.import_module(module), owner).reaches)
     assert "call_reaches(" in source, f"{owner}.reaches does not use the shared rule"
     assert "nx.descendants" not in source, f"{owner}.reaches still asks descendants, which excludes the source"
+
+
+# ----------------------------------------------------------------------------------------------
+# Leg 4a, Task 1: the SDG path Cypher's two shared fragments.
+#
+# The three Neo4j backends each carried an identical *expression* computing a per-language *value*:
+# ``_VIA_CASE`` and ``_PATH_ORDER`` are built from that backend's ``VIA`` table, so the strings
+# differ (``J_DDG`` against ``PY_DDG``) while the code producing them did not. That is what makes
+# them liftable as functions of ``P`` rather than as constants.
+# ----------------------------------------------------------------------------------------------
+
+
+def _path_backends():
+    """The three backends and their relationship-type prefixes, imported lazily like every other
+    backend reference in this file so a missing install extra cannot fail collection."""
+    from cldk.analysis.java.neo4j.neo4j_backend import JNeo4jBackend
+    from cldk.analysis.python.neo4j.neo4j_backend import PyNeo4jBackend
+    from cldk.analysis.typescript.neo4j.neo4j_backend import TSNeo4jBackend
+
+    return [("PY", PyNeo4jBackend), ("J", JNeo4jBackend), ("TS", TSNeo4jBackend)]
+
+
+@pytest.mark.parametrize("P", ["PY", "J", "TS"])
+def test_via_case_reproduces_each_backends_constant(P):
+    """Byte-identical, because a changed ``CASE`` arm changes which word a hop is reported under and
+    a changed ``ORDER BY`` term changes which paths ``max_paths`` keeps."""
+    from cldk.analysis.commons.graphs import via_case
+
+    backend = dict(_path_backends())[P]
+    assert via_case(P) == backend._VIA_CASE
+
+
+@pytest.mark.parametrize("P", ["PY", "J", "TS"])
+def test_path_order_reproduces_each_backends_constant(P):
+    from cldk.analysis.commons.graphs import path_order
+
+    backend = dict(_path_backends())[P]
+    assert path_order(P) == backend._PATH_ORDER
+
+
+def test_the_three_constants_differ_only_in_the_relationship_prefix():
+    """What is and is not shared, stated exactly.
+
+    The values are **not** interchangeable -- three distinct strings, because each names its own
+    language's relationship types. What was duplicated is the expression, and the only difference
+    between the results is the prefix, which is why one function of ``P`` replaces three constants.
+    A future divergence beyond the prefix would fail here rather than being absorbed silently.
+    """
+    from cldk.analysis.commons.graphs import path_order, via_case
+
+    assert len({via_case(P) for P in ("PY", "J", "TS")}) == 3
+    assert len({path_order(P) for P in ("PY", "J", "TS")}) == 3
+    for P in ("J", "TS"):
+        assert via_case(P).replace(f"{P}_", "PY_") == via_case("PY")
+        assert path_order(P).replace(f"{P}_", "PY_") == path_order("PY")

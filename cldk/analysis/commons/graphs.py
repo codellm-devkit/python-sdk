@@ -157,6 +157,50 @@ def via_table(P: str) -> dict[str, str]:
     }
 
 
+#: The two fragments every SDG path statement is built from. Both were written out identically in
+#: all three Neo4j backends, each computing its own language's value from that backend's ``VIA``
+#: table -- so the *expression* was triplicated while the *result* is per-language, which is why
+#: these are functions of ``P`` and not constants. The strings are not interchangeable: they differ
+#: in the relationship prefix and in nothing else.
+
+
+def via_case(P: str) -> str:
+    """The Cypher ``CASE`` mapping a hop's relationship type to the caller's word for it (E6).
+
+    Computed in Cypher rather than in Python because :func:`path_order`'s ``ORDER BY`` sorts by the
+    same vocabulary :func:`hop_sort_key` sorts by. Ordering by the raw ``type(r)`` instead would be
+    just as deterministic and a *different* order (``PY_CDG`` before ``PY_DDG`` before
+    ``PY_PARAM_IN``, against ``argument`` before ``control`` before ``data``), so two backends of one
+    language would truncate ``max_paths`` to different witnesses.
+    """
+    return "CASE type(relationships(p)[i]) " + " ".join(f"WHEN '{rel}' THEN '{word}'" for rel, word in via_table(P).items()) + " ELSE type(relationships(p)[i]) END"
+
+
+def path_order(P: str) -> str:
+    """One sort key per path, ordered exactly as Python would order the tuple :func:`hop_sort_key`
+    builds -- so a truncation at ``max_paths`` is a prefix of the documented total order rather than
+    whichever paths the database happened to return first.
+
+    The separator is ``\\u0001`` rather than ``|`` for one reason and only that reason: string
+    comparison agrees with field-by-field comparison **only** when the separator sorts below every
+    character a field can hold, and ``|`` (0x7C) sorts *above* every lowercase letter, which would
+    order a variable ``x`` after ``xy``.
+
+    ``coalesce(relationships(p)[i].var, '')`` is load-bearing, not defensive: of the five SDG
+    relationship types only ``{P}_DDG`` carries ``var``, so the bare property is ``null`` on every
+    control, argument, return and summary hop -- and a ``null`` term would make the whole key
+    ``null`` and the ordering arbitrary.
+
+    ``elementId`` is each hop's last field and breaks the tie between parallel relationships a caller
+    cannot tell apart. It is stable for repeated calls against one database and means nothing outside
+    it, which is why it is last and why nothing above depends on it.
+    """
+    return (
+        "reduce(k = '', i IN range(0, length(p) - 1) | k + " + via_case(P) + " + '\\u0001' + coalesce(relationships(p)[i].var, '') "
+        "+ '\\u0001' + nodes(p)[i + 1].id + '\\u0001' + elementId(relationships(p)[i]) + '\\u0001')"
+    )
+
+
 def hop_sort_key(hops: Sequence[PathHop]) -> Tuple:
     """The order two paths are compared in, in the caller's *own* vocabulary.
 
