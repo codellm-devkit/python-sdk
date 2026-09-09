@@ -239,42 +239,11 @@ def test_the_three_constants_differ_only_in_the_relationship_prefix():
 # this -- the relationship variable, which Java spells ``e`` where the other two spell ``r``. That
 # last one is semantically inert; it is a parameter so this lift can be byte-identical rather than a
 # judgement call. Normalising it is a separate, arguable change.
+#
+# The arguments themselves live at each backend's own ``sdg_path_query(...)`` call site, not here --
+# these tests judge ``backend._PATHS``, the statement that ships, rather than a reconstruction of it
+# from a second, hand-kept copy of its arguments.
 # ----------------------------------------------------------------------------------------------
-
-#: The arguments that reproduce each backend's statement, written out rather than derived: a
-#: derivation that produced the wrong string would also produce the wrong expectation.
-PATHS_ARGS = {
-    "PY": dict(
-        node_label="PyBodyNode",
-        projection="ref: n.id, kind: n.kind, var: n.var, line: n.start_line, "
-        "callable: head([(c:PyCallable)-[:PY_HAS_BODY_NODE]->(n) | c.signature]), "
-        "c_line: head([(c:PyCallable)-[:PY_HAS_BODY_NODE]->(n) | c.start_line])",
-    ),
-    "J": dict(
-        node_label="JBodyNode",
-        endpoint_scope="n.id STARTS WITH $prefix",
-        interior_scope="n.id STARTS WITH $prefix",
-        projection="ref: n.id, kind: n.kind, line: n.start_line",
-        rel_var="e",
-    ),
-    "TS": dict(
-        node_label="CanNode:TSBodyNode",
-        interior_scope="(n.id STARTS WITH $p)",
-        projection="ref: n.id, kind: n.kind, of: n.of, line: n.start_line, "
-        "callable: head([(c:TSCallable)-[:TS_HAS_BODY_NODE]->(n) | c.signature]), "
-        "c_line: head([(c:TSCallable)-[:TS_HAS_BODY_NODE]->(n) | c.start_line])",
-    ),
-}
-
-
-@pytest.mark.parametrize("P", ["PY", "J", "TS"])
-def test_sdg_path_query_reproduces_each_backends_paths(P):
-    """Byte-identical, and that is the whole safety property of this lift: these three statements are
-    shipped code on a release branch mid-rc, so anything but equality is a behaviour change."""
-    from cldk.analysis.commons.graphs import sdg_path_query
-
-    backend = dict(_path_backends())[P]
-    assert sdg_path_query(P, **PATHS_ARGS[P]) == backend._PATHS
 
 
 @pytest.mark.parametrize("P", ["PY", "J", "TS"])
@@ -287,23 +256,23 @@ def test_the_generated_statement_still_formats(P):
     brace, which would mean an escape the template never resolved and a statement the server would
     reject.
     """
-    from cldk.analysis.commons.graphs import sdg_path_query, sdg_rel_pattern
+    from cldk.analysis.commons.graphs import sdg_rel_pattern
 
-    out = sdg_path_query(P, **PATHS_ARGS[P]).format(rels=sdg_rel_pattern(P), depth="")
+    backend = dict(_path_backends())[P]
+    out = backend._PATHS.format(rels=sdg_rel_pattern(P), depth="")
     assert "{{" not in out and "}}" not in out, "an escape survived formatting"
     assert "{id:$src}" in out and "{id:$dst}" in out
     assert out.count("allShortestPaths") == 1
 
 
 def test_the_scope_predicates_are_written_where_the_backend_writes_them():
-    """Not a restatement of the equality above: it pins *which* backend scopes what, so a future
+    """Not a restatement of the digest below: it pins *which* backend scopes what, so a future
     edit that moved Python onto the prefix predicate would fail here with a reason rather than
     silently changing a statement whose omission was measured and is sanctioned (see
     tests/analysis/python/test_neo4j_multi_application_scope.py -- id-keying is a scope kind).
     """
-    from cldk.analysis.commons.graphs import sdg_path_query
-
-    py, j, ts = (sdg_path_query(P, **PATHS_ARGS[P]) for P in ("PY", "J", "TS"))
+    backends = dict(_path_backends())
+    py, j, ts = (backends[P]._PATHS for P in ("PY", "J", "TS"))
     assert "STARTS WITH" not in py, "Python's path statement is scoped by id, deliberately"
     assert j.count("STARTS WITH $prefix") == 3, "Java scopes both endpoints and the interior"
     assert ts.count("STARTS WITH $p") == 1, "TypeScript scopes the interior only"
@@ -313,13 +282,10 @@ def test_the_scope_predicates_are_written_where_the_backend_writes_them():
 # Leg 4a, Task 3: the byte-identity guard expires the moment ``_PATHS`` becomes the call it used to
 # be compared against.
 #
-# ``test_sdg_path_query_reproduces_each_backends_paths`` above compares
-# ``sdg_path_query(P, **PATHS_ARGS[P])`` against ``backend._PATHS`` -- and after Task 3, ``_PATHS``
-# *is* ``sdg_path_query(P, **<the backend's own args>)``. The two sides no longer come from
-# independent sources, so that test now only catches a divergence between ``PATHS_ARGS`` and the
-# backend's own arguments; a change to ``sdg_path_query``, ``path_order`` or ``via_case`` moves both
-# sides together and passes silently. The digest below is what still fails when the statement
-# itself changes.
+# Once each backend's ``_PATHS`` became a call to ``sdg_path_query(...)`` with its own arguments,
+# comparing that call's result against itself proved nothing: a change to ``sdg_path_query``,
+# ``path_order`` or ``via_case`` moves both sides together and passes silently. The digest below is
+# what still fails when the statement itself changes.
 # ----------------------------------------------------------------------------------------------
 
 #: A digest of each backend's `_PATHS`, pinned so that a change to the shared generator, to
@@ -327,18 +293,17 @@ def test_the_scope_predicates_are_written_where_the_backend_writes_them():
 #:
 #: This replaces the byte-identity comparison leg 4a retired. While `_PATHS` was a hand-written
 #: literal, comparing it against `sdg_path_query()` proved the generator reproduced it -- the two
-#: sides were independent. Now `_PATHS` *is* that call, so both sides of that equality move
-#: together and only a mismatch between `PATHS_ARGS` and the backend's own arguments can fail it.
-#: A digest is what still fails when the statement itself changes.
+#: sides were independent. Once `_PATHS` became that call itself, both sides of that equality moved
+#: together, so only a digest still fails when the statement itself changes.
 #:
-#: **When this fails:** the statement changed. Print
-#: `sdg_path_query(P, **PATHS_ARGS[P])` and diff it against the previous value to see how, decide
-#: whether the change was intended, and if it was, update the digest **in the same commit that
-#: changed the statement** -- never in a separate one, or the two stop being reviewable together.
+#: **When this fails:** the statement changed. Print `backend._PATHS` and diff it against the
+#: previous value to see how, decide whether the change was intended, and if it was, update the
+#: digest **in the same commit that changed the statement** -- never in a separate one, or the two
+#: stop being reviewable together.
 PATHS_DIGESTS = {"PY": "c1ea290360d42460", "J": "236a302937bcd98a", "TS": "a710986b595dc4df"}
 
 
 @pytest.mark.parametrize("P", ["PY", "J", "TS"])
 def test_the_generated_statement_has_not_drifted(P):
     backend = dict(_path_backends())[P]
-    assert hashlib.sha256(backend._PATHS.encode()).hexdigest()[:16] == PATHS_DIGESTS[P]
+    assert hashlib.sha256(backend._PATHS.encode()).hexdigest()[:16] == PATHS_DIGESTS[P], backend._PATHS
