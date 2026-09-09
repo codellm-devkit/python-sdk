@@ -157,13 +157,6 @@ def via_table(P: str) -> dict[str, str]:
     }
 
 
-#: The two fragments every SDG path statement is built from. Both were written out identically in
-#: all three Neo4j backends, each computing its own language's value from that backend's ``VIA``
-#: table -- so the *expression* was triplicated while the *result* is per-language, which is why
-#: these are functions of ``P`` and not constants. The strings are not interchangeable: they differ
-#: in the relationship prefix and in nothing else.
-
-
 def via_case(P: str) -> str:
     """The Cypher ``CASE`` mapping a hop's relationship type to the caller's word for it (E6).
 
@@ -201,22 +194,25 @@ def path_order(P: str) -> str:
     )
 
 
-def sdg_path_query(P: str, *, node_label: str, endpoint_scope: str = "", interior_scope: str = "", projection: str, rel_var: str = "r") -> str:
+def sdg_path_query(P: str, *, node_label: str, endpoint_scope: Callable[[str], str] | None = None, interior_scope: Callable[[str], str] | None = None, projection: str, rel_var: str = "r") -> str:
     """The shortest-path statement every Neo4j backend issues for ``paths_between``.
 
     ``allShortestPaths`` and not a plain variable-length match. A variable-length pattern enumerates
-    *trails*, the shape that does not terminate on a real dependence graph (killed at 600 s on odoo);
-    ``allShortestPaths`` is a bidirectional BFS and answers the pathological cases in milliseconds --
-    0.08 s for an unreachable pair seeded in a 440,270-node forward cone. ``$cap`` is ``max_paths + 1``
-    at the call site, so one extra row reports the truncation rather than a second ``count(p)``
-    traversal for a number the caller cannot act on.
+    *trails*, the shape that does not terminate on a real dependence graph -- ``EXISTS { (a)-[:
+    PY_CALLS*1..]->(a) }`` ran 600 s without terminating on odoo-slim-19; ``allShortestPaths`` is a
+    bidirectional BFS and answers the pathological cases in milliseconds -- 0.08 s for an unreachable
+    pair seeded at ``Website.configurator_apply``'s ``kwargs`` (the 440,270-node forward cone), 0.06 s
+    for a reachable one with 405 distinct shortest paths. ``$cap`` is ``max_paths + 1`` at the call
+    site, so one extra row reports the truncation rather than a second ``count(p)`` traversal for a
+    number the caller cannot act on.
 
     Five things differ between the three backends, and all five are parameters:
 
     * ``node_label`` -- ``PyBodyNode`` / ``JBodyNode`` / ``CanNode:TSBodyNode``.
-    * ``endpoint_scope`` and ``interior_scope`` -- Cypher fragments over the node variable ``n``,
-      empty for a backend that does not write one. **Empty is not an oversight.** Python's statements
-      are keyed by a body-node ``id``, which embeds the application, and
+    * ``endpoint_scope`` and ``interior_scope`` -- callables taking the node variable's name and
+      returning the Cypher predicate for it, ``None`` for a backend that does not write one.
+      **None is not an oversight.** Python's statements are keyed by a body-node ``id``, which
+      embeds the application, and
       ``tests/analysis/python/test_neo4j_multi_application_scope.py`` sanctions id-keying as one of
       four scope kinds for a measured reason: the predicate there would mean testing 195,784 reached
       nodes against a list. Java writes it anyway under a stricter rule -- the audit judges the
@@ -231,9 +227,9 @@ def sdg_path_query(P: str, *, node_label: str, endpoint_scope: str = "", interio
     Returns a ``.format()`` template still carrying ``{rels}`` and ``{depth}``, so the runner methods
     are unchanged.
     """
-    a_scope = f" WHERE {endpoint_scope.replace('n.', 'a.')}" if endpoint_scope else ""
-    b_scope = f" WHERE {endpoint_scope.replace('n.', 'b.')}" if endpoint_scope else ""
-    interior = f" WHERE all(n IN nodes(p) WHERE {interior_scope})" if interior_scope else ""
+    a_scope = f" WHERE {endpoint_scope('a')}" if endpoint_scope else ""
+    b_scope = f" WHERE {endpoint_scope('b')}" if endpoint_scope else ""
+    interior = f" WHERE all(n IN nodes(p) WHERE {interior_scope('n')})" if interior_scope else ""
     return (
         f"MATCH (a:{node_label} {{{{id:$src}}}}){a_scope} "
         f"MATCH (b:{node_label} {{{{id:$dst}}}}){b_scope} "
