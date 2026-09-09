@@ -1,6 +1,10 @@
 # tests/analysis/commons/test_taint_semantics.py
+import pytest
+
 from cldk.analysis.commons.graphs import shortest_walks, via_table
+from cldk.analysis.commons.resolve import resolve_sanitizers
 from cldk.analysis.commons.results import Diagnostic, TaintResult
+from cldk.utils.exceptions.exceptions import SelectorNotInGraph
 
 VIA = via_table("PY")
 
@@ -95,3 +99,115 @@ def test_exhausted_survives_a_round_trip():
     """A triage caller writes the result to JSON and another process reads the verdict back."""
     r = TaintResult(paths=[], complete=True, exhausted=[_pair()], roots=[], resolved="", unresolved=[])
     assert TaintResult.model_validate(r.model_dump()).exhausted == [_pair()]
+
+
+# ----------------------------------------------------------------------------------------------
+# Leg 4b, Task 4: resolve_sanitizers() -- T6's shape/resolution agreement, and the four rulings
+# that amend the brief (variable existence is checked against edge vars, never resolve_value; the
+# variable cut is scoped to `within`; an empty/whitespace variable is refused; shape mismatches
+# raise rather than falling back to the other resolver).
+# ----------------------------------------------------------------------------------------------
+
+
+def _node(ref, name):
+    from cldk.analysis.commons.results import SliceNode
+
+    return SliceNode(file="h.py", line=3, callable=name, kind="callable", name=name, ref=ref)
+
+
+def _raises(*_a, **_k):
+    raise SelectorNotInGraph("callable", [_a[0] if _a else "?"], 1)
+
+
+def _unused(*_a, **_k):
+    raise AssertionError("this resolver must not be called for this selector's shape")
+
+
+#: `resolve_callable` resolves `Handler.handle` (the pair's `within`) and `html.escape` (the bare
+#: cut); `edge_vars_in` stands in for the domain Ruling A checks against -- the vars an amended
+#: `sdg_taint_query` predicate can actually match on edges scoped to a callable, not
+#: `resolve_value`'s parameter-only domain.
+_HANDLE_REF = "can://app/python/h.py/handle@3:4"
+_ESCAPE_REF = "can://app/python/h.py/escape"
+
+
+def _resolve_callable(name, **_kw):
+    if name == "Handler.handle":
+        return _node(ref=_HANDLE_REF, name=name)
+    if name == "html.escape":
+        return _node(ref=_ESCAPE_REF, name=name)
+    raise SelectorNotInGraph("callable", [name], 1)
+
+
+def _edge_vars_in(prefix):
+    assert prefix == _HANDLE_REF
+    # 'cleaned' is a real PY_DDG edge var that is NOT a formal_in parameter, so it would be missed
+    # by resolve_value (measured on the live graph -- see Ruling A). 'token' is on the same graph.
+    return {"token", "cleaned", "handler::query"}
+
+
+def test_a_pair_cuts_a_variable_and_a_bare_name_cuts_a_callable():
+    cuts, callables = resolve_sanitizers(
+        [("token", "Handler.handle"), "html.escape"],
+        resolve_callable=_resolve_callable,
+        edge_vars_in=_edge_vars_in,
+    )
+    assert cuts == [{"var": "token", "prefix": _HANDLE_REF}]
+    assert callables == [_ESCAPE_REF]
+
+
+def test_ruling_a_a_variable_absent_from_resolve_value_but_present_on_an_edge_resolves():
+    """'cleaned' is not a formal_in parameter (resolve_value would miss it), but it is a real edge
+    var. This is Ruling A's whole point: validating through resolve_value would raise here, and
+    that would be a legitimate sanitizer told it does not exist."""
+    cuts, _callables = resolve_sanitizers(
+        [("cleaned", "Handler.handle")],
+        resolve_callable=_resolve_callable,
+        edge_vars_in=_edge_vars_in,
+    )
+    assert cuts == [{"var": "cleaned", "prefix": _HANDLE_REF}]
+
+
+def test_ruling_b_the_cut_carries_the_within_callables_prefix_for_scoping():
+    """The cut is not a bare variable name -- it carries the resolved callable's ref as `prefix`,
+    which is what lets the amended predicate scope `startNode(r).id STARTS WITH c.prefix` instead
+    of cutting the name everywhere in the application."""
+    cuts, _callables = resolve_sanitizers(
+        [("token", "Handler.handle")],
+        resolve_callable=_resolve_callable,
+        edge_vars_in=_edge_vars_in,
+    )
+    assert cuts == [{"var": "token", "prefix": _HANDLE_REF}]
+
+
+def test_a_bare_name_that_is_not_a_callable_raises_rather_than_cutting_a_variable():
+    """T6. One signature carries two semantics, so the accident of omitting `within` must be loud
+    -- silently cutting the other thing is how a caller gets a confident wrong answer."""
+    with pytest.raises(SelectorNotInGraph):
+        resolve_sanitizers(["token"], resolve_callable=_raises, edge_vars_in=_unused)
+
+
+def test_a_pair_whose_name_is_a_callable_raises_too():
+    """The mirror of the above: a pair is resolved as a pair, never silently treated as a bare
+    callable name just because its first element happens to also be one."""
+    with pytest.raises(SelectorNotInGraph):
+        resolve_sanitizers([("html.escape", "Handler.handle")], resolve_callable=_resolve_callable, edge_vars_in=lambda _p: set())
+
+
+def test_ruling_c_an_empty_variable_selector_raises():
+    """The predicate's `coalesce(r.var, '')` makes '' cut every hop with no var in that callable --
+    most control/summary edges. Refused rather than passed through."""
+    with pytest.raises(ValueError):
+        resolve_sanitizers([("", "Handler.handle")], resolve_callable=_resolve_callable, edge_vars_in=_unused)
+
+
+def test_ruling_c_a_whitespace_only_variable_selector_raises():
+    with pytest.raises(ValueError):
+        resolve_sanitizers([("   ", "Handler.handle")], resolve_callable=_resolve_callable, edge_vars_in=_unused)
+
+
+def test_a_variable_absent_from_every_edge_in_scope_raises():
+    """A variable that is not a parameter AND not on any edge scoped to `within` is genuinely
+    unresolvable -- not everything is Ruling A's exception."""
+    with pytest.raises(SelectorNotInGraph):
+        resolve_sanitizers([("nonexistent", "Handler.handle")], resolve_callable=_resolve_callable, edge_vars_in=_edge_vars_in)

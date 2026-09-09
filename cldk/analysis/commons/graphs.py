@@ -249,14 +249,31 @@ def sdg_taint_query(P: str, *, node_label: str, endpoint_scope: Callable[[str], 
       sinks is one round trip and one traversal per pair rather than m*n statements.
     * A sanitizer cut lives **inside** the pattern -- ``$cut_callables`` (a list of ``can://``
       prefixes; a body-node id *is* ``<callable id>@<local key>``, so cutting a callable is a
-      prefix test and needs no join) and ``$cut_vars`` (a list of variable names) -- rather than
-      being applied to the rows a first, unfiltered match returns. Measured on Neo4j 5.26.30: an
-      ``all()`` over ``relationships(p)`` inlines into the ``ShortestPath`` operator, so the search
-      itself returns the shortest *unsanitized* path. Filtering afterwards would report no flow for
-      a source whose shortest paths are all sanitized and whose next one is not -- a false
+      prefix test and needs no join) and ``$cuts`` (a list of ``{var, prefix}`` maps) -- rather
+      than being applied to the rows a first, unfiltered match returns. Measured on Neo4j 5.26.30:
+      an ``all()`` over ``relationships(p)`` inlines into the ``ShortestPath`` operator, so the
+      search itself returns the shortest *unsanitized* path. Filtering afterwards would report no
+      flow for a source whose shortest paths are all sanitized and whose next one is not -- a false
       refutation, which in this design closes a live security alert. The predicate has to stay in
       an inlinable form: a subquery or an aggregate here reintroduces the exhaustive fallback,
       which is trail enumeration and does not terminate on a real dependence graph.
+    * ``$cuts`` is **scoped**, not a flat list of variable names: each member names the callable
+      the caller wrote the sanitizer's ``within=`` as (its ``prefix``, a ``can://`` id) alongside
+      the variable (``var``). A pair sanitizer ``("cleaned", "Handler.handle")`` therefore only
+      cuts the hops whose ``var`` is ``"cleaned"`` *and* whose start node's id falls under
+      ``Handler.handle``'s prefix, not every ``"cleaned"`` in the application. Variable names like
+      ``result``, ``answer`` and ``token`` recur across callables in any real program; an unscoped
+      cut on one of them would sever flows the caller never named, and over-cutting produces false
+      refutations -- the one output this design exists to refuse. Measured to still inline into
+      ``ShortestPath`` with no separate ``Filter`` and no ``ExhaustiveShortestPath``, which is the
+      only reason the flat form was tempting.
+
+      ``startNode({rel_var})`` and not either endpoint is deliberate. A ``PARAM_IN`` edge starts in
+      the caller and ends in the callee, so a cut named for the *callee's* formal will not sever
+      that crossing edge -- the cut under-scopes rather than over-scopes at a call boundary. That
+      under-cuts, and under-cutting only over-reports: the caller investigates a flow that was in
+      fact sanitized. Scoping on either endpoint would over-cut -- closing a live alert -- so the
+      safe direction is the one written here, on purpose, not the one that reads more symmetric.
     * ``coalesce({rel_var}.var, '')`` is mandatory, and for three reasons that all still hold even
       though the emitter has improved: ``CDG`` and ``SUMMARY`` carry no properties at all;
       ``PARAM_IN``/``PARAM_OUT`` are written by the emitter as ``prune({{"var": e.var}})``, so the
@@ -269,12 +286,14 @@ def sdg_taint_query(P: str, *, node_label: str, endpoint_scope: Callable[[str], 
       term is ``null``, and the path is silently excluded -- the same false-refutation failure mode
       as above, reached a different way.
 
-      **The empty string must never be a legal member of ``$cut_vars``.** ``coalesce`` maps a null
-      ``var`` to ``''``, so if ``''`` reached ``$cut_vars`` the predicate would read as "cut every
-      hop whose var is null" -- which, given the paragraph above, is most control, summary and
-      pre-1.5.1 param hops in the application. One malformed sanitizer would silently sever most of
-      the graph and turn found flows into confident refutations. This function does not enforce
-      the rejection; a caller upstream of it must.
+      **The empty string must never be a legal member of any ``$cuts`` entry's ``var``.**
+      ``coalesce`` maps a null ``var`` to ``''``, so if ``''`` reached ``$cuts`` the predicate would
+      read as "cut every hop whose var is null, inside that prefix" -- which, given the paragraph
+      above, is most control and summary hops in the named callable, and (below the current floor)
+      its param hops too. One malformed sanitizer would silently sever most of a callable's graph
+      and turn found flows into confident refutations. This function does not enforce the
+      rejection; a caller upstream of it must (:func:`~cldk.analysis.commons.resolve.resolve_sanitizers`
+      does).
     * The cap is **per pair** -- ``collect(p)[0..$cap]`` after an ordered ``WITH a, b`` -- rather
       than a flat ``LIMIT``, because with one sink and forty sources a flat cap lets one prolific
       pair starve the other thirty-nine, and in triage the per-source witness is the answer.
@@ -296,7 +315,8 @@ def sdg_taint_query(P: str, *, node_label: str, endpoint_scope: Callable[[str], 
         "MATCH p = allShortestPaths((a)-[:{rels}*1..{depth}]->(b)) "
         "WHERE all(n IN nodes(p) WHERE NOT any(q IN $cut_callables WHERE n.id STARTS WITH q))"
         + interior + " "
-        f"AND all({rel_var} IN relationships(p) WHERE NOT coalesce({rel_var}.var, '') IN $cut_vars) "
+        f"AND all({rel_var} IN relationships(p) WHERE NOT any(c IN $cuts WHERE "
+        f"coalesce({rel_var}.var, '') = c.var AND startNode({rel_var}).id STARTS WITH c.prefix)) "
         "WITH a, b, p, " + path_order(P) + " AS key ORDER BY length(p), key "
         "WITH a, b, collect(p)[0..$cap] AS ps "
         "UNWIND ps AS p "
