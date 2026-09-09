@@ -1,4 +1,5 @@
 # tests/analysis/commons/test_lifted_helpers.py
+import hashlib
 import importlib, pytest
 
 LIFTED = {
@@ -213,28 +214,6 @@ def _path_backends():
     return [("PY", PyNeo4jBackend), ("J", JNeo4jBackend), ("TS", TSNeo4jBackend)]
 
 
-@pytest.mark.parametrize("P", ["PY", "J", "TS"])
-def test_via_case_reproduces_each_backends_constant(P):
-    """Byte-identical, because a changed ``CASE`` arm changes which word a hop is reported under and
-    a changed ``ORDER BY`` term changes which paths ``max_paths`` keeps.
-
-    Task 3 replaced the backends' own ``_VIA_CASE``/``_PATH_ORDER`` attributes with calls to these
-    same functions, so there is no longer a second copy of the string to compare against -- the
-    fragment now only exists once, inside the backend's surviving ``_PATHS``."""
-    from cldk.analysis.commons.graphs import via_case
-
-    backend = dict(_path_backends())[P]
-    assert via_case(P) in backend._PATHS
-
-
-@pytest.mark.parametrize("P", ["PY", "J", "TS"])
-def test_path_order_reproduces_each_backends_constant(P):
-    from cldk.analysis.commons.graphs import path_order
-
-    backend = dict(_path_backends())[P]
-    assert path_order(P) in backend._PATHS
-
-
 def test_the_three_constants_differ_only_in_the_relationship_prefix():
     """What is and is not shared, stated exactly.
 
@@ -328,3 +307,38 @@ def test_the_scope_predicates_are_written_where_the_backend_writes_them():
     assert "STARTS WITH" not in py, "Python's path statement is scoped by id, deliberately"
     assert j.count("STARTS WITH $prefix") == 3, "Java scopes both endpoints and the interior"
     assert ts.count("STARTS WITH $p") == 1, "TypeScript scopes the interior only"
+
+
+# ----------------------------------------------------------------------------------------------
+# Leg 4a, Task 3: the byte-identity guard expires the moment ``_PATHS`` becomes the call it used to
+# be compared against.
+#
+# ``test_sdg_path_query_reproduces_each_backends_paths`` above compares
+# ``sdg_path_query(P, **PATHS_ARGS[P])`` against ``backend._PATHS`` -- and after Task 3, ``_PATHS``
+# *is* ``sdg_path_query(P, **<the backend's own args>)``. The two sides no longer come from
+# independent sources, so that test now only catches a divergence between ``PATHS_ARGS`` and the
+# backend's own arguments; a change to ``sdg_path_query``, ``path_order`` or ``via_case`` moves both
+# sides together and passes silently. The digest below is what still fails when the statement
+# itself changes.
+# ----------------------------------------------------------------------------------------------
+
+#: A digest of each backend's `_PATHS`, pinned so that a change to the shared generator, to
+#: `path_order`/`via_case`, or to a backend's own arguments cannot pass unnoticed.
+#:
+#: This replaces the byte-identity comparison leg 4a retired. While `_PATHS` was a hand-written
+#: literal, comparing it against `sdg_path_query()` proved the generator reproduced it -- the two
+#: sides were independent. Now `_PATHS` *is* that call, so both sides of that equality move
+#: together and only a mismatch between `PATHS_ARGS` and the backend's own arguments can fail it.
+#: A digest is what still fails when the statement itself changes.
+#:
+#: **When this fails:** the statement changed. Print
+#: `sdg_path_query(P, **PATHS_ARGS[P])` and diff it against the previous value to see how, decide
+#: whether the change was intended, and if it was, update the digest **in the same commit that
+#: changed the statement** -- never in a separate one, or the two stop being reviewable together.
+PATHS_DIGESTS = {"PY": "c1ea290360d42460", "J": "236a302937bcd98a", "TS": "a710986b595dc4df"}
+
+
+@pytest.mark.parametrize("P", ["PY", "J", "TS"])
+def test_the_generated_statement_has_not_drifted(P):
+    backend = dict(_path_backends())[P]
+    assert hashlib.sha256(backend._PATHS.encode()).hexdigest()[:16] == PATHS_DIGESTS[P]
