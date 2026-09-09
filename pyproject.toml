@@ -35,15 +35,15 @@ dependencies = [
     "tree-sitter-java==0.23.5",
     "tree-sitter-python==0.23.6",
     "tree-sitter-javascript==0.23.1",
-    "codeanalyzer-python==1.5.0",
-    "codeanalyzer-typescript==1.5.2",
+    "codeanalyzer-python==1.5.1",
+    "codeanalyzer-typescript==1.5.3",
 ]
 
 [project.optional-dependencies]
 # The Neo4j-backed analysis backends (read-only; no analyzer is invoked).
 neo4j = ["neo4j>=5.14,<7"]
 # The local Java backend: the analyzer wheel carries the jar and a bundled JVM (jdk4py).
-java = ["codeanalyzer-java==3.1.1"]
+java = ["codeanalyzer-java==3.1.2"]
 # Everything. `codeanalyzer-python` and `codeanalyzer-typescript` are still hard
 # dependencies; #340 moves them here, and this list grows when it does.
 all = ["cldk[java]", "cldk[neo4j]"]
@@ -86,9 +86,9 @@ include = [
 ]
 
 [tool.backend-versions]
-codeanalyzer-java = "3.1.1"
-codeanalyzer-python = "1.5.0"
-codeanalyzer-typescript = "1.5.2"
+codeanalyzer-java = "3.1.2"
+codeanalyzer-python = "1.5.1"
+codeanalyzer-typescript = "1.5.3"
 
 ########################################
 # Tool configurations
