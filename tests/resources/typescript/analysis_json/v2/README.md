@@ -1,4 +1,4 @@
-Generated from `tests/resources/typescript/application` by the released **codeanalyzer-typescript 1.5.2** wheel:
+Generated from `tests/resources/typescript/application` by the released **codeanalyzer-typescript 1.5.3** wheel:
 
     cants -i tests/resources/typescript/application --app-name slim -a <1|2|3|4> -o a<N> --cache-dir <scratch> -j 1 --no-build
 
@@ -23,3 +23,18 @@ homes lost their language segment entirely (`can://slim/@external/(builtin)/log`
 moved inside the application prefix (`can://slim/artifact/package.json`). 1.5.1 made the id change
 but shipped with `ANALYZER_VERSION` left at `"1.5.0"`, so these were regenerated with 1.5.2 --
 the first release whose stamp matches what it emits, and the SDK's floor for that reason.
+
+What 1.5.3 changed against the 1.5.2 generation these files held before: `param_in` and `param_out`
+edges name the bound formal in `var` (cants#197), on the argument leg and the return leg alike.
+Measured on `a4`: `param_in` went from 5 of 31 edges carrying `var` to 31 of 31, and `param_out` from
+0 of 26 to 26 of 26. Nothing else moved -- no top-level key appeared or vanished at any level, and no
+model needed widening, because `TSParamEdge` had already declared `var` as optional. The sibling
+analyzers shipped the same fix in lockstep (codeanalyzer-python 1.5.1 / #196, codeanalyzer-java
+3.1.2 / #250), and Java's did need a model widening: `JParamEdge` had only `src`/`dst`, so every
+param edge failed validation until the field was added — the mirrors were `extra="forbid"` then, and
+are `extra="ignore"` since #386, so an addition like this one is now absorbed silently instead.
+
+Why it mattered: the schemas had declared the property since the L4 layer landed and the projections
+wrote nothing, so a consumer predicate on `var` was `null` on every edge crossing a call boundary.
+Under Cypher's three-valued logic an `all()` over that `null` excludes the whole path, so an
+interprocedural flow read as a proved absence of flow -- indistinguishable from a real negative.

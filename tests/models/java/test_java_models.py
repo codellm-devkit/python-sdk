@@ -80,19 +80,48 @@ def test_round_trip_is_byte_equal(fixture_name: str, request):
     assert _sorted(dumped) == _sorted(json.loads(raw))
 
 
-def test_unknown_top_level_key_is_rejected(analysis_json_a4: str):
+def test_an_unknown_top_level_key_is_ignored(analysis_json_a4: str):
+    """#386: the mirrors are ``extra="ignore"``, so an undeclared key is dropped, not rejected.
+
+    ``repository`` is a real field on codeanalyzer-python's application and absent from Java's, so it
+    stands in for the shape this policy exists to absorb: a sibling analyzer's field arriving in a
+    later Java release. It used to fail the whole payload; now it parses and the value is gone.
+    """
     raw = json.loads(analysis_json_a4)
     raw["repository"] = "x"
-    with pytest.raises(ValidationError):
-        JAnalysis.model_validate(raw)
+
+    a = JAnalysis.model_validate(raw)
+    assert not hasattr(a, "repository")
+    assert "repository" not in a.model_dump()
+    assert a.model_extra in (None, {}), "extra=ignore must not retain it; extra=allow would"
 
 
-def test_unknown_nested_key_is_rejected(analysis_json_a4: str):
+def test_an_unknown_nested_key_is_ignored(analysis_json_a4: str):
+    """The same policy one level down, where the old behaviour was most expensive.
+
+    ``file_path`` is a **retired 1.x** key on the compilation unit. Rejecting it meant a stale or
+    misspelled wire key failed the entire analysis; ignoring it means the key is unreachable and
+    nothing says so. That is the trade #386 accepted, and the assertion here is what keeps it
+    explicit rather than folklore.
+
+    ``JCompilationUnit`` is worth naming: it overrides ``model_config`` wholesale for its alias
+    settings, so ``_Base``'s policy does not reach it and it carries its own ``ignore``. If this test
+    ever fails while the top-level one passes, that override has drifted back to ``forbid``.
+    """
     raw = json.loads(analysis_json_a4)
-    unit = next(iter(raw["application"]["symbol_table"].values()))
-    unit["file_path"] = "x"
-    with pytest.raises(ValidationError):
-        JAnalysis.model_validate(raw)
+    key = next(iter(raw["application"]["symbol_table"]))
+    raw["application"]["symbol_table"][key]["file_path"] = "x"
+
+    a = JAnalysis.model_validate(raw)
+    unit = a.application.symbol_table[key]
+
+    # `file_path` is a property over a PrivateAttr that `JApplication` stamps from the symbol-table
+    # key (models.py:691,714) -- not a wire field -- so the test is not that the attribute vanishes
+    # but that the injected wire value never reaches it.
+    assert "file_path" not in type(unit).model_fields, "file_path is not a wire field"
+    assert unit.file_path == key, "the property still derives from the symbol-table key"
+    assert unit.file_path != "x", "the ignored wire value must not have taken effect"
+    assert unit.model_extra in (None, {}), "extra=ignore must not retain it; extra=allow would"
 
 
 def test_v1_shaped_payload_is_rejected():
