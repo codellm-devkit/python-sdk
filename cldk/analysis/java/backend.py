@@ -2049,10 +2049,15 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         at all -- and never of the analyzer's version, so output that connects the two layers makes
         this answer with no change here.
 
-        **The level gate belongs to the walk, not here.** Each :meth:`_taint_walk` opens with
-        ``self._require_dataflow()``, which is a no-op on the graph backend and the real check on the
-        in-memory one, so the gate lives in the same place in all three languages rather than in a
-        body two of the five backends would have to be asked a question they do not measure.
+        **The level gate is asked here**, which is Java's one divergence from the other two languages:
+        :meth:`_require_dataflow` exists on *this* contract -- a no-op on the graph backend, since
+        ``--emit neo4j`` is always full depth, and the real check on the in-memory one -- so asking it
+        costs nothing and buys the message that names both levels. Without it a local analysis below
+        the dependence level resolved its names, reached the port-lattice gate and was told
+        :data:`PORTS_DISCONNECTED`: a true sentence about what the *analyzer emitted*, pointing the
+        caller at codeanalyzer-java#227, when the remedy is
+        ``analysis_level='system_dependency_graph'``. The Python and TypeScript ABCs carry no such
+        method, and there the gate opens each :meth:`_taint_walk` instead.
 
         Args:
             sources: The values taint enters at, each ``(name, within)`` -- the addressing
@@ -2081,6 +2086,10 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
             CodeanalyzerExecutionException: :data:`PORTS_DISCONNECTED` -- this analysis's port lattice
                 carries no dependence edge, so every pair would come back refuted for a reason that
                 has nothing to do with the program.
+            CodeanalyzerUsageException: (local backend) built below
+                ``analysis_level="program_dependency_graph"``, where there is no dependence edge to
+                walk at all -- reported as the level rather than as the port lattice, which is a
+                different fact.
             SelectorNotInGraph: A name matched nothing, or a sanitizer's shape disagrees with what it
                 resolves to.
             TypeError: ``sources`` or ``sinks`` is a bare string, which would unpack into a pair.
@@ -2099,6 +2108,7 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         srcs = [self.resolve_value(name, within=within) for name, within in sources]
         dsts = [self.resolve_value(name, within=within) for name, within in sinks]
         cuts, cut_callables = resolve_sanitizers(sanitizers, resolve_callable=self.resolve_callable, edge_vars_in=self._edge_vars_in)
+        self._require_dataflow()
         self._require_connected_ports("taint")
         rows, blocked = self._taint_walk(srcs, dsts, cuts=cuts, cut_callables=cut_callables, depth=depth, max_paths=max_paths)
         found: Dict[Tuple[str, str], List[FlowPath]] = {}

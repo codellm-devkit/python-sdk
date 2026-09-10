@@ -31,11 +31,20 @@ import pytest
 
 from cldk.analysis.commons.results import Diagnostic, FlowPath, PathHop, SliceNode
 from cldk.analysis.java.backend import JavaAnalysisBackend
-from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException, SelectorNotInGraph
+from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException, CodeanalyzerUsageException, SelectorNotInGraph
+
+from tests.analysis.java.test_java_addressing import _local
 
 HANDLE = "com.acme.Svc.handle(java.lang.String)"
 STORE = "com.acme.Dao.store(java.lang.String)"
 LOG = "com.acme.Log.write(java.lang.String)"
+
+#: Two real positions in the committed **a1** fixture, for the one test below that runs the level gate
+#: against the local backend rather than the fake: a1 is level 1, where the analyzer emits no
+#: cfg/cdg/ddg and no dependence edge out of a ``formal_in`` at all.
+DIRECT = "com.ibm.websphere.samples.daytrader.impl.direct.TradeDirect"
+CANCEL = f"{DIRECT}.cancelOrder(java.lang.Integer, boolean)"
+SELL = f"{DIRECT}.sell(java.lang.String, java.lang.Integer, int)"
 
 
 def _value(name: str, within: str) -> SliceNode:
@@ -137,6 +146,23 @@ def test_a_disconnected_port_lattice_refuses_after_resolution_and_before_the_wal
     with pytest.raises(ValueError):
         backend.taint([("in", HANDLE)], [("sql", STORE)], depth=0)
 
+
+def test_below_the_dataflow_level_the_diagnosis_is_the_level_and_not_the_port_lattice(analysis_json):
+    """Ruling F -- "the level gate belongs to the walk" -- rests on ``_require_dataflow`` not existing
+    on the ABC, which is true of Python and TypeScript and **not** of Java: Java has one, a no-op on
+    the graph backend and the real check on the in-memory one.
+
+    Without it a level-1 local analysis resolved both names, reached ``_require_connected_ports`` and
+    was told ``PORTS_DISCONNECTED`` -- *this analysis's port lattice carries no dependence edge* --
+    which that helper's own docstring makes a claim about what the analyzer **emitted**. True sentence,
+    wrong diagnosis: it points at codeanalyzer-java#227 when the remedy is
+    ``analysis_level='system_dependency_graph'``. Measured on this fixture before the gate was added.
+    """
+    backend = _local(analysis_json)
+    backend.analysis_level = "symbol_table"
+    with pytest.raises(CodeanalyzerUsageException, match="program_dependency_graph") as raised:
+        backend.taint([("orderID", CANCEL)], [("userID", SELL)])
+    assert "formal_in" not in str(raised.value), "the level is the diagnosis, not the port lattice"
 
 def test_a_found_flow_carries_its_witnesses_the_roots_and_the_audit_line():
     a, b = _value("in", HANDLE), _value("sql", STORE)
