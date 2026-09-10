@@ -207,6 +207,20 @@ def test_paths_are_trimmed_per_pair_and_completeness_says_the_cap_fired():
     assert len(whole.paths) == 4 and whole.complete
 
 
+def test_two_selectors_that_resolve_to_the_same_position_are_one_pair():
+    """``max_paths`` is documented as most witnesses **per pair**, and a pair is a pair of resolved
+    *positions*: a caller assembling sources programmatically duplicates an entry by the same
+    accident that produces a degenerate pair, and counting it twice returns 2m witnesses for a cap of
+    m. ``roots`` already dedups by ``ref``; the verdict does too, keeping the first spelling so
+    ``exhausted`` still names what the caller wrote."""
+    a, b = _value("in", HANDLE), _value("sql", STORE)
+    rows = [(a.ref, b.ref, _witness(a, b))] * 3
+    once = _Recording(rows=rows[:1]).taint([("in", HANDLE), ("in", HANDLE)], [("sql", STORE)])
+    assert len(once.paths) == 1 and once.complete, "one distinct pair, one witness"
+    capped = _Recording(rows=rows).taint([("in", HANDLE), ("in", HANDLE)], [("sql", STORE)], max_paths=2)
+    assert len(capped.paths) == 2 and not capped.complete, "the cap holds per distinct pair"
+    assert once.exhausted == [] and capped.exhausted == []
+
 def test_the_sanitizer_selectors_are_resolved_through_the_edge_vars_hook():
     """Step 4 of the order: the two shapes reach the walk as ``$cuts`` and ``$cut_callables``, and a
     variable selector is checked against the vars on real SDG edges rather than ``resolve_value``,

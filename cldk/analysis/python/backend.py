@@ -1102,7 +1102,9 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
                 whenever it is set.
             max_paths: Most witnesses **per pair**, not per call: with one sink and forty sources a
                 flat cap lets one prolific pair starve the other thirty-nine, and in triage the
-                per-source witness is the answer.
+                per-source witness is the answer. A pair is a pair of *resolved positions*, so two
+                selectors naming the same one are one pair and neither double the witnesses nor the
+                cap.
 
         Returns:
             A :class:`~cldk.analysis.commons.results.TaintResult`: ``paths`` are the witnesses,
@@ -1140,39 +1142,50 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         # the walk sees flat source and sink lists, so its m*n cross product can contain a
         # combination this loop refuses to answer (a value that is both a source and a sink of two
         # different pairs), and a row for one is simply never read.
+        #
+        # The pairs are deduplicated by the *positions* they resolved to, in first-seen order. A pair
+        # is a pair of positions, which is what ``max_paths``' "per pair" and ``exhausted``'s verdict
+        # are both about: without this, a duplicated selector -- the accident that also produces a
+        # degenerate pair, a caller assembling sources programmatically -- would repeat its witnesses
+        # and let a cap of m yield 2m. ``roots`` has always deduplicated by ``ref``; this is the same
+        # rule one line later. The first spelling wins, so ``exhausted`` still names what the caller
+        # wrote.
+        pairs: Dict[Tuple[str, str], Tuple[str, str, SliceNode]] = {}
+        for (source, _), a in zip(sources, srcs):
+            for (sink, _), b in zip(sinks, dsts):
+                pairs.setdefault((a.ref, b.ref), (source, sink, a))
         paths: List[FlowPath] = []
         exhausted: List[Tuple[str, str]] = []
         ledger: List[Diagnostic] = []
         truncated = False
         claimed: set[Tuple[str, str]] = set()
-        for (source, _), a in zip(sources, srcs):
-            for (sink, _), b in zip(sinks, dsts):
-                if a.ref == b.ref:
-                    # ``Diagnostic.code`` is a closed vocabulary with no member for a degenerate
-                    # pair. ``no_match`` is the nearest true thing it can say -- there is no answer
-                    # for this pair -- where ``unresolved_dispatch`` would falsely implicate the call
-                    # frontier, which is the one signal ``exhausted`` reduces to.
-                    ledger.append(
-                        Diagnostic(
-                            code="no_match",
-                            message=(
-                                f"{source!r} and {sink!r} name the same position within {a.callable!r}, so that pair is skipped rather than "
-                                f"searched; a value reaches itself only through recursion, which reaches({a.callable!r}, {a.callable!r}) answers"
-                            ),
-                        )
+        for (src_ref, dst_ref), (source, sink, a) in pairs.items():
+            if src_ref == dst_ref:
+                # ``Diagnostic.code`` is a closed vocabulary with no member for a degenerate
+                # pair. ``no_match`` is the nearest true thing it can say -- there is no answer
+                # for this pair -- where ``unresolved_dispatch`` would falsely implicate the call
+                # frontier, which is the one signal ``exhausted`` reduces to.
+                ledger.append(
+                    Diagnostic(
+                        code="no_match",
+                        message=(
+                            f"{source!r} and {sink!r} name the same position within {a.callable!r}, so that pair is skipped rather than "
+                            f"searched; a value reaches itself only through recursion, which reaches({a.callable!r}, {a.callable!r}) answers"
+                        ),
                     )
-                    continue
-                claimed.add((a.ref, b.ref))
-                stopped = list(blocked.get((a.ref, b.ref), []))
-                witnesses = found.get((a.ref, b.ref), [])
-                ledger.extend(stopped)
-                paths.extend(witnesses[:max_paths])
-                truncated = truncated or len(witnesses) > max_paths
-                # The three conditions, in one place: unbounded search, no witness, clean ledger for
-                # this pair. The pair association comes from ``blocked``'s key and never from
-                # reading a diagnostic's message back out.
-                if depth is None and not witnesses and not stopped:
-                    exhausted.append((source, sink))
+                )
+                continue
+            claimed.add((src_ref, dst_ref))
+            stopped = list(blocked.get((src_ref, dst_ref), []))
+            witnesses = found.get((src_ref, dst_ref), [])
+            ledger.extend(stopped)
+            paths.extend(witnesses[:max_paths])
+            truncated = truncated or len(witnesses) > max_paths
+            # The three conditions, in one place: unbounded search, no witness, clean ledger for
+            # this pair. The pair association comes from ``blocked``'s key and never from
+            # reading a diagnostic's message back out.
+            if depth is None and not witnesses and not stopped:
+                exhausted.append((source, sink))
         # Every key the walk filed under is read, whether or not a requested pair claimed it. The
         # loop above reads one key per pair, so a diagnostic keyed any other way -- a reversed pair,
         # one arm of a callable frontier, a combination this caller did not request -- would be read
