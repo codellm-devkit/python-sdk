@@ -24,12 +24,12 @@ backend binds each once and hands the bound object down.
 
 from __future__ import annotations
 
-from typing import Callable, Iterable, List, Literal, Mapping, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Literal, Mapping, Sequence, Tuple
 
 import networkx as nx
 
 from cldk.analysis.commons.bounds import check_selector, reject_bare_string
-from cldk.analysis.commons.results import FlowPath, LocateResult, PathHop, SliceNode
+from cldk.analysis.commons.results import Diagnostic, FlowPath, LocateResult, PathHop, SliceNode, TaintResult
 
 
 def bounded_subgraph(graph: nx.DiGraph, roots: List[str], depth: int | None, declared: Iterable[str]) -> nx.DiGraph:
@@ -575,3 +575,109 @@ def slice_resolved(roots: List[SliceNode]) -> str:
     results is comparing answers and not two spellings of one.
     """
     return ", ".join(f"{r.callable} {r.kind} {r.name!r}" if r.kind != "callable" else r.callable for r in roots)
+
+
+def taint_verdict(
+    sources: Sequence[Tuple[str, str]],
+    sinks: Sequence[Tuple[str, str]],
+    srcs: Sequence[SliceNode],
+    dsts: Sequence[SliceNode],
+    *,
+    rows: Sequence[Tuple[str, str, FlowPath]],
+    blocked: Mapping[Tuple[str, str], List[Diagnostic]],
+    depth: int | None,
+    max_paths: int,
+) -> TaintResult:
+    """What a walk found, turned into the answer ``taint()`` returns: witnesses, verdicts, ledger.
+
+    One implementation for all three languages, because every edit this assembly has needed has been
+    one edit times three files, and the first such edit applied to two of them is drift of exactly
+    the kind that ships a wrong ``exhausted``. The *contract* stays on each ABC -- the docstring, the
+    ordered checks, the resolution, Java's two gates -- and only the arithmetic after the walk is
+    here, in the module that already owns ``sdg_taint_query`` and ``slice_resolved``.
+
+    Four rules live in this body and nowhere else:
+
+    * **The verdict is assembled by looking each requested pair up**, never by consuming ``rows``.
+      A walk sees flat source and sink lists, so its m*n cross product can contain a combination no
+      requested pair names (a value that is both a source of one pair and a sink of another), and a
+      row for one of those is simply never read.
+    * **A pair is a pair of resolved positions.** The requested pairs are deduplicated by
+      ``(src ref, dst ref)`` in first-seen order, which is the rule ``roots`` follows too: without it
+      a duplicated selector repeats its witnesses and lets a cap of m yield 2m, contradicting
+      ``max_paths``' own "per pair". The first spelling wins, so ``exhausted`` names what the caller
+      wrote.
+    * **No key in ``blocked`` can vanish.** The pair loop reads one key per pair and claims it; every
+      key left unclaimed is swept into the ledger afterwards. A diagnostic keyed any other way -- a
+      reversed pair, one arm of a callable frontier, a combination this caller did not request --
+      would otherwise be read by nobody, and the pair it named would come back ``exhausted`` with a
+      clean ledger: a certified refutation of a flow that was in fact blocked. Nothing here can
+      attribute a stray key to a pair, so ``exhausted`` is emptied rather than trusted; refusing to
+      certify is the direction that cannot close a live alert, and ``unresolved`` says why.
+    * **``complete`` is the whole batch's flag**, ``True`` only when the cap cut nothing *and* the
+      ledger is empty. It is deliberately conservative and deliberately coarse: one degenerate pair
+      makes a forty-pair call ``False``, and raising ``max_paths`` will not change that. ``exhausted``
+      is what carries a per-pair verdict.
+
+    Args:
+        sources: The ``(name, within)`` selectors as the caller wrote them -- what ``exhausted`` and
+            the diagnostics are named by.
+        sinks: The same, for the sinks.
+        srcs: What ``sources`` resolved to, positionally aligned with it.
+        dsts: What ``sinks`` resolved to, positionally aligned with it.
+        rows: The walk's ``(src ref, dst ref, path)`` triples, shortest-first within a pair and
+            capped at ``max_paths + 1`` per pair, which is what reports truncation without a second
+            counting traversal.
+        blocked: The walk's frontier ledger, keyed by the pair each diagnostic implicates.
+        depth: The bound the call ran under; ``exhausted`` is empty whenever it is not ``None``,
+            because a pair with no path within five hops is unmeasured rather than refuted.
+        max_paths: Most witnesses per pair.
+
+    Returns:
+        The :class:`~cldk.analysis.commons.results.TaintResult` the accessor hands back.
+    """
+    found: Dict[Tuple[str, str], List[FlowPath]] = {}
+    for src_ref, dst_ref, path in rows:
+        found.setdefault((src_ref, dst_ref), []).append(path)
+    pairs: Dict[Tuple[str, str], Tuple[str, str, SliceNode]] = {}
+    for (source, _), a in zip(sources, srcs):
+        for (sink, _), b in zip(sinks, dsts):
+            pairs.setdefault((a.ref, b.ref), (source, sink, a))
+    paths: List[FlowPath] = []
+    exhausted: List[Tuple[str, str]] = []
+    ledger: List[Diagnostic] = []
+    truncated = False
+    claimed: set[Tuple[str, str]] = set()
+    for (src_ref, dst_ref), (source, sink, a) in pairs.items():
+        if src_ref == dst_ref:
+            # ``Diagnostic.code`` is a closed vocabulary with no member for a degenerate pair.
+            # ``no_match`` is the nearest true thing it can say -- there is no answer for this pair --
+            # where ``unresolved_dispatch`` would falsely implicate the call frontier, which is the
+            # one signal ``exhausted`` reduces to.
+            ledger.append(
+                Diagnostic(
+                    code="no_match",
+                    message=(
+                        f"{source!r} and {sink!r} name the same position within {a.callable!r}, so that pair is skipped rather than "
+                        f"searched; a value reaches itself only through recursion, which reaches({a.callable!r}, {a.callable!r}) answers"
+                    ),
+                )
+            )
+            continue
+        claimed.add((src_ref, dst_ref))
+        stopped = list(blocked.get((src_ref, dst_ref), []))
+        witnesses = found.get((src_ref, dst_ref), [])
+        ledger.extend(stopped)
+        paths.extend(witnesses[:max_paths])
+        truncated = truncated or len(witnesses) > max_paths
+        # The three conditions, in one place: unbounded search, no witness, clean ledger for this
+        # pair. The pair association comes from ``blocked``'s key and never from reading a
+        # diagnostic's message back out.
+        if depth is None and not witnesses and not stopped:
+            exhausted.append((source, sink))
+    unclaimed = [d for key, stopped in blocked.items() if key not in claimed for d in stopped]
+    if unclaimed:
+        ledger.extend(unclaimed)
+        exhausted = []
+    roots = list({node.ref: node for node in [*srcs, *dsts]}.values())
+    return TaintResult(paths=paths, complete=not truncated and not ledger, exhausted=exhausted, roots=roots, resolved=slice_resolved(roots), unresolved=ledger)

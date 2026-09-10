@@ -68,6 +68,7 @@ from cldk.analysis.commons.graphs import (
     sdg_rels,
     shortest_walks,
     slice_resolved,
+    taint_verdict,
     via_table,
 )
 from cldk.analysis.commons.keys import body_key_column, call_graph_scope, resolve_module_key, scope_paths
@@ -1135,78 +1136,7 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         dsts = [self.resolve_value(name, within=within) for name, within in sinks]
         cuts, cut_callables = resolve_sanitizers(sanitizers, resolve_callable=self.resolve_callable, edge_vars_in=self._edge_vars_in)
         rows, blocked = self._taint_walk(srcs, dsts, cuts=cuts, cut_callables=cut_callables, depth=depth, max_paths=max_paths)
-        found: Dict[Tuple[str, str], List[FlowPath]] = {}
-        for src_ref, dst_ref, path in rows:
-            found.setdefault((src_ref, dst_ref), []).append(path)
-        # The verdict is assembled by looking each *requested* pair up, never by consuming the rows:
-        # the walk sees flat source and sink lists, so its m*n cross product can contain a
-        # combination this loop refuses to answer (a value that is both a source and a sink of two
-        # different pairs), and a row for one is simply never read.
-        #
-        # The pairs are deduplicated by the *positions* they resolved to, in first-seen order. A pair
-        # is a pair of positions, which is what ``max_paths``' "per pair" and ``exhausted``'s verdict
-        # are both about: without this, a duplicated selector -- the accident that also produces a
-        # degenerate pair, a caller assembling sources programmatically -- would repeat its witnesses
-        # and let a cap of m yield 2m. ``roots`` has always deduplicated by ``ref``; this is the same
-        # rule one line later. The first spelling wins, so ``exhausted`` still names what the caller
-        # wrote.
-        pairs: Dict[Tuple[str, str], Tuple[str, str, SliceNode]] = {}
-        for (source, _), a in zip(sources, srcs):
-            for (sink, _), b in zip(sinks, dsts):
-                pairs.setdefault((a.ref, b.ref), (source, sink, a))
-        paths: List[FlowPath] = []
-        exhausted: List[Tuple[str, str]] = []
-        ledger: List[Diagnostic] = []
-        truncated = False
-        claimed: set[Tuple[str, str]] = set()
-        for (src_ref, dst_ref), (source, sink, a) in pairs.items():
-            if src_ref == dst_ref:
-                # ``Diagnostic.code`` is a closed vocabulary with no member for a degenerate
-                # pair. ``no_match`` is the nearest true thing it can say -- there is no answer
-                # for this pair -- where ``unresolved_dispatch`` would falsely implicate the call
-                # frontier, which is the one signal ``exhausted`` reduces to.
-                ledger.append(
-                    Diagnostic(
-                        code="no_match",
-                        message=(
-                            f"{source!r} and {sink!r} name the same position within {a.callable!r}, so that pair is skipped rather than "
-                            f"searched; a value reaches itself only through recursion, which reaches({a.callable!r}, {a.callable!r}) answers"
-                        ),
-                    )
-                )
-                continue
-            claimed.add((src_ref, dst_ref))
-            stopped = list(blocked.get((src_ref, dst_ref), []))
-            witnesses = found.get((src_ref, dst_ref), [])
-            ledger.extend(stopped)
-            paths.extend(witnesses[:max_paths])
-            truncated = truncated or len(witnesses) > max_paths
-            # The three conditions, in one place: unbounded search, no witness, clean ledger for
-            # this pair. The pair association comes from ``blocked``'s key and never from
-            # reading a diagnostic's message back out.
-            if depth is None and not witnesses and not stopped:
-                exhausted.append((source, sink))
-        # Every key the walk filed under is read, whether or not a requested pair claimed it. The
-        # loop above reads one key per pair, so a diagnostic keyed any other way -- a reversed pair,
-        # one arm of a callable frontier, a combination this caller did not request -- would be read
-        # by nobody, and the pair it named would come back in ``exhausted`` with a clean ledger:
-        # a certified refutation of a flow that was in fact blocked, which is the one output this
-        # accessor exists to refuse (E5, "a bound is never silent"). Nothing here can attribute a
-        # stray key to a requested pair, so no pair keeps its certification -- refusing to certify is
-        # the safe direction, and the ledger says why.
-        unclaimed = [d for key, stopped in blocked.items() if key not in claimed for d in stopped]
-        if unclaimed:
-            ledger.extend(unclaimed)
-            exhausted = []
-        roots = list({node.ref: node for node in [*srcs, *dsts]}.values())
-        return TaintResult(
-            paths=paths,
-            complete=not truncated and not ledger,
-            exhausted=exhausted,
-            roots=roots,
-            resolved=slice_resolved(roots),
-            unresolved=ledger,
-        )
+        return taint_verdict(sources, sinks, srcs, dsts, rows=rows, blocked=blocked, depth=depth, max_paths=max_paths)
 
     def _taint_walk(
         self,
