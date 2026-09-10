@@ -181,6 +181,19 @@ def test_a_pair_a_diagnostic_implicates_is_neither_proved_nor_refuted():
     assert result.exhausted == [] and result.unresolved == [blocked] and not result.complete
 
 
+def test_a_ledger_entry_no_requested_pair_claims_is_still_reported():
+    """An unresolved dispatch belongs to a *callable frontier*, not to one pair, so a walk may key it
+    in a way this body does not look up -- a reversed pair, one arm of a frontier, a combination the
+    caller never requested. Reading only the requested keys would drop the entry and hand the pair it
+    named back as ``exhausted``: a certified refutation of a flow that was in fact blocked, which is
+    the one output this accessor exists to refuse."""
+    a, b = _value("in", HANDLE), _value("sql", STORE)
+    stray = Diagnostic(code="unresolved_dispatch", message=f"'sql' in {STORE} to 'in' in {HANDLE} crosses an unresolved dispatch")
+    result = _Recording(blocked={(b.ref, a.ref): [stray]}).taint([("in", HANDLE)], [("sql", STORE)])
+    assert result.unresolved == [stray], "the entry survives a key no requested pair claimed"
+    assert result.exhausted == [], "nothing can attribute a stray key to a pair, so no pair is certified"
+    assert not result.complete
+
 def test_paths_are_trimmed_per_pair_and_completeness_says_the_cap_fired():
     """The walk caps each pair at ``max_paths + 1``, so the extra row reports truncation without a
     second counting traversal -- and the trim is per pair, so a prolific pair cannot starve a

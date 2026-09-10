@@ -2110,6 +2110,7 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         exhausted: List[Tuple[str, str]] = []
         ledger: List[Diagnostic] = []
         truncated = False
+        claimed: set[Tuple[str, str]] = set()
         for (source, _), a in zip(sources, srcs):
             for (sink, _), b in zip(sinks, dsts):
                 if a.ref == b.ref:
@@ -2127,6 +2128,7 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
                         )
                     )
                     continue
+                claimed.add((a.ref, b.ref))
                 stopped = list(blocked.get((a.ref, b.ref), []))
                 witnesses = found.get((a.ref, b.ref), [])
                 ledger.extend(stopped)
@@ -2137,6 +2139,18 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
                 # reading a diagnostic's message back out.
                 if depth is None and not witnesses and not stopped:
                     exhausted.append((source, sink))
+        # Every key the walk filed under is read, whether or not a requested pair claimed it. The
+        # loop above reads one key per pair, so a diagnostic keyed any other way -- a reversed pair,
+        # one arm of a callable frontier, a combination this caller did not request -- would be read
+        # by nobody, and the pair it named would come back in ``exhausted`` with a clean ledger:
+        # a certified refutation of a flow that was in fact blocked, which is the one output this
+        # accessor exists to refuse (E5, "a bound is never silent"). Nothing here can attribute a
+        # stray key to a requested pair, so no pair keeps its certification -- refusing to certify is
+        # the safe direction, and the ledger says why.
+        unclaimed = [d for key, stopped in blocked.items() if key not in claimed for d in stopped]
+        if unclaimed:
+            ledger.extend(unclaimed)
+            exhausted = []
         roots = list({node.ref: node for node in [*srcs, *dsts]}.values())
         return TaintResult(
             paths=paths,
@@ -2169,6 +2183,16 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         implicates**. The key is the association, not the message: ``exhausted`` is decided from
         these keys, and recovering a pair by parsing prose back out of a ``Diagnostic`` would
         resurrect exactly the derivation that field is stored to avoid.
+
+        **An unresolved dispatch is a property of a callable frontier, not of a pair**, and this
+        mapping has no key meaning "every pair" -- so a walk that meets one files the same diagnostic
+        under *each* ``(source ref, sink ref)`` key it affects, not under one of them and not under a
+        key of its own devising. Filing under one arm is not equivalent and the difference is not
+        laxity: :meth:`taint` reads every key it is handed, so nothing is dropped either way, but a
+        key no requested pair claims costs **every** pair its ``exhausted`` certification, because
+        nothing on the receiving side can attribute a stray key to a pair. Filing per affected pair
+        is what keeps the verdict as precise as the walk's own knowledge; the signature cannot say
+        so, which is why it is said here.
 
         A local backend opens with ``self._require_dataflow()``: the graph backends do not measure
         the analysis level (their attach probe never looks at the dependence relationships), so the
