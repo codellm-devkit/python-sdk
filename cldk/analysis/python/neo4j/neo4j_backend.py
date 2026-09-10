@@ -97,7 +97,7 @@ from codeanalyzer.schema.ids import application_id, module_id
 from codeanalyzer.schema.py_schema import PyEntrypointReport
 
 from cldk.analysis.commons.backend import semver as _semver
-from cldk.analysis.commons.graphs import path_order, sdg_path_query
+from cldk.analysis.commons.graphs import path_order, sdg_path_query, sdg_taint_query
 from cldk.analysis.commons.keys import module_key_of
 from cldk.analysis.commons.resolve import CallableCandidate, body_node_kind, resolve_callable_signature, resolve_value_name, resolve_within, value_candidate
 from cldk.analysis.commons.results import BodyRef, CallableRef, Diagnostic, EdgePage, EntrypointCoverage, FlowPath, FlowPaths, LocateResult, ModuleRef, PathHop, Slice, SliceNode, TypeRef
@@ -1641,6 +1641,80 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         a = self.resolve_value(src, within=src_within)
         b = self.resolve_value(dst, within=dst_within)
         return self._paths(self._PATHS, _slice_node, a, b, src=a.ref, dst=b.ref, depth=depth, max_paths=max_paths)
+
+    #: ``taint()``'s statement: the same shortest-path search as :attr:`_PATHS`, but m sources
+    #: against n sinks in one traversal, with the sanitizer cut **inside** the pattern and the cap
+    #: applied per pair. Everything that differs from :attr:`_PATHS` is argued in
+    #: :func:`~cldk.analysis.commons.graphs.sdg_taint_query`'s own docstring; the two share this
+    #: backend's ``node_label`` and projection verbatim, which is what makes a taint witness and a
+    #: ``paths_between`` witness describe a node identically.
+    _TAINT = sdg_taint_query(
+        "PY",
+        node_label="PyBodyNode",
+        projection="ref: n.id, kind: n.kind, var: n.var, line: n.start_line, "
+        "callable: head([(c:PyCallable)-[:PY_HAS_BODY_NODE]->(n) | c.signature]), "
+        "c_line: head([(c:PyCallable)-[:PY_HAS_BODY_NODE]->(n) | c.start_line])",
+    )
+
+    #: The variable names on SDG edges *leaving* a node inside ``$prefix`` -- ``startNode``, matching
+    #: :attr:`_TAINT`'s cut predicate exactly, so a sanitizer this validates is one that predicate
+    #: can actually match (Ruling A / :func:`~cldk.analysis.commons.resolve.resolve_sanitizers`).
+    #:
+    #: ``$prefix`` here is a **callable's** ``can://`` ref, not the application's: narrower than the
+    #: usual scope and application-stamped by the same construction, since a callable id embeds the
+    #: application. One round trip per variable sanitizer, which is as often as a caller writes one.
+    _EDGE_VARS = "MATCH (n:PyBodyNode)-[r:{rels}]->() WHERE n.id STARTS WITH $prefix RETURN collect(DISTINCT r.var) AS vars"
+
+    def _taint_walk(self, srcs, dsts, *, cuts, cut_callables, depth, max_paths):
+        """The sanitized shortest walks, server-side (see :meth:`PythonAnalysisBackend._taint_walk`).
+
+        One statement for the whole batch, and one row per witness -- ``a.id AS src`` / ``b.id AS
+        dst`` carry the pairing back, because the m*n batching is only useful if the grouping
+        survives it. Ordering, the per-pair ``$cap`` and both cuts are the statement's
+        (:func:`~cldk.analysis.commons.graphs.sdg_taint_query`), so nothing is re-sorted or
+        re-filtered here: a Python-side filter is the false-refutation bug that function exists to
+        avoid, and a Python-side sort would silently disagree with
+        :func:`~cldk.analysis.commons.graphs.path_order`.
+
+        **The ledger comes back empty, and that is a measured limitation rather than a shortcut.**
+        An unresolved dispatch is not observable from inside this walk: when the analyzer cannot
+        resolve a call it emits no ``PY_PARAM_IN``/``PY_PARAM_OUT`` for it at all, so the frontier
+        is an *absence* of edges, indistinguishable here from a call that genuinely passes nothing
+        tainted. The graph's ``:PyExternal`` ghosts are the opposite case -- a call resolved *to*
+        something outside the project -- and reporting those as frontier findings would file a
+        diagnostic against every pair in any application that calls a library function, emptying
+        ``exhausted`` for all of them (Ruling I) and destroying the refutation this accessor is for.
+        Consequence, stated because nothing here can catch it: a pair whose flow leaves through an
+        unresolved call is certified ``exhausted``. That is what leg 4b's corpus check is for.
+        """
+        rows = self._run(
+            self._TAINT.format(rels=SDG_REL_PATTERN, depth="" if depth is None else depth),
+            srcs=[n.ref for n in srcs],
+            dsts=[n.ref for n in dsts],
+            cuts=cuts,
+            cut_callables=cut_callables,
+            cap=max_paths + 1,
+            prefix=self._scope_prefix,
+        )
+        return [
+            (
+                r["src"],
+                r["dst"],
+                flow_path([_slice_node(n, self._module_key) for n in r["ns"]], [(e["via"], e["var"], e["prov"]) for e in r["rs"]], via=VIA),
+            )
+            for r in rows
+        ], {}
+
+    def _edge_vars_in(self, callable_id: str) -> FrozenSet[str]:
+        """The edge variables scoped to this callable (see :meth:`PythonAnalysisBackend._edge_vars_in`).
+
+        ``r.var`` is absent on four of the five relationship types, so the collected list carries
+        ``None``; it is dropped rather than kept, because a membership test against a set holding
+        ``None`` would be answering a question no caller can ask -- ``resolve_sanitizers`` refuses a
+        blank variable before it gets here.
+        """
+        rows = self._run(self._EDGE_VARS.format(rels=SDG_REL_PATTERN), prefix=callable_id)
+        return frozenset(v for v in rows[0]["vars"] if v)
 
     def call_paths_between(self, src: str, dst: str, *, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
         """How one callable reaches another (see :meth:`PythonAnalysisBackend.call_paths_between`)."""

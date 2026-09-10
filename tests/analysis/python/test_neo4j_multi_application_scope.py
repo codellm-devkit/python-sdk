@@ -452,7 +452,7 @@ def _every_statement() -> Dict[str, str]:
 
 def test_the_audit_sees_the_dataflow_statements_too():
     names = set(_class_level_statements())
-    for expected in ("_REACHES", "_CONE", "_PATHS", "_CALL_PATHS", "_VALUE_REACHES", "_CALLEE_VALUES", "_SOURCES", "_SLICE", "_CALLERS", "_CALLEES", "_OWN_EDGES", "_LOCATE_QUERY", "_OVERVIEW_PROJECTION"):
+    for expected in ("_REACHES", "_CONE", "_PATHS", "_CALL_PATHS", "_TAINT", "_EDGE_VARS", "_VALUE_REACHES", "_CALLEE_VALUES", "_SOURCES", "_SLICE", "_CALLERS", "_CALLEES", "_OWN_EDGES", "_LOCATE_QUERY", "_OVERVIEW_PROJECTION"):
         assert expected in names, f"{expected} is not a class-level statement any more; move it back or extend the audit"
 
 
