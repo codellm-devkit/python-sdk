@@ -323,6 +323,7 @@ def test_the_taint_query_is_null_safe_and_caps_per_pair():
     assert "collect(p)[0..$cap]" in q, "a flat LIMIT lets one prolific pair starve the rest"
     assert "a.id IN $srcs" in q and "b.id IN $dsts" in q, "taint is m x n in one statement"
     assert "allShortestPaths" in q, "a variable-length pattern enumerates trails and will not finish"
+    assert "b <> a" in q, "Neo4j aborts the whole batch when one requested pair is source == sink"
 
 
 def test_the_taint_query_groups_by_pair():
@@ -388,7 +389,7 @@ def test_the_taint_query_still_formats():
 #: **When this fails:** the statement changed. Print `backend._TAINT` and diff it against the
 #: previous value, decide whether the change was intended, and if it was, update the digest **in the
 #: same commit that changed the statement** -- never in a separate one.
-TAINT_DIGESTS = {"PY": "5e5b19785ef89b40", "J": "e044026c1df6827d", "TS": "095ad613e9a19952"}
+TAINT_DIGESTS = {"PY": "7187b2a862485643", "J": "f21a4e01ddc3e8a9", "TS": "eb9ac5abbd76fd14"}
 
 
 @pytest.mark.parametrize("P", ["PY", "J", "TS"])

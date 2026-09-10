@@ -342,6 +342,19 @@ def sdg_taint_query(P: str, *, node_label: str, endpoint_scope: Callable[[str], 
       and turn found flows into confident refutations. This function does not enforce the
       rejection; a caller upstream of it must (:func:`~cldk.analysis.commons.resolve.resolve_sanitizers`
       does).
+    * ``b <> a`` is a **correctness guard, not an optimisation**. Neo4j refuses
+      ``allShortestPaths`` when the start and end node are the same
+      (``Neo.DatabaseError.Statement.ExecutionFailed``, "the shortest path algorithm does not work
+      when the start and end nodes are the same"), and it refuses it for the *whole statement* --
+      so a single overlapping selector aborts the entire m*n batch with a driver exception instead
+      of returning the other pairs. :func:`taint_verdict` already skips such a pair and books a
+      ``degenerate_pair`` diagnostic, but it only sees rows the walk returned, and the walk never
+      got to return any. Measured: a 13-selector batch with ``sources == sinks`` (169 pairs, 13 of
+      them degenerate) raised rather than answering 156. The guard sits in ``b``'s ``WHERE`` so it
+      filters the cartesian *before* the shortest-path operator, and ``degenerate_pair`` still
+      fires because ``taint_verdict`` iterates the pairs the caller *requested*, not the rows that
+      came back.
+
     * The cap is **per pair** -- ``collect(p)[0..$cap]`` after an ordered ``WITH a, b`` -- rather
       than a flat ``LIMIT``, because with one sink and forty sources a flat cap lets one prolific
       pair starve the other thirty-nine, and in triage the per-source witness is the answer.
@@ -359,7 +372,7 @@ def sdg_taint_query(P: str, *, node_label: str, endpoint_scope: Callable[[str], 
     interior = f" AND all(n IN nodes(p) WHERE {interior_scope('n')})" if interior_scope else ""
     return (
         f"MATCH (a:{node_label}) WHERE a.id IN $srcs{a_scope} "
-        f"MATCH (b:{node_label}) WHERE b.id IN $dsts{b_scope} "
+        f"MATCH (b:{node_label}) WHERE b.id IN $dsts AND b <> a{b_scope} "
         "MATCH p = allShortestPaths((a)-[:{rels}*1..{depth}]->(b)) "
         "WHERE all(n IN nodes(p) WHERE NOT any(q IN $cut_callables WHERE "
         "n.id = q OR n.id STARTS WITH q + '@' OR n.id STARTS WITH q + '/'))"
