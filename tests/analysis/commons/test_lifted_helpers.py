@@ -367,6 +367,13 @@ def test_the_taint_query_delimits_the_callable_cut_rather_than_bare_prefixing_it
     for disjunct in ("startNode(r).id = c.prefix", "startNode(r).id STARTS WITH c.prefix + '@'", "startNode(r).id STARTS WITH c.prefix + '/'"):
         assert disjunct in q, f"the variable cut's scope lost its {disjunct!r} disjunct"
     assert "STARTS WITH c.prefix)" not in q, "the variable cut's scope is still a bare prefix test"
+    # The same asymmetry, reached through three-valued logic rather than through a prefix. ``var`` is
+    # null on every ``CDG``/``SUMMARY`` edge and on every param crossing emitted before the analyzers'
+    # ``var``-on-param-edge fix, and ``NULL = c.var`` is NULL, so ``NOT any(...)`` is NULL and the
+    # whole ``all()`` drops the path -- an over-cut, in the false-refutation direction, on exactly the
+    # edges an interprocedural flow has to use. Asserted by name because deleting the ``coalesce``
+    # leaves the offline semantics suite green: only a live graph carries the nulls.
+    assert "coalesce(r.var, '')" in q, "the variable cut lost its coalesce; a null var would over-cut"
 
 
 def test_the_taint_query_still_formats():
