@@ -350,7 +350,7 @@ test = [
 requires-dist = [
     { name = "cldk", extras = ["java"], marker = "extra == 'all'" },
     { name = "cldk", extras = ["neo4j"], marker = "extra == 'all'" },
-    { name = "codeanalyzer-java", marker = "extra == 'java'", specifier = "==3.1.2" },
+    { name = "codeanalyzer-java", marker = "extra == 'java'", specifier = "==3.2.0" },
     { name = "codeanalyzer-python", specifier = "==1.5.1" },
     { name = "codeanalyzer-typescript", specifier = "==1.5.3" },
     { name = "neo4j", marker = "extra == 'neo4j'", specifier = ">=5.14,<7" },
@@ -398,13 +398,13 @@ wheels = [
 
 [[package]]
 name = "codeanalyzer-java"
-version = "3.1.2"
+version = "3.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jdk4py" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2d/aa/def8074c19b85c7d644c936eefa2f6be1a14f4f5ae06acc059c29405cd7d/codeanalyzer_java-3.1.2-py3-none-any.whl", hash = "sha256:77d9d894c8a225cc38a1217876cc42ca7abfcbd3c2ab10abecbbc338f5ac0872", size = 32839694, upload-time = "2026-09-09T14:07:37.058Z" },
+    { url = "https://files.pythonhosted.org/packages/c5/06/26d6c653ada36ce11358b08a33bbc24ca8b6f0da8b843c379c6d160691a3/codeanalyzer_java-3.2.0-py3-none-any.whl", hash = "sha256:c4e98c22c719bdb1665e98d8bcee4e2d81cc18ec518f66e467d77bdd6d871251", size = 32840590, upload-time = "2026-09-10T15:14:49.099Z" },
 ]
 
 [[package]]

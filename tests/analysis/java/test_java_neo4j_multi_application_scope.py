@@ -81,21 +81,61 @@ class _Graph:
 
 _PARAMS_JSON = '[{"name":"%s","type":"java.lang.String","modifiers":[],"decorators":[],"is_variadic":false}]'
 
+#: The two files the fixture graph projects, one ``:JModule.source`` each (codeanalyzer-java 3.2.0).
+#: Every byte offset below is *derived* from these by :func:`_bytes`, and every ``start_line`` matches
+#: the line the text is really on -- a fixture whose offsets were counted by hand would pin the
+#: arithmetic to itself rather than to the file.
+_WIDGET_SOURCE = """package shared;
+
+public class Widget {
+    private int %(tag)s_attr;
+
+    public String render(String %(tag)s) {
+        int %(tag)s_var = 1; return helper();
+    }
+
+    static class Inner {
+        void ping() {
+        }
+    }
+}
+"""
+
+_HELPER_SOURCE = """package shared;
+
+class Helper {
+    static String help() {
+        return "%(tag)s help";
+    }
+}
+"""
+
+
+def _bytes(src: str, text: str, through: str = "") -> Tuple[int, int]:
+    """``(start_byte, end_byte)`` of ``text`` in ``src``, extended to the end of the first ``through``
+    after it. Both files are ASCII, so a character index *is* a UTF-8 byte offset here."""
+    b0 = src.index(text)
+    return b0, (src.index(through, b0 + len(text)) + len(through) if through else b0 + len(text))
+
 
 def _build() -> _Graph:
     g = _Graph()
     g.node("Named", ["JAnnotation"], name="Named")
     g.node("java.util", ["JPackage"], name="java.util")
     for app, tag in ((APP_A, "alpha"), (APP_B, "beta")):
-        app_id = g.node(f"can://{app}", ["JApplication"], name=app, schema_version="2.0.0", analyzer_name="codeanalyzer-java", analyzer_version="3.1.1")
-        # Both applications declare the same two repo-relative paths -- the key collision.
-        mod = g.node(f"can://{app}/java/{SHARED_MODULE}", ["JModule"], file_key=SHARED_MODULE, package="shared", content_hash=f"{tag}hash")
+        app_id = g.node(f"can://{app}", ["JApplication"], name=app, schema_version="2.0.0", analyzer_name="codeanalyzer-java", analyzer_version="3.2.0")
+        widget_src, helper_src = _WIDGET_SOURCE % {"tag": tag}, _HELPER_SOURCE % {"tag": tag}
+        # Both applications declare the same two repo-relative paths -- the key collision. The two
+        # ``source`` blobs are what every slice below is taken out of, so a leak reads as the other
+        # application's identifier inside the text, not merely as a wrong count.
+        mod = g.node(f"can://{app}/java/{SHARED_MODULE}", ["JModule"], file_key=SHARED_MODULE, package="shared", content_hash=f"{tag}hash", source=widget_src)
         g.edge(app_id, "J_HAS_MODULE", mod)
         g.edge(mod, "J_IMPORTS", "java.util", spellings=[f"java.util.{tag.title()}List"], is_static=None)
-        helper_mod = g.node(f"can://{app}/java/{OTHER_MODULE}", ["JModule"], file_key=OTHER_MODULE, package="shared", content_hash=f"{tag}helper")
+        helper_mod = g.node(f"can://{app}/java/{OTHER_MODULE}", ["JModule"], file_key=OTHER_MODULE, package="shared", content_hash=f"{tag}helper", source=helper_src)
         g.edge(app_id, "J_HAS_MODULE", helper_mod)
 
         # shared.Widget in both applications, same qualified name, different members.
+        cls_bytes = _bytes(widget_src, "public class Widget", "\n}")
         cls = g.node(
             f"{mod}/Widget",
             ["JSymbol", "JType"],
@@ -106,10 +146,17 @@ def _build() -> _Graph:
             interfaces=["shared.Face"],
             docstring=f"{tag} class doc",
             start_line=3,
-            end_line=40,
+            end_line=14,
+            start_byte=cls_bytes[0],
+            end_byte=cls_bytes[1],
         )
         g.edge(mod, "J_DECLARES", cls)
         g.edge(cls, "J_ANNOTATED_BY", "Named", arguments=[f'"{tag}"'])
+        # ``code`` is still projected (3.2.0 retains it) and is the whole *declaration*; nothing in
+        # the SDK reads it any more, and the body-block assertions below go red if anything starts.
+        decl_bytes = _bytes(widget_src, f"public String render(String {tag})", "\n    }")
+        body_bytes = _bytes(widget_src, "{\n        int", "\n    }")
+        assert body_bytes[1] == decl_bytes[1], "a Java declaration's last character is its body's closing brace"
         method = g.node(
             f"{cls}/{METHOD_SIG}",
             ["JSymbol", "JCallable"],
@@ -120,22 +167,40 @@ def _build() -> _Graph:
             return_type="java.lang.String",
             parameters_json=_PARAMS_JSON % tag,
             modifiers=["public"],
-            code=f"public String render(String {tag}) {{ return helper(); }}",
+            code=widget_src[decl_bytes[0] : decl_bytes[1]],
             docstring=f"{tag} method doc",
             cyclomatic_complexity=1,
             referenced_types=[f"shared.{tag.title()}"],
             accessed_fields=[f"shared.Widget.{tag}_attr"],
             start_line=6,
             end_line=8,
+            start_byte=decl_bytes[0],
+            end_byte=decl_bytes[1],
+            body_start_byte=body_bytes[0],
         )
         g.edge(cls, "J_HAS_METHOD", method)
         ctor = g.node(f"{cls}/<init>()", ["JSymbol", "JCallable"], name="<init>", signature="<init>()", kind="constructor", is_implicit=True)
         g.edge(cls, "J_HAS_METHOD", ctor)
-        field = g.node(f"{cls}#field#{tag}_attr", ["JField"], name=f"{tag}_attr", type="int", modifiers=["private"], start_line=4, end_line=4)
+        field_bytes = _bytes(widget_src, f"private int {tag}_attr;")
+        field = g.node(f"{cls}#field#{tag}_attr", ["JField"], name=f"{tag}_attr", type="int", modifiers=["private"], start_line=4, end_line=4, start_byte=field_bytes[0], end_byte=field_bytes[1])
         g.edge(cls, "J_HAS_FIELD", field)
-        nested = g.node(f"{cls}/Inner", ["JSymbol", "JType"], name="Inner", kind="class", modifiers=["static"], start_line=20, end_line=30)
+        nested_bytes = _bytes(widget_src, "static class Inner {", "\n    }")
+        nested = g.node(f"{cls}/Inner", ["JSymbol", "JType"], name="Inner", kind="class", modifiers=["static"], start_line=10, end_line=13, start_byte=nested_bytes[0], end_byte=nested_bytes[1])
         g.edge(cls, "J_DECLARES", nested)
-        nested_m = g.node(f"{nested}/ping()", ["JSymbol", "JCallable"], name="ping", signature="ping()", kind="method", code=f"{tag} inner code", start_line=21, end_line=22)
+        ping_bytes = _bytes(widget_src, "void ping() {", "\n        }")
+        nested_m = g.node(
+            f"{nested}/ping()",
+            ["JSymbol", "JCallable"],
+            name="ping",
+            signature="ping()",
+            kind="method",
+            code=widget_src[ping_bytes[0] : ping_bytes[1]],
+            start_line=11,
+            end_line=12,
+            start_byte=ping_bytes[0],
+            end_byte=ping_bytes[1],
+            body_start_byte=_bytes(widget_src, "{\n        }")[0],
+        )
         g.edge(nested, "J_HAS_METHOD", nested_m)
         local = g.node(f"{method}/$anon$0", ["JSymbol", "JType"], name="$anon$0", kind="class", start_line=7, end_line=7)
         g.edge(method, "J_DECLARES", local)
@@ -143,14 +208,30 @@ def _build() -> _Graph:
         # callable, so this collides with the one above unless the callable is part of the key.
         ctor_local = g.node(f"{ctor}/$anon$0", ["JSymbol", "JType"], name="$anon$0", kind="class", start_line=5, end_line=5)
         g.edge(ctor, "J_DECLARES", ctor_local)
-        var = g.node(f"{method}#{tag}_var@7", ["JVariable"], name=f"{tag}_var", type="int", initializer="1", start_line=7, end_line=7)
+        var_bytes = _bytes(widget_src, f"int {tag}_var = 1;")
+        var = g.node(f"{method}#{tag}_var@7", ["JVariable"], name=f"{tag}_var", type="int", initializer="1", start_line=7, end_line=7, start_byte=var_bytes[0], end_byte=var_bytes[1])
         g.edge(method, "J_DECLARES_VAR", var)
 
         # A helper the method calls, in the other module, plus one external target.
-        helper_cls = g.node(f"{helper_mod}/Helper", ["JSymbol", "JType"], name="Helper", kind="class", start_line=1, end_line=9)
+        helper_cls_bytes = _bytes(helper_src, "class Helper {", "\n}")
+        helper_cls = g.node(f"{helper_mod}/Helper", ["JSymbol", "JType"], name="Helper", kind="class", start_line=3, end_line=7, start_byte=helper_cls_bytes[0], end_byte=helper_cls_bytes[1])
         g.edge(helper_mod, "J_DECLARES", helper_cls)
-        helper = g.node(f"{helper_cls}/help()", ["JSymbol", "JCallable"], name="help", signature="help()", kind="method", code=f"{tag} help", start_line=2, end_line=3)
+        help_bytes = _bytes(helper_src, "static String help()", "\n    }")
+        helper = g.node(
+            f"{helper_cls}/help()",
+            ["JSymbol", "JCallable"],
+            name="help",
+            signature="help()",
+            kind="method",
+            code=helper_src[help_bytes[0] : help_bytes[1]],
+            start_line=4,
+            end_line=6,
+            start_byte=help_bytes[0],
+            end_byte=help_bytes[1],
+            body_start_byte=_bytes(helper_src, "{\n        return")[0],
+        )
         g.edge(helper_cls, "J_HAS_METHOD", helper)
+        call_bytes = _bytes(widget_src, "helper();")
         call = g.node(
             f"{method}@7:12",
             ["JBodyNode"],
@@ -165,6 +246,8 @@ def _build() -> _Graph:
             argument_expr=[],
             start_line=7,
             end_line=7,
+            start_byte=call_bytes[0],
+            end_byte=call_bytes[1],
         )
         g.edge(method, "J_HAS_BODY_NODE", call)
         g.edge(call, "J_RESOLVES_TO", helper)
@@ -440,7 +523,7 @@ def _backend() -> JNeo4jBackend:
 
 
 # =====================================================================================
-# The fake graph is what a 3.1.1 graph is
+# The fake graph is what a 3.2.0 graph is
 # =====================================================================================
 def test_the_fake_graph_carries_no_module_property_and_no_v1_vocabulary():
     assert GRAPH.nodes and not any("_module" in props for _, props in GRAPH.nodes.values())
@@ -497,8 +580,9 @@ def test_get_all_classes_covers_nested_and_local_types_of_this_application_only(
 def test_get_method_and_parameters_resolve_inside_the_application_only():
     backend = _backend()
     method = backend.get_method(CLASS_FQN, METHOD_SIG)
-    assert method is not None and method.code.endswith("return helper(); }")
+    assert method is not None and method.code == "{\n        int alpha_var = 1; return helper();\n    }", "code is the body block, sliced out of :JModule.source"
     assert "alpha" in method.code and "beta" not in method.code
+    assert method.code_start_line == 6 and method.start_line == 6
     assert [p.name for p in backend.get_method_parameters(CLASS_FQN, METHOD_SIG)] == ["alpha"]
     assert backend.get_method(CLASS_FQN, "noSuchMethod()") is None
     assert backend.get_all_methods_in_class(CLASS_FQN) == {METHOD_SIG: method}
@@ -516,7 +600,7 @@ def test_call_graph_keys_by_fqn_and_signature_and_drops_externals():
     graph = _backend().get_call_graph()
     assert set(graph.edges) == {(f"{CLASS_FQN}.{METHOD_SIG}", "shared.Helper.help()")}
     assert all("can://" not in n for n in graph.nodes)
-    assert graph.nodes[f"{CLASS_FQN}.{METHOD_SIG}"]["method_detail"].method.code.startswith("public String render(String alpha)")
+    assert "alpha_var" in graph.nodes[f"{CLASS_FQN}.{METHOD_SIG}"]["method_detail"].method.code, "the call-graph node's text came from application B"
     edge = graph.edges[f"{CLASS_FQN}.{METHOD_SIG}", "shared.Helper.help()"]
     assert edge["type"] == "CALL_DEP" and edge["weight"] == 1
 
@@ -565,9 +649,10 @@ def test_the_addressing_surface_answers_from_this_application_only():
     assert node.ref.startswith(f"can://{APP_A}/")
     assert "alpha" in backend.get_source(node.callable)
     assert backend.resolve_value("alpha", within="Widget.render").ref == f"{node.ref}@formal_in:0"
-    # The graph carries no text below callable granularity: the position is found, its source is
-    # ``None`` -- never application B's, and never the enclosing declaration standing in for it.
-    assert backend.describe([found])[0].source is None
+    # Text reaches below callable granularity since 3.2.0: the body node carries its own offsets, so
+    # its source is its own slice -- never application B's, and never the enclosing declaration
+    # standing in for it. A body node the projection places nowhere still describes as ``None``.
+    assert backend.describe([found])[0].source == "helper();"
 
 
 def test_the_task_three_surface_answers_from_this_application_only():
@@ -583,7 +668,7 @@ def test_the_task_three_surface_answers_from_this_application_only():
         "shared.Widget.Inner.ping()",
         "shared.Helper.help()",
     }, "the projection is the addressing domain of *this* application"
-    assert backend.get_method_bodies(list(keys))[f"{CLASS_FQN}.{METHOD_SIG}"].endswith("return helper(); }")
+    assert backend.get_method_bodies(list(keys))[f"{CLASS_FQN}.{METHOD_SIG}"].endswith("return helper();\n    }")
     assert "beta" not in "".join(backend.get_method_bodies(list(keys)).values())
     assert [s.method_name for s in backend.get_callsites_for([f"{CLASS_FQN}.{METHOD_SIG}"])[f"{CLASS_FQN}.{METHOD_SIG}"]] == ["help"]
     assert [o.key for o in backend.get_decorated_callables(["Named"])] == [], "the annotation is on the type, not the callable"

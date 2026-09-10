@@ -10,7 +10,7 @@ an optional read-only Neo4j backend — selected by the *type* of the `backend=`
 
 | Language | Entry point | Local backend | Neo4j backend | Models |
 |----------|-------------|---------------|---------------|--------|
-| Java | `CLDK.java(...)` (needs the `cldk[java]` extra) | `JCodeanalyzer` (the `codeanalyzer-java` 3.1.1 wheel's jar on its bundled JVM, subprocess, `-a 1..4` — no jar in this repo, no JDK download) | `JNeo4jBackend` (graphs emitted by ≥ 3.1.1, probed at attach) | `cldk/models/java/` (schema v2 mirror) + `projections.py` |
+| Java | `CLDK.java(...)` (needs the `cldk[java]` extra) | `JCodeanalyzer` (the `codeanalyzer-java` 3.2.0 wheel's jar on its bundled JVM, subprocess, `-a 1..4` — no jar in this repo, no JDK download) | `JNeo4jBackend` (graphs emitted by ≥ 3.2.0, probed at attach) | `cldk/models/java/` (schema v2 mirror) + `projections.py` |
 | Python | `CLDK.python(...)` | `PyCodeanalyzer` (in-process `codeanalyzer-python`) | `PyNeo4jBackend` | re-exported from `codeanalyzer-python` |
 | TypeScript (+ JavaScript modules) | `CLDK.typescript(...)` | `TSCodeanalyzer` (`codeanalyzer-typescript` 1.5.2 binary from the wheel, subprocess; `-a 1..4`, but `--emit neo4j` takes no `-a` and is always full depth) | `TSNeo4jBackend` (graphs emitted by ≥ 1.5.2; older refused at attach) | `cldk/models/typescript/` (schema v2 mirror) |
 

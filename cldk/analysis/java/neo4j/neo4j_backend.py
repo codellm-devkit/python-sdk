@@ -21,7 +21,7 @@ A drop-in alternative to :class:`~cldk.analysis.java.codeanalyzer.JCodeanalyzer`
 surface, answered over a live graph that ``codeanalyzer-java --emit neo4j`` populated out of band.
 This class never writes and needs neither the analyzer JAR, a JDK, nor the project sources.
 
-**The graph it reads** (``schema.neo4j.json`` at the 3.1.1 tag, contract ``2.0.0``, verified
+**The graph it reads** (``schema.neo4j.json`` at the 3.2.0 tag, contract ``2.0.0``, verified
 against the reference graph): ``:JApplication`` is keyed by **``id``** (``can://<app>``; ``name``
 survives as a display property with no uniqueness constraint) and stamps
 ``analyzer_version``; every project-owned node carries a ``can://<app>/java/…`` ``id`` and the
@@ -90,10 +90,13 @@ On a 3.0.x graph it is twelve: the anchor carries no entrypoint report, so the t
 are not issued at all (:meth:`_overlay_rows`).
 
 **Lossiness** relative to the in-memory backend (the projection's, not this client's; see
-:mod:`reconstruct` for the per-node detail): a module carries no ``source`` and no span, so
-``JCompilationUnit.code`` is ``""`` and only a *callable's* text survives — as its whole
-declaration, where the local backend's ``code`` is the body block; comments exist only as one
-``docstring`` per declaration, so file-level comments are not projected at all
+:mod:`reconstruct` for the per-node detail): **text is no longer part of it** — codeanalyzer-java
+3.2.0 projects ``:JModule.source`` plus byte offsets, so every node's ``code`` is the same slice of
+the same file the local backend reads, a callable's included (its ``body_span`` is rebuilt from
+``body_start_byte``, so ``code`` is the body block on both backends); what remains missing is every
+*column*, a slice for the 102 implicit ``<init>()`` that were never written, and text below the
+``call`` nodes of a body. Comments exist only as one ``docstring`` per declaration, so file-level
+comments are not projected at all
 (:meth:`get_all_comments` and :meth:`get_comment_in_file` raise rather than answer with a smaller
 set claiming to be every comment); ``JCallable.body`` holds the ``call`` nodes only, without their
 ``arguments`` or end columns; ``cfg``/``cdg``/``ddg``/``summary``, ``param_in``/``param_out`` and
@@ -205,15 +208,23 @@ class JNeo4jBackend(JavaAnalysisBackend):
     #: Relationship types every supported graph has; a graph missing any was emitted by another
     #: generation (a schema-v1 graph shares only ``J_CALLS``) and is refused at attach.
     _REQUIRED_RELATIONSHIP_TYPES: FrozenSet[str] = frozenset({"J_HAS_MODULE", "J_HAS_METHOD", "J_HAS_BODY_NODE", "J_CALLS"})
-    #: The oldest codeanalyzer-java whose graph this backend serves. **3.1.1 exactly**, not
-    #: "3.0.1 or newer": 3.1.1 moved the application to the outermost segment of the ``can://``
+    #: The oldest codeanalyzer-java whose graph this backend serves. **3.2.0 exactly** — the release
+    #: whose projection carries the canonical text model: ``:JModule.source`` plus the
+    #: ``start_byte``/``end_byte`` offsets every node's ``code`` is a slice of. This backend reads
+    #: text only that way (:func:`reconstruct.span`), so on a 3.1.x graph every ``code`` on every
+    #: node would be ``""`` — the silent empty this floor exists to refuse.
+    #:
+    #: *Why a version and not a data probe*, against the house rule that a probe reads the data: the
+    #: floor is a **generation** question, not a capability one, and the precedent is the reason 3.1.1
+    #: was the floor before it. 3.1.1 moved the application to the outermost segment of the ``can://``
     #: grammar every statement here scopes on, and 3.1.0 — which is in the wild — emits the old
-    #: ``can://java/<app>/…`` one. A 3.1.0 graph carries every relationship type
+    #: ``can://java/<app>/…`` one; a 3.1.0 graph carries every relationship type
     #: :meth:`_probe_schema` looks for and the contract-2.0.0 body-node shape, so it attaches
-    #: cleanly and then answers every prefix-scoped statement with zero rows. Refusing it by version
-    #: is the only thing between a caller and that silent empty. (3.0.0 stamped contract 2.2.0;
-    #: 3.0.1 holds 2.0.0 — the body-node shape every statement here reads.)
-    _ANALYZER_FLOOR = (3, 1, 1)
+    #: cleanly and then answers every prefix-scoped statement with zero rows. Version was the only
+    #: thing between a caller and that empty then, and ``:JModule.source`` is a fine capability probe
+    #: and a poor generation one now. (3.0.0 stamped contract 2.2.0; 3.0.1 holds 2.0.0 — the
+    #: body-node shape every statement here reads.)
+    _ANALYZER_FLOOR = (3, 2, 0)
     #: Set by :meth:`_probe_schema`; the class-level ``None`` is for the ``object.__new__`` seam.
     _analyzer_version: Tuple[int, int, int] | None = None
     #: The database's relationship types, read once by :meth:`_probe_schema` and reused by
@@ -559,9 +570,7 @@ class JNeo4jBackend(JavaAnalysisBackend):
                 # A module declares types only; ``kind`` is a ``Literal`` on :class:`JType`, so a
                 # row that is not one is refused by the model.
                 types[self._child_key(module_id, p)] = self._type(p, children, sites)
-            unit = R.compilation_unit(props, import_declarations=[i for e in imports.get(key, []) for i in R.imports(e)], types=types)
-            R.thread_code(unit, self._projected_code(children, module_id))
-            symbol_table[key] = unit
+            symbol_table[key] = R.compilation_unit(props, import_declarations=[i for e in imports.get(key, []) for i in R.imports(e)], types=types)
         return JApplication(
             id=self._application_id,
             symbol_table=symbol_table,
@@ -586,20 +595,6 @@ class JNeo4jBackend(JavaAnalysisBackend):
             config_uses=None if report is None else uses,
             config_reads_unresolved=None if report is None else reads,
         )
-
-    @staticmethod
-    def _projected_code(children: Dict[str, List[_Child]], module_id: str) -> Dict[str, str]:
-        """``callable id -> code`` for one module's subtree — what :func:`reconstruct.thread_code`
-        threads onto the callables so their ``code`` view reads the graph's text."""
-        out: Dict[str, str] = {}
-        stack = [module_id]
-        while stack:
-            for rel, p, _ in children.get(stack.pop(), []):
-                if rel in ("J_DECLARES", "J_HAS_METHOD"):
-                    stack.append(p["id"])
-                    if rel == "J_HAS_METHOD":
-                        out[p["id"]] = p.get("code") or ""
-        return out
 
     # =====================================================================================
     # The reconstructed view and its index (both built on first use)
@@ -697,7 +692,8 @@ class JNeo4jBackend(JavaAnalysisBackend):
     _BODY_NODES = (
         "UNWIND $prefixes AS p MATCH (b:JBodyNode) WHERE b.id STARTS WITH p "
         "OPTIONAL MATCH (b)-[:J_RESOLVES_TO]->(t) WHERE " + _scoped("t") + " "
-        "RETURN b.id AS id, b.kind AS kind, b.start_line AS s, b.end_line AS e, t.id AS callee"
+        "RETURN b.id AS id, b.kind AS kind, b.start_line AS s, b.end_line AS e, "
+        "b.start_byte AS sb, b.end_byte AS eb, t.id AS callee"
     )
 
     def _body_nodes(self, callable_ids: Sequence[str]) -> Dict[str, Dict[str, JBodyNode]]:
@@ -708,6 +704,12 @@ class JNeo4jBackend(JavaAnalysisBackend):
         Java ``can://`` id carries none (checked: 0 of daytrader8's 1,216 and ThingsBoard's 28,763
         callables). That recovers the *callable*, which is all that is needed here; it does not
         recover the local body key, and nothing tries to.
+
+        Each node is then threaded to the compilation unit that callable was declared in, which is
+        what makes :meth:`_body_source` a real slice: these nodes are built outside the containment
+        tree, so :meth:`JCompilationUnit.model_post_init` never sees them. A callable with no unit
+        (an ``@external``, which stays in scope by design) leaves its nodes unthreaded, and
+        :meth:`_body_source` answers ``None`` for them.
         """
         ids = list(dict.fromkeys(callable_ids))
         if not ids:
@@ -715,15 +717,34 @@ class JNeo4jBackend(JavaAnalysisBackend):
         out: Dict[str, Dict[str, JBodyNode]] = {}
         for row in self._run(self._BODY_NODES, prefixes=[f"{i}@" for i in ids], prefix=self._scope_prefix):
             node_id = row["id"]
-            out.setdefault(node_id.partition("@")[0], {})[node_id] = R.body_node({"kind": row["kind"], "start_line": row["s"], "end_line": row["e"], "callee": row["callee"]}, None)
+            owner = node_id.partition("@")[0]
+            node = R.body_node(
+                {"kind": row["kind"], "start_line": row["s"], "end_line": row["e"], "start_byte": row["sb"], "end_byte": row["eb"], "callee": row["callee"]},
+                None,
+            )
+            node._unit = self._unit_of(owner)
+            out.setdefault(owner, {})[node_id] = node
         return out
 
+    def _unit_of(self, callable_id: str) -> JCompilationUnit | None:
+        """The compilation unit a callable was declared in, or ``None`` when it has no file — which
+        is every ``@external`` callable, and nothing else."""
+        owner = self._callables.get(callable_id)
+        return None if owner is None else self._application.symbol_table.get(self._file_of.get(owner[0].qualified_name, ""))
+
     def _body_source(self, node: JBodyNode) -> str | None:
-        """See :meth:`JavaAnalysisBackend._body_source`. Always ``None``: ``:JBodyNode`` carries a
-        line range and no text, and ``:JModule`` carries no ``source`` to slice one out of, so this
-        projection has nothing below callable granularity. Substituting the enclosing callable's
-        declaration would be a wrong answer rather than a missing one."""
-        return None
+        """See :meth:`JavaAnalysisBackend._body_source` — a real slice of the owning module's
+        ``source``, off the ``start_byte``/``end_byte`` codeanalyzer-java 3.2.0 projects on a
+        ``:JBodyNode`` and the unit :meth:`_body_nodes` threaded on.
+
+        ``None`` — never ``""`` — for the two nodes that have no text here: one the projection wrote
+        no offsets for (6,726 of the reference graph's 13,544 carry them; the synthetic port
+        vertices stand for no source at all) and one whose callable has no file. An empty string
+        would claim the node's text *is* empty, which is the wrong answer rather than a missing one.
+        """
+        if node._unit is None or node.span is None or node.span.bytes[0] < 0:
+            return None
+        return node.code or None
 
     @property
     def has_resolution_edges(self) -> bool:
@@ -1188,11 +1209,10 @@ class JNeo4jBackend(JavaAnalysisBackend):
         return {sig: c for sig, c in klass.callables.items() if c.is_constructor}
 
     def get_method(self, qualified_class_name: str, qualified_method_name: str) -> JCallable | None:
-        """The callable, or ``None``. Two fields differ from the in-memory backend's, because the
-        projection differs: ``code`` is the whole **declaration** (the graph carries one line range
-        per callable and no ``body_span``), where the in-memory backend's is the body block; and
-        ``body`` holds the ``call`` nodes **only** — about 30% of the graph's body nodes (4,006 of
-        daytrader8's 13,436) — which is what ``call_sites`` is a view over."""
+        """The callable, or ``None``. One field differs from the in-memory backend's, because the
+        projection differs: ``body`` holds the ``call`` nodes **only** — about 30% of the graph's
+        body nodes (4,006 of daytrader8's 13,436) — which is what ``call_sites`` is a view over.
+        ``code`` is the same body block on both since codeanalyzer-java 3.2.0."""
         klass = self.get_class(qualified_class_name)
         return klass.callables.get(qualified_method_name) if klass is not None else None
 

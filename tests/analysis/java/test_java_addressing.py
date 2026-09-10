@@ -82,8 +82,9 @@ def _local(payload: str) -> JCodeanalyzer:
 class _BodyNodeResponder:
     """The two statements the graph backend issues in the offline suites: the per-callable body-node
     fetch (leg 3b Task 1) and the port-lattice probe (Task 2). Both are answered out of the same
-    fixture, in the graph's own vocabulary (a global ``id``, ``kind``, a line-only span and the
-    ``J_RESOLVES_TO`` target's id as ``callee``), so the rows are shaped like the projection's
+    fixture, in the graph's own vocabulary (a global ``id``, ``kind``, the span's lines *and* byte
+    offsets -- codeanalyzer-java 3.2.0 projects both -- and the ``J_RESOLVES_TO`` target's id as
+    ``callee``), so the rows are shaped like the projection's
     rather than like the model's -- and the probe's answer is the fixture's own fact, not a
     constant: it is ``True`` exactly when some ``formal_in`` of the payload has an outgoing
     dependence edge, which is what the graph would report.
@@ -105,7 +106,15 @@ class _BodyNodeResponder:
     def _walk(self, t) -> None:
         for c in t.callables.values():
             self.rows[c.id] = [
-                {"id": java_body_node_id(c.id, key), "kind": n.kind, "s": n.start_line if n.span else None, "e": n.end_line if n.span else None, "callee": n.callee}
+                {
+                    "id": java_body_node_id(c.id, key),
+                    "kind": n.kind,
+                    "s": n.start_line if n.span else None,
+                    "e": n.end_line if n.span else None,
+                    "sb": n.span.bytes[0] if n.span else None,
+                    "eb": n.span.bytes[1] if n.span else None,
+                    "callee": n.callee,
+                }
                 for key, n in c.body.items()
             ]
             for local in c.types.values():
@@ -402,18 +411,15 @@ def test_describe_accepts_a_locate_result(both):
     assert described[0].kind == found.body.kind
 
 
-def test_a_body_node_hydrates_only_where_the_text_exists(analysis_json):
-    """The documented ``get_source`` divergence, on the finer grain: the local backend slices the
-    statement out of the module's real text; the graph carries none below callable granularity, so
-    the position is *found* and its source is ``None`` — never the enclosing declaration."""
+def test_a_body_node_hydrates_the_same_statement_on_both_backends(analysis_json):
+    """The ``get_source`` divergence that 3.2.0 closes, on the finest grain: the local backend slices
+    the statement out of the module's real text, and so does the graph now that the projection
+    carries the body node's own byte offsets. Not "the same length" or "contained in" — the same
+    string, because both are the same slice of the same file."""
     local, graph = _local(analysis_json), _graph(analysis_json)
     found = next(r for line in range(600, 700) if (r := local.locate(TRADE_DIRECT_FILE, line)).body is not None)
-    assert local.describe([found])[0].source
-    assert graph.describe([found])[0].source is None
-    assert local.get_source(found.node_id)
-    with pytest.raises(KeyError) as e:
-        graph.get_source(found.node_id)
-    assert "no recoverable source" in str(e.value)
+    assert local.describe([found])[0].source == graph.describe([found])[0].source != None
+    assert local.get_source(found.node_id) == graph.get_source(found.node_id)
 
 
 def test_describe_answers_a_ref_resolve_value_just_minted(both):

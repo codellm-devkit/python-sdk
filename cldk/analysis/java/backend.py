@@ -531,16 +531,16 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
     # callable (:meth:`_body_nodes`), the text of one (:meth:`_body_source`), and whether call
     # sites resolve at all (:attr:`has_resolution_edges`).
     #
-    # WHAT STILL DIFFERS, AND IT IS THE DATA, NOT THE CODE. ``JCallable.code`` is the **body
-    # block** off ``analysis.json`` and the whole **declaration** off the Neo4j projection
-    # (codeanalyzer-java#176: the graph carries one line range per callable and no ``body_span``),
-    # so :meth:`get_source` and :attr:`LocateResult.source` return the declaration over Neo4j —
-    # stated on :meth:`JavaAnalysis.get_source`, in the lossiness table of
-    # ``docs/agent-api-reference.md``, and asserted by the live parity suite as
-    # ``neo.code.endswith(ref.code)``. A **module** carries no ``source`` at all there, so a
-    # module-scope :meth:`locate` answers ``""`` plus a ``module_source_unavailable`` diagnostic;
-    # and a body node has no text on either side of the graph, so it hydrates only locally.
-    # None of that is branched on: it falls out of what the models hold.
+    # WHAT STILL DIFFERS, AND IT IS THE DATA, NOT THE CODE. **Text no longer differs.**
+    # codeanalyzer-java 3.2.0 projects ``:JModule.source`` plus the byte offsets every node's text is
+    # a slice of, so :meth:`get_source`, :attr:`LocateResult.source` and a module-scope
+    # :meth:`locate` read the same characters on both backends and the live parity suite asserts
+    # ``neo.code == ref.code`` (it asserted ``neo.code.endswith(ref.code)`` while the graph carried
+    # the whole declaration and no ``body_span`` — codeanalyzer-java#176, fixed by the 3.2.0 text
+    # model, which is why ``JNeo4jBackend`` floors there). What is still thinner over Neo4j is the
+    # *set* of nodes, not their text: a body node has text only where the projection wrote offsets
+    # for it, and ``JCallable.body`` holds the ``call`` nodes only. None of that is branched on: it
+    # falls out of what the models hold.
     #
     # NO ``can://`` AND NO ORDINAL leaves this surface except in ``ref`` / ``node_id`` (E6/E7);
     # every error names what missed and suggests nothing (E8).
@@ -651,9 +651,10 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         names = java_module_dotted(unit.package, unit.types)
         module_ref = ModuleRef(path=key, module_name=names[0] if names else None)
         if row is None:
-            # The graph carries no module ``source``, so the text a module-scope result would hand
-            # back does not exist there. Read off the data rather than off which backend is running:
-            # "" is never returned as if it were the file.
+            # Read off the data rather than off which backend is running: "" is never returned as
+            # if it were the file. Since codeanalyzer-java 3.2.0 the projection carries
+            # ``:JModule.source``, so this diagnostic fires on a module whose text is genuinely
+            # missing -- an unreadable or undecodable file -- and on nothing else.
             diagnostics = [Diagnostic(code="module_scope", message=f"line {line} is at module scope in {key}.")]
             if not unit.source:
                 diagnostics.append(Diagnostic(code="module_source_unavailable", message=f"no source text is available for {key} on this backend."))
@@ -823,17 +824,17 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         statement or call site an alert landed on can be re-fetched, not just its enclosing
         callable. Round-tripped, never composed by the caller (E6).
 
-        **What comes back for a callable differs by backend, and the difference is the graph's.**
-        Off ``analysis.json`` it is the **body block**; off the Neo4j projection it is the whole
-        **declaration**, which ends with that body block — the graph carries one line range per
-        callable and no ``body_span`` (codeanalyzer-java#176). The relation is exact and total, and
-        the live parity suite asserts it rather than tolerating it.
+        **The same text on both backends**: the callable's body block, or the statement's own
+        region, sliced out of the module's text. Before codeanalyzer-java 3.2.0 the graph carried
+        one line range per callable, no ``body_span`` and no module text, so a callable came back as
+        the whole **declaration** and a body node not at all (codeanalyzer-java#176); 3.2.0 projects
+        ``:JModule.source`` plus byte offsets down to ``:JBodyNode``, and the live parity suite
+        asserts equality rather than tolerating a difference.
 
         Raises:
             KeyError: Nothing this backend holds is named by ``node_id``, or it names a node with
-                no recoverable text — an implicit callable (no span and no body at all), or, on the
-                Neo4j backend, any body node, since the graph carries no text below callable
-                granularity. The message names the reason.
+                no recoverable text — an implicit callable (no span and no body at all), or any
+                node the projection placed nowhere in a file. The message names the reason.
         """
         found = self._sources_for([node_id])
         if node_id not in found:
@@ -904,11 +905,10 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
 
         Afterwards ``source=None`` means exactly one thing: *this position exists and the backend
         has no text for it*. It never means "the lookup failed", because a ref naming nothing raises
-        instead. Which positions have no text differs by backend, honestly: a ``kind="callable"``
-        node hydrates on both (as the declaration over Neo4j, the body block locally); a
-        ``parameter`` hydrates on neither, having no span in the analyzer's own model; a statement
-        or call site hydrates only locally, because the graph carries no text below callable
-        granularity.
+        instead. Which positions have no text no longer differs by backend: a ``kind="callable"``
+        node and a statement or call site both hydrate on either, to the same slice of the same file
+        (codeanalyzer-java 3.2.0 carries byte offsets down to ``:JBodyNode``); a ``parameter``
+        hydrates on neither, having no span in the analyzer's own model.
 
         Raises:
             KeyError: A ``ref`` names nothing this backend can find — a ref comes from this SDK, so
@@ -1381,9 +1381,8 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         Neither sibling language has this accessor, so it is designed rather than ported, and the
         pattern it follows is :meth:`JavaAnalysis.get_test_methods`: read the **analyzer's own**
         annotations off the model (``J_ANNOTATED_BY``; 26,162 edges on the reference graph) rather
-        than re-parsing a source string, so it answers identically on both backends -- a
-        Neo4j-backed analysis carries no module source at all, and the 1.x tree-sitter version
-        returned ``{}`` there.
+        than re-parsing a source string, so it answers identically on both backends -- the 1.x
+        tree-sitter version returned ``{}`` on any projection that carried no module text.
 
         Args:
             annotations: Annotation names, matched by the J-5 marker rule
@@ -1401,10 +1400,8 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
             * ``class`` -- the declaring type's qualified name;
             * ``signature`` -- the callable's signature within that type;
             * ``method_name`` -- its simple name (the 1.x key, kept);
-            * ``body`` -- :attr:`~cldk.models.java.models.JCallable.code` (the 1.x key, kept).
-              Note this is the body block off ``analysis.json`` and the whole declaration off the
-              Neo4j projection, exactly as it is for :meth:`JavaAnalysis.get_test_methods`; it is a
-              documented property of the model, not a divergence introduced here.
+            * ``body`` -- :attr:`~cldk.models.java.models.JCallable.code` (the 1.x key, kept),
+              the body block on either backend since codeanalyzer-java 3.2.0.
 
             ``class`` and ``signature`` are new against 1.x, which returned the simple name alone.
             A simple name is not an address in Java -- 200 of daytrader8's 581 distinct signatures

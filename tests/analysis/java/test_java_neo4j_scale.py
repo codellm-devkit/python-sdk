@@ -135,10 +135,12 @@ def test_get_test_methods_answers_off_the_graph(backend):
     """The accessor daytrader8 cannot exercise at all: it ships zero ``@Test`` methods, so ``{}``
     there is correct whatever the implementation does. ThingsBoard carries thousands.
 
-    The 1.x implementation re-parsed each ``JCompilationUnit.source`` with Tree-sitter, and this
-    projection carries no module source (``source=""`` on every unit), so it returned ``{}`` here —
-    an empty reading as "this application has no tests" on an application with 3,354 annotated
-    callables. The annotations are in the graph on ``J_ANNOTATED_BY``, which is what is read now.
+    The 1.x implementation re-parsed each ``JCompilationUnit.source`` with Tree-sitter, which
+    returned ``{}`` on any projection that carried no module source — an empty reading as "this
+    application has no tests" on an application with 3,354 annotated callables. The annotations are
+    in the graph on ``J_ANNOTATED_BY``, which is what is read now. Since codeanalyzer-java 3.2.0 the
+    projection does carry ``:JModule.source``, but that is text for slicing, not a parse target: this
+    accessor still reads the edge, so it cannot regress to re-parsing a file that may be absent.
     """
     from cldk.analysis.java.java_analysis import _TEST_ANNOTATIONS
 
