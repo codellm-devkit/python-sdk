@@ -2020,9 +2020,11 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         that rots, and this accessor is the mechanism.
 
         **A sanitizer is two mechanisms wearing one word**, told apart by shape. A bare ``str`` cuts
-        a *callable* on the path -- what a transforming sanitizer (``StringEscapeUtils.escapeHtml4``,
-        a parameterised ``PreparedStatement`` bind) is, since it sits on the data path and is
-        naturally named as the function it is. A
+        a *callable* on the path -- what a transforming sanitizer is, since it sits on the data path
+        and is naturally named as the method it is. The name is resolved with
+        :meth:`resolve_callable`, so it is the method *this application* declares around
+        ``StringEscapeUtils.escapeHtml4`` or a parameterised ``PreparedStatement`` bind, not the
+        library call that method delegates to. A
         ``(name, within)`` pair cuts a *variable* inside that callable, which is the only thing that
         severs a *validating* guard, because a guard never appears on the data path at all. Both
         cuts are applied **inside** the search rather than to the rows it returns, so what comes back

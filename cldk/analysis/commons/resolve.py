@@ -424,8 +424,10 @@ def resolve_sanitizers(
     it is off-limits), a ``(name, within)`` pair cuts a **variable**, scoped to the callable
     ``within`` names. They are different mechanisms for a reason: a validating guard
     (``if not re.match(...): abort``) never sits on the data path, so only a variable cut severs
-    it; a transforming sanitizer (``html.escape(x)``) does sit on the path and is naturally named
-    as the function it is.
+    it; a transforming sanitizer (the application's own ``escape_html(x)`` wrapper) does sit on the
+    path and is naturally named as the callable it is -- and since the bare shape goes through
+    :func:`resolve_callable`, the name it needs is the wrapper's, not that of the library function
+    the wrapper delegates to.
 
     **The shape decides which resolver runs, and neither is a fallback for the other.** A bare
     name that :func:`resolve_callable` cannot resolve raises -- it is never retried as a variable

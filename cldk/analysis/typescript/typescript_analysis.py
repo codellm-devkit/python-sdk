@@ -758,7 +758,7 @@ class TypeScriptAnalysis:
             r = ts.taint(
                 sources=[("userInput", "SearchBar.onChange")],
                 sinks=[("html", "ResultList.render")],
-                sanitizers=["DOMPurify.sanitize", ("validated", "SearchBar.onChange")],
+                sanitizers=["SearchBar.sanitizeQuery", ("validated", "SearchBar.onChange")],
             )
             for path in r.paths:
                 print(" -> ".join(h.to.name for h in path.hops))
@@ -776,10 +776,11 @@ class TypeScriptAnalysis:
         stands on any pair in the result: one blocked pair voids the whole batch's ``exhausted``.
 
         **Sources, sinks and sanitizers are the caller's to supply** — no framework catalogue ships
-        here. A bare ``str`` cuts a *callable* on the path (a transforming sanitizer,
-        ``encodeURIComponent``); a ``(name, within)`` pair cuts a *variable* inside that callable,
-        which is the only thing that severs a *validating* guard, since a guard never sits on the
-        data path. Both cuts are applied inside the search, so the result is the shortest
+        here. A bare ``str`` cuts a *callable* on the path: a transforming sanitizer, named as the
+        wrapper *in this application* that calls ``encodeURIComponent``, because the bare shape is
+        resolved with :meth:`resolve_callable`. A ``(name, within)`` pair cuts a *variable* inside
+        that callable, which is the only thing that severs a *validating* guard, since a guard never
+        sits on the data path. Both cuts are applied inside the search, so the result is the shortest
         **unsanitized** route.
 
         Every hop's provenance is ``reaching-defs``, as on :meth:`paths_between`, so a TypeScript

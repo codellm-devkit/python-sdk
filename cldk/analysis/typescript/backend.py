@@ -937,8 +937,10 @@ class TSAnalysisBackend(AnalysisBackend[TSApplication, TSModule, TSType, TSCalla
         that rots, and this accessor is the mechanism.
 
         **A sanitizer is two mechanisms wearing one word**, told apart by shape. A bare ``str`` cuts
-        a *callable* on the path -- what a transforming sanitizer (``encodeURIComponent``, ``DOMPurify.sanitize``)
-        is, since it sits on the data path and is naturally named as the function it is. A
+        a *callable* on the path -- what a transforming sanitizer is, since it sits on the data path
+        and is naturally named as the function it is. The name is resolved with
+        :meth:`resolve_callable`, so it is the wrapper *this application* owns around
+        ``encodeURIComponent`` or ``DOMPurify.sanitize``, not the library function it delegates to. A
         ``(name, within)`` pair cuts a *variable* inside that callable, which is the only thing that
         severs a *validating* guard, because a guard never appears on the data path at all. Both
         cuts are applied **inside** the search rather than to the rows it returns, so what comes back

@@ -759,7 +759,7 @@ Names in, names out. No `can://` URIs, no ordinals — you say `"invoice_id"`, n
 | `paths_between(src, dst, src_within=, dst_within=, depth=None, max_paths=10)` | how one reaches the other | `py.paths_between("invoice_id", "invoice_ids", src_within="PaymentPortal.invoice_transaction", dst_within="PaymentPortal._process_transaction")` |
 | `flows_to_call(src, callee, within=, depth=None)` | reaches **any call to** X | `py.flows_to_call("invoice_id", "_process_transaction", within="PaymentPortal.invoice_transaction")` |
 | `flows_to_argument(src, callee, arg, within=, depth=None)` | reaches X's **named argument** | `py.flows_to_argument("invoice_id", "_process_transaction", arg="invoice_ids", within="…invoice_transaction")` |
-| `taint(sources, sinks, sanitizers=(), depth=None, max_paths=10)` | which of m sources reach which of n sinks, and which pairs are **refuted** | `py.taint([("invoice_id", "PaymentPortal.invoice_transaction")], [("query", "AccountMove._execute")], sanitizers=["html.escape"])` |
+| `taint(sources, sinks, sanitizers=(), depth=None, max_paths=10)` | which of m sources reach which of n sinks, and which pairs are **refuted** | `py.taint([("invoice_id", "PaymentPortal.invoice_transaction")], [("query", "AccountMove._execute")], sanitizers=["PaymentPortal._sanitize_id"])` |
 | `reaches(src, dst, depth=None)` | is there a call path | `py.reaches("invoice_transaction", "AccountMove.write")` |
 | `call_paths_between(src, dst, depth=None, max_paths=10)` | show the call chains | `py.call_paths_between("PaymentPortal.invoice_transaction", "AccountMove.write")` |
 | `resolve_callable(name, in_class=, in_module=)` | what a name means, before asking | `py.resolve_callable("write", in_class="AccountMove").callable` |
@@ -793,11 +793,12 @@ one traversal and reports each pair three ways: a witness in `paths`, a **refuta
 **Sources, sinks and sanitizers are yours to supply.** The SDK ships no framework catalogue and
 derives no default set — a per-language vocabulary of taint sources is policy that rots, and this is
 the mechanism. A sanitizer is two things wearing one word, told apart by **shape**: a bare `str` cuts
-a *callable* on the path (a transforming sanitizer, `html.escape`), and a `(name, within)` pair cuts a
-*variable* inside that callable, which is the only thing that severs a *validating* guard — a guard
-never sits on the data path at all, it reads the value and throws. Both cuts are applied inside the
-search, so what comes back is the shortest **unsanitized** route rather than a filtered list of
-sanitized ones. Measured on superset-frontend: `sanitizeHtmlIfNeeded`'s `htmlString` reaches two
+a *callable* on the path — a transforming sanitizer, named as the wrapper *in this application* that
+calls `html.escape`, because the bare shape is resolved with `resolve_callable` — and a
+`(name, within)` pair cuts a *variable* inside that callable, which is the only thing that severs a
+*validating* guard — a guard never sits on the data path at all, it reads the value and throws. Both
+cuts are applied inside the search, so what comes back is the shortest **unsanitized** route rather
+than a filtered list of sanitized ones. Measured on superset-frontend: `sanitizeHtmlIfNeeded`'s `htmlString` reaches two
 sinks; cutting one callable refutes that pair and leaves the sibling witnessed in the same result.
 
 **A slice is a set; a path is a sequence.** `slice_backward` answers "what is in scope"; a 10k-node

@@ -1667,7 +1667,7 @@ class JavaAnalysis:
             r = java.taint(
                 sources=[("userID", "TradeAppServlet.doPost")],
                 sinks=[("sql", "TradeDirect.getOrders")],
-                sanitizers=["StringEscapeUtils.escapeHtml4", ("checked", "TradeAppServlet.doPost")],
+                sanitizers=["TradeAppServlet.escapeUserID", ("checked", "TradeAppServlet.doPost")],
             )
             for path in r.paths:
                 print(" -> ".join(h.to.name for h in path.hops))
@@ -1685,7 +1685,8 @@ class JavaAnalysis:
         stands on any pair in the result: one blocked pair voids the whole batch's ``exhausted``.
 
         **Sources, sinks and sanitizers are the caller's to supply** — no framework catalogue ships
-        here. A bare ``str`` cuts a *callable* on the path (a transforming sanitizer); a
+        here. A bare ``str`` cuts a *callable* on the path (a transforming sanitizer, resolved with
+        :meth:`resolve_callable` and so named as a callable *this application* declares); a
         ``(name, within)`` pair cuts a *variable* inside that callable, which is the only thing that
         severs a *validating* guard, since a guard never sits on the data path. Both cuts are applied
         inside the search, so the result is the shortest **unsanitized** route.

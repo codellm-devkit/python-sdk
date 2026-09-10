@@ -1410,7 +1410,7 @@ class PythonAnalysis:
             r = py.taint(
                 sources=[("invoice_id", "PaymentPortal.invoice_transaction")],
                 sinks=[("query", "AccountMove._execute")],
-                sanitizers=["html.escape", ("checked_id", "PaymentPortal.invoice_transaction")],
+                sanitizers=["PaymentPortal._sanitize_id", ("checked_id", "PaymentPortal.invoice_transaction")],
             )
             for path in r.paths:                       # the witnesses
                 print(" -> ".join(h.to.name for h in path.hops))
@@ -1436,11 +1436,13 @@ class PythonAnalysis:
         **Sources, sinks and sanitizers are yours to supply.** This SDK ships no framework
         catalogue and derives no default set: a per-language vocabulary of taint sources is policy
         that rots, and this is the mechanism. A sanitizer is two things wearing one word, told
-        apart by shape — a bare ``str`` cuts a *callable* on the path (a transforming sanitizer,
-        ``html.escape``), and a ``(name, within)`` pair cuts a *variable* inside that callable,
-        which is the only thing that severs a *validating* guard, because a guard never sits on the
-        data path at all. Both cuts are applied inside the search, so what comes back is the
-        shortest **unsanitized** route rather than a filtered list of sanitized ones.
+        apart by shape — a bare ``str`` cuts a *callable* on the path: a transforming sanitizer,
+        named as the wrapper *in this application* that calls ``html.escape``, because the bare
+        shape is resolved with :meth:`resolve_callable`. A ``(name, within)`` pair cuts a *variable*
+        inside that callable, which is the only thing that severs a *validating* guard, because a
+        guard never sits on the data path at all. Both cuts are applied inside the search, so what
+        comes back is the shortest **unsanitized** route rather than a filtered list of sanitized
+        ones.
 
         Args:
             sources: The values taint enters at, each ``(name, within)`` — the addressing
