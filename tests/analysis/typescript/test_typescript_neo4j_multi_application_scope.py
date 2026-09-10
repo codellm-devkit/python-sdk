@@ -724,7 +724,13 @@ def test_has_resolution_edges_is_probed_against_this_applications_edges():
 # =====================================================================================
 # The audit: every statement, class-level and inline, carries the application scope
 # =====================================================================================
-_MATCHES_BY_PREFIX = re.compile(r"\w+\.id STARTS WITH \$p\b")
+#: ``$p`` is the application scope (TS-3). ``$callable_prefix`` (leg 4b) is one **callable's** own
+#: ``can://`` ref, minted by ``resolve_callable``, which is itself application-scoped -- so a body
+#: node whose id starts with it is this application's by construction, exactly as one matched by a
+#: whole id is. It is spelled apart from ``$p`` on purpose: what makes ``_EDGE_VARS`` scoped is a
+#: property of the *value* bound to it, not of the statement, and a distinct name keeps that
+#: checkable rather than annotated.
+_MATCHES_BY_PREFIX = re.compile(r"\w+\.id STARTS WITH \$(?:p|callable_prefix)\b")
 _MATCHES_BY_SIGNATURE = re.compile(r"signature\s*[:=]\s*\$|\.signature IN \$")
 #: A ``can://`` id, or a **prefix of one**. ``$bp`` (leg 2.5b) is a resolved callable's own ``ref``
 #: plus ``@`` -- minted by ``resolve_callable``, which is itself application-scoped -- so a body node
@@ -753,7 +759,7 @@ _TEMPLATE_ARGS = {"{rel}": "TS_DDG", "{rels}": SDG_REL_PATTERN, "{depth}": "5", 
 #: deliberately not on this list: ``can://<app>/typescript/`` is inside the application and drops
 #: every ``.js`` module and every language-neutral ghost, so it is a bug rather than a scope (leg
 #: 2.5b review, finding 9 -- which is what the two-prefix arrangement kept re-creating).
-_SCOPED_VAR = re.compile(r"\b(\w+)\.id STARTS WITH (?:\$(?:p|bp)|pos\.module_prefix)\b")
+_SCOPED_VAR = re.compile(r"\b(\w+)\.id STARTS WITH (?:\$(?:p|bp|callable_prefix)|pos\.module_prefix)\b")
 
 #: A variable pinned to an id -- in the node pattern (``{id: $x}``) or in a ``WHERE``
 #: (``x.id = $y`` / ``x.id IN $ys``). A ``can://`` id embeds the application that minted it, so a
@@ -1388,9 +1394,21 @@ def test_no_statement_names_retired_or_untargeted_vocabulary():
             assert untargeted not in s, f"{name} names {untargeted!r}, a label this backend deliberately does not target yet (cants#95): {s[:160]!r}"
 
 
+#: The ``any()`` form of the **application scope** -- ``any(p IN $prefixes WHERE n.id STARTS WITH p)``
+#: and anything else that iterates a scope parameter. Named by its parameter rather than by the
+#: keyword, because ``any()`` over a list that is *not* the scope is an ordinary predicate: leg 4b's
+#: ``_TAINT`` carries two of them (``$cut_callables`` and ``$cuts``, the sanitizer cut), and
+#: :func:`~cldk.analysis.commons.graphs.sdg_taint_query` documents them as measured to inline into
+#: the ``ShortestPath`` operator -- they do not choose the seek, they filter what it walks. The
+#: original spelling of this ban was the bare keyword plus ``STARTS WITH``, which caught the cut as
+#: collateral and would have been "fixed" by moving the cut out of the pattern -- the false-refutation
+#: bug the whole leg exists to avoid.
+_SCOPE_BY_ANY = re.compile(r"any\(\s*\w+ IN \$(?:p|bp|prefixes)\b")
+
+
 def test_no_statement_spells_the_scope_with_any():
     """``any(p IN $prefixes WHERE …)`` plans as a label scan; a bare ``STARTS WITH`` seeks."""
-    assert [name for name, s in _every_statement().items() if "any(" in s and "STARTS WITH" in s] == []
+    assert [name for name, s in _every_statement().items() if _SCOPE_BY_ANY.search(s)] == []
 
 
 @pytest.mark.parametrize("name", sorted(_every_statement()))
@@ -1428,5 +1446,10 @@ def test_seek_labels_follow_the_measured_rule():
         s = _render(statement)  # a template's `{{id:$x}}` is an id point lookup; judge what runs
         for m in re.finditer(r"\(\w*:([\w:|]+) ?\{id ?: ?\$\w+\}\)", s):
             assert m.group(1).startswith("CanNode:") or m.group(1) in ("Application",), f"{name}: id point lookup without :CanNode -- {m.group(0)}"
-        if _is_scoped(s) and not re.search(r"\{id ?: ?\$\w+\}", s):
+        # ``.id IN $srcs`` (leg 4b's ``_TAINT``) is the same unique-index seek as ``{id: $src}``, once
+        # per value -- which is why ``_MATCHES_BY_ID`` already treats the three spellings alike. The
+        # measurement this rule rests on is about a ``STARTS WITH`` *range* seek being what finds the
+        # anchor; a statement that pins its anchors by id has nothing to range-seek, however many ids
+        # it pins.
+        if _is_scoped(s) and not re.search(r"\{id ?: ?\$\w+\}|\.id (?:=|IN) \$", s):
             assert "CanNode" not in s, f"{name}: a prefix-scoped statement names :CanNode (measured: bare 1.62 ms vs 32.35 ms) -- {s[:120]!r}"

@@ -133,7 +133,7 @@ from cldk.analysis.commons.bounds import (
     encode_cursor,
     keyset_where,
 )
-from cldk.analysis.commons.graphs import cone_sinks, flow_path, path_order, sdg_path_query, slice_resolved
+from cldk.analysis.commons.graphs import cone_sinks, flow_path, path_order, sdg_path_query, sdg_taint_query, slice_resolved
 from cldk.analysis.commons.keys import body_key_column, module_key_of, resolve_module_key
 from cldk.analysis.commons.resolve import CallableCandidate, resolve_callable_signature, resolve_value_name, resolve_within
 from cldk.analysis.commons.results import (
@@ -1891,6 +1891,113 @@ class TSNeo4jBackend(TSAnalysisBackend):
         b = self.resolve_value(dst, within=dst_within)
         query = self._PATHS.format(rels=SDG_REL_PATTERN, depth="" if depth is None else depth)
         return self._paths(query, self._slice_row, a, b, src=a.ref, dst=b.ref, max_paths=max_paths)
+
+    #: ``taint()``'s statement: the same shortest-path search as :attr:`_PATHS`, but m sources
+    #: against n sinks in one traversal, with the sanitizer cut **inside** the pattern and the cap
+    #: applied per pair. Everything that differs from :attr:`_PATHS` is argued in
+    #: :func:`~cldk.analysis.commons.graphs.sdg_taint_query`'s own docstring; the two share this
+    #: backend's ``node_label`` and projection verbatim, which is what makes a taint witness and a
+    #: ``paths_between`` witness describe a node identically.
+    #:
+    #: ``interior_scope`` and no ``endpoint_scope``, matching :attr:`_PATHS`: the endpoints are
+    #: pinned by ``a.id IN $srcs`` / ``b.id IN $dsts``, and a ``can://`` id embeds the application
+    #: that minted it, while an interior node reached over an SDG relationship is not provably this
+    #: application's (the SDG types are deliberately outside the audit's ``_KEEPS_SCOPE``).
+    _TAINT = sdg_taint_query(
+        "TS",
+        node_label="CanNode:TSBodyNode",
+        interior_scope=_scoped,
+        projection="ref: n.id, kind: n.kind, of: n.of, line: n.start_line, "
+        "callable: head([(c:TSCallable)-[:TS_HAS_BODY_NODE]->(n) | c.signature]), "
+        "c_line: head([(c:TSCallable)-[:TS_HAS_BODY_NODE]->(n) | c.start_line])",
+    )
+
+    #: The variable names on SDG edges *leaving* a node inside ``$callable_prefix`` -- ``startNode``,
+    #: the same end of the hop :attr:`_TAINT`'s cut predicate reads, so a sanitizer this validates is
+    #: one that predicate can actually match (Ruling A /
+    #: :func:`~cldk.analysis.commons.resolve.resolve_sanitizers`).
+    #:
+    #: The parameter is named apart from this backend's ``$p`` because it holds a different thing: a
+    #: **callable's** ``can://`` ref, not the application's. It is still application-scoped, by
+    #: construction rather than by convention -- a callable id embeds the application name -- and
+    #: ``test_typescript_neo4j_multi_application_scope.py`` classifies it on that basis.
+    #:
+    #: A bare ``STARTS WITH``, deliberately wider than :attr:`_TAINT`'s delimited cut
+    #: (:func:`~cldk.analysis.commons.graphs.under_callable`), and on TypeScript that width is not
+    #: hypothetical: a callable id ends in a bare member name, so ``create``'s prefix really does
+    #: reach every edge of ``createGuest``. A variable may therefore be *accepted* here that the cut
+    #: cannot then match. That direction under-cuts -- a cut that severs nothing over-reports -- and
+    #: the one this leg must refuse is the other. Widening the domain is also what Ruling A asks for;
+    #: narrowing it here would refuse a real sanitizer, which is the failure that ruling exists to
+    #: prevent. One round trip per variable sanitizer, which is as often as a caller writes one.
+    #: The **bare** ``:TSBodyNode`` and not :attr:`_TAINT`'s ``:CanNode:TSBodyNode``, per the measured
+    #: seek rule this backend's audit enforces: a ``STARTS WITH`` is a range seek and ``:CanNode``
+    #: turns it into a range-seek union, while ``_TAINT`` pins its anchors by id and seeks the unique
+    #: index. Same reason the Python twin spells it ``:PyBodyNode``.
+    _EDGE_VARS = "MATCH (n:TSBodyNode)-[r:{rels}]->() WHERE n.id STARTS WITH $callable_prefix RETURN collect(DISTINCT r.var) AS vars"
+
+    def _taint_walk(self, srcs, dsts, *, cuts, cut_callables, depth, max_paths):
+        """The sanitized shortest walks, server-side (see :meth:`TSAnalysisBackend._taint_walk`).
+
+        One statement for the whole batch, and one row per witness -- ``a.id AS src`` / ``b.id AS
+        dst`` carry the pairing back, because the m*n batching is only useful if the grouping
+        survives it. Ordering, the per-pair ``$cap`` and both cuts are the statement's
+        (:func:`~cldk.analysis.commons.graphs.sdg_taint_query`), so nothing is re-sorted or
+        re-filtered here: a Python-side filter is the false-refutation bug that function exists to
+        avoid, and a Python-side sort would silently disagree with
+        :func:`~cldk.analysis.commons.graphs.path_order`.
+
+        No level gate, per Ruling F: ``--emit neo4j`` takes no ``-a`` and is always full depth, so
+        this backend has no shallow mode to refuse and nothing to measure -- the attach probe reads
+        the relationship-type fingerprint, never the dependence edges' presence.
+
+        **The ledger comes back empty, and that is a deliberate refusal rather than a missing
+        signal.** A frontier signal exists here too, though it is spelled differently than on the
+        Python graph: cants emits **no ``TS_RESOLVES_TO`` relationship at all**, so an unresolved
+        dispatch cannot be read as a missing edge the way it can there. What it leaves is a
+        ``kind:'call'`` body node whose ``callee`` property is null -- the property
+        :attr:`has_resolution_edges` probes at the application level, and the same one the local
+        backend reads off ``TSBodyNode.callee``. Measured 0 of the a4 fixture's 31 call nodes, so
+        that fixture has nothing to file.
+
+        It is not filed because the granularity is wrong in the one direction that matters. A
+        diagnostic empties ``exhausted`` for the *whole batch* (Ruling I, see
+        :func:`~cldk.analysis.commons.graphs.taint_verdict`), so a signal that also fires on the
+        ordinary case would void every refutation in every application that makes one. And in
+        TypeScript the ordinary case is common and hard to separate: a call into an ambient
+        declaration, a ``.d.ts``-only type, or an untyped ``require`` leaves the same null
+        ``callee`` as a genuinely unresolved dispatch, and with no ``TS_RESOLVES_TO`` there is not
+        even an ``:TSExternal`` ghost on the far end to tell the two apart by. Telling them apart
+        well enough to file only the first is future work; leg 4b's corpus check is where it gets
+        measured.
+
+        Consequence, stated because nothing here can catch it: a pair whose flow leaves through an
+        unresolved call is certified ``exhausted``.
+        """
+        rows = self._run(
+            self._TAINT.format(rels=SDG_REL_PATTERN, depth="" if depth is None else depth),
+            srcs=[n.ref for n in srcs],
+            dsts=[n.ref for n in dsts],
+            cuts=cuts,
+            cut_callables=cut_callables,
+            cap=max_paths + 1,
+            **self._scope_params,
+        )
+        return [
+            (r["src"], r["dst"], flow_path([self._slice_row(n) for n in r["ns"]], [(e["via"], e["var"], e["prov"]) for e in r["rs"]], via=VIA))
+            for r in rows
+        ], {}
+
+    def _edge_vars_in(self, callable_id: str) -> FrozenSet[str]:
+        """The edge variables scoped to this callable (see :meth:`TSAnalysisBackend._edge_vars_in`).
+
+        ``r.var`` is absent on ``TS_CDG`` and ``TS_SUMMARY``, so the collected list carries ``None``;
+        it is dropped rather than kept, because a membership test against a set holding ``None``
+        would be answering a question no caller can ask -- ``resolve_sanitizers`` refuses a blank
+        variable before it gets here.
+        """
+        rows = self._run(self._EDGE_VARS.format(rels=SDG_REL_PATTERN), callable_prefix=callable_id)
+        return frozenset(v for v in rows[0]["vars"] if v)
 
     def call_paths_between(self, src: str, dst: str, *, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
         """How one callable reaches another (see :meth:`TSAnalysisBackend.call_paths_between`)."""

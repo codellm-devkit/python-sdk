@@ -22,13 +22,25 @@ testable against a backend whose walk only records what it was asked. What is pi
 the walk), the two deliberate divergences from ``paths_between`` (a same-position pair is skipped
 rather than raised; a bounded ``depth`` yields no ``exhausted`` pair), and the three membership
 conditions of ``exhausted``.
+
+The last group is the **graph** backend's half of the walk, over a fake driver rather than a server.
+There is no live TypeScript graph in this repo's verification set, so what a fake driver can prove is
+bounded and worth saying plainly: the statement text is the one ``sdg_taint_query`` built, the
+parameters are bound as the contract says (``cap = max_paths + 1``, the application scope, the two
+cut lists), and a row is translated into a witness the way ``paths_between``'s rows are. It proves
+nothing about what Cypher *does* with that statement -- that the cut inlines into ``ShortestPath``,
+that ``allShortestPaths`` returns what the design assumes. Only
+``tests/analysis/python/test_python_taint_live.py`` proves that, and only for Python.
 """
 
 import pytest
 
 from cldk.analysis.commons.results import Diagnostic, FlowPath, PathHop, SliceNode
-from cldk.analysis.typescript.backend import TSAnalysisBackend
+from cldk.analysis.typescript.backend import SDG_REL_PATTERN, TSAnalysisBackend
+from cldk.analysis.typescript.neo4j.neo4j_backend import TSNeo4jBackend
 from cldk.utils.exceptions.exceptions import SelectorNotInGraph
+
+from .conftest import FakeDriver
 
 
 def _value(name: str, within: str) -> SliceNode:
@@ -263,3 +275,127 @@ def test_the_two_walk_hooks_are_stubs_rather_than_abstract_methods():
         TSAnalysisBackend._taint_walk(None, [], [], cuts=[], cut_callables=[], depth=None, max_paths=1)
     with pytest.raises(NotImplementedError):
         TSAnalysisBackend._edge_vars_in(None, "can://app/typescript/app.ts/f")
+
+
+# ==============================================================================================
+# The graph backend's half, over a fake driver: statement text, parameter binding, row translation.
+# ==============================================================================================
+#: One module, so ``_slice_row``'s ``file`` can be verified against the application's module keys the
+#: way it is against a real graph's -- a body-node id embeds the module key and the graph stores no
+#: path to project instead.
+_MODULE = "app.ts"
+_HANDLE = f"can://app/typescript/{_MODULE}/handle"
+_SINK = f"can://app/typescript/{_MODULE}/query"
+
+
+def _row(src: str, dst: str, *, var: str = "answer") -> dict:
+    """One witness as the statement projects it: ``ns`` per node, ``rs`` per hop, one fewer hop than
+    nodes. The keys are :attr:`TSNeo4jBackend._TAINT`'s projection, which is
+    :attr:`~TSNeo4jBackend._PATHS`' verbatim -- that shared projection is what makes a taint witness
+    and a ``paths_between`` witness describe a node identically."""
+    return {
+        "src": src,
+        "dst": dst,
+        "ns": [
+            {"ref": src, "kind": "formal_in", "of": "raw", "line": None, "callable": "app.handle", "c_line": 7},
+            {"ref": dst, "kind": "formal_in", "of": "cleaned", "line": 12, "callable": "app.query", "c_line": 11},
+        ],
+        "rs": [{"via": "TS_DDG", "var": var, "prov": ["reaching-defs"]}],
+    }
+
+
+def _graph(rows=(), edge_vars=(), record=None):
+    """A ``TSNeo4jBackend`` over a fake driver that answers the attach probes, the taint statement and
+    the edge-variable statement, and records the parameters each was bound with."""
+
+    def _responder(query, params):
+        if record is not None:
+            record.append((query, dict(params)))
+        if "TS_HAS_MODULE" in query:
+            return [{"k": _MODULE, "id": f"can://app/typescript/{_MODULE}"}]
+        if "AS ok" in query:
+            return [{"ok": True}]
+        if "collect(DISTINCT r.var) AS vars" in query:
+            return [{"vars": list(edge_vars)}]
+        if "AS src, b.id AS dst" in query:
+            return list(rows)
+        return []
+
+    return TSNeo4jBackend._from_driver(FakeDriver(responder=_responder), application_name="app")
+
+
+def test_the_graph_walk_issues_the_generated_statement_and_binds_the_cap_one_past_max_paths():
+    """The extra row is the whole truncation mechanism (Ruling H / E5): bind ``$cap`` to
+    ``max_paths`` and ``taint()`` reports ``complete=True`` on a result it silently cut. The scope
+    parameter is bound in the same call because :attr:`_TAINT` carries the interior predicate --
+    an unbound ``$p`` is a Cypher error, so this is what says the two agree."""
+    record = []
+    graph = _graph(record=record)
+    src, dst = _value("raw", "handle"), _value("cleaned", "query")
+    graph._taint_walk([src], [dst], cuts=[{"var": "answer", "prefix": _HANDLE}], cut_callables=[_SINK], depth=None, max_paths=3)
+    query, params = record[-1]
+    assert query == TSNeo4jBackend._TAINT.format(rels=SDG_REL_PATTERN, depth="")
+    assert params == {
+        "srcs": [src.ref],
+        "dsts": [dst.ref],
+        "cuts": [{"var": "answer", "prefix": _HANDLE}],
+        "cut_callables": [_SINK],
+        "cap": 4,
+        "p": "can://app/",
+    }
+
+
+def test_an_explicit_depth_reaches_the_statement_as_the_quantifiers_upper_bound():
+    """``depth=None`` renders ``*1..`` and a bound renders ``*1..5``; the walk is the only place that
+    substitution happens, so a backend that forgot it would answer every call unbounded -- and an
+    unbounded answer to a bounded question is the direction that manufactures witnesses."""
+    record = []
+    _graph(record=record)._taint_walk([_value("raw", "handle")], [_value("cleaned", "query")], cuts=[], cut_callables=[], depth=5, max_paths=1)
+    assert record[-1][0] == TSNeo4jBackend._TAINT.format(rels=SDG_REL_PATTERN, depth="5")
+    assert "*1..5]->" in record[-1][0]
+
+
+def test_the_graph_walk_returns_every_row_untrimmed_and_keyed_by_the_pair_the_server_reported():
+    """Grouping and trimming are ``taint()``'s, so the walk hands back what it found -- including the
+    ``max_paths + 1``-th row. Trimming here would put the cap in two places and make ``complete``
+    unprovable from either.
+
+    The pairing comes from the statement's own ``a.id AS src`` / ``b.id AS dst`` and never from the
+    order the rows arrive in: the m*n batching is only useful if the grouping survives it."""
+    src, dst = _value("raw", "handle"), _value("cleaned", "query")
+    rows, blocked = _graph(rows=[_row(src.ref, dst.ref), _row(src.ref, dst.ref, var="second")])._taint_walk(
+        [src], [dst], cuts=[], cut_callables=[], depth=None, max_paths=1
+    )
+    assert [(r[0], r[1]) for r in rows] == [(src.ref, dst.ref)] * 2, "two rows for a cap of one: the extra row is what reports truncation"
+    assert [r[2].hops[0].var for r in rows] == ["answer", "second"]
+    assert blocked == {}, "Ruling I: an empty ledger is a refusal to file, argued in the walk's docstring"
+
+
+def test_a_graph_row_is_described_the_way_a_paths_between_row_is():
+    """Same projection, same ``_slice_row``: ``file`` derived from the id's own module key (verified
+    against the application's, never split), ``via`` translated through the shared ``VIA`` table, and
+    a parameter-passing vertex with no span of its own borrowing the callable's first line."""
+    src, dst = _value("raw", "handle"), _value("cleaned", "query")
+    (row,) = _graph(rows=[_row(src.ref, dst.ref)])._taint_walk([src], [dst], cuts=[], cut_callables=[], depth=None, max_paths=5)[0]
+    (hop,) = row[2].hops
+    assert hop.via == "data" and hop.var == "answer" and hop.prov == ["reaching-defs"]
+    assert (hop.frm.file, hop.frm.line, hop.frm.callable, hop.frm.kind, hop.frm.name) == (_MODULE, 7, "app.handle", "parameter", "raw")
+    assert (hop.to.file, hop.to.line, hop.to.kind) == (_MODULE, 12, "parameter")
+
+
+def test_the_graph_edge_variable_domain_is_scoped_by_the_callables_own_ref_and_drops_the_nulls():
+    """``$callable_prefix`` holds a **callable's** ``can://`` ref rather than the application's, which
+    is why it is spelled apart from ``$p``: what makes the statement application-scoped is a property
+    of the value bound to it -- a callable id embeds the application name -- and the scope audit
+    classifies it on that basis.
+
+    ``collect(DISTINCT r.var)`` returns a ``null`` for every ``TS_CDG``/``TS_SUMMARY`` hop, which
+    carry no ``var`` at all. Keeping it would put ``None`` in a set ``resolve_sanitizers`` tests
+    membership against, and ``resolve_sanitizers`` has already refused a blank variable by then."""
+    record = []
+    graph = _graph(edge_vars=["answer", None, "raw"], record=record)
+    assert graph._edge_vars_in(_HANDLE) == frozenset({"answer", "raw"})
+    query, params = record[-1]
+    assert query == TSNeo4jBackend._EDGE_VARS.format(rels=SDG_REL_PATTERN)
+    assert params == {"callable_prefix": _HANDLE}
+    assert "CanNode" not in query, "a STARTS WITH-scoped statement seeks best on the bare label (the measured seek rule)"
