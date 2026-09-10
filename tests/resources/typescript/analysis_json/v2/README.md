@@ -1,4 +1,4 @@
-Generated from `tests/resources/typescript/application` by the released **codeanalyzer-typescript 1.5.3** wheel:
+Generated from `tests/resources/typescript/application` by the released **codeanalyzer-typescript 1.6.0** wheel:
 
     cants -i tests/resources/typescript/application --app-name slim -a <1|2|3|4> -o a<N> --cache-dir <scratch> -j 1 --no-build
 
@@ -38,3 +38,12 @@ Why it mattered: the schemas had declared the property since the L4 layer landed
 wrote nothing, so a consumer predicate on `var` was `null` on every edge crossing a call boundary.
 Under Cypher's three-valued logic an `all()` over that `null` excludes the whole path, so an
 interprocedural flow read as a proved absence of flow -- indistinguishable from a real negative.
+
+What 1.6.0 changed against the 1.5.3 generation these files held before: **nothing in this output**.
+All four levels are byte-identical apart from the `analyzer.version` stamp, checked by parsing both
+generations and comparing them with that one field masked. 1.6.0 is a Neo4j-projection release
+(codeanalyzer-typescript#204): `:TSModule` gains `source`, the shared `SPAN` gains `start_column` /
+`end_column` / `start_byte` / `end_byte` across ten labels, and `:TSAnonymousCallable` stops writing
+a half-span by hand. `analysis.json` already carried every one of those facts, which is why the
+regeneration moves only the stamp — and why the pin bump is not a read-path change. `:TSCallable.code`
+is kept upstream on purpose: this SDK's Neo4j reconstruction reads it.

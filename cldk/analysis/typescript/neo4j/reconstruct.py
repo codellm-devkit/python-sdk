@@ -26,12 +26,19 @@ and assembles the containment tree; the per-node shape lives here.
 What the projection does **not** carry, and therefore comes back at the model's empty default
 (verified against the schema and the live graph, not assumed):
 
-* ``TSModule.source`` -- the graph stores each node's own ``code`` text and its line span, never
-  the module text or byte offsets. A reconstructed node's ``span`` is therefore line-only
+* ``TSModule.source`` -- this module reads each node's own ``code`` text and its line span, and
+  neither the module text nor byte offsets. A reconstructed node's ``span`` is therefore line-only
   (columns ``0``) with ``bytes = (0, len(code))``, and its private ``_source`` is set to its own
   ``code`` so the model's ``code`` property reads the text the graph projected for that node
   (``None`` when the graph carries none). A module is assembled with ``model_construct`` so the
   module-level source threading (which would overwrite that with ``""``) does not run.
+
+  Since codeanalyzer-typescript 1.6.0 the graph *does* carry ``:TSModule.source`` (the whole file,
+  ``""`` only for an empty one) plus ``start_column`` / ``end_column`` / ``start_byte`` /
+  ``end_byte`` on all ten spanned labels, so this is the backend's ceiling now rather than the
+  projection's -- python-sdk#391 is taking it up, and the attach floor stays 1.5.2 meanwhile, so a
+  served graph may carry none of it. ``:TSCallable.code`` is kept upstream precisely because this
+  path reads it (codeanalyzer-typescript#204).
 * ``TSCallable.comments``, ``type_parameters``, ``overload_signatures``, ``body``,
   ``cfg``/``cdg``/``ddg``/``summary`` -- ``:TSCallable`` projects none of them; the call view is
   answered from ``:TSBodyNode {kind:'call'}`` by the backend's call-site accessors, not stored on
