@@ -53,6 +53,8 @@ SHOW = "src/controllers.UserController.show"
 CREATE = "src/services.UserService.create"
 NEXT_ID = "src/services.nextId"
 ENTITY_CTOR = "src/models.Entity.constructor"
+MAKE_GUEST = "src/services.makeGuestName"
+CREATE_GUEST = "src/services.UserService.createGuest"
 
 
 def _fake_run_writing_output(payload: str):
@@ -299,3 +301,151 @@ def test_every_predicate_and_path_accessor_type_checks_depth(ts):
     ):
         with pytest.raises(ValueError, match="depth"):
             call()
+
+
+# ----------------------------------------------------------------------------------------------
+# Leg 4b, Task 7: the local ``taint`` walk, offline.
+#
+# ``taint()`` is a refutation instrument: its ``exhausted`` list certifies "no flow exists between
+# this source and this sink", so over-cutting is far worse than under-cutting -- cutting too much
+# removes paths, removing paths adds pairs to ``exhausted``, and a wrong ``exhausted`` closes an
+# alert on a live flow. Every assertion below is therefore two-sided: the cut severed what it named
+# *and* left alone what it did not.
+#
+# No graph and no container; only the a4 fixture the rest of this file already uses. ``taint`` is
+# not on the facade yet, so the backend is called directly. Every number was derived by walking
+# ``analysis.json``'s ``ddg``/``cdg``/``summary`` lists and the application's ``param_in``/
+# ``param_out`` overlays through ``shortest_walks`` -- never by running ``_taint_walk`` and copying
+# what it printed.
+# ----------------------------------------------------------------------------------------------
+#: As a caller writes them. Both sources are a *callee's* parameter, per Ruling J: a caller's own
+#: parameter has its ``@formal_in`` port disjoint from its ``@entry`` def-site upstream, so it is
+#: unusable as a source on any of the three analyzers.
+TAINT_SOURCES = [("id", SHOW), ("seed", MAKE_GUEST)]
+TAINT_SINKS = [("n", NEXT_ID)]
+#: The pair with two witnesses of equal length -- the only one a cap of 1 can be measured on.
+TAINT_PAIR = ([("id", SHOW)], [("n", NEXT_ID)])
+
+
+def test_the_local_taint_walk_opens_with_the_same_level_gate(ts_a2):
+    """Ruling F: ``taint()`` carries no level gate of its own on this backend -- the graph backend
+    has no level to measure -- so the local walk is where a below-level-4 caller is refused, or
+    nowhere. The hook is called directly because the gate is its first statement, before any
+    selector is resolved: asking it later would make a level-2 caller hear "no such value" from
+    ``resolve_value`` rather than "rebuild at level 4"."""
+    with pytest.raises(CodeanalyzerUsageException) as e:
+        ts_a2.backend._taint_walk([], [], cuts=[], cut_callables=[], depth=None, max_paths=1)
+    assert "program_dependency_graph" in str(e.value)
+
+
+def test_the_local_walk_finds_the_measured_witnesses_and_refutes_nothing(ts):
+    """The anchor the rest of this group narrows. Two pairs: ``show``'s ``id`` reaches ``nextId``'s
+    ``n`` by two four-hop routes that differ only in which field of ``UserService`` the argument is
+    computed from, and ``makeGuestName``'s ``seed`` reaches it by four eight-hop routes that leave
+    ``makeGuestName`` through its return, pass through ``createGuest`` and enter ``create``. A walk
+    that stopped at a call boundary would still return the first two rows; only the eight-hop
+    chains say it crossed one in both directions."""
+    r = ts.backend.taint(TAINT_SOURCES, TAINT_SINKS, max_paths=10)
+    assert sorted(tuple(h.via for h in p.hops) for p in r.paths) == [
+        ("data", "argument", "data", "argument"),
+        ("data", "argument", "data", "argument"),
+        ("data", "data", "return", "data", "control", "argument", "data", "argument"),
+        ("data", "data", "return", "data", "control", "argument", "data", "argument"),
+        ("data", "data", "return", "data", "data", "argument", "data", "argument"),
+        ("data", "data", "return", "data", "data", "argument", "data", "argument"),
+    ]
+    assert r.exhausted == [] and r.complete is True
+
+
+def test_the_local_walk_returns_one_row_past_the_cap_so_truncation_is_never_silent(ts):
+    """A walk that caps at ``max_paths`` rather than ``max_paths + 1`` returns a full-looking result
+    with ``complete=True`` -- a silent bound, which E5 forbids. ``taint()`` cannot detect it from the
+    rows it is handed, so the extra row is tested here or nowhere."""
+    at_one = ts.backend.taint(*TAINT_PAIR, max_paths=1)
+    assert len(at_one.paths) == 1 and at_one.complete is False
+    at_two = ts.backend.taint(*TAINT_PAIR, max_paths=2)
+    assert len(at_two.paths) == 2 and at_two.complete is True
+
+
+def test_the_local_cap_keeps_a_prefix_of_one_total_order(ts):
+    """*Which* witness survives is stated, not incidental. ``shortest_walks``' replay sorts equal
+    length branches by ``(via, var, to)`` -- the components ``hop_sort_key`` documents, and the same
+    order the Cypher ``ORDER BY length(p), key`` produces -- so the cap is a prefix of a total order
+    rather than whichever branch the recursion reached first. The two witnesses of this pair are
+    both four hops and first differ at hop 3, where ``this.startId`` sorts before
+    ``this.users.length``."""
+    one, many = ts.backend.taint(*TAINT_PAIR, max_paths=1), ts.backend.taint(*TAINT_PAIR, max_paths=5)
+    assert one.paths == many.paths[:1], "the local taint cap is not a prefix of one total order"
+    assert [h.var for h in one.paths[0].hops] == ["id", NEXT_ID, "this.startId", "n"]
+
+
+def test_the_local_walk_runs_once_per_distinct_pair_not_once_per_selector(ts):
+    """Two selectors naming one position are one pair. Walking it twice would report every witness
+    twice and make a cap of *m* yield *2m* -- the graph side gets this free from ``a.id IN $srcs``,
+    so the local side has to deduplicate to match."""
+    once = ts.backend.taint(*TAINT_PAIR, max_paths=10)
+    twice = ts.backend.taint([("id", SHOW), ("id", SHOW)], [("n", NEXT_ID)], max_paths=10)
+    assert len(twice.paths) == len(once.paths) == 2
+
+
+def test_a_local_callable_cut_severs_its_own_pair_and_leaves_the_sibling_alone(ts):
+    """Over-cutting is the one output this leg refuses, so a cut that closed *both* pairs would pass
+    a naive "the sanitizer worked" assertion while being the failure. ``createGuest`` sits on every
+    route out of ``makeGuestName`` and on none of ``show``'s, so exactly one pair is refuted."""
+    r = ts.backend.taint(TAINT_SOURCES, TAINT_SINKS, sanitizers=[CREATE_GUEST], max_paths=10)
+    guest = ts.backend.resolve_callable(CREATE_GUEST).ref
+    assert len(r.paths) == 2, "show's two witnesses survive a cut that names a callable they never enter"
+    assert all(not h.frm.ref.startswith(guest) and not h.to.ref.startswith(guest) for p in r.paths for h in p.hops)
+    assert r.exhausted == [("seed", "n")] and r.complete is True
+
+
+def test_a_local_callable_cut_that_contains_the_source_yields_no_walk(ts):
+    """``allow_node`` is checked against ``src`` up front, because ``src`` is never itself a
+    ``steps()`` destination for either pass to filter. Without that check a source inside a cut
+    callable would still emit its first hop."""
+    r = ts.backend.taint([("seed", MAKE_GUEST)], TAINT_SINKS, sanitizers=[MAKE_GUEST])
+    assert r.paths == [] and r.exhausted == [("seed", "n")] and r.complete is True
+
+
+def test_a_local_variable_cut_severs_a_call_boundary_and_only_the_pairs_that_cross_it(ts):
+    """The scoped variable cut, end to end, over a hop that is a call boundary: ``$ret`` is the var
+    the analyzer writes on ``makeGuestName``'s ``TS_PARAM_OUT`` return edge, so cutting it inside
+    ``makeGuestName`` severs the *return* crossing rather than a statement edge. That only works
+    because ``TS_PARAM_IN``/``TS_PARAM_OUT`` reach the adjacency carrying their ``var``: with it
+    hardcoded ``None`` the name would not be in ``_edge_vars_in``'s domain at all and
+    ``resolve_sanitizers`` would refuse a real dataflow variable (Ruling A exists to prevent that),
+    and ``allow_edge``'s ``var == c["var"]`` test could never match a param hop.
+
+    ``show``'s two witnesses cross no such edge and are untouched, which is what separates a scoped
+    cut from a cut on every hop in the application."""
+    assert "$ret" in ts.backend._edge_vars_in(ts.backend.resolve_callable(MAKE_GUEST).ref)
+    r = ts.backend.taint(TAINT_SOURCES, TAINT_SINKS, sanitizers=[("$ret", MAKE_GUEST)], max_paths=10)
+    assert len(r.paths) == 2 and {p.hops[0].frm.callable for p in r.paths} == {SHOW}
+    assert r.exhausted == [("seed", "n")] and r.complete is True
+
+
+def test_a_local_variable_cut_is_scoped_by_callable_id_and_not_by_string_prefix(ts):
+    """Ruling K, on the one fixture that can witness it. ``UserService.create``'s callable id is a
+    strict, **non-delimited** prefix of ``UserService.createGuest``'s -- a TypeScript callable id ends
+    in a bare member name, with no ``(`` to terminate it the way Python's and Java's do -- so a cut
+    scoped with ``id.startswith(prefix)`` would sever every hop inside ``createGuest`` too.
+
+    ``$ret`` is a real edge variable under both, and the seed pair's route leaves
+    ``createGuest@32:5/actual_out`` on a ``$ret`` hop. Cutting ``$ret`` inside ``create`` must
+    therefore change nothing: all six witnesses survive. Under a bare prefix test the seed pair
+    comes back refuted -- a certified "no flow" over a flow that exists, which is the exact failure
+    ``under_callable`` is in the shared module to prevent. The companion test above cuts the same
+    variable name inside a callable the routes *do* leave and severs a pair, so the two together say
+    the scoping is real rather than vacuous."""
+    create, guest = ts.backend.resolve_callable(CREATE).ref, ts.backend.resolve_callable(CREATE_GUEST).ref
+    assert guest.startswith(create) and guest[len(create)] not in "@/", "the fixture no longer carries the collision this test is about"
+    r = ts.backend.taint(TAINT_SOURCES, TAINT_SINKS, sanitizers=[("$ret", CREATE)], max_paths=10)
+    assert len(r.paths) == 6 and r.exhausted == []
+
+
+def test_a_local_variable_sanitizer_that_names_nothing_still_raises(ts):
+    """Ruling A widened the domain from parameters to edge variables; it did not remove the check. A
+    typo must be refused loudly rather than silently cutting nothing -- a sanitizer that cuts
+    nothing reports flows the caller believes were sanitized."""
+    with pytest.raises(SelectorNotInGraph):
+        ts.backend.taint(TAINT_SOURCES, TAINT_SINKS, sanitizers=[("nosuchvar", MAKE_GUEST)])
