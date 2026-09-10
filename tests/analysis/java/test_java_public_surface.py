@@ -85,6 +85,7 @@ SURFACE = {
     "call_paths_between": "(self, src: 'str', dst: 'str', *, depth: 'int | None' = None, max_paths: 'int' = 10) -> 'FlowPaths'",
     "flows_to_call": "(self, src: 'str', callee: 'str', *, within: 'str', depth: 'int | None' = None) -> 'bool'",
     "flows_to_argument": "(self, src: 'str', callee: 'str', arg: 'str', *, within: 'str', depth: 'int | None' = None) -> 'bool'",
+    "taint": "(self, sources: 'Sequence[Tuple[str, str]]', sinks: 'Sequence[Tuple[str, str]]', sanitizers: 'Sequence[Tuple[str, str] | str]' = (), *, depth: 'int | None' = None, max_paths: 'int' = 10) -> 'TaintResult'",
     # -- entrypoints, the bulk projections, the artifact layer and the type-kind leaf accessors
     # (leg 3b, Task 3). Python's signatures, keyword-for-keyword, with Java's models -- except the
     # artifact layer, which is the one part of the graph every codeanalyzer projects identically and

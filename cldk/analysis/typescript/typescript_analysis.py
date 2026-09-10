@@ -32,7 +32,7 @@ import networkx as nx
 from cldk.analysis.commons.backend_config import CodeAnalyzerConfig, Neo4jConnectionConfig, TSBackend, cache_subdir
 from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
 from cldk.analysis.commons.bounds import DEFAULT_DEPTH, DEFAULT_MAX_NODES, DEFAULT_MAX_PATHS, DEFAULT_PAGE_SIZE
-from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, FlowPaths, LocateResult, Slice, SliceNode
+from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, FlowPaths, LocateResult, Slice, SliceNode, TaintResult
 from cldk.analysis.typescript.backend import TSAnalysisBackend
 from cldk.analysis.typescript.codeanalyzer import TSCodeanalyzer
 from cldk.analysis.typescript.neo4j import TSNeo4jBackend
@@ -741,6 +741,67 @@ class TypeScriptAnalysis:
             ValueError: ``depth`` is not a positive ``int``.
         """
         return self.backend.flows_to_argument(src, callee, arg, within=within, depth=depth)
+
+    def taint(
+        self,
+        sources: Sequence[Tuple[str, str]],
+        sinks: Sequence[Tuple[str, str]],
+        sanitizers: Sequence[Tuple[str, str] | str] = (),
+        *,
+        depth: int | None = None,
+        max_paths: int = DEFAULT_MAX_PATHS,
+    ) -> TaintResult:
+        """Which of these sources reach which of these sinks, and what to make of the ones that do not.
+
+        m sources against n sinks in one traversal, where :meth:`paths_between` proves one flow::
+
+            r = ts.taint(
+                sources=[("userInput", "SearchBar.onChange")],
+                sinks=[("html", "ResultList.render")],
+                sanitizers=["DOMPurify.sanitize", ("validated", "SearchBar.onChange")],
+            )
+            for path in r.paths:
+                print(" -> ".join(h.to.name for h in path.hops))
+            for src, sink in r.exhausted:
+                print(src, "does not reach", sink)
+
+        **``exhausted`` is the reason to call this and the only output that can do harm.** A pair is
+        listed there when it was searched to exhaustion and nothing was found — the refutation
+        :meth:`paths_between`'s ``[]`` cannot give — and only when all three hold: no witness, no
+        diagnostic in ``unresolved`` implicating it, and **``depth`` was ``None``**. An explicit
+        ``depth`` empties ``exhausted`` by rule, because a bound turns a real long flow into an empty
+        result and a wrong refutation closes a live alert.
+
+        **``complete`` is the batch's flag, not the pair's.** While it is ``False``, no absence claim
+        stands on any pair in the result: one blocked pair voids the whole batch's ``exhausted``.
+
+        **Sources, sinks and sanitizers are the caller's to supply** — no framework catalogue ships
+        here. A bare ``str`` cuts a *callable* on the path (a transforming sanitizer,
+        ``encodeURIComponent``); a ``(name, within)`` pair cuts a *variable* inside that callable,
+        which is the only thing that severs a *validating* guard, since a guard never sits on the
+        data path. Both cuts are applied inside the search, so the result is the shortest
+        **unsanitized** route.
+
+        Every hop's provenance is ``reaching-defs``, as on :meth:`paths_between`, so a TypeScript
+        witness is argued from its hops rather than from a provenance comparison between two of them.
+
+        Args:
+            sources: The values taint enters at, each ``(name, within)``.
+            sinks: The values it must not reach, addressed the same way.
+            sanitizers: Bare names cut callables; ``(name, within)`` pairs cut variables.
+            depth: Most hops; ``None`` (the default) for no bound, and ``exhausted`` is empty
+                whenever it is set.
+            max_paths: Most witnesses **per pair**, not per call.
+
+        Raises:
+            AmbiguousName: A name, or a sanitizer's ``within``, matched more than one thing.
+            SelectorNotInGraph: A name matched nothing, or a sanitizer's shape disagrees with what it
+                resolves to.
+            TypeError: ``sources`` or ``sinks`` is a bare string, which would unpack into a pair.
+            ValueError: A bound is out of range, ``sources`` or ``sinks`` is empty, or a sanitizer
+                names a blank variable.
+        """
+        return self.backend.taint(sources, sinks, sanitizers, depth=depth, max_paths=max_paths)
 
     # =====================================================================================
     # Entrypoints and the repository-artifact layer (leg 2.5b, Task 3)
