@@ -43,7 +43,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from functools import partial
-from typing import ClassVar, Dict, List, Sequence, Set, Tuple
+from typing import ClassVar, Collection, Dict, List, Mapping, Sequence, Set, Tuple
 
 import networkx as nx
 
@@ -54,10 +54,14 @@ from cldk.analysis.commons.bounds import (
     DEFAULT_MAX_PATHS,
     DEFAULT_PAGE_SIZE,
     EdgeOrder,
+    check_depth,
+    check_max_paths,
+    reject_bare_string,
 )
-from cldk.analysis.commons.graphs import as_slice_node, edge_sort_key, sdg_rel_pattern, sdg_rels, via_table
+from cldk.analysis.commons.graphs import as_slice_node, edge_sort_key, sdg_rel_pattern, sdg_rels, slice_resolved, via_table
 from cldk.analysis.commons.keys import module_dotted
-from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, FlowPaths, LocateResult, Slice, SliceNode
+from cldk.analysis.commons.resolve import resolve_sanitizers
+from cldk.analysis.commons.results import Diagnostic, EdgePage, EntrypointCoverage, FlowPath, FlowPaths, LocateResult, Slice, SliceNode, TaintResult
 from cldk.models.typescript import (
     TSApplication,
     TSCallable,
@@ -907,6 +911,197 @@ class TSAnalysisBackend(AnalysisBackend[TSApplication, TSModule, TSType, TSCalla
                 ``callee``, which is a caller error and not a ``False``.
             ValueError: ``depth`` is not a positive ``int``.
         """
+
+    # -----[ taint: many sources, many sinks, one traversal ]-----
+    def taint(
+        self,
+        sources: Sequence[Tuple[str, str]],
+        sinks: Sequence[Tuple[str, str]],
+        sanitizers: Sequence[Tuple[str, str] | str] = (),
+        *,
+        depth: int | None = None,
+        max_paths: int = DEFAULT_MAX_PATHS,
+    ) -> TaintResult:
+        """Which of these sources reach which of these sinks, and what to make of the ones that do not.
+
+        The verb triage needs, and the one nothing else on this surface stands in for.
+        :meth:`paths_between` *proves* a flow; a caller who gets ``[]`` back from it cannot tell "no
+        flow exists" from "the flow left the resolved graph". ``taint()`` runs m sources against n
+        sinks in one traversal and reports that distinction **per pair**: the witnesses in
+        :attr:`~cldk.analysis.commons.results.FlowPaths.paths`, the pairs an absence claim can be
+        built on in :attr:`~cldk.analysis.commons.results.TaintResult.exhausted`, and everything
+        else explained in :attr:`~cldk.analysis.commons.results.TaintResult.unresolved`.
+
+        **Sources, sinks and sanitizers are the caller's to supply.** This SDK ships no framework
+        catalogue and derives no default set: a per-language vocabulary of taint sources is policy
+        that rots, and this accessor is the mechanism.
+
+        **A sanitizer is two mechanisms wearing one word**, told apart by shape. A bare ``str`` cuts
+        a *callable* on the path -- what a transforming sanitizer (``encodeURIComponent``, ``DOMPurify.sanitize``)
+        is, since it sits on the data path and is naturally named as the function it is. A
+        ``(name, within)`` pair cuts a *variable* inside that callable, which is the only thing that
+        severs a *validating* guard, because a guard never appears on the data path at all. Both
+        cuts are applied **inside** the search rather than to the rows it returns, so what comes back
+        is the shortest *unsanitized* route: filtering afterwards would report nothing for a source
+        whose ten shortest paths are sanitized and whose eleventh is not -- a false refutation, the
+        one output this accessor must never produce, because in triage it closes a live alert.
+
+        **Every hop's provenance is ``reaching-defs``** (see :meth:`get_ddg`), so every witness's
+        ``weakest`` caps at the same tier here. That is a fact about what cants establishes, not a
+        gap in this accessor, and it is why a TypeScript flow is argued from its *hops* rather than
+        from a provenance comparison between two of them.
+
+        **The order of the checks is part of the contract**, cheapest-to-be-wrong-about first: the
+        bounds before any name, the names before any sanitizer, the sanitizers before the walk. A
+        caller with a typo in ``depth`` hears about ``depth`` rather than about a name, and pays for
+        no round trip to learn it.
+
+        **Two deliberate divergences from :meth:`paths_between`.** A pair whose source and sink are
+        the *same position* is skipped with a diagnostic rather than raised -- ``paths_between``
+        raises there (:func:`~cldk.analysis.commons.bounds.check_distinct_endpoints`), and raising
+        would discard a forty-pair batch over one degenerate pair that a caller assembling sources
+        programmatically produces by accident. And an explicit ``depth`` yields **no** ``exhausted``
+        pair, ever: a pair with no path within five hops is not refuted, it is unmeasured, and
+        conflating the two is the bounded-boolean error.
+
+        **The level gate belongs to the walk, not here.** ``_require_dataflow`` is a *local*
+        backend's method -- a graph backend has no shallow mode to guard against -- so each
+        :meth:`_taint_walk` opens with it rather than this body asking every backend a question two
+        of them cannot answer.
+
+        Args:
+            sources: The values taint enters at, each ``(name, within)`` -- the addressing
+                :meth:`resolve_value` and :meth:`paths_between` already use.
+            sinks: The values it must not reach, addressed the same way.
+            sanitizers: Bare names cut callables; ``(name, within)`` pairs cut variables (above).
+            depth: Most hops a path may take; ``None`` (the default) for no bound, because a bound
+                turns a refutation into an artefact of the budget -- and ``exhausted`` is empty
+                whenever it is set.
+            max_paths: Most witnesses **per pair**, not per call: with one sink and forty sources a
+                flat cap lets one prolific pair starve the other thirty-nine, and in triage the
+                per-source witness is the answer.
+
+        Returns:
+            A :class:`~cldk.analysis.commons.results.TaintResult`: ``paths`` are the witnesses,
+            ``exhausted`` the pairs searched to exhaustion with a clean ledger, ``roots`` and
+            ``resolved`` what every name matched, ``unresolved`` the ledger, and ``complete`` is
+            ``True`` only when nothing was truncated and no pair was skipped. A pair is named in
+            ``exhausted`` by the two strings the caller passed, so two sources sharing a name in
+            different callables read as one pair there -- ``roots`` is what tells them apart.
+
+        Raises:
+            AmbiguousName: A name, or a sanitizer's ``within``, matched more than one thing.
+            SelectorNotInGraph: A name matched nothing, or a sanitizer's shape disagrees with what it
+                resolves to.
+            TypeError: ``sources`` or ``sinks`` is a bare string, which would unpack into a pair.
+            ValueError: ``depth`` is not a positive ``int``, ``max_paths`` is below 1, ``sources`` or
+                ``sinks`` is empty (refused, not answered ``[]``), or a sanitizer names a blank
+                variable.
+        """
+        check_depth(depth)
+        check_max_paths(max_paths)
+        reject_bare_string("sources", sources)
+        reject_bare_string("sinks", sinks)
+        if not sources:
+            raise ValueError("sources= names nothing to taint from; pass at least one (name, within) pair")
+        if not sinks:
+            raise ValueError("sinks= names nothing to taint to; pass at least one (name, within) pair")
+        srcs = [self.resolve_value(name, within=within) for name, within in sources]
+        dsts = [self.resolve_value(name, within=within) for name, within in sinks]
+        cuts, cut_callables = resolve_sanitizers(sanitizers, resolve_callable=self.resolve_callable, edge_vars_in=self._edge_vars_in)
+        rows, blocked = self._taint_walk(srcs, dsts, cuts=cuts, cut_callables=cut_callables, depth=depth, max_paths=max_paths)
+        found: Dict[Tuple[str, str], List[FlowPath]] = {}
+        for src_ref, dst_ref, path in rows:
+            found.setdefault((src_ref, dst_ref), []).append(path)
+        # The verdict is assembled by looking each *requested* pair up, never by consuming the rows:
+        # the walk sees flat source and sink lists, so its m*n cross product can contain a
+        # combination this loop refuses to answer (a value that is both a source and a sink of two
+        # different pairs), and a row for one is simply never read.
+        paths: List[FlowPath] = []
+        exhausted: List[Tuple[str, str]] = []
+        ledger: List[Diagnostic] = []
+        truncated = False
+        for (source, _), a in zip(sources, srcs):
+            for (sink, _), b in zip(sinks, dsts):
+                if a.ref == b.ref:
+                    # ``Diagnostic.code`` is a closed vocabulary with no member for a degenerate
+                    # pair. ``no_match`` is the nearest true thing it can say -- there is no answer
+                    # for this pair -- where ``unresolved_dispatch`` would falsely implicate the call
+                    # frontier, which is the one signal ``exhausted`` reduces to.
+                    ledger.append(
+                        Diagnostic(
+                            code="no_match",
+                            message=(
+                                f"{source!r} and {sink!r} name the same position within {a.callable!r}, so that pair is skipped rather than "
+                                f"searched; a value reaches itself only through recursion, which reaches({a.callable!r}, {a.callable!r}) answers"
+                            ),
+                        )
+                    )
+                    continue
+                stopped = list(blocked.get((a.ref, b.ref), []))
+                witnesses = found.get((a.ref, b.ref), [])
+                ledger.extend(stopped)
+                paths.extend(witnesses[:max_paths])
+                truncated = truncated or len(witnesses) > max_paths
+                # The three conditions, in one place: unbounded search, no witness, clean ledger for
+                # this pair. The pair association comes from ``blocked``'s key and never from
+                # reading a diagnostic's message back out.
+                if depth is None and not witnesses and not stopped:
+                    exhausted.append((source, sink))
+        roots = list({node.ref: node for node in [*srcs, *dsts]}.values())
+        return TaintResult(
+            paths=paths,
+            complete=not truncated and not ledger,
+            exhausted=exhausted,
+            roots=roots,
+            resolved=slice_resolved(roots),
+            unresolved=ledger,
+        )
+
+    def _taint_walk(
+        self,
+        srcs: Sequence[SliceNode],
+        dsts: Sequence[SliceNode],
+        *,
+        cuts: List[Dict[str, str]],
+        cut_callables: List[str],
+        depth: int | None,
+        max_paths: int,
+    ) -> Tuple[List[Tuple[str, str, FlowPath]], Mapping[Tuple[str, str], List[Diagnostic]]]:
+        """The sanitized shortest walks between every source and every sink, and what stopped a pair.
+
+        Rows are ``(source ref, sink ref, path)`` triples, shortest-first within a pair and in
+        :func:`~cldk.analysis.commons.graphs.hop_sort_key` order among equals, capped at
+        ``max_paths + 1`` **per pair** -- the extra row is what lets :meth:`taint` report truncation
+        without a second counting traversal, and the per-pair cap is why one prolific pair cannot
+        starve the rest. Grouping and trimming are :meth:`taint`'s, so a walk returns what it found.
+
+        The second element is the frontier ledger, **keyed by the ``(source ref, sink ref)`` pair it
+        implicates**. The key is the association, not the message: ``exhausted`` is decided from
+        these keys, and recovering a pair by parsing prose back out of a ``Diagnostic`` would
+        resurrect exactly the derivation that field is stored to avoid.
+
+        A local backend opens with ``self._require_dataflow()``: the graph backends do not measure
+        the analysis level (their attach probe never looks at the dependence relationships), so the
+        gate lives in the implementations that can answer rather than in :meth:`taint`.
+
+        A stub rather than an ``@abstractmethod`` while the implementations land, so a backend
+        without one is refused when it is *called* rather than when it is constructed.
+        """
+        raise NotImplementedError
+
+    def _edge_vars_in(self, callable_id: str) -> Collection[str]:
+        """The variable names carried by SDG edges scoped to this callable -- the domain a variable
+        sanitizer is checked against.
+
+        Not :meth:`resolve_value`, which addresses ``formal_in`` port vertices only: most real edge
+        variables are locals (``cleaned``, ``answer``, ``result``), so validating a sanitizer through
+        the resolver would refuse a legitimate one for not being a parameter. One ``DISTINCT r.var``
+        query on the graph side, the adjacency already built on the local side.
+
+        A stub rather than an ``@abstractmethod`` for :meth:`_taint_walk`'s reason.
+        """
+        raise NotImplementedError
 
     def describe(self, nodes: Sequence[object]) -> List[SliceNode]:
         """Fill in :attr:`~cldk.analysis.commons.results.SliceNode.source` for these positions.
