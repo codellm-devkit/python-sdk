@@ -52,7 +52,7 @@ from __future__ import annotations
 import logging
 from functools import partial
 from pathlib import Path
-from typing import Dict, Iterator, List, Sequence, Tuple, Union
+from typing import Dict, FrozenSet, Iterator, List, Sequence, Tuple, Union
 
 import networkx as nx
 
@@ -1432,6 +1432,62 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         described[a.ref] = a
         paths = [flow_path([described[a.ref]] + [described[ref] for ref, _ in walk], [label for _, label in walk], via=VIA) for walk in walks[:max_paths]]
         return FlowPaths(paths=paths, complete=len(walks) <= max_paths)
+
+    def _taint_walk(self, srcs, dsts, *, cuts, cut_callables, depth, max_paths):
+        """The sanitized shortest walks, in process (see :meth:`PythonAnalysisBackend._taint_walk`).
+
+        ``self._require_dataflow()`` first, per :meth:`PythonAnalysisBackend.taint`'s own note: the
+        level gate is a local backend's to ask, and asking it after resolution would mean a level-2
+        analysis hearing "no such value" from ``resolve_value`` rather than "rebuild at level 4".
+
+        One :func:`~cldk.analysis.commons.graphs.shortest_walks` call **per pair**, which is what
+        makes ``max_paths + 1`` a per-pair cap here the way ``collect(p)[0..$cap]`` is one over
+        Cypher -- a single walk over the flattened source and sink lists would let one prolific pair
+        starve the rest. Pairs are deduplicated by resolved position first, for the same reason
+        :func:`~cldk.analysis.commons.graphs.taint_verdict` deduplicates the requested ones: two
+        selectors naming one position are one pair, and walking it twice would report each witness
+        twice and make a cap of *m* yield *2m*. The graph side gets that free from ``a.id IN $srcs``.
+
+        Both cuts are :func:`~cldk.analysis.commons.graphs.shortest_walks`' predicates rather than a
+        filter over the walks it returns, which is the property the whole design rests on: the
+        breadth-first pass must measure the shortest *satisfying* distance, or a sanitized short
+        route hides a clean longer one and the pair comes back refuted. ``allow_edge`` reads the
+        hop's **start** node, mirroring the Cypher predicate's ``startNode(r)`` term, so a variable
+        cut severs only the callable the caller named it in. Both are ``None`` when nothing is
+        sanitized -- the documented "no filtering" default, and no per-node cost on the common call.
+
+        The ledger comes back empty for the graph backend's measured reason
+        (:meth:`~cldk.analysis.python.neo4j.neo4j_backend.PyNeo4jBackend._taint_walk`): an
+        unresolved dispatch emits no dependence edge at all, so the frontier is an absence here too,
+        and the analyzer's own ``call_sites`` do not say which callee it failed to resolve either.
+        """
+        self._require_dataflow()
+        adjacency, nodes = self._sdg()
+        allow_node = (lambda nid: not any(nid.startswith(q) for q in cut_callables)) if cut_callables else None
+        allow_edge = (lambda frm, _rel, var: not any(var == c["var"] and frm.startswith(c["prefix"]) for c in cuts)) if cuts else None
+        pairs: Dict[Tuple[str, str], SliceNode] = {}
+        for a in srcs:
+            for b in dsts:
+                pairs.setdefault((a.ref, b.ref), a)
+        rows = []
+        for (src_ref, dst_ref), a in pairs.items():
+            walks = self._shortest_walks(adjacency["forward"], src_ref, dst_ref, depth, max_paths + 1, allow_edge=allow_edge, allow_node=allow_node)
+            described = {ref: _local_slice_node(nodes[ref], ref) for walk in walks for ref, _ in walk if ref in nodes}
+            described[src_ref] = a
+            rows.extend((src_ref, dst_ref, flow_path([described[src_ref]] + [described[ref] for ref, _ in walk], [label for _, label in walk], via=VIA)) for walk in walks)
+        return rows, {}
+
+    def _edge_vars_in(self, callable_id: str) -> FrozenSet[str]:
+        """The edge variables scoped to this callable (see :meth:`PythonAnalysisBackend._edge_vars_in`).
+
+        Off the adjacency this backend already builds and caches, so a variable sanitizer costs a
+        scan of it and no second traversal. Edges *leaving* a node under ``callable_id`` -- the same
+        ``startNode`` scoping the cut itself uses, so this validates exactly the domain the cut can
+        match. Four of the five relationship types carry no ``var``; those ``None``s are dropped,
+        because ``resolve_sanitizers`` refuses a blank variable before it asks.
+        """
+        forward = self._sdg()[0]["forward"]
+        return frozenset(var for src, outs in forward.items() if src.startswith(callable_id) for labels in outs.values() for _rel, var, _prov in labels if var)
 
     def paths_between(self, src: str, dst: str, *, src_within: str, dst_within: str, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
         """How a value reaches another value (see :meth:`PythonAnalysisBackend.paths_between`)."""

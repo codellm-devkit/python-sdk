@@ -366,7 +366,7 @@ def shortest_walks(
     limit: int,
     *,
     via: Mapping[str, str],
-    allow_edge: Callable[[str, "str | None"], bool] | None = None,
+    allow_edge: Callable[[str, str, "str | None"], bool] | None = None,
     allow_node: Callable[[str], bool] | None = None,
 ) -> List[list]:
     """Up to ``limit`` shortest ``src``->``dst`` walks over ``edges``, in the documented order.
@@ -379,10 +379,21 @@ def shortest_walks(
     ordinary -- one statement feeding one argument on several variables is several distinct paths --
     and collapsing them would merge several pieces of evidence into one.
 
-    ``allow_edge`` and ``allow_node`` are the taint sanitizer cut: ``allow_edge(relationship type,
-    var)`` keeps a label, ``allow_node(node id)`` keeps a node (checked against ``src`` itself too,
-    so a source inside a cut callable yields no walk at all). Both default to ``None``, meaning no
-    filtering, so every caller that predates taint is unaffected. **They must be applied before the
+    ``allow_edge`` and ``allow_node`` are the taint sanitizer cut: ``allow_edge(start node id,
+    relationship type, var)`` keeps a label, ``allow_node(node id)`` keeps a node (checked against
+    ``src`` itself too, so a source inside a cut callable yields no walk at all). Both default to
+    ``None``, meaning no filtering, so every caller that predates taint is unaffected.
+
+    **The start node is a parameter because a variable cut is scoped**, and it is scoped to the
+    *start* node exactly as the Cypher predicate is (corrected Ruling B --
+    :func:`sdg_taint_query`'s ``startNode({rel_var}).id STARTS WITH c.prefix``). A cut is
+    ``{var, prefix}``: the variable, and the ``can://`` id of the callable the caller wrote
+    ``within=`` as. Without the start node a local predicate could only compare the name, cutting
+    every ``result``/``answer``/``token`` hop in the application when the caller named one
+    callable's -- and over-cutting produces false refutations, the one output this design refuses.
+    ``startNode`` and not either endpoint is deliberate there and here: a parameter-passing edge
+    starts in the caller, so a cut named for the callee's formal under-cuts rather than over-cuts,
+    and under-cutting only over-reports. **They must be applied before the
     breadth-first pass computes ``dist``, not only in the depth-first replay** -- see :func:`steps`
     below, which both passes call. Filtering the replay alone would leave ``dist`` describing the
     unfiltered graph: a sanitized 2-hop route would still pin ``dist[dst]`` to 2, and a clean 3-hop
@@ -416,11 +427,15 @@ def shortest_walks(
         would leave the breadth-first ``dist`` describing the unfiltered graph (see the module
         docstring above for why that is a false refutation, not a performance shortcut). Filtering
         here instead makes ``dist`` the shortest *satisfying* distance.
+
+        ``node`` is what a scoped variable cut needs and is only available here, which is why
+        ``allow_edge`` takes it: this is the one place in either pass that knows which node a label
+        is leaving.
         """
         for d, labels in edges.get(node, {}).items():
             if allow_node is not None and not allow_node(d):
                 continue
-            kept = [lab for lab in labels if allow_edge is None or allow_edge(lab[0], lab[1])]
+            kept = [lab for lab in labels if allow_edge is None or allow_edge(node, lab[0], lab[1])]
             if kept:
                 yield d, kept
 

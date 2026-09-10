@@ -1226,6 +1226,15 @@ def test_local_paths_need_dataflow_and_reuse_the_one_level_guard(local_l2):
         assert "program_dependency_graph" in str(e.value)
 
 
+def test_the_local_taint_walk_opens_with_the_same_level_gate(local_l2):
+    """Ruling F: ``taint()`` carries no level gate of its own -- the graph backends have no level to
+    measure -- so the local walk is where a below-level-4 caller is refused, or nowhere. The hook is
+    exercised directly because the gate is its first statement, before any selector is resolved."""
+    with pytest.raises(CodeanalyzerUsageException) as e:
+        local_l2._taint_walk([], [], cuts=[], cut_callables=[], depth=None, max_paths=1)
+    assert "program_dependency_graph" in str(e.value)
+
+
 def test_local_call_paths_do_not_need_dataflow(local_l2):
     """``call_paths_between`` is a call-graph question and the call graph exists from level 2 --
     the same split ``reaches``/``callers_of`` already make."""

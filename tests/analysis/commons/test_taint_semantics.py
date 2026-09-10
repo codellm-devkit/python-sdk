@@ -27,7 +27,7 @@ def test_a_sanitized_shortest_route_does_not_hide_a_clean_longer_one():
     """The local twin of the inlining result: the search must find the shortest *satisfying* walk,
     not filter the shortest walk. If this returns [], the predicate was applied to the replay only
     and every local taint refutation is unsound."""
-    walks = shortest_walks(ADJ, "a", "b", None, 10, via=VIA, allow_edge=lambda rel, var: var != "tainted")
+    walks = shortest_walks(ADJ, "a", "b", None, 10, via=VIA, allow_edge=lambda frm, rel, var: var != "tainted")
     assert [len(w) for w in walks] == [3], "the clean 3-hop route was not found"
 
 
@@ -35,7 +35,7 @@ def test_a_null_var_hop_is_not_cut_by_a_variable_sanitizer():
     """PARAM_IN carries no var. A predicate that treats None as "not equal to anything" is fine; one
     that treats it as unknown-and-therefore-excluded refutes every interprocedural flow."""
     adj = {"a": {"p": [("PY_DDG", "clean", ["ssa"])]}, "p": {"q": [("PY_PARAM_IN", None, None)]}, "q": {"b": [("PY_DDG", "clean", ["ssa"])]}}
-    walks = shortest_walks(adj, "a", "b", None, 10, via=VIA, allow_edge=lambda rel, var: var != "tainted")
+    walks = shortest_walks(adj, "a", "b", None, 10, via=VIA, allow_edge=lambda frm, rel, var: var != "tainted")
     assert [len(w) for w in walks] == [3]
 
 
@@ -58,8 +58,30 @@ def test_a_sanitized_parallel_edge_is_not_reported_as_evidence():
     ``dist[b]`` at 1 no matter which pass filters, so a BFS-only filter cannot fail this case -- only
     the replay's own filter keeps the sanitized label out of the walk it emits as taint evidence.
     """
-    walks = shortest_walks(PARALLEL, "a", "b", None, 10, via=VIA, allow_edge=lambda rel, var: var != "tainted")
+    walks = shortest_walks(PARALLEL, "a", "b", None, 10, via=VIA, allow_edge=lambda frm, rel, var: var != "tainted")
     assert [lab[1] for w in walks for _, lab in w] == ["clean"]
+
+
+#: The same variable name on two different start nodes -- ``a`` is inside the cut's scope, ``s`` is
+#: not. Corrected Ruling B is only observable on a graph like this one; on ``ADJ`` a scoped and an
+#: unscoped predicate agree.
+SCOPED = {
+    "s": {"a": [("PY_DDG", "answer", ["ssa"])]},
+    "a": {"b": [("PY_DDG", "answer", ["ssa"])]},
+}
+
+
+def test_a_variable_cut_is_scoped_to_the_start_nodes_it_names():
+    """The local mirror of the Cypher predicate's ``startNode(r).id STARTS WITH c.prefix``: a cut on
+    ``answer`` written for one callable must not sever the same name elsewhere. Names like
+    ``answer``, ``result`` and ``token`` recur across callables in any real program, so an unscoped
+    local predicate would over-cut -- and over-cutting is a false refutation, which in triage closes
+    a live alert. Only the ``a -> b`` hop is cut here, so the ``s -> b`` walk is 1 hop shorter than
+    it can be reached in, i.e. there is no walk at all."""
+    kept = shortest_walks(SCOPED, "s", "b", None, 10, via=VIA, allow_edge=lambda frm, rel, var: not (var == "answer" and frm.startswith("a")))
+    assert kept == [], "the in-scope hop is the only route, so cutting it leaves nothing"
+    survives = shortest_walks(SCOPED, "s", "b", None, 10, via=VIA, allow_edge=lambda frm, rel, var: not (var == "answer" and frm.startswith("z")))
+    assert [len(w) for w in survives] == [2], "a cut scoped to a callable this walk never enters must sever nothing"
 
 
 def test_a_cut_source_yields_no_walk():
