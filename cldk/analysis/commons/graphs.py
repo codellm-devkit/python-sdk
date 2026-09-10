@@ -271,13 +271,17 @@ def under_callable(node_id: str, callable_ids: Collection[str]) -> bool:
       the bare prefix test accepted. codeanalyzer-typescript's graph was measured the same at 125,532
       body nodes with 0 exceptions (see ``TSNeo4jBackend._OWN_EDGES``, whose ``$bp`` is
       ``node.ref + "@"`` for exactly this reason).
-    * ``q + "/"`` -- everything minted *under* a body node or a nested callable, since a child id is
+    * ``q + "/"`` -- the body nodes of a callable *nested inside* ``q``, since a child id is
       ``parent + "/" + key`` (``reconstruct.child_key`` raises if it is not). This is not a
-      speculative disjunct: a TypeScript call site's port sub-nodes are spelled
-      ``...create@26:5/actual_in:1``, and there are 920 such joins in the one fixture. Dropping it
-      would sever a call site from its own arguments and under-cut every interprocedural cut, so it
-      is here to **preserve** the bare prefix test's reach, exactly as ``resolve_sanitizers``
-      documents a callable cut ("every body node under it").
+      speculative disjunct, and it is the ``@`` disjunct that shows why it is needed separately: a
+      call site's own port sub-nodes (``...create@26:5/actual_in:1``) start with ``create@`` and are
+      already accepted above, but a nested arrow function's are not. Measured on the committed
+      level-4 TypeScript fixture: of the 33 ids that own body nodes, **5 have a ``q + "/"``
+      descendant**, every one an anonymous nested callable --
+      ``...controllers.ts/Controller/<anon@5:10>@entry`` and its four siblings. Dropping this
+      disjunct would leave a callable cut covering the callable but not the closures written inside
+      it, which under-cuts, so it is here to **preserve** the bare prefix test's reach, exactly as
+      ``resolve_sanitizers`` documents a callable cut ("every body node under it").
     """
     return any(node_id == q or node_id.startswith(q + "@") or node_id.startswith(q + "/") for q in callable_ids)
 

@@ -87,6 +87,24 @@ def test_a_python_callable_cut_accepts_exactly_what_the_bare_prefix_test_accepte
         assert under_callable(q + key, [q])
 
 
+def test_a_callable_cut_reaches_a_callable_nested_inside_it():
+    """The ``q + "/"`` disjunct, which is the only one with no other test covering it -- a call
+    site's port sub-node (``create@26:5/actual_in:1``) starts with ``create@`` and so is already
+    accepted by the ``@`` disjunct, meaning deleting ``startswith(q + "/")`` leaves every other
+    assertion in this file green.
+
+    What it actually earns is the closures written *inside* a callable. Measured on the same
+    committed fixture: of the 33 ids that own body nodes, 5 have a ``q + "/"`` descendant and every
+    one is an anonymous nested callable. ``resolve_sanitizers`` documents a callable cut as putting
+    "every body node under it" off-limits, and an arrow function's body nodes are under it -- so
+    without this disjunct a cut would cover ``Controller`` and not the closure it returns, which
+    *under*-cuts and merely over-reports. That is the safe direction, which is exactly why nothing
+    else would have caught its loss."""
+    q = "can://slim/typescript/src/controllers.ts/Controller"
+    for nested in ("/<anon@5:10>", "/<anon@5:10>@entry", "/<anon@5:10>@exit", "/<anon@5:10>@formal_out", "/<anon@5:10>@5:16"):
+        assert under_callable(q + nested, [q]), f"a nested callable's {nested} is under {q}"
+
+
 def test_a_callable_cut_names_the_callable_itself_and_takes_a_list():
     """The ``= q`` disjunct, and that several cuts are tested disjunctively -- ``$cut_callables`` is
     a list, and a node under any member is cut."""
