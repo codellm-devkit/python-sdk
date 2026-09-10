@@ -92,6 +92,11 @@ pytestmark = pytest.mark.skipif(
 SOURCES = [("raw", "scrub"), ("raw", "relay")]
 SINKS = [("cleaned", "run_query"), ("note", "run_query")]
 
+#: The one pair on this fixture with more than one witness, so the only pair whose *ordering* is
+#: observable: ``raw@scrub -> cleaned@run_query`` has two, and they separate in
+#: :func:`~cldk.analysis.python.backend.hop_sort_key` at hop 2 (``<return>`` against ``app::ch.*``).
+CAP_PAIR = ([("raw", "scrub")], [("cleaned", "run_query")])
+
 
 # ``.backend`` and not the facade: ``taint()`` is a backend method until the facade method lands
 # (leg 4b Task 8 -- ``PythonAnalysis`` delegates one accessor at a time, and this is the last one),
@@ -113,8 +118,30 @@ def local():
 
 def _chains(result):
     """A result's witnesses as sorted ``via``-chains -- the vocabulary a caller reads, and the one
-    thing two backends can be compared in without comparing their ids."""
+    thing two backends can be compared in without comparing their ids.
+
+    Sorted, and ``via`` only, so this is **blind to order by construction**: all six witnesses on
+    this fixture share the chain ``("data","data","return","data","data","argument")``. Anything
+    about *which* witness came first has to use :func:`_keys`.
+    """
     return sorted(tuple(h.via for h in p.hops) for p in result.paths)
+
+
+def _keys(result):
+    """A result's witnesses in order, each collapsed to what ``hop_sort_key`` actually ranks on.
+
+    ``(via, var, position)`` per hop -- the triple
+    :func:`~cldk.analysis.python.backend.hop_sort_key` builds, which is what makes a tie-break
+    disagreement between the local replay's ``sorted(..., key=(via, var, to))`` and Cypher's
+    ``ORDER BY length(p), key`` visible. Unsorted, unlike :func:`_chains`: the order *is* the claim.
+
+    The ``can://`` application segment is dropped because the two backends legitimately disagree
+    about it and only about it -- a local run names the application after the project directory
+    (``proj``), and the graph after the ``PyApplication`` it was imported as (``leg4b``) -- so
+    ``ref.split("/", 3)[3]`` keeps the whole addressable position and discards the one field that is
+    a naming fact rather than an ordering one. Everything below it is identical, measured.
+    """
+    return [[(h.via, h.var, h.to.ref.split("/", 3)[3]) for h in p.hops] for p in result.paths]
 
 
 def test_both_backends_agree_on_the_witnesses_and_on_the_refutations(local, graph):
@@ -143,11 +170,19 @@ def test_the_walk_returns_one_row_past_the_cap_so_truncation_is_never_silent(req
     with ``complete=True`` -- a silent bound, which E5 exists to forbid. ``taint()`` cannot detect
     it, so each of the five implementations is tested here or nowhere."""
     backend = request.getfixturevalue(backend_name)
-    pair = ([("raw", "scrub")], [("cleaned", "run_query")])
-    at_one = backend.taint(*pair, max_paths=1)
+    at_one = backend.taint(*CAP_PAIR, max_paths=1)
     assert len(at_one.paths) == 1 and at_one.complete is False
-    at_two = backend.taint(*pair, max_paths=2)
+    at_two = backend.taint(*CAP_PAIR, max_paths=2)
     assert len(at_two.paths) == 2 and at_two.complete is True
+    # *Which* witness survived, not just how many. A cap that kept the other one passes every count
+    # assertion above, and a caller who reads ``paths[0]`` as "the shortest route" reads a walk the
+    # ordering never promised. ``<return>`` is measured, not guessed: hop 2 of the surviving witness
+    # goes out through ``scrub``'s formal_out, and its sibling goes through the module-global
+    # ``app::ch.*`` -- and ``'<'`` sorts before ``'a'``, which is the whole tie-break.
+    assert at_one.paths[0].hops[1].var == "<return>"
+    many = backend.taint(*CAP_PAIR, max_paths=5)
+    assert at_one.paths == many.paths[:1], "the taint cap is not a prefix of one total order"
+    assert len(many.paths) == 2 and many.complete is True
 
 
 @pytest.mark.parametrize("backend_name", ["local", "graph"])
@@ -178,3 +213,20 @@ def test_a_callable_sanitizer_cuts_its_own_pair_and_leaves_the_sibling_alone(req
     # exactly why ``roots`` is what tells two same-named pairs apart.
     assert r.exhausted == [("raw", "note")]
     assert r.complete is True, "one pair refuted and one witnessed is a clean batch"
+
+
+def test_both_backends_rank_the_two_witnesses_the_same_way(local, graph):
+    """The cap test above holds each backend to its own order; nothing yet holds the two to *each
+    other's*.
+
+    Two implementations of one ordering can each be internally consistent and still disagree about
+    a tie -- the local replay sorts branches by ``(via, var, to)`` in Python, the graph sorts whole
+    paths by ``path_order(P)`` in Cypher, and on a tie the two could hand a caller different
+    ``paths[0]`` from the same question. Since ``taint_verdict`` truncates with
+    ``witnesses[:max_paths]``, that disagreement is exactly a disagreement about which witness a
+    capped result reports, and ``_chains`` cannot see it.
+    """
+    got = {name: (_keys(b.taint(*CAP_PAIR, max_paths=1)), _keys(b.taint(*CAP_PAIR, max_paths=5))) for name, b in (("local", local), ("graph", graph))}
+    assert got["local"] == got["graph"], "the two walks rank the same two witnesses differently"
+    capped, full = got["local"]
+    assert len(full) == 2 and capped == full[:1]
