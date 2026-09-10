@@ -32,7 +32,11 @@ body nodes, ``thrown_exceptions`` over ``error_channel``, ``cyclomatic_complexit
 ``refs``, the ``is_*`` type predicates over ``kind`` and the owner chain. What the wire does not
 carry (CRUD) is an empty list, and the facade raises for it (J-4).
 
-``extra="forbid"`` is intentional: drift between the analyzer's JSON and these models fails loudly.
+``extra="ignore"`` since #386: an additive analyzer release is consumable without an SDK edit. What
+that gives up is the drift detector — an unmodelled field is dropped silently, so a field the SDK does
+not declare is unreachable rather than an error. The projections in ``projections.py`` keep
+``extra="forbid"``, because they are constructed by this SDK and never validated from the wire, so
+there strictness guards our own typos rather than the analyzer's additions.
 """
 
 from __future__ import annotations
@@ -46,7 +50,26 @@ from cldk.models.java.enums import CRUDOperationType, CRUDQueryType
 
 
 class _Base(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    #: ``ignore``, not ``forbid`` (#386). An additive analyzer release used to fail the whole payload
+    #: rather than the one field it added: codeanalyzer-java 3.1.2's ``var`` on ``param_in``/
+    #: ``param_out`` produced 2515 validation errors on daytrader8 until ``JParamEdge`` declared it,
+    #: for a change that was backward compatible by construction. Uptake should not require an SDK
+    #: edit before anything parses.
+    #:
+    #: What this gives up is the drift detector. ``forbid`` was what surfaced that ``var`` within
+    #: seconds of the pin bump; under ``ignore`` the same addition is absorbed silently and the first
+    #: symptom is a wrong answer from something reading a field the SDK never learned. The intended
+    #: replacement is a comparison against each analyzer's published schema in ``codeanalyzer-schema``
+    #: — reporting what is unmodelled instead of refusing to parse — which is tracked separately.
+    #:
+    #: ``ignore`` rather than ``allow`` on purpose: ``allow`` keeps unknown fields in ``model_extra``
+    #: and so widens ``model_dump_json()`` with whatever the analyzer emitted, and several tests
+    #: assert properties *of* dumps (E6's ``"can://" not in ...model_dump_json()``). A field the SDK
+    #: does not model must not be able to change what a dump contains.
+    #:
+    #: A declared field is therefore the only way a value is reachable. Relaxing this does not make
+    #: the explicit ones redundant — it makes them load-bearing.
+    model_config = ConfigDict(extra="ignore")
 
 
 # ----------------------------------------------------------------------------------------------
@@ -653,7 +676,9 @@ class JCompilationUnit(_Node):
     :class:`JImport` records, exposed as :attr:`import_declarations`; the 1.x ``imports`` (a list of
     paths) is the property of that name."""
 
-    model_config = ConfigDict(extra="forbid", validate_by_name=True, validate_by_alias=True, serialize_by_alias=True)
+    #: Overrides ``_Base`` entirely, so it needs its own ``ignore`` (#386) — a subclass
+    #: ``model_config`` replaces rather than merges, and this one is here for the alias settings.
+    model_config = ConfigDict(extra="ignore", validate_by_name=True, validate_by_alias=True, serialize_by_alias=True)
 
     kind: Literal["module"] = "module"
     span: JSpan
