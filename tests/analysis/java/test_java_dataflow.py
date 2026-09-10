@@ -36,6 +36,7 @@ are in this fixture, so ``get_ddg`` is asserted to contain them: the shape canno
 
 import inspect
 import json
+import re
 from collections import Counter
 
 import pytest
@@ -46,7 +47,7 @@ from cldk.analysis.java.backend import JavaAnalysisBackend
 from cldk.analysis.java.java_analysis import JavaAnalysis
 from cldk.analysis.python.backend import PythonAnalysisBackend
 from cldk.analysis.python.python_analysis import PythonAnalysis
-from cldk.models.java.models import JCdgEdge, JCfgEdge, JDdgEdge, JParamEdge
+from cldk.models.java.models import JCdgEdge, JCfgEdge, JDdgEdge
 from cldk.utils.exceptions import AmbiguousName, SelectorNotInGraph
 from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException, CodeanalyzerUsageException
 
@@ -686,7 +687,40 @@ def test_taint_refuses_while_the_port_lattice_carries_no_dependence_edge(disconn
         disconnected.taint(TAINT_SOURCES, TAINT_SINKS)
 
 
-def test_a_java_param_edge_carries_the_variable_the_analyzer_put_on_it(ref):
+def _with_param_vars(payload: str) -> str:
+    """The same fixture with a ``var`` on every ``param_in``/``param_out`` edge -- the shape
+    codeanalyzer-java 3.1.2 (codeanalyzer-java#250) emits and this fixture, at 3.1.0, does not.
+
+    Built by **addition** the way :func:`_without_port_crossings` is built by subtraction, and for
+    the same reason: the shape under test has to come from the real payload rather than from a
+    hand-written one, so a regeneration that changes what is being added fails the count below.
+
+    The name written on each edge is the formal position its own endpoint already spells --
+    ``@formal_in:0`` becomes ``p0``, ``@formal_out`` becomes ``ret`` -- so a label that reached the
+    adjacency off the *wrong* edge shows up as the wrong name rather than as a name that is merely
+    present. All 355 endpoints spell one, asserted rather than assumed.
+    """
+    payload_json = json.loads(payload)
+    application = payload_json["application"]
+    named = 0
+    for edge in application["param_in"]:
+        edge["var"] = "p" + re.search(r"@formal_in:(\d+)$", edge["dst"]).group(1)
+        named += 1
+    for edge in application["param_out"]:
+        assert edge["src"].endswith("@formal_out"), f"a param_out edge starting somewhere other than a formal_out: {edge['src']}"
+        edge["var"] = "ret"
+        named += 1
+    assert named == 355, f"the 3.1.2 shape names all 355 param edges, not {named}"
+    return json.dumps(payload_json)
+
+
+@pytest.fixture(scope="module")
+def param_vars(analysis_json_a4):
+    """The local backend over a payload shaped like codeanalyzer-java 3.1.2's."""
+    return _local(_with_param_vars(analysis_json_a4))
+
+
+def test_a_java_param_edge_carries_the_variable_the_analyzer_put_on_it(ref, param_vars):
     """``J_PARAM_IN``/``J_PARAM_OUT`` must reach the adjacency with whatever ``var`` the payload put
     on them. This backend hardcoded ``None``, which was true until codeanalyzer-java 3.1.2
     (codeanalyzer-java#250) added the property, and became a lie that cost two things:
@@ -695,17 +729,54 @@ def test_a_java_param_edge_carries_the_variable_the_analyzer_put_on_it(ref):
     ``var == c["var"]`` could never match a param edge, so a scoped variable cut was structurally
     incapable of cutting at a call boundary.
 
-    **This fixture cannot witness the fix.** It was emitted by 3.1.0, whose 258 ``param_in`` and 97
-    ``param_out`` edges carry no ``var`` key at all, so the assertion is what the *plumbing* does
-    with an edge that has one -- built here rather than measured, and honest about which. Whether the
-    pinned analyzer writes ``var`` in practice is unverified in this repo: there is no jar and no JVM.
+    **This fixture cannot witness the fix**, so the fix is witnessed on a payload built from it:
+    a4 was emitted by 3.1.0, whose 258 ``param_in`` and 97 ``param_out`` edges carry no ``var`` key
+    at all, and :func:`_with_param_vars` writes the ones 3.1.2 would. What runs is the real
+    ``getattr(e, "var", None)`` at ``JCodeanalyzer._sdg``, not a constructed label: the count and the
+    name of every param edge in the adjacency come back out of the traversal, and the consumer the
+    hardcoded ``None`` blinded -- ``_edge_vars_in`` -- gains exactly the two crossing names ``sell``
+    scopes and nothing else. Whether the pinned analyzer writes ``var`` in practice is unverified in
+    this repo: there is no jar and no JVM.
     """
-    adjacency = ref._sdg()[0]["forward"]
-    params = [(rel, var) for outs in adjacency.values() for labels in outs.values() for rel, var, _prov in labels if rel.startswith("J_PARAM")]
-    assert len(params) == 355, "a4 was emitted by 3.1.0: 258 param_in + 97 param_out, none carrying a var"
-    assert all(var is None for _rel, var in params), "this fixture's param edges carry no var; the next assertion is the plumbing, not the data"
-    edge = JParamEdge(src="a", dst="b", var="conn")
-    assert (getattr(edge, "var", None), tuple(getattr(edge, "prov", None) or ())) == ("conn", ()), "the label the adjacency stores for a 3.1.2 param edge"
+    old_labels = [(rel, var) for outs in ref._sdg()[0]["forward"].values() for labels in outs.values() for rel, var, _prov in labels if rel.startswith("J_PARAM")]
+    assert len(old_labels) == 355, "a4 was emitted by 3.1.0: 258 param_in + 97 param_out, none carrying a var"
+    assert all(var is None for _rel, var in old_labels), "this fixture's param edges carry no var; what follows is asserted on the 3.1.2 shape"
+
+    new_labels = [(rel, var) for outs in param_vars._sdg()[0]["forward"].values() for labels in outs.values() for rel, var, _prov in labels if rel.startswith("J_PARAM")]
+    assert Counter(new_labels) == {
+        ("J_PARAM_IN", "p0"): 157,
+        ("J_PARAM_IN", "p1"): 83,
+        ("J_PARAM_IN", "p2"): 8,
+        ("J_PARAM_IN", "p3"): 6,
+        ("J_PARAM_IN", "p4"): 4,
+        ("J_PARAM_OUT", "ret"): 97,
+    }, "every param edge reaches the adjacency under its own formal's name"
+
+    scope = ref.resolve_callable(SELL).ref
+    assert param_vars._edge_vars_in(scope) - ref._edge_vars_in(scope) == {"p0", "p1"}, "sell's 12 crossings bind two distinct formals, and a sanitizer can now name either"
+
+
+def test_a_java_variable_cut_severs_a_call_boundary_and_only_the_scope_that_named_it(ref, param_vars):
+    """The payoff, end to end: the scoped variable cut over a hop that *is* a call boundary. On the
+    3.1.0 shape ``("p0", BUY)`` is refused as nonexistent -- ``_edge_vars_in`` cannot see a name that
+    reached the adjacency as ``None`` -- which is Ruling A refusing a real dataflow variable, the
+    exact failure the hardcoded ``None`` caused. On the 3.1.2 shape the same cut severs ``buy``'s
+    ``J_PARAM_IN`` crossings and takes both of its pairs from 6 witnesses to ``exhausted``.
+
+    ``completeOrder``'s 3 witnesses are untouched, and cutting ``p0`` *under* ``completeOrder``
+    changes nothing at all: ``allow_edge`` reads the hop's start node, so a cut severs only the
+    callable the caller scoped it to. That is what separates a scoped cut from a cut on every param
+    hop in the application -- and over-cutting is the one error this instrument must not make."""
+    with pytest.raises(SelectorNotInGraph, match="'p0'"):
+        ref.taint(TAINT_SOURCES, TAINT_SINKS, sanitizers=[("p0", BUY)], max_paths=10)
+
+    assert len(param_vars.taint(TAINT_SOURCES, TAINT_SINKS, max_paths=10).paths) == 9, "naming the param vars changes no unsanitized answer"
+    cut = param_vars.taint(TAINT_SOURCES, TAINT_SINKS, sanitizers=[("p0", BUY)], max_paths=10)
+    assert len(cut.paths) == 3 and {p.hops[0].frm.callable for p in cut.paths} == {COMPLETE_ORDER}
+    assert cut.exhausted == [("orderProcessingMode", "inGlobalTxn"), ("orderProcessingMode", "conn")] and cut.complete is True
+
+    elsewhere = param_vars.taint(TAINT_SOURCES, TAINT_SINKS, sanitizers=[("p0", COMPLETE_ORDER)], max_paths=10)
+    assert len(elsewhere.paths) == 9 and elsewhere.exhausted == [], "the same name under another scope cuts nothing"
 
 
 def test_the_local_java_walk_finds_the_measured_witnesses_and_refutes_nothing(ref):
