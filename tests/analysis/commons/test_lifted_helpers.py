@@ -351,6 +351,23 @@ def test_the_taint_query_uses_callables_not_string_replace():
     assert "AND b.id STARTS WITH $prefix" in q
 
 
+def test_the_taint_query_delimits_the_callable_cut_rather_than_bare_prefixing_it():
+    """The Cypher half of :func:`~cldk.analysis.commons.graphs.under_callable`, asserted here so the
+    two halves cannot drift: a TypeScript callable id has no closing delimiter, so a bare
+    ``n.id STARTS WITH q`` cuts ``createGuest`` when the caller named ``create`` -- 13 real ids in
+    the committed level-4 TypeScript fixture. Over-cutting adds pairs to ``exhausted``, which
+    certifies that no flow exists, so it is a false refutation and not a conservative default."""
+    from cldk.analysis.commons.graphs import sdg_taint_query
+
+    q = sdg_taint_query("PY", node_label="PyBodyNode", projection="ref: n.id")
+    assert "n.id STARTS WITH q)" not in q, "a bare prefix test over-cuts every sibling callable"
+    for disjunct in ("n.id = q", "n.id STARTS WITH q + '@'", "n.id STARTS WITH q + '/'"):
+        assert disjunct in q, f"the callable cut lost its {disjunct!r} disjunct"
+    for disjunct in ("startNode(r).id = c.prefix", "startNode(r).id STARTS WITH c.prefix + '@'", "startNode(r).id STARTS WITH c.prefix + '/'"):
+        assert disjunct in q, f"the variable cut's scope lost its {disjunct!r} disjunct"
+    assert "STARTS WITH c.prefix)" not in q, "the variable cut's scope is still a bare prefix test"
+
+
 def test_the_taint_query_still_formats():
     from cldk.analysis.commons.graphs import sdg_rel_pattern, sdg_taint_query
 

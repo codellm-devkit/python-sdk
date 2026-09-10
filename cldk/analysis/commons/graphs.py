@@ -24,7 +24,7 @@ backend binds each once and hands the bound object down.
 
 from __future__ import annotations
 
-from typing import Callable, Dict, Iterable, List, Literal, Mapping, Sequence, Tuple
+from typing import Callable, Collection, Dict, Iterable, List, Literal, Mapping, Sequence, Tuple
 
 import networkx as nx
 
@@ -240,6 +240,48 @@ def sdg_path_query(P: str, *, node_label: str, endpoint_scope: Callable[[str], s
     )
 
 
+def under_callable(node_id: str, callable_ids: Collection[str]) -> bool:
+    """Whether ``node_id`` names one of ``callable_ids``, one of its body nodes, or one of a
+    callable nested inside it -- the Python mirror of :func:`sdg_taint_query`'s ``$cut_callables``
+    predicate, and the one place either half of that predicate is written.
+
+    **A bare ``node_id.startswith(q)`` is wrong, and only visibly wrong in one language.** A Python
+    callable id ends in ``)`` and so does a Java one, so a prefix test on those is self-delimiting by
+    accident -- measured on the committed daytrader8 level-4 fixture: of 444 delimiter-free ids every
+    callable-shaped one ends ``)``, and ``<init>()`` is not a prefix of
+    ``<init>(java.math.BigDecimal, ...)`` because the ``)`` falls where the other has ``j``. A
+    TypeScript callable id carries no closing delimiter at all
+    (``can://slim/typescript/src/services.ts/UserService/create``), so a bare prefix test written for
+    ``create`` also matches every id belonging to ``createGuest`` -- 13 of them in the committed
+    level-4 TypeScript fixture, alongside a second collision (``User`` / ``UserId``). That over-cuts:
+    paths a caller never sanitized disappear, the pair joins ``exhausted``, and ``exhausted`` is a
+    *certificate that no flow exists*. Over-cutting is therefore a false refutation -- the one output
+    ``taint()`` exists to refuse -- while under-cutting merely over-reports. The two directions are
+    not symmetric, so do not simplify this back to one ``startswith``.
+
+    Three disjuncts, each earning its place. The joiner histogram over every longer id starting with
+    a delimiter-free id in that TypeScript fixture is ``{'/': 920, '@': 254, 'G': 13, 'I': 1}``: the
+    two joiners are what the disjuncts accept, and the ``G`` and ``I`` are exactly the collisions
+    they now reject.
+
+    * ``node_id == q`` -- the callable's own node. Unreachable under a body-node ``MATCH`` and free,
+      but it is what "under this callable" means, so it is written rather than assumed away.
+    * ``q + "@"`` -- its body nodes. On the leg-4b Python fixture all 69 ``PY_HAS_BODY_NODE`` children
+      join with ``@`` and none joins any other way, so on Python this predicate accepts exactly what
+      the bare prefix test accepted. codeanalyzer-typescript's graph was measured the same at 125,532
+      body nodes with 0 exceptions (see ``TSNeo4jBackend._OWN_EDGES``, whose ``$bp`` is
+      ``node.ref + "@"`` for exactly this reason).
+    * ``q + "/"`` -- everything minted *under* a body node or a nested callable, since a child id is
+      ``parent + "/" + key`` (``reconstruct.child_key`` raises if it is not). This is not a
+      speculative disjunct: a TypeScript call site's port sub-nodes are spelled
+      ``...create@26:5/actual_in:1``, and there are 920 such joins in the one fixture. Dropping it
+      would sever a call site from its own arguments and under-cut every interprocedural cut, so it
+      is here to **preserve** the bare prefix test's reach, exactly as ``resolve_sanitizers``
+      documents a callable cut ("every body node under it").
+    """
+    return any(node_id == q or node_id.startswith(q + "@") or node_id.startswith(q + "/") for q in callable_ids)
+
+
 def sdg_taint_query(P: str, *, node_label: str, endpoint_scope: Callable[[str], str] | None = None, interior_scope: Callable[[str], str] | None = None, projection: str, rel_var: str = "r") -> str:
     """The multi-source, multi-sink shortest-path statement behind ``taint()``.
 
@@ -248,8 +290,10 @@ def sdg_taint_query(P: str, *, node_label: str, endpoint_scope: Callable[[str], 
     * ``$srcs`` / ``$dsts`` are lists, not a single ``$src`` / ``$dst``, so m sources against n
       sinks is one round trip and one traversal per pair rather than m*n statements.
     * A sanitizer cut lives **inside** the pattern -- ``$cut_callables`` (a list of ``can://``
-      prefixes; a body-node id *is* ``<callable id>@<local key>``, so cutting a callable is a
-      prefix test and needs no join) and ``$cuts`` (a list of ``{var, prefix}`` maps) -- rather
+      callable ids, tested with the three disjuncts :func:`under_callable` documents rather than a
+      bare ``STARTS WITH``, so a cut named ``create`` cannot also sever ``createGuest``; no join is
+      needed either way, because a body node's id is minted under its callable's) and ``$cuts``
+      (a list of ``{var, prefix}`` maps) -- rather
       than being applied to the rows a first, unfiltered match returns. Measured on Neo4j 5.26.30:
       an ``all()`` over ``relationships(p)`` inlines into the ``ShortestPath`` operator, so the
       search itself returns the shortest *unsanitized* path. Filtering afterwards would report no
@@ -313,10 +357,13 @@ def sdg_taint_query(P: str, *, node_label: str, endpoint_scope: Callable[[str], 
         f"MATCH (a:{node_label}) WHERE a.id IN $srcs{a_scope} "
         f"MATCH (b:{node_label}) WHERE b.id IN $dsts{b_scope} "
         "MATCH p = allShortestPaths((a)-[:{rels}*1..{depth}]->(b)) "
-        "WHERE all(n IN nodes(p) WHERE NOT any(q IN $cut_callables WHERE n.id STARTS WITH q))"
+        "WHERE all(n IN nodes(p) WHERE NOT any(q IN $cut_callables WHERE "
+        "n.id = q OR n.id STARTS WITH q + '@' OR n.id STARTS WITH q + '/'))"
         + interior + " "
         f"AND all({rel_var} IN relationships(p) WHERE NOT any(c IN $cuts WHERE "
-        f"coalesce({rel_var}.var, '') = c.var AND startNode({rel_var}).id STARTS WITH c.prefix)) "
+        f"coalesce({rel_var}.var, '') = c.var AND (startNode({rel_var}).id = c.prefix "
+        f"OR startNode({rel_var}).id STARTS WITH c.prefix + '@' "
+        f"OR startNode({rel_var}).id STARTS WITH c.prefix + '/'))) "
         "WITH a, b, p, " + path_order(P) + " AS key ORDER BY length(p), key "
         "WITH a, b, collect(p)[0..$cap] AS ps "
         "UNWIND ps AS p "

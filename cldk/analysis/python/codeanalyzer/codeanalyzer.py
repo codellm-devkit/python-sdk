@@ -61,7 +61,7 @@ from codeanalyzer.options import AnalysisOptions, EmitTarget
 from codeanalyzer.schema import Analysis, model_dump_json
 
 from cldk.analysis import AnalysisLevel
-from cldk.analysis.commons.graphs import call_reaches
+from cldk.analysis.commons.graphs import call_reaches, under_callable
 from cldk.analysis.commons.levels import ANALYZER_LEVELS, LEVEL_NAMES, analyzer_level
 from cldk.analysis.commons.resolve import CallableCandidate, body_node_kind, resolve_callable_signature, resolve_value_name, resolve_within, value_candidate
 from cldk.analysis.commons.results import BodyRef, CallableRef, Diagnostic, EdgePage, EntrypointCoverage, FlowPaths, LocateResult, ModuleRef, Slice, SliceNode, TypeRef
@@ -1463,8 +1463,8 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         """
         self._require_dataflow()
         adjacency, nodes = self._sdg()
-        allow_node = (lambda nid: not any(nid.startswith(q) for q in cut_callables)) if cut_callables else None
-        allow_edge = (lambda frm, _rel, var: not any(var == c["var"] and frm.startswith(c["prefix"]) for c in cuts)) if cuts else None
+        allow_node = (lambda nid: not under_callable(nid, cut_callables)) if cut_callables else None
+        allow_edge = (lambda frm, _rel, var: not any(var == c["var"] and under_callable(frm, (c["prefix"],)) for c in cuts)) if cuts else None
         pairs: Dict[Tuple[str, str], SliceNode] = {}
         for a in srcs:
             for b in dsts:

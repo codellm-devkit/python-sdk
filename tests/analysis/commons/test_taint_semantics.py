@@ -1,7 +1,7 @@
 # tests/analysis/commons/test_taint_semantics.py
 import pytest
 
-from cldk.analysis.commons.graphs import shortest_walks, via_table
+from cldk.analysis.commons.graphs import shortest_walks, under_callable, via_table
 from cldk.analysis.commons.resolve import resolve_sanitizers
 from cldk.analysis.commons.results import Diagnostic, TaintResult
 from cldk.utils.exceptions.exceptions import SelectorNotInGraph
@@ -43,6 +43,56 @@ def test_a_node_cut_removes_a_whole_callable():
     """The callable-granular sanitizer: every body node under the callable's id prefix is cut."""
     walks = shortest_walks(ADJ, "a", "b", None, 10, via=VIA, allow_node=lambda nid: not nid.startswith("m"))
     assert [len(w) for w in walks] == [3]
+
+
+# ----------------------------------------------------------------------------------------------
+# The callable-cut predicate itself. The three tests above pass their OWN ``startswith`` lambdas,
+# so they exercise ``shortest_walks``' plumbing and never the predicate the backends actually use;
+# ``under_callable`` is that predicate, and these two are its only coverage.
+# ----------------------------------------------------------------------------------------------
+#: Real ids, out of the committed level-4 TypeScript fixture
+#: (``tests/resources/typescript/analysis_json/v2/a4/analysis.json``, app ``slim``). A TypeScript
+#: callable id ends in the bare member name with no delimiter, so ``create`` is a strict prefix of
+#: ``createGuest`` -- and 13 ids in that one fixture begin with ``create`` while belonging to
+#: ``createGuest``. Measured joiners over every longer id starting with an ``@``-free id:
+#: ``{'/': 920, '@': 254, 'G': 13, 'I': 1}`` -- the ``G`` and the ``I`` are the two collisions
+#: (``create``/``createGuest`` and ``User``/``UserId``), the ``@`` and ``/`` are the real joins.
+_CREATE = "can://slim/typescript/src/services.ts/UserService/create"
+_CREATE_GUEST = "can://slim/typescript/src/services.ts/UserService/createGuest"
+
+
+def test_a_callable_cut_does_not_reach_a_callable_whose_name_merely_starts_with_it():
+    """The over-cut, in real analyzer output rather than a constructed pair. A TypeScript callable id
+    carries no closing delimiter, so a bare prefix test written for ``create`` also cuts every body
+    node of ``createGuest``. Cutting more than the caller named removes paths; removing paths adds
+    the pair to ``exhausted``; ``exhausted`` certifies that *no flow exists*. So over-cutting is a
+    false refutation -- the one output this accessor exists to refuse -- while under-cutting merely
+    over-reports. Python and Java ids end in ``)`` and hide this entirely (measured on daytrader8:
+    444 ``@``-free ids, all callable-shaped ones ending ``)``, and ``<init>()`` is not a prefix of
+    ``<init>(java.math.BigDecimal, ...)``), which is why the predicate is shared: it has to hold for
+    the language that does not hide it."""
+    assert under_callable(_CREATE + "@26:5", [_CREATE]), "its own body node"
+    assert under_callable(_CREATE + "@26:5/actual_in:1", [_CREATE]), "a call site's port sub-node"
+    assert not under_callable(_CREATE_GUEST, [_CREATE]), "a sibling callable is not under it"
+    assert not under_callable(_CREATE_GUEST + "@32:5", [_CREATE]), "nor is that sibling's body"
+    assert not under_callable(_CREATE_GUEST + "@32:5/actual_out", [_CREATE])
+    assert under_callable(_CREATE_GUEST + "@32:5", [_CREATE_GUEST]), "the cut it was named for holds"
+
+
+def test_a_python_callable_cut_accepts_exactly_what_the_bare_prefix_test_accepted():
+    """Measured on the leg-4b fixture: all 69 body nodes join with ``@``, so the narrowing is
+    behaviour-preserving on the one language that has a live graph to measure."""
+    q = "can://leg4b/python/app.py/scrub(raw)"
+    for key in ("@entry", "@exit", "@formal_in:0", "@32:8"):
+        assert under_callable(q + key, [q])
+
+
+def test_a_callable_cut_names_the_callable_itself_and_takes_a_list():
+    """The ``= q`` disjunct, and that several cuts are tested disjunctively -- ``$cut_callables`` is
+    a list, and a node under any member is cut."""
+    assert under_callable(_CREATE, [_CREATE])
+    assert under_callable(_CREATE_GUEST + "@32:5", [_CREATE, _CREATE_GUEST])
+    assert not under_callable(_CREATE_GUEST + "@32:5", [])
 
 
 PARALLEL = {"a": {"b": [("PY_DDG", "tainted", ["ssa"]), ("PY_DDG", "clean", ["ssa"])]}}
