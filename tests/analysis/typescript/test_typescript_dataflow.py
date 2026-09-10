@@ -312,8 +312,9 @@ def test_every_predicate_and_path_accessor_type_checks_depth(ts):
 # alert on a live flow. Every assertion below is therefore two-sided: the cut severed what it named
 # *and* left alone what it did not.
 #
-# No graph and no container; only the a4 fixture the rest of this file already uses. ``taint`` is
-# not on the facade yet, so the backend is called directly. Every number was derived by walking
+# No graph and no container; only the a4 fixture the rest of this file already uses. The backend is
+# called directly even though ``TypeScriptAnalysis.taint`` now exists, because that is what the rest
+# of this file does and the walk is the subject. Every number was derived by walking
 # ``analysis.json``'s ``ddg``/``cdg``/``summary`` lists and the application's ``param_in``/
 # ``param_out`` overlays through ``shortest_walks`` -- never by running ``_taint_walk`` and copying
 # what it printed.

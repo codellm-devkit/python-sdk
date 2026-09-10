@@ -121,9 +121,13 @@ SINKS = [("cleaned", "run_query"), ("note", "run_query")]
 CAP_PAIR = ([("raw", "scrub")], [("cleaned", "run_query")])
 
 
-# ``.backend`` and not the facade: ``taint()`` is a backend method until the facade method lands
-# (leg 4b Task 8 -- ``PythonAnalysis`` delegates one accessor at a time, and this is the last one),
-# and a suite that waited for the delegation would leave the two walks untested in between.
+# ``.backend`` and not the facade, now that ``PythonAnalysis.taint`` exists (it landed in leg 4b's
+# Task 8): the claim these fixtures exist to support is that the two *walks* agree, and
+# :func:`test_both_backends_agree_on_the_witnesses_and_on_the_refutations` can only make it by
+# calling the same method on both. A facade wraps one backend, so the pair has to be two backends;
+# putting the facade on one side would compare a delegation against a direct call. What the facade
+# adds over what is called here is one ``self.backend.taint(...)`` line, pinned by
+# ``test_the_facade_passes_the_call_through_unchanged`` in ``tests/analysis/python/test_python_taint.py``.
 @pytest.fixture(scope="module")
 def graph():
     """The fixture graph, attached. Module-scoped: attaching runs three probes and a module load."""

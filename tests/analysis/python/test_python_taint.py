@@ -24,10 +24,13 @@ rather than raised; a bounded ``depth`` yields no ``exhausted`` pair), and the t
 conditions of ``exhausted``.
 """
 
+import inspect
+
 import pytest
 
 from cldk.analysis.commons.results import Diagnostic, FlowPath, PathHop, SliceNode
 from cldk.analysis.python.backend import PythonAnalysisBackend
+from cldk.analysis.python.python_analysis import PythonAnalysis
 from cldk.utils.exceptions.exceptions import SelectorNotInGraph
 
 
@@ -289,3 +292,24 @@ def test_the_two_walk_hooks_are_abstract_methods():
     with pytest.raises(TypeError) as err:
         type("_NoWalk", (PythonAnalysisBackend,), {})()
     assert "_taint_walk" in str(err.value) and "_edge_vars_in" in str(err.value)
+
+
+def test_the_facade_passes_the_call_through_unchanged():
+    """``PythonAnalysis.taint`` is one delegating line, and Python is the facade the other two mirror
+    signature-for-signature (``test_typescript_public_surface`` asserts that mirror against *this*
+    class). So a drift here moves all three at once and the mirror test stays green -- which is why
+    the origin needs its own pin, and why this asserts the arguments *arrive*, not just the signature.
+
+    A bare object for the backend, not a ``_Recording``: what is under test is the delegation, and a
+    real backend would only add a way for it to fail for another reason.
+    """
+    seen = {}
+    facade = PythonAnalysis.__new__(PythonAnalysis)
+    facade.backend = type("_B", (), {"taint": lambda _s, *a, **k: seen.update(args=a, kwargs=k) or "verdict"})()
+    assert facade.taint([("x", "f")], [("y", "g")], ["scrub"], depth=3, max_paths=2) == "verdict"
+    assert seen == {"args": ([("x", "f")], [("y", "g")], ["scrub"]), "kwargs": {"depth": 3, "max_paths": 2}}
+    assert str(inspect.signature(PythonAnalysis.taint)) == (
+        "(self, sources: 'Sequence[Tuple[str, str]]', sinks: 'Sequence[Tuple[str, str]]', "
+        "sanitizers: 'Sequence[Tuple[str, str] | str]' = (), *, depth: 'int | None' = None, "
+        "max_paths: 'int' = 10) -> 'TaintResult'"
+    )

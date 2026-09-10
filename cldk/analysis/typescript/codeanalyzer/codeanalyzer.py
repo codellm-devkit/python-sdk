@@ -1352,9 +1352,12 @@ class TSCodeanalyzer(TSAnalysisBackend):
         """The sanitized shortest walks, in process (see :meth:`TSAnalysisBackend._taint_walk`).
 
         ``self._require_dataflow()`` first, per Ruling F and :meth:`TSAnalysisBackend.taint`'s own
-        note: the level gate is a local backend's to ask, and asking it after resolution would mean
-        a level-2 analysis hearing "no such value" from ``resolve_value`` rather than "rebuild at
-        level 4".
+        note: the level gate is a local backend's to ask, because the graph backends have no level to
+        measure. It is first so that a *direct* call to this hook is diagnosed by level rather than by
+        an empty walk. Through ``taint()`` it never fires -- resolution runs before the walk and the
+        ports it addresses exist only at level 4, so a shallow caller hears ``SelectorNotInGraph``
+        naming their value instead. Python's :meth:`~cldk.analysis.python.backend.PythonAnalysisBackend.taint`
+        docstring carries the whole argument, including why the unreachable gate is still worth having.
 
         One :func:`~cldk.analysis.commons.graphs.shortest_walks` call **per pair**, which is what
         makes ``max_paths + 1`` a per-pair cap here the way ``collect(p)[0..$cap]`` is one over

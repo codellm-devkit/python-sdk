@@ -1345,6 +1345,34 @@ TAINT_SINKS = [("cleaned", "run_query"), ("note", "run_query")]
 TAINT_PAIR = ([("raw", "scrub")], [("cleaned", "run_query")])
 
 
+@pytest.fixture(scope="module", params=[AnalysisLevel.call_graph, AnalysisLevel.program_dependency_graph], ids=["l2", "l3"])
+def taint_shallow(request, two_route_project, tmp_path_factory) -> PyCodeanalyzer:
+    """The taint project at each level below the one its ports need."""
+    return _backend(two_route_project, tmp_path_factory.mktemp(f"cache-shallow-{request.param.name}"), request.param)
+
+
+def test_a_shallow_analysis_is_refused_by_resolution_before_the_walks_gate(taint_shallow):
+    """What a below-level-4 caller of ``taint()`` actually hears, measured rather than assumed.
+
+    ``_taint_walk`` opens with ``_require_dataflow()``, and
+    :func:`test_the_local_taint_walk_opens_with_the_same_level_gate` shows it firing -- but only
+    because it calls the hook directly. Through ``taint()`` the two ``resolve_value`` calls come
+    first, and the ``formal_in`` ports they address are emitted only at level 4, so both levels below
+    it are refused by *name* instead. Level 3 is included deliberately: it satisfies the gate and
+    still cannot resolve, which is the whole reason the gate's threshold is not what protects this
+    surface.
+
+    So the gate is unreachable through the public method today. It stays because resolution's
+    strictness is not a contract -- Java's ``resolve_value`` already has a parameter-list fallback
+    that answers below level 4 -- and a level-3 batch that got past resolution would walk a port-less
+    SDG and put every pair in ``exhausted``.
+    """
+    with pytest.raises(SelectorNotInGraph) as e:
+        taint_shallow.taint(TAINT_SOURCES, TAINT_SINKS)
+    assert "raw" in str(e.value), "refused by name, not by level"
+    assert "program_dependency_graph" not in str(e.value), "a level diagnosis here would mean the gate had fired"
+
+
 def test_the_local_walk_finds_the_measured_witnesses_and_refutes_nothing(taint_l4):
     """The anchor the rest of this group narrows: 2 + 2 + 1 + 1 witnesses over four pairs, each
     crossing two call boundaries in both directions. A walk that stopped at a call boundary would

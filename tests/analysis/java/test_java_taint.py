@@ -27,13 +27,14 @@ Java's extra clause is the gate: ``_require_connected_ports`` sits *after* resol
 with a typo hears about their typo and not about a gap in the analysis.
 
 The last group is the **graph** backend's half of the walk, over a fake driver rather than a server,
-and it is worth saying plainly what that can and cannot prove. There is no live Java graph in this
-repo's verification set, so what is pinned is the statement text ``sdg_taint_query`` built, the
-parameters bound to it (``cap = max_paths + 1``, the application scope prefix, the two cut lists) and
-the translation of canned rows into witnesses through the same ``_body_slice_node`` the slice uses.
-It proves nothing about what Cypher *does* with that statement -- that the cut inlines into
-``ShortestPath``, that ``allShortestPaths`` returns what the design assumes. Only
-``tests/analysis/python/test_python_taint_live.py`` proves that, and only for Python.
+and it is worth saying plainly what that can and cannot prove. What is pinned here is the statement
+text ``sdg_taint_query`` built, the parameters bound to it (``cap = max_paths + 1``, the application
+scope prefix, the two cut lists) and the translation of canned rows into witnesses through the same
+``_body_slice_node`` the slice uses. It proves nothing about what Cypher *does* with that statement
+-- that the cut inlines into ``ShortestPath``, that ``allShortestPaths`` returns what the design
+assumes. ``tests/analysis/java/test_java_taint_live.py`` proves that, on daytrader8, and it skips
+whenever no server at ``CLDK_TEST_JTAINT_NEO4J_URI`` holds that application -- which is why this
+module exists rather than being folded into it: this one always runs.
 """
 
 import pytest
@@ -73,10 +74,10 @@ class _Recording(JavaAnalysisBackend):
 
     ``__abstractmethods__`` is cleared below rather than the other fifty-odd methods being stubbed:
     what is under test is one concrete body, and anything else this backend could answer would only
-    be a way for these tests to fail for an unrelated reason. ``_ports_carry_dependence`` and
-    ``_ports_carry_dependence`` stays a property because the real one is (a plain attribute would
-    not shadow a data descriptor at all), and ``_application_name`` is a bare string because the real
-    property reads an application view this fake does not have.
+    be a way for these tests to fail for an unrelated reason. ``_ports_carry_dependence`` stays a
+    property because the real one is -- a plain attribute would not shadow a data descriptor at all,
+    so a fake that used one would read the real property and hit the missing application view --
+    while ``_application_name`` is a bare string precisely because the real property reads that view.
     """
 
     _application_name = "acme"

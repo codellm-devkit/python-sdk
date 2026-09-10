@@ -1093,6 +1093,17 @@ class PythonAnalysisBackend(AnalysisBackend[PyApplication, PyModule, PyClass, Py
         :meth:`_taint_walk` opens with it rather than this body asking every backend a question two
         of them cannot answer.
 
+        What that gate does **not** do is diagnose a shallow analysis for this method, and the reason
+        is the two ``resolve_value`` lines below it: the ports this surface addresses are emitted only
+        at level 4, so a level-2 or level-3 caller is refused *there*, by name, with
+        ``SelectorNotInGraph`` -- measured, in
+        ``test_a_shallow_analysis_is_refused_by_resolution_before_the_walks_gate``. So the gate is
+        unreachable through this method today, and its threshold (level 3) is one level below what a
+        walk over ports actually needs. Both are load-bearing the day ``resolve_value`` gains a
+        fallback that answers below level 4 -- Java has one, which is why Java also measures the port
+        lattice with ``_require_connected_ports`` -- because a level-3 batch that got past resolution
+        would walk a port-less SDG and certify **every** pair as ``exhausted``.
+
         Args:
             sources: The values taint enters at, each ``(name, within)`` -- the addressing
                 :meth:`resolve_value` and :meth:`paths_between` already use.

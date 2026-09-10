@@ -23,14 +23,15 @@ the walk), the two deliberate divergences from ``paths_between`` (a same-positio
 rather than raised; a bounded ``depth`` yields no ``exhausted`` pair), and the three membership
 conditions of ``exhausted``.
 
-The last group is the **graph** backend's half of the walk, over a fake driver rather than a server.
-There is no live TypeScript graph in this repo's verification set, so what a fake driver can prove is
-bounded and worth saying plainly: the statement text is the one ``sdg_taint_query`` built, the
-parameters are bound as the contract says (``cap = max_paths + 1``, the application scope, the two
-cut lists), and a row is translated into a witness the way ``paths_between``'s rows are. It proves
-nothing about what Cypher *does* with that statement -- that the cut inlines into ``ShortestPath``,
-that ``allShortestPaths`` returns what the design assumes. Only
-``tests/analysis/python/test_python_taint_live.py`` proves that, and only for Python.
+The last group is the **graph** backend's half of the walk, over a fake driver rather than a server,
+so what it can prove is bounded and worth saying plainly: the statement text is the one
+``sdg_taint_query`` built, the parameters are bound as the contract says (``cap = max_paths + 1``,
+the application scope, the two cut lists), and a row is translated into a witness the way
+``paths_between``'s rows are. It proves nothing about what Cypher *does* with that statement -- that
+the cut inlines into ``ShortestPath``, that ``allShortestPaths`` returns what the design assumes.
+``tests/analysis/typescript/test_typescript_taint_live.py`` proves that, on superset-frontend, and it
+skips whenever no server at ``CLDK_TEST_TSTAINT_NEO4J_URI`` holds that application -- which is why
+this module exists rather than being folded into it: this one always runs.
 """
 
 import pytest

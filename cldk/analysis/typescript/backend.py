@@ -967,7 +967,10 @@ class TSAnalysisBackend(AnalysisBackend[TSApplication, TSModule, TSType, TSCalla
         **The level gate belongs to the walk, not here.** ``_require_dataflow`` is a *local*
         backend's method -- a graph backend has no shallow mode to guard against -- so each
         :meth:`_taint_walk` opens with it rather than this body asking every backend a question two
-        of them cannot answer.
+        of them cannot answer. It also never fires through this method: resolution runs first and the
+        ports it addresses exist only at level 4, so a shallow caller hears ``SelectorNotInGraph``
+        naming their value. :meth:`~cldk.analysis.python.backend.PythonAnalysisBackend.taint` carries
+        the full argument, including why an unreachable backstop is still worth having.
 
         Args:
             sources: The values taint enters at, each ``(name, within)`` -- the addressing
