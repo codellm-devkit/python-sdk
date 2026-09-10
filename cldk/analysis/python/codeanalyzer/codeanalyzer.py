@@ -1289,10 +1289,16 @@ class PyCodeanalyzer(PythonAnalysisBackend):
                         )
             # Endpoints here are already global (``emit_l4`` resolved them through the endpoint
             # functions' identity maps), so they are used as-is -- joining them again would mint
-            # ids that name nothing.
+            # ids that name nothing. ``var`` is read off the edge exactly as the intra-procedural
+            # branch above reads it: until the rc.5 analyzer pin (codeanalyzer-python 1.5.1) these
+            # two lists declared the property and the projection wrote nothing, so a hardcoded
+            # ``None`` was the truth; the pin bump made it a lie, and a lie with consequences --
+            # a call-crossing variable was invisible to ``_edge_vars_in`` (so a real sanitizer was
+            # refused as nonexistent) and ``allow_edge``'s ``var == c["var"]`` could never cut at a
+            # call boundary, which is the capability this branch was rebased onto the new pins for.
             for rel, edges in (("PY_PARAM_IN", self.application.param_in), ("PY_PARAM_OUT", self.application.param_out)):
                 for e in edges or []:
-                    link(e.src, e.dst, (rel, None, ()))
+                    link(e.src, e.dst, (rel, getattr(e, "var", None), ()))
             self._sdg_cache = ({"forward": forward, "backward": backward}, nodes)
         return self._sdg_cache
 

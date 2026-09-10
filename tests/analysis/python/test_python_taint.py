@@ -254,6 +254,32 @@ def test_roots_are_deduplicated_by_ref_so_one_position_is_audited_once():
     assert result.resolved == "f parameter 'x', g parameter 'y'"
 
 
+def test_the_walk_hook_is_called_once_per_call_with_the_cap_the_caller_wrote():
+    """The calling convention every ``_taint_walk`` implementation has to honour, stated at the one
+    layer that can see it -- and the one Task 7's four new walks are most likely to get wrong.
+
+    Three facts, none of them obvious from the signature. **One call, not one per pair:** the hook
+    receives the flat resolved source and sink lists and owns the m*n cross product itself, which is
+    what makes a single round trip possible on the graph backends. **The cap arrives
+    unincremented:** ``taint()`` passes ``max_paths`` through as written, so the ``+ 1`` that makes
+    truncation visible is the *walk's* to add, per pair -- a walk that assumes the increment already
+    happened caps at ``max_paths - 1``, and a walk that forgets it caps at exactly ``max_paths`` and
+    returns a full-looking result with ``complete=True``, which is the silent bound E5 forbids.
+    **The lists arrive undeduplicated and positionally aligned** with the selectors the caller wrote,
+    because ``taint_verdict`` is what deduplicates by resolved position; a walk that assumed
+    distinct inputs would walk a repeated pair twice.
+    """
+    a, b = _value("x", "f"), _value("y", "g")
+    backend = _Recording(rows=[(a.ref, b.ref, _witness(a, b))])
+    backend.taint([("x", "f"), ("x", "f")], [("y", "g")], max_paths=3, depth=7)
+    assert len(backend.walks) == 1, "the hook is called once for the batch, not once per pair"
+    (walk,) = backend.walks
+    assert walk["max_paths"] == 3, "the walk owns the + 1; taint() must not pre-apply it"
+    assert walk["depth"] == 7
+    assert walk["srcs"] == [a.ref, a.ref], "duplicates reach the walk; taint_verdict dedups the pairs"
+    assert walk["dsts"] == [b.ref]
+
+
 def test_the_two_walk_hooks_are_stubs_rather_than_abstract_methods():
     """Ruling G: an abstract method here would make every concrete backend un-instantiable until the
     last implementation lands, so they raise instead. Task 7 flips them, and this test is what says

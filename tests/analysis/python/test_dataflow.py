@@ -1263,6 +1263,181 @@ def test_a_bad_depth_is_refused_by_the_path_accessors(slice_l4, call):
 
 
 # ----------------------------------------------------------------------------------------------
+# Leg 4b fix round: the local ``taint`` walk, offline.
+#
+# Task 6 shipped this walk covered only by a container-gated file, so its cap, its per-pair dedup
+# and both of its cuts were invisible to a developer without podman -- in a leg whose whole output
+# is a refutation. Nothing below needs a graph or a container; only the analyzer.
+# ----------------------------------------------------------------------------------------------
+def test_a_param_edge_carries_the_variable_the_analyzer_put_on_it(slice_l4):
+    """``PY_PARAM_IN``/``PY_PARAM_OUT`` reach the adjacency with their ``var``, and the calling
+    callable's edge variables therefore include the callee formal the call crosses into.
+
+    **The hardcoded ``None`` this replaces used to be correct.** Until the rc.5 analyzer pin
+    (codeanalyzer-python 1.5.1 and its Java/TypeScript siblings) ``param_in``/``param_out`` declared
+    a ``var`` property that the projection never wrote, so ``None`` was the truth. The pin bump made
+    it a lie, and the lie cost two things: ``_edge_vars_in`` could not see any call-crossing variable,
+    so ``resolve_sanitizers`` refused a real dataflow variable as nonexistent (Ruling A exists to
+    prevent exactly that); and ``allow_edge``'s ``var == c["var"]`` test could never match a param
+    edge, so a scoped variable cut was structurally incapable of cutting at a call boundary -- which
+    is the capability this leg was rebased onto the new pins to obtain.
+    """
+    adjacency = slice_l4._sdg()[0]["forward"]
+    params = [(rel, var) for outs in adjacency.values() for labels in outs.values() for rel, var, _prov in labels if rel.startswith("PY_PARAM")]
+    assert params, "the fixture has a call, so it has param edges; without them this asserts nothing"
+    assert all(var for _rel, var in params), f"a param edge reached the adjacency with no var: {params}"
+    assert ("PY_PARAM_IN", "x") in params, "the argument hop carries the callee formal's name"
+    assert ("PY_PARAM_OUT", "<return>") in params, "the return hop carries the analyzer's return var"
+    assert "x" in slice_l4._edge_vars_in(slice_l4.resolve_callable("Portal.charge").ref), "a call-crossing variable is invisible to a sanitizer that names it"
+
+
+#: Two routes from one parameter to one sink -- a short one through a sanitizing call and a longer
+#: one that does not -- which is the shape that separates a correct sanitizer cut from a plausible
+#: one, and the shape ``taint`` is for. Deliberately the leg-4b Neo4j fixture's own source minus its
+#: class: measured to answer identically (6 witnesses, the same
+#: ``data data return data data argument`` chain on each), so what the container-gated file proves
+#: about the graph, this proves about the local walk for free.
+@pytest.fixture(scope="module")
+def two_route_project(tmp_path_factory):
+    root = tmp_path_factory.mktemp("taint")
+    (root / "src").mkdir()
+    (root / "src" / "app.py").write_text(
+        textwrap.dedent(
+            """
+            def scrub(raw):
+                return "".join(ch for ch in raw if ch.isalnum())
+
+
+            def relay(raw):
+                return raw
+
+
+            def wrap(mid):
+                return "[" + mid + "]"
+
+
+            def run_query(cleaned, note):
+                return "SELECT " + cleaned + " -- " + note
+
+
+            def handle(user_input):
+                answer = scrub(user_input)          # short route: one call between the ports
+                hop = relay(user_input)             # long route: two calls between the ports
+                note = wrap(hop)
+                return run_query(answer, note)
+            """
+        ).lstrip()
+    )
+    return root
+
+
+@pytest.fixture(scope="module")
+def taint_l4(two_route_project, tmp_path_factory) -> PyCodeanalyzer:
+    return _backend(two_route_project, tmp_path_factory.mktemp("cache-taint"), AnalysisLevel.system_dependency_graph)
+
+
+#: As a caller writes them. A *caller's* parameter is unusable as a source (codeanalyzer-python#204:
+#: its ``@formal_in`` port and its ``@entry`` def-site are disjoint upstream), so both sources are a
+#: callee's -- the same choice the container-gated file documents at length.
+TAINT_SOURCES = [("raw", "scrub"), ("raw", "relay")]
+TAINT_SINKS = [("cleaned", "run_query"), ("note", "run_query")]
+#: The one pair with two witnesses, so it is the only one a cap of 1 can be measured on.
+TAINT_PAIR = ([("raw", "scrub")], [("cleaned", "run_query")])
+
+
+def test_the_local_walk_finds_the_measured_witnesses_and_refutes_nothing(taint_l4):
+    """The anchor the rest of this group narrows: 2 + 2 + 1 + 1 witnesses over four pairs, each
+    crossing two call boundaries in both directions. A walk that stopped at a call boundary would
+    still return rows; only the chain says it went in and came back out."""
+    r = taint_l4.taint(TAINT_SOURCES, TAINT_SINKS, max_paths=10)
+    assert sorted(tuple(h.via for h in p.hops) for p in r.paths) == [("data", "data", "return", "data", "data", "argument")] * 6
+    assert r.exhausted == [] and r.complete is True
+
+
+def test_the_local_walk_returns_one_row_past_the_cap_so_truncation_is_never_silent(taint_l4):
+    """A walk that caps at ``max_paths`` rather than ``max_paths + 1`` returns a full-looking result
+    with ``complete=True`` -- a silent bound, which E5 forbids. ``taint()`` cannot detect it, so the
+    walk is tested here or nowhere."""
+    at_one = taint_l4.taint(*TAINT_PAIR, max_paths=1)
+    assert len(at_one.paths) == 1 and at_one.complete is False
+    at_two = taint_l4.taint(*TAINT_PAIR, max_paths=2)
+    assert len(at_two.paths) == 2 and at_two.complete is True
+
+
+def test_the_local_cap_keeps_a_prefix_of_one_total_order(taint_l4):
+    """*Which* witness survives is stated, not incidental. ``shortest_walks``' replay sorts equal
+    length branches by ``(via, var, to)`` -- the same components ``hop_sort_key`` documents and the
+    same the Cypher ``ORDER BY length(p), key`` produces -- so the cap is a prefix of a total order
+    rather than whichever walks the recursion happened to reach first. ``<return>`` and not
+    ``app::ch.*`` is a measured value: the two witnesses of this pair differ at hop 2, and ``'<'``
+    sorts before ``'a'``."""
+    one, many = taint_l4.taint(*TAINT_PAIR, max_paths=1), taint_l4.taint(*TAINT_PAIR, max_paths=5)
+    assert one.paths == many.paths[:1], "the local taint cap is not a prefix of one total order"
+    assert one.paths[0].hops[1].var == "<return>"
+
+
+def test_the_local_walk_runs_once_per_distinct_pair_not_once_per_selector(taint_l4):
+    """Two selectors naming one position are one pair. Walking it twice would report every witness
+    twice and make a cap of *m* yield *2m* -- the graph side gets this free from ``a.id IN $srcs``,
+    so the local side has to deduplicate to match."""
+    once = taint_l4.taint(*TAINT_PAIR, max_paths=10)
+    twice = taint_l4.taint([("raw", "scrub"), ("raw", "scrub")], [("cleaned", "run_query")], max_paths=10)
+    assert len(twice.paths) == len(once.paths) == 2
+
+
+def test_a_local_callable_cut_severs_its_own_pair_and_leaves_the_sibling_alone(taint_l4):
+    """Over-cutting is the one output this leg refuses, so a cut that closed *both* pairs would pass
+    a naive "the sanitizer worked" assertion while being the failure."""
+    r = taint_l4.taint(TAINT_SOURCES, [("note", "run_query")], sanitizers=["scrub"])
+    scrub_src = taint_l4.resolve_value("raw", within="scrub").ref
+    relay_src = taint_l4.resolve_value("raw", within="relay").ref
+    assert len(r.paths) == 1 and r.paths[0].hops[0].frm.ref == relay_src
+    assert all(scrub_src != h.frm.ref for p in r.paths for h in p.hops)
+    assert r.exhausted == [("raw", "note")] and r.complete is True
+
+
+def test_a_local_callable_cut_that_contains_the_source_yields_no_walk(taint_l4):
+    """``allow_node`` is checked against ``src`` up front, because ``src`` is never itself a
+    ``steps()`` destination for either pass to filter. Without that check a source inside a cut
+    callable would still emit its first hop."""
+    r = taint_l4.taint([("raw", "relay")], [("note", "run_query")], sanitizers=["relay"])
+    assert r.paths == [] and r.exhausted == [("raw", "note")] and r.complete is True
+
+
+def test_a_local_variable_cut_severs_a_call_boundary_and_only_the_pairs_that_cross_it(taint_l4):
+    """The scoped variable cut, end to end, and the assertion that fails without the param-edge
+    ``var`` above: ``cleaned`` is ``run_query``'s formal, reached from ``handle`` across a
+    ``PY_PARAM_IN``, so cutting it inside ``handle`` is a cut *at* a call boundary. With ``var``
+    hardcoded ``None`` this raised ``SelectorNotInGraph`` -- ``_edge_vars_in('handle')`` could not
+    see the variable at all -- so the whole scoped-variable-cut mechanism was unreachable from the
+    local backend and no test noticed.
+
+    Only the two ``cleaned`` pairs are refuted; the two ``note`` pairs keep both their witnesses,
+    which is what distinguishes a scoped cut from a cut on every hop in the callable."""
+    r = taint_l4.taint(TAINT_SOURCES, TAINT_SINKS, sanitizers=[("cleaned", "handle")], max_paths=10)
+    assert len(r.paths) == 3, "the two note-sink pairs survive: 2 + 1 witnesses"
+    assert {p.hops[-1].to.ref for p in r.paths} == {taint_l4.resolve_value("note", within="run_query").ref}
+    assert r.exhausted == [("raw", "cleaned"), ("raw", "cleaned")], "both sources are spelled 'raw'; roots tell them apart"
+    assert r.complete is True
+
+
+def test_a_local_variable_cut_is_scoped_to_the_callable_it_names(taint_l4):
+    """The same name, cut inside a callable this walk's hops do not leave: ``mid`` is real inside
+    ``wrap`` (so Ruling A admits it) and severs nothing on these six witnesses. An unscoped cut on a
+    recurring name like ``result`` or ``token`` would sever flows the caller never named -- over-cut,
+    false refutation."""
+    r = taint_l4.taint(TAINT_SOURCES, TAINT_SINKS, sanitizers=[("mid", "wrap")], max_paths=10)
+    assert len(r.paths) == 6 and r.exhausted == []
+
+
+def test_a_local_variable_sanitizer_that_names_nothing_still_raises(taint_l4):
+    """Ruling A widened the domain to edge variables; it did not remove the check. A typo must still
+    be refused loudly rather than silently cutting nothing."""
+    with pytest.raises(SelectorNotInGraph):
+        taint_l4.taint(TAINT_SOURCES, TAINT_SINKS, sanitizers=[("nosuchvar", "handle")])
+
+
+# ----------------------------------------------------------------------------------------------
 # Fix round: which accessors bound themselves by default, and why that is one rule, not five.
 # ----------------------------------------------------------------------------------------------
 BOUNDED_BY_DEFAULT = ("slice_backward", "slice_forward", "backward_cone")
