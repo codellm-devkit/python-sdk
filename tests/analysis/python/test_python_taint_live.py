@@ -28,27 +28,36 @@ call boundaries in both directions::
 
     formal_in -> body -> formal_out -[return]-> actual_out -> stmt -> actual_in -[argument]-> formal_in
 
-**Correction, measured in Task 8 on the current fixture graph.** An earlier version of this docstring
-said a *caller's* parameter was unusable as a source -- that ``Handler.handle``'s ``@formal_in`` port
-and its ``@entry`` def-site were disjoint upstream, so the port a selector resolves to reached no
-argument at all (codeanalyzer-python#204), and that sourcing from ``("user_input", "handle")`` would
-record a defect as a passing assertion. **That is no longer true of this graph, and both backends
-agree it is not.** ``taint([("user_input", "handle")], ...)`` returns **7 witnesses across 4 sinks**,
-each 3 hops, e.g.::
+**codeanalyzer-python#204, narrowed by measurement.** An earlier version of this docstring said a
+*caller's* parameter reaches no argument at all; a later one said the symptom was gone. Both are
+wrong. The symptom is still present and it is **narrow**: a caller's parameter cannot reach the
+**first** call it is passed to, and does reach every later one. Measured at edge level on this graph,
+``handle@formal_in:1`` -- what ``resolve_value("user_input", within="handle")`` returns -- has exactly
+two out-edges, both to *statements* (``@50:8`` and ``@51:8``), and a statement has no edge to its own
+``actual_in``. A statement does have edges to a **later** statement's ``actual_in``, so every witness
+runs three hops through the preceding statement::
 
-    handle@formal_in:1 -[data user_input]-> handle@50:8 -[data answer]-> handle@53:8/actual_in:0
-                       -[argument cleaned]-> run_query@formal_in:0
+    handle@formal_in:1 -[data user_input]-> handle@50:8 -[data user_input]-> @51:8/actual_in:0
+                       -[argument raw]-> relay@formal_in:0
 
-So a caller's parameter *does* reach the arguments it is passed to here, at 3 hops rather than 6.
-:data:`SOURCES` is left on the callees' parameters anyway -- it is what the existing assertions were
-measured against and rewriting them would discard that -- but nothing below rests on #204's symptom
-being present, and :data:`ALL_VALUES` includes ``("user_input", "handle")`` precisely because it now
-witnesses.
+That leaves exactly the failure Ruling J exists to prevent, live on this graph. The fixture's first
+body line is ``answer = scrub(user_input)``, and ``taint([("user_input", "handle")],
+[("raw", "scrub")])`` returns **0 paths, ``exhausted == [("user_input", "raw")]``, ``complete is
+True``** -- a certified refutation of the file's most obvious flow. The SDK is right and the graph is
+wrong, and nothing in the SDK can tell. That is pinned below as a known upstream defect, so a fix
+upstream fails a test rather than passing silently.
+
+So :data:`SOURCES` sources from **callees'** parameters, and that is the rule which makes its
+assertions mean what they say. :data:`ALL_VALUES` keeps ``("user_input", "handle")`` because the batch
+test asserts an accounting identity over 169 pairs rather than the truth of any one refutation -- but
+**at least one of its 139 certificates is that false refutation**, so the count is a measurement of
+this graph and never a claim that 139 flows do not exist.
 
 Path counts on this graph are still **not route counts**: a reaching-definition ``var`` names the
-*use* rather than the def, which inflates them (two of the seven witnesses above differ only in which
-statement line the first ``data`` hop passes through). So the numbers below are measured, and what
-they are asserted against is a hop chain wherever a chain will do.
+*use* rather than the def, which inflates them (of the seven witnesses ``("user_input", "handle")`` has
+across four sinks, pairs differ only in which statement line the first ``data`` hop passes through).
+So the numbers below are measured, and what they are asserted against is a hop chain wherever a chain
+will do.
 
 Every ref is measured from the graph through ``resolve_value``. Nothing here hardcodes a ``can://``
 id: the leg-4a ledger did, its fixture was regenerated, and those ids now name nothing.
@@ -331,6 +340,12 @@ def test_a_169_pair_batch_accounts_for_every_pair_exactly_once(local, graph):
        A degenerate pair is attributable by construction (it is skipped by name), so the 139
        certificates stand beside 13 diagnostics. ``complete`` is still ``False``, because the ledger
        is not empty, and that is Ruling H being coarse on purpose.
+
+    What the 139 is **not** is 139 true refutations. At least one of them --
+    ``("user_input", "raw")``, the source file's own first line -- is false, for the graph-shape
+    reason :func:`test_the_first_call_a_caller_parameter_is_passed_to_is_still_falsely_refuted` pins.
+    The claim here is the accounting, not the verdicts: every pair is answered exactly once, whether
+    or not the graph answered it correctly.
     """
     got = {}
     for name, backend in (("local", local), ("graph", graph)):
@@ -344,3 +359,42 @@ def test_a_169_pair_batch_accounts_for_every_pair_exactly_once(local, graph):
     assert (witnessed_count, len(exhausted), paths) == (17, 139, 28), "measured on the fixture; the identity above is what protects it"
     assert complete is False, "13 diagnostics in the ledger, so the batch flag is False (Ruling H)"
     assert exhausted, "and Ruling I does not void them: a degenerate pair is attributable by name"
+
+
+@pytest.mark.parametrize("backend_name", ["local", "graph"])
+def test_the_first_call_a_caller_parameter_is_passed_to_is_still_falsely_refuted(request, backend_name):
+    """codeanalyzer-python#204, pinned as a defect rather than left as a passing assertion.
+
+    The fixture's first body line is ``answer = scrub(user_input)``. This asks the one question whose
+    right answer the graph cannot give, and both backends give the same wrong one: **no flow, and a
+    certificate saying so.** Every condition ``exhausted`` requires holds honestly -- the search was
+    unbounded, it found nothing, and no diagnostic fired -- so the refutation is not a bug in
+    ``taint()``. It is the analyzer's reaching-definition shape: ``handle@formal_in:1``'s only
+    successors are *statements*, and a statement has no edge to its own ``actual_in``.
+
+    This test exists because that is the one output class that can do harm. A false ``exhausted``
+    closes a live alert, where a false witness only costs a human a triage pass, and the asymmetry is
+    why the module docstring spells the symptom out rather than working around it. It is also the
+    reason :data:`SOURCES` sources from callees.
+
+    **When #204 is fixed upstream this test fails**, and that is its purpose: the pin turns a silent
+    change of meaning into a red test that says which numbers to re-measure -- this module's ``(17,
+    139, 28)`` batch figures first.
+    """
+    backend = request.getfixturevalue(backend_name)
+    r = backend.taint([("user_input", "handle")], [("raw", "scrub")])
+    assert r.paths == [], "the flow the source file shows on its first line"
+    assert r.exhausted == [("user_input", "raw")], "and it is certified absent -- the dangerous direction"
+    assert r.complete is True
+    assert r.unresolved == [], "nothing fired, so Ruling I does not void it either"
+
+    # The same source against a *later* call it is passed to: reached, at three hops through the
+    # statement that precedes the call. So the symptom is narrow, and 'a caller's parameter is
+    # unusable' would be as wrong as 'the symptom is gone'.
+    later = backend.taint([("user_input", "handle")], [("raw", "relay")])
+    assert [(h.via, h.var) for h in later.paths[0].hops] == [
+        ("data", "user_input"),
+        ("data", "user_input"),
+        ("argument", "raw"),
+    ]
+    assert later.exhausted == []
