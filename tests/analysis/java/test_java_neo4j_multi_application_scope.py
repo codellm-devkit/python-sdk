@@ -649,7 +649,14 @@ def test_a_module_row_that_is_not_a_type_is_refused_by_the_model():
 # =====================================================================================
 # The audit: every statement, class-level and inline, carries the application scope
 # =====================================================================================
-_SCOPED_VAR = re.compile(r"\b(\w+)\.id STARTS WITH \$prefix\b")
+#: ``$callable_prefix`` is the taint sanitizer domain's parameter (``JNeo4jBackend._EDGE_VARS``) and
+#: is listed here for a reason worth stating rather than by analogy with ``$prefix``: it holds a
+#: **callable's** ``can://`` ref, not the application's, so what makes the statement
+#: application-scoped is a property of the value bound to it -- a callable id embeds the application
+#: name -- and the value itself is minted by this backend from its own resolver. The alternative,
+#: adding ``AND n.id STARTS WITH $prefix`` beside it, is the same broad-then-filter plan the
+#: ``$prefixes`` note below measured at 15x.
+_SCOPED_VAR = re.compile(r"\b(\w+)\.id STARTS WITH \$(?:prefix|callable_prefix)\b")
 #: The second scoped spelling: ``UNWIND $prefixes AS p … WHERE x.id STARTS WITH p``. It is the
 #: **narrower** one -- each element is a single callable's id prefix, which is itself inside the
 #: application prefix -- and it is what the per-callable body-node fetch issues. Adding
@@ -1008,10 +1015,17 @@ def test_the_interior_audit_sees_every_variable_length_hop_and_not_only_shortest
     assert {"_SLICE", "_VALUE_REACHES"} <= selected, "the two variable-length walks are in the audit's domain"
 
 
+#: ``any()`` **over a scope parameter**. The ban is on that shape and not on the keyword: the taint
+#: statement's sanitizer cut is an ``any(c IN $cuts …)`` / ``any(q IN $cut_callables …)`` over a list
+#: of cut descriptors, which is not the application scope and is measured to inline into
+#: ``ShortestPath`` rather than plan as a scan.
+_SCOPE_BY_ANY = re.compile(r"any\(\s*\w+ IN \$prefix(?:es)?\b")
+
+
 def test_no_statement_spells_the_scope_with_any():
     """``any(p IN $prefixes WHERE …)`` plans as a label scan; Java has one prefix, so the predicate
     is a bare ``STARTS WITH`` and there is nothing for ``any()`` to iterate."""
-    assert [name for name, s in _every_statement().items() if "any(" in s] == []
+    assert [name for name, s in _every_statement().items() if _SCOPE_BY_ANY.search(s)] == []
 
 
 @pytest.mark.parametrize("name", sorted(_every_statement()))

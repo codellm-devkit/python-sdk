@@ -25,15 +25,26 @@ port-lattice gate, a sanitizer before the walk), the two deliberate divergences 
 
 Java's extra clause is the gate: ``_require_connected_ports`` sits *after* resolution, so a caller
 with a typo hears about their typo and not about a gap in the analysis.
+
+The last group is the **graph** backend's half of the walk, over a fake driver rather than a server,
+and it is worth saying plainly what that can and cannot prove. There is no live Java graph in this
+repo's verification set, so what is pinned is the statement text ``sdg_taint_query`` built, the
+parameters bound to it (``cap = max_paths + 1``, the application scope prefix, the two cut lists) and
+the translation of canned rows into witnesses through the same ``_body_slice_node`` the slice uses.
+It proves nothing about what Cypher *does* with that statement -- that the cut inlines into
+``ShortestPath``, that ``allShortestPaths`` returns what the design assumes. Only
+``tests/analysis/python/test_python_taint_live.py`` proves that, and only for Python.
 """
 
 import pytest
 
 from cldk.analysis.commons.results import Diagnostic, FlowPath, PathHop, SliceNode
-from cldk.analysis.java.backend import JavaAnalysisBackend
+from cldk.analysis.java.backend import SDG_REL_PATTERN, JavaAnalysisBackend
+from cldk.analysis.java.neo4j.neo4j_backend import JNeo4jBackend
 from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException, CodeanalyzerUsageException, SelectorNotInGraph
 
-from tests.analysis.java.test_java_addressing import _local
+from tests.analysis.java.conftest import FakeDriver
+from tests.analysis.java.test_java_addressing import _graph, _local
 
 HANDLE = "com.acme.Svc.handle(java.lang.String)"
 STORE = "com.acme.Dao.store(java.lang.String)"
@@ -322,3 +333,148 @@ def test_the_two_walk_hooks_are_stubs_rather_than_abstract_methods():
         JavaAnalysisBackend._taint_walk(None, [], [], cuts=[], cut_callables=[], depth=None, max_paths=1)
     with pytest.raises(NotImplementedError):
         JavaAnalysisBackend._edge_vars_in(None, f"can://java/acme/{HANDLE}")
+
+
+# ==============================================================================================
+# The graph backend's half, over a fake driver: statement text, parameter binding, row translation.
+# ==============================================================================================
+#: Two real positions of the committed a4 fixture, so ``taint()`` runs end to end on the graph
+#: backend -- resolution, both gates, the walk, the verdict -- with only the rows faked. The pair is
+#: the one the local group measures, which is what makes the two halves comparable.
+BUY = f"{DIRECT}.buy(java.lang.String, java.lang.String, double, int)"
+SET_IN_GLOBAL_TXN = f"{DIRECT}.setInGlobalTxn(boolean)"
+
+
+class _TaintResponder:
+    """``_BodyNodeResponder`` plus the two taint statements, recording what each was bound with.
+
+    The delegate answers the port-lattice probe and the per-callable body-node fetch out of the real
+    fixture, so the gates and the addressing behave as they do everywhere else offline; only the
+    walk's rows are canned.
+    """
+
+    def __init__(self, delegate, rows, edge_vars=()):
+        self.delegate, self.rows, self.edge_vars = delegate, rows, list(edge_vars)
+        self.seen = []
+
+    def __call__(self, query, params):
+        if "AS src, b.id AS dst" in query or "collect(DISTINCT e.var) AS vars" in query:
+            self.seen.append((query, dict(params)))
+            return [{"vars": self.edge_vars}] if "AS vars" in query else list(self.rows)
+        return self.delegate(query, params)
+
+
+def _graph_with(analysis_json_a4, rows=(), edge_vars=()):
+    backend = _graph(analysis_json_a4)
+    responder = _TaintResponder(backend._driver.responder, rows, edge_vars)
+    backend._driver = FakeDriver(responder=responder)
+    return backend, responder
+
+
+def _taint_row(backend, src_name, src_within, dst_name, dst_within):
+    """One witness in the shape :attr:`JNeo4jBackend._TAINT` projects: ``ns`` per node, ``rs`` per
+    hop, one fewer hop than nodes, with the ids the resolver really minted for those two positions."""
+    a, b = backend.resolve_value(src_name, within=src_within), backend.resolve_value(dst_name, within=dst_within)
+    return {
+        "src": a.ref,
+        "dst": b.ref,
+        "ns": [{"ref": a.ref, "kind": "formal_in", "line": None}, {"ref": b.ref, "kind": "formal_in", "line": None}],
+        "rs": [{"via": "J_PARAM_IN", "var": "arg0", "prov": ["ssa"]}],
+    }
+
+
+def test_the_graph_walk_issues_the_generated_statement_and_binds_the_cap_one_past_max_paths(analysis_json_a4):
+    """The extra row is the whole truncation mechanism (Ruling H / E5): bind ``$cap`` to
+    ``max_paths`` and ``taint()`` reports ``complete=True`` on a result it silently cut. ``$prefix``
+    is bound in the same call because :attr:`JNeo4jBackend._TAINT` carries the interior scope
+    predicate -- an unbound parameter is a Cypher error, so this is what says the statement and the
+    call agree."""
+    backend, responder = _graph_with(analysis_json_a4)
+    result = backend.taint([("orderProcessingMode", BUY)], [("inGlobalTxn", SET_IN_GLOBAL_TXN)], max_paths=3)
+    assert result.paths == [] and result.exhausted == [("orderProcessingMode", "inGlobalTxn")]
+    query, params = responder.seen[-1]
+    assert query == JNeo4jBackend._TAINT.format(rels=SDG_REL_PATTERN, depth="")
+    assert params == {
+        "srcs": [backend.resolve_value("orderProcessingMode", within=BUY).ref],
+        "dsts": [backend.resolve_value("inGlobalTxn", within=SET_IN_GLOBAL_TXN).ref],
+        "cuts": [],
+        "cut_callables": [],
+        "cap": 4,
+        "prefix": backend._scope_prefix,
+    }
+
+
+def test_an_explicit_depth_reaches_the_graph_statement_as_the_quantifiers_upper_bound(analysis_json_a4):
+    """``depth=None`` renders ``*1..`` and a bound renders ``*1..5``. The walk is the only place that
+    substitution happens, so a backend that forgot it would answer every call unbounded -- and an
+    unbounded answer to a bounded question manufactures witnesses."""
+    backend, responder = _graph_with(analysis_json_a4)
+    backend.taint([("orderProcessingMode", BUY)], [("inGlobalTxn", SET_IN_GLOBAL_TXN)], depth=5)
+    assert responder.seen[-1][0] == JNeo4jBackend._TAINT.format(rels=SDG_REL_PATTERN, depth="5")
+    assert "*1..5]->" in responder.seen[-1][0]
+
+
+def test_the_graph_walk_binds_both_cut_lists_as_the_resolver_shaped_them(analysis_json_a4):
+    """A callable sanitizer becomes a bare ``can://`` id in ``$cut_callables``; a pair sanitizer
+    becomes a ``{var, prefix}`` map in ``$cuts``. The scoping is the ``prefix`` member: a flat list of
+    variable names would sever every ``arg0`` in the application, and over-cutting is the one output
+    this leg refuses."""
+    backend, responder = _graph_with(analysis_json_a4, edge_vars=["arg0"])
+    backend.taint([("orderProcessingMode", BUY)], [("inGlobalTxn", SET_IN_GLOBAL_TXN)], sanitizers=[SET_IN_GLOBAL_TXN, ("arg0", BUY)])
+    walk = responder.seen[-1][1]
+    assert walk["cut_callables"] == [backend.resolve_callable(SET_IN_GLOBAL_TXN).ref]
+    assert walk["cuts"] == [{"var": "arg0", "prefix": backend.resolve_callable(BUY).ref}]
+
+
+def test_the_graph_walk_returns_every_row_untrimmed_and_the_verdict_does_the_trimming(analysis_json_a4):
+    """Grouping and trimming are ``taint()``'s, so the walk hands back what it found -- including the
+    ``max_paths + 1``-th row. Trimming here would put the cap in two places and make ``complete``
+    unprovable from either."""
+    backend, _ = _graph_with(analysis_json_a4)
+    rows = [_taint_row(backend, "orderProcessingMode", BUY, "inGlobalTxn", SET_IN_GLOBAL_TXN)] * 2
+    backend, _ = _graph_with(analysis_json_a4, rows=rows)
+    walked, _ledger = backend._taint_walk(
+        [backend.resolve_value("orderProcessingMode", within=BUY)],
+        [backend.resolve_value("inGlobalTxn", within=SET_IN_GLOBAL_TXN)],
+        cuts=[],
+        cut_callables=[],
+        depth=None,
+        max_paths=1,
+    )
+    assert len(walked) == 2, "two rows for a cap of one: the extra row is what reports truncation"
+    assert _ledger == {}, "Ruling I: an empty ledger is a refusal to file, argued in the walk's docstring"
+    at_one = backend.taint([("orderProcessingMode", BUY)], [("inGlobalTxn", SET_IN_GLOBAL_TXN)], max_paths=1)
+    assert len(at_one.paths) == 1 and at_one.complete is False and at_one.exhausted == []
+
+
+def test_a_graph_row_is_described_the_way_a_slice_row_is(analysis_json_a4):
+    """Same ``_body_slice_node`` as the slice and ``paths_between``: the owning callable, the file and
+    the parameter name come off the id prefix and the index this backend already holds, so no
+    callable is joined back and a vertex reads identically whichever accessor returned it. A port
+    vertex has no span, so the callable's first line stands in."""
+    backend, _ = _graph_with(analysis_json_a4)
+    backend, _ = _graph_with(analysis_json_a4, rows=[_taint_row(backend, "orderProcessingMode", BUY, "inGlobalTxn", SET_IN_GLOBAL_TXN)])
+    result = backend.taint([("orderProcessingMode", BUY)], [("inGlobalTxn", SET_IN_GLOBAL_TXN)])
+    (hop,) = result.paths[0].hops
+    assert (hop.via, hop.var, hop.prov) == ("argument", "arg0", ["ssa"])
+    assert (hop.frm.callable, hop.frm.kind, hop.frm.name) == (BUY, "parameter", "orderProcessingMode")
+    assert (hop.to.callable, hop.to.kind, hop.to.name) == (SET_IN_GLOBAL_TXN, "parameter", "inGlobalTxn")
+    assert hop.frm.file.endswith("TradeDirect.java") and hop.frm.line > 0
+    assert result.exhausted == [] and result.complete is True
+
+
+def test_the_graph_edge_variable_domain_is_scoped_by_the_callables_own_ref_and_drops_the_nulls(analysis_json_a4):
+    """``$callable_prefix`` holds a **callable's** ``can://`` ref rather than the application's, which
+    is why it is spelled apart from ``$prefix``: what makes the statement application-scoped is a
+    property of the value bound to it -- a callable id embeds the application name -- and the scope
+    audit classifies it on that basis.
+
+    ``collect(DISTINCT e.var)`` returns a ``null`` for every ``J_CDG``/``J_SUMMARY`` hop, and for the
+    port crossings of a graph emitted before codeanalyzer-java 3.1.2. Keeping it would put ``None``
+    in a set ``resolve_sanitizers`` tests membership against, and ``resolve_sanitizers`` has already
+    refused a blank variable by then."""
+    backend, responder = _graph_with(analysis_json_a4, edge_vars=["arg0", None, "conn"])
+    assert backend._edge_vars_in(backend.resolve_callable(BUY).ref) == frozenset({"arg0", "conn"})
+    query, params = responder.seen[-1]
+    assert query == JNeo4jBackend._EDGE_VARS.format(rels=SDG_REL_PATTERN)
+    assert params == {"callable_prefix": backend.resolve_callable(BUY).ref}

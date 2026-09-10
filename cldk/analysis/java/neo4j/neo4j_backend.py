@@ -117,7 +117,7 @@ from typing import Any, Dict, FrozenSet, Iterable, List, Sequence, Tuple
 import networkx as nx
 
 from cldk.analysis.commons.bounds import DEFAULT_PAGE_SIZE, EdgeOrder, check_page_size, cursor_params, encode_cursor, keyset_where
-from cldk.analysis.commons.graphs import flow_path, sdg_path_query, slice_resolved
+from cldk.analysis.commons.graphs import flow_path, sdg_path_query, sdg_taint_query, slice_resolved
 from cldk.analysis.commons.results import EdgePage, FlowPaths, Slice, SliceNode
 from cldk.analysis.java.backend import (
     CDG_ORDER,
@@ -933,6 +933,112 @@ class JNeo4jBackend(JavaAnalysisBackend):
             for r in rows[:max_paths]
         ]
         return FlowPaths(paths=paths, complete=len(rows) <= max_paths)
+
+    #: ``taint()``'s statement: the same shortest-path search as :attr:`_PATHS`, m sources against n
+    #: sinks in one traversal, with the sanitizer cut **inside** the pattern and the cap applied per
+    #: pair. Everything that differs from :attr:`_PATHS` is argued in
+    #: :func:`~cldk.analysis.commons.graphs.sdg_taint_query`; the two share this backend's
+    #: ``node_label``, its ``rel_var`` and its projection verbatim, which is what makes a taint
+    #: witness and a ``paths_between`` witness describe a vertex identically -- neither joins a
+    #: callable back, because :meth:`~cldk.analysis.java.backend.JavaAnalysisBackend._body_slice_node`
+    #: recovers the owner, the file and the parameter names from the id prefix and the index this
+    #: backend already holds.
+    #:
+    #: The interior predicate is here for :attr:`_PATHS`'s reason and not by analogy with it: a
+    #: variable-length pattern binds only its endpoints, so scoping those leaves every node between
+    #: them free and a walk could enter another application and come back. Both endpoints keep their
+    #: own ``STARTS WITH`` alongside, redundantly and deliberately, because the audit judges **per
+    #: bound variable**.
+    _TAINT = sdg_taint_query(
+        "J",
+        node_label="JBodyNode",
+        endpoint_scope=_scoped,
+        interior_scope=_scoped,
+        projection="ref: n.id, kind: n.kind, line: n.start_line",
+        rel_var="e",
+    )
+
+    #: The variable names on SDG edges *leaving* a node inside ``$callable_prefix`` -- ``startNode``,
+    #: the same end of the hop :attr:`_TAINT`'s cut predicate reads, so a sanitizer this validates is
+    #: one that predicate can actually match (Ruling A /
+    #: :func:`~cldk.analysis.commons.resolve.resolve_sanitizers`).
+    #:
+    #: The parameter is named apart from every other statement's ``$prefix`` because it holds a
+    #: different thing: a **callable's** ``can://`` ref, not the application's. It is still
+    #: application-scoped, by construction rather than by convention -- a callable id embeds the
+    #: application name -- and ``test_java_neo4j_multi_application_scope.py`` classifies it on that
+    #: basis.
+    #:
+    #: A bare ``STARTS WITH``, deliberately wider than :attr:`_TAINT`'s delimited cut
+    #: (:func:`~cldk.analysis.commons.graphs.under_callable`): a sibling callable whose name merely
+    #: starts with this one contributes its edge variables here, so a variable may be *accepted* that
+    #: the cut cannot then match. That direction under-cuts -- a cut severing nothing over-reports --
+    #: and the direction this leg must refuse is the other one. A Java ``can://`` callable id ends in
+    #: ``)``, so the collision needs a same-arity overload of a longer name and cannot arise;
+    #: TypeScript's can (Ruling K), which is why the two ends are spelled the same way on all three
+    #: backends. One round trip per variable sanitizer, which is as often as a caller writes one.
+    _EDGE_VARS = "MATCH (n:JBodyNode)-[e:{rels}]->() WHERE n.id STARTS WITH $callable_prefix RETURN collect(DISTINCT e.var) AS vars"
+
+    def _taint_walk(self, srcs, dsts, *, cuts, cut_callables, depth, max_paths):
+        """The sanitized shortest walks, server-side (see :meth:`JavaAnalysisBackend._taint_walk`).
+
+        One statement for the whole batch, and one row per witness -- ``a.id AS src`` / ``b.id AS
+        dst`` carry the pairing back, because the m*n batching is only useful if the grouping
+        survives it. Ordering, the per-pair ``$cap`` and both cuts are the statement's
+        (:func:`~cldk.analysis.commons.graphs.sdg_taint_query`), so nothing is re-sorted or
+        re-filtered here: a Python-side filter is the false-refutation bug that function exists to
+        avoid, and a Python-side sort would silently disagree with
+        :func:`~cldk.analysis.commons.graphs.path_order`. Rows come back untrimmed, including the
+        ``max_paths + 1``-th, which is what lets ``taint()`` report truncation without counting
+        twice.
+
+        Neither gate is asked here. :meth:`JavaAnalysisBackend.taint` asks
+        :meth:`_require_dataflow` (a no-op on this backend -- ``--emit neo4j`` always runs at full
+        depth) and :meth:`_require_connected_ports` before the walk is entered.
+
+        **The ledger comes back empty, and that is a refusal to file rather than a missing signal.**
+        Java's frontier signal exists on this graph as a ``kind:'call'`` body node with no outgoing
+        ``J_RESOLVES_TO``, which is what :meth:`_resolution_edges_present` already probes for. It is
+        not filed because the granularity is wrong in the one direction that matters: a diagnostic
+        empties ``exhausted`` for the *whole batch* (Ruling I), so a signal that also fires on the
+        ordinary case -- a call into the JDK, which on this graph resolves into a ``:JExternal``
+        ghost or nothing at all -- would void every refutation in every application that calls a
+        library. Telling "unresolved dispatch" apart from "resolved external" well enough to file
+        only the first is future work, and leg 4b's corpus check is where the separation gets
+        measured.
+
+        Consequence, stated because nothing here can catch it: a pair whose flow leaves through an
+        unresolved dispatch is certified ``exhausted``.
+        """
+        query = self._TAINT.format(rels=SDG_REL_PATTERN, depth="" if depth is None else depth)
+        rows = self._run(
+            query,
+            srcs=[n.ref for n in srcs],
+            dsts=[n.ref for n in dsts],
+            cuts=cuts,
+            cut_callables=cut_callables,
+            cap=max_paths + 1,
+            prefix=self._scope_prefix,
+        )
+        return [
+            (
+                r["src"],
+                r["dst"],
+                flow_path([self._body_slice_node(n["ref"], n["kind"], n["line"]) for n in r["ns"]], [(e["via"], e["var"], e["prov"]) for e in r["rs"]], via=VIA),
+            )
+            for r in rows
+        ], {}
+
+    def _edge_vars_in(self, callable_id: str) -> FrozenSet[str]:
+        """The edge variables scoped to this callable (see :meth:`JavaAnalysisBackend._edge_vars_in`).
+
+        ``collect(DISTINCT e.var)`` returns a ``null`` for every hop that carries no ``var`` --
+        ``J_CDG`` and ``J_SUMMARY`` by construction, and ``J_PARAM_IN``/``J_PARAM_OUT`` on a graph
+        emitted before codeanalyzer-java 3.1.2 -- and those are dropped, because
+        ``resolve_sanitizers`` refuses a blank variable before it ever asks.
+        """
+        rows = self._run(self._EDGE_VARS.format(rels=SDG_REL_PATTERN), callable_prefix=callable_id)
+        return frozenset(v for v in rows[0]["vars"] if v)
 
     #: ``WITH DISTINCT m`` before the membership test is what makes this a pruning BFS instead of a
     #: trail enumeration. Every hop is inside the application, by the same whole-path predicate
