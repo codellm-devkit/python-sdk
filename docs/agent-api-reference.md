@@ -930,6 +930,7 @@ Any accessor may attach these. They exist so an empty result is never ambiguous.
 | — | a scoping keyword naming nothing raises `SelectorNotInGraph`; it is an error, not a diagnostic |
 | `no_match`, `ambiguous`, `unknown_callable`, `unknown_param`, `did_you_mean` | declared in the `Diagnostic` code vocabulary, but **nothing emits them**: resolution failures are raised (`AmbiguousName` / `SelectorNotInGraph`), not attached, and `did_you_mean` in particular can never fire — E8 puts typo-tolerant matching out of scope in the error path as much as in the resolver |
 | `unresolved_dispatch` | an edge the traversal could not follow |
+| `degenerate_pair` | a `taint()` pair whose source and sink resolved to the same position — skipped rather than searched, so it is in neither `paths` nor `exhausted` |
 
 **The rule behind all of them:** an empty result that could mean two things is a defect. When you
 get nothing back, check the diagnostics before concluding the answer is "no".

@@ -650,13 +650,12 @@ def taint_verdict(
     claimed: set[Tuple[str, str]] = set()
     for (src_ref, dst_ref), (source, sink, a) in pairs.items():
         if src_ref == dst_ref:
-            # ``Diagnostic.code`` is a closed vocabulary with no member for a degenerate pair.
-            # ``no_match`` is the nearest true thing it can say -- there is no answer for this pair --
-            # where ``unresolved_dispatch`` would falsely implicate the call frontier, which is the
-            # one signal ``exhausted`` reduces to.
+            # Its own code, because the two neighbouring ones would both be false: ``no_match`` says a
+            # search found nothing and nothing was searched here, and ``unresolved_dispatch`` would
+            # implicate the call frontier, which is the one signal ``exhausted`` reduces to.
             ledger.append(
                 Diagnostic(
-                    code="no_match",
+                    code="degenerate_pair",
                     message=(
                         f"{source!r} and {sink!r} name the same position within {a.callable!r}, so that pair is skipped rather than "
                         f"searched; a value reaches itself only through recursion, which reaches({a.callable!r}, {a.callable!r}) answers"

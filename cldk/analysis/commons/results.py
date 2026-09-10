@@ -63,8 +63,9 @@ class Diagnostic(BaseModel):
             populated**. E8 (leg 1.5) put typo-tolerant matching out of scope "not in the
             resolver, not in the error path", so nothing in the SDK constructs a ``Diagnostic``
             with suggestions or with ``code="did_you_mean"``; the codes actually emitted are
-            ``file_not_in_graph``, ``module_scope``, ``module_source_unavailable`` and
-            ``entrypoint_report_unavailable``. The field and the code stay because both are part
+            ``file_not_in_graph``, ``module_scope``, ``module_source_unavailable``,
+            ``entrypoint_report_unavailable``, and — since ``taint()`` — ``unresolved_dispatch``
+            and ``degenerate_pair``. The field and the code stay because both are part
             of a published model contract (``docs/agent-api-reference.md``) that a caller may
             already destructure; removing either is a separate, breaking change.
     """
@@ -82,6 +83,7 @@ class Diagnostic(BaseModel):
         "unresolved_dispatch",
         "graph_schema_mismatch",
         "entrypoint_report_unavailable",
+        "degenerate_pair",
     ]
     message: str
     suggestions: list[str] = []
@@ -671,9 +673,11 @@ class TaintResult(FlowPaths):
             not ``None``.
         roots: What each selector matched, so a conclusion is auditable rather than asserted.
         resolved: The human-readable form of ``roots``, via ``slice_resolved``.
-        unresolved: The frontier ledger. Each entry is a ``Diagnostic`` with ``code
-            ="unresolved_dispatch"`` (already in the closed vocabulary; no widening needed) and the
-            affected pair named in ``message`` prose — the same convention every other diagnostic in
+        unresolved: The ledger of everything that stopped a pair short of an answer, whatever stopped
+            it. Two codes reach it: ``unresolved_dispatch`` for a frontier the walk could not follow,
+            and ``degenerate_pair`` for a requested pair whose source and sink resolved to the same
+            position, which is skipped rather than searched. Both name the
+            affected pair in ``message`` prose — the same convention every other diagnostic in
             this SDK follows (e.g. the Neo4j backend's ``module_scope`` message). ``Diagnostic`` has
             no structured field for a pair today, so this is a human-readable explanation, not
             something to compute with: the pair→diagnostic association ``exhausted`` needs is tracked

@@ -134,6 +134,7 @@ def test_the_same_position_pair_is_skipped_with_a_diagnostic_not_raised():
     result = backend.taint([("x", "f"), ("y", "h")], [("x", "f")])
     assert result.paths == []
     assert any("same position" in d.message for d in result.unresolved)
+    assert [d.code for d in result.unresolved] == ["degenerate_pair"], "its own code: nothing was searched, so no match failed"
     assert result.exhausted == [("y", "x")], "the degenerate pair is skipped; the rest of the batch still answers"
     assert not result.complete
 
@@ -162,6 +163,7 @@ def test_a_ledger_entry_no_requested_pair_claims_is_still_reported():
     assert result.exhausted == [], "nothing can attribute a stray key to a pair, so no pair is certified"
     assert not result.complete
 
+
 def test_paths_are_trimmed_per_pair_and_completeness_says_the_cap_fired():
     """The walk caps each pair at ``max_paths + 1``, so the extra row reports truncation without a
     second counting traversal -- and the trim is per pair, so a prolific pair cannot starve a
@@ -188,6 +190,7 @@ def test_two_selectors_that_resolve_to_the_same_position_are_one_pair():
     capped = _Recording(rows=rows).taint([("x", "f"), ("x", "f")], [("y", "g")], max_paths=2)
     assert len(capped.paths) == 2 and not capped.complete, "the cap holds per distinct pair"
     assert once.exhausted == [] and capped.exhausted == []
+
 
 def test_the_sanitizer_selectors_are_resolved_through_the_edge_vars_hook():
     """Step 4 of the order: the two shapes reach the walk as ``$cuts`` and ``$cut_callables``, and a
