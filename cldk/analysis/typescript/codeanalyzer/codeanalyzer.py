@@ -35,7 +35,7 @@ from collections import defaultdict
 from functools import cached_property, partial
 from pathlib import Path
 from subprocess import CompletedProcess
-from typing import Dict, FrozenSet, Iterator, List, Sequence, Set, Tuple, Union
+from typing import Dict, FrozenSet, Iterator, List, Mapping, Sequence, Set, Tuple, Union
 
 import networkx as nx
 
@@ -61,6 +61,7 @@ from cldk.analysis.commons.results import (
     Diagnostic,
     EdgePage,
     EntrypointCoverage,
+    FlowPath,
     FlowPaths,
     LocateResult,
     ModuleRef,
@@ -1338,7 +1339,16 @@ class TSCodeanalyzer(TSAnalysisBackend):
     #: to TypeScript's ``via`` table.
     _shortest_walks = staticmethod(partial(shortest_walks, via=VIA))
 
-    def _taint_walk(self, srcs, dsts, *, cuts, cut_callables, depth, max_paths):
+    def _taint_walk(
+        self,
+        srcs: Sequence[SliceNode],
+        dsts: Sequence[SliceNode],
+        *,
+        cuts: List[Dict[str, str]],
+        cut_callables: List[str],
+        depth: int | None,
+        max_paths: int,
+    ) -> Tuple[List[Tuple[str, str, FlowPath]], Mapping[Tuple[str, str], List[Diagnostic]]]:
         """The sanitized shortest walks, in process (see :meth:`TSAnalysisBackend._taint_walk`).
 
         ``self._require_dataflow()`` first, per Ruling F and :meth:`TSAnalysisBackend.taint`'s own
@@ -1403,7 +1413,7 @@ class TSCodeanalyzer(TSAnalysisBackend):
         scan of it and no second traversal. Edges *leaving* a node under ``callable_id`` -- the same
         ``startNode`` scoping the cut itself uses, so this validates exactly the domain the cut can
         match. Two of the five relationship types carry no ``var`` (``TS_CDG`` and ``TS_SUMMARY``);
-        those ``None``\ s are dropped, because ``resolve_sanitizers`` refuses a blank variable
+        those ``None`` values are dropped, because ``resolve_sanitizers`` refuses a blank variable
         before it asks.
 
         :func:`~cldk.analysis.commons.graphs.under_callable` and not ``startswith`` for Ruling K's

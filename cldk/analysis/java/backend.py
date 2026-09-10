@@ -2117,6 +2117,7 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         rows, blocked = self._taint_walk(srcs, dsts, cuts=cuts, cut_callables=cut_callables, depth=depth, max_paths=max_paths)
         return taint_verdict(sources, sinks, srcs, dsts, rows=rows, blocked=blocked, depth=depth, max_paths=max_paths)
 
+    @abstractmethod
     def _taint_walk(
         self,
         srcs: Sequence[SliceNode],
@@ -2156,11 +2157,12 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         answered. Nor is the port-lattice gate: :meth:`taint` opens
         :meth:`_require_connected_ports` too, in the same place the five sibling flow accessors do.
 
-        A stub rather than an ``@abstractmethod`` while the implementations land, so a backend
-        without one is refused when it is *called* rather than when it is constructed.
+        ``@abstractmethod`` now that every backend has one (Ruling G): it shipped as a concrete stub
+        so a backend without an implementation was refused when it was *called* rather than when it
+        was constructed, and the last implementation closed that window.
         """
-        raise NotImplementedError
 
+    @abstractmethod
     def _edge_vars_in(self, callable_id: str) -> Collection[str]:
         """The variable names carried by SDG edges scoped to this callable -- the domain a variable
         sanitizer is checked against.
@@ -2170,9 +2172,8 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         the resolver would refuse a legitimate one for not being a parameter. One ``DISTINCT r.var``
         query on the graph side, the adjacency already built on the local side.
 
-        A stub rather than an ``@abstractmethod`` for :meth:`_taint_walk`'s reason.
+        ``@abstractmethod`` for :meth:`_taint_walk`'s reason, and since the same commit.
         """
-        raise NotImplementedError
 
     # -----[ the two facts a backend supplies about its own analysis ]-----
     def _require_dataflow(self) -> None:

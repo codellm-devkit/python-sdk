@@ -52,7 +52,7 @@ from __future__ import annotations
 import logging
 from functools import partial
 from pathlib import Path
-from typing import Dict, FrozenSet, Iterator, List, Sequence, Tuple, Union
+from typing import Dict, FrozenSet, Iterator, List, Mapping, Sequence, Tuple, Union
 
 import networkx as nx
 
@@ -64,7 +64,7 @@ from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.graphs import call_reaches, under_callable
 from cldk.analysis.commons.levels import ANALYZER_LEVELS, LEVEL_NAMES, analyzer_level
 from cldk.analysis.commons.resolve import CallableCandidate, body_node_kind, resolve_callable_signature, resolve_value_name, resolve_within, value_candidate
-from cldk.analysis.commons.results import BodyRef, CallableRef, Diagnostic, EdgePage, EntrypointCoverage, FlowPaths, LocateResult, ModuleRef, Slice, SliceNode, TypeRef
+from cldk.analysis.commons.results import BodyRef, CallableRef, Diagnostic, EdgePage, EntrypointCoverage, FlowPath, FlowPaths, LocateResult, ModuleRef, Slice, SliceNode, TypeRef
 from cldk.utils.exceptions import CodeanalyzerUsageException
 from cldk.analysis.python.backend import (
     CDG_ORDER,
@@ -1439,7 +1439,16 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         paths = [flow_path([described[a.ref]] + [described[ref] for ref, _ in walk], [label for _, label in walk], via=VIA) for walk in walks[:max_paths]]
         return FlowPaths(paths=paths, complete=len(walks) <= max_paths)
 
-    def _taint_walk(self, srcs, dsts, *, cuts, cut_callables, depth, max_paths):
+    def _taint_walk(
+        self,
+        srcs: Sequence[SliceNode],
+        dsts: Sequence[SliceNode],
+        *,
+        cuts: List[Dict[str, str]],
+        cut_callables: List[str],
+        depth: int | None,
+        max_paths: int,
+    ) -> Tuple[List[Tuple[str, str, FlowPath]], Mapping[Tuple[str, str], List[Diagnostic]]]:
         """The sanitized shortest walks, in process (see :meth:`PythonAnalysisBackend._taint_walk`).
 
         ``self._require_dataflow()`` first, per :meth:`PythonAnalysisBackend.taint`'s own note: the

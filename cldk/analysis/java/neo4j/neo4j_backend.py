@@ -112,13 +112,13 @@ import logging
 import re
 from collections import defaultdict
 from functools import cached_property
-from typing import Any, Dict, FrozenSet, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Sequence, Tuple
 
 import networkx as nx
 
 from cldk.analysis.commons.bounds import DEFAULT_PAGE_SIZE, EdgeOrder, check_page_size, cursor_params, encode_cursor, keyset_where
 from cldk.analysis.commons.graphs import flow_path, sdg_path_query, sdg_taint_query, slice_resolved
-from cldk.analysis.commons.results import EdgePage, FlowPaths, Slice, SliceNode
+from cldk.analysis.commons.results import Diagnostic, EdgePage, FlowPath, FlowPaths, Slice, SliceNode
 from cldk.analysis.java.backend import (
     CDG_ORDER,
     CFG_ORDER,
@@ -979,7 +979,16 @@ class JNeo4jBackend(JavaAnalysisBackend):
     #: backends. One round trip per variable sanitizer, which is as often as a caller writes one.
     _EDGE_VARS = "MATCH (n:JBodyNode)-[e:{rels}]->() WHERE n.id STARTS WITH $callable_prefix RETURN collect(DISTINCT e.var) AS vars"
 
-    def _taint_walk(self, srcs, dsts, *, cuts, cut_callables, depth, max_paths):
+    def _taint_walk(
+        self,
+        srcs: Sequence[SliceNode],
+        dsts: Sequence[SliceNode],
+        *,
+        cuts: List[Dict[str, str]],
+        cut_callables: List[str],
+        depth: int | None,
+        max_paths: int,
+    ) -> Tuple[List[Tuple[str, str, FlowPath]], Mapping[Tuple[str, str], List[Diagnostic]]]:
         """The sanitized shortest walks, server-side (see :meth:`JavaAnalysisBackend._taint_walk`).
 
         One statement for the whole batch, and one row per witness -- ``a.id AS src`` / ``b.id AS

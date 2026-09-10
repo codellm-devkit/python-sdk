@@ -33,7 +33,7 @@ import re
 import subprocess
 from pathlib import Path
 from subprocess import CompletedProcess
-from typing import Any, Dict, FrozenSet, Iterable, List, Sequence, Tuple, Union
+from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Sequence, Tuple, Union
 
 import networkx as nx
 from pydantic import ValidationError
@@ -42,7 +42,7 @@ from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.bounds import DEFAULT_PAGE_SIZE, check_page_size, edge_page
 from cldk.analysis.commons.graphs import flow_path, shortest_walks, slice_resolved, under_callable
 from cldk.analysis.commons.levels import ANALYZER_LEVELS, LEVEL_NAMES, analyzer_level
-from cldk.analysis.commons.results import Diagnostic, EdgePage, FlowPaths, Slice, SliceNode
+from cldk.analysis.commons.results import Diagnostic, EdgePage, FlowPath, FlowPaths, Slice, SliceNode
 from cldk.analysis.java.backend import (
     CDG_ORDER,
     CFG_ORDER,
@@ -550,7 +550,16 @@ class JCodeanalyzer(JavaAnalysisBackend):
         paths = [flow_path([described[a.ref]] + [described[ref] for ref, _ in walk], [label for _, label in walk], via=VIA) for walk in walks[:max_paths]]
         return FlowPaths(paths=paths, complete=len(walks) <= max_paths)
 
-    def _taint_walk(self, srcs, dsts, *, cuts, cut_callables, depth, max_paths):
+    def _taint_walk(
+        self,
+        srcs: Sequence[SliceNode],
+        dsts: Sequence[SliceNode],
+        *,
+        cuts: List[Dict[str, str]],
+        cut_callables: List[str],
+        depth: int | None,
+        max_paths: int,
+    ) -> Tuple[List[Tuple[str, str, FlowPath]], Mapping[Tuple[str, str], List[Diagnostic]]]:
         """The sanitized shortest walks, in process (see :meth:`JavaAnalysisBackend._taint_walk`).
 
         **No** ``self._require_dataflow()`` here, unlike Python's and TypeScript's local walks:

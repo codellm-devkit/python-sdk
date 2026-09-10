@@ -324,15 +324,15 @@ def test_roots_are_deduplicated_by_ref_so_one_position_is_audited_once():
     assert result.resolved == f"{HANDLE} parameter 'in', {STORE} parameter 'sql'"
 
 
-def test_the_two_walk_hooks_are_stubs_rather_than_abstract_methods():
-    """Ruling G: an abstract method here would make every concrete backend un-instantiable until the
-    last implementation lands, so they raise instead. Task 7 flips them, and this test is what says
-    the stub is still a stub."""
-    assert not {"_taint_walk", "_edge_vars_in"} & JavaAnalysisBackend.__abstractmethods__
-    with pytest.raises(NotImplementedError):
-        JavaAnalysisBackend._taint_walk(None, [], [], cuts=[], cut_callables=[], depth=None, max_paths=1)
-    with pytest.raises(NotImplementedError):
-        JavaAnalysisBackend._edge_vars_in(None, f"can://java/acme/{HANDLE}")
+def test_the_two_walk_hooks_are_abstract_methods():
+    """Ruling G, discharged: the hooks shipped as concrete stubs because an abstract method would
+    have made every backend un-instantiable until the last implementation landed, so a backend
+    without one was refused when the walk was *called*. Every backend has one now, so the refusal
+    moves to construction, where a missing implementation is cheaper to find."""
+    assert {"_taint_walk", "_edge_vars_in"} <= JavaAnalysisBackend.__abstractmethods__
+    with pytest.raises(TypeError) as err:
+        type("_NoWalk", (JavaAnalysisBackend,), {})()
+    assert "_taint_walk" in str(err.value) and "_edge_vars_in" in str(err.value)
 
 
 # ==============================================================================================

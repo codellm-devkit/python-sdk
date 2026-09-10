@@ -89,7 +89,7 @@ import logging
 from collections import defaultdict
 from contextlib import contextmanager
 from functools import cached_property
-from typing import Any, Callable, Dict, FrozenSet, List, Sequence, Tuple
+from typing import Any, Callable, Dict, FrozenSet, List, Mapping, Sequence, Tuple
 
 import networkx as nx
 from codeanalyzer.schema import model_dump_json
@@ -1674,7 +1674,16 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     #: as often as a caller writes one.
     _EDGE_VARS = "MATCH (n:PyBodyNode)-[r:{rels}]->() WHERE n.id STARTS WITH $callable_prefix RETURN collect(DISTINCT r.var) AS vars"
 
-    def _taint_walk(self, srcs, dsts, *, cuts, cut_callables, depth, max_paths):
+    def _taint_walk(
+        self,
+        srcs: Sequence[SliceNode],
+        dsts: Sequence[SliceNode],
+        *,
+        cuts: List[Dict[str, str]],
+        cut_callables: List[str],
+        depth: int | None,
+        max_paths: int,
+    ) -> Tuple[List[Tuple[str, str, FlowPath]], Mapping[Tuple[str, str], List[Diagnostic]]]:
         """The sanitized shortest walks, server-side (see :meth:`PythonAnalysisBackend._taint_walk`).
 
         One statement for the whole batch, and one row per witness -- ``a.id AS src`` / ``b.id AS
