@@ -46,8 +46,9 @@ disconnected old copy that the new application-prefix delete cannot reach.
 
 ## TypeScript
 
-Status: leg 2.5b (`codeanalyzer-typescript` 1.5.2 pinned; graphs emitted by 1.5.2 or newer
-served — see the floor below). What attaches
+Status: leg 2.5b (`codeanalyzer-typescript` 1.6.0 pinned; graphs emitted by 1.5.2 or newer
+served — the pin is what the SDK installs and the floor what it requires, two numbers that move
+independently; see the floor below). What attaches
 today is the **1.x accessor surface** — symbol table, classes / interfaces /
 enums / type aliases / namespaces, methods, fields, call graph, call sites, decorators, externals,
 synthesized callables, the four bulk accessors and the repository-artifact layer — on both backends.
@@ -154,12 +155,12 @@ documented empty comes back.
 | `get_application_view().param_in` / `.param_out` | empty — leg 2.5a reads **no** dataflow overlay (2.5b does). `.config_reads` and `.unresolved_imports` are empty for their own reasons: the config-read edge carries no `site`, so the view's entries would not be the ones in-process holds (`get_unresolved_config_reads()` is where they are reachable), and no accessor reads `TS_UNRESOLVED_IMPORT`. `.artifacts` / `.dependencies` / `.config_uses` **are** populated, from the same rows the dedicated accessors return |
 | `TSCallable.comments`, `type_parameters`, `overload_signatures`, `body`, `cfg`/`cdg`/`ddg`/`summary` | empty. `parameters` are populated from `parameters_json` on a 1.4.0 graph |
 | `TSEnumMember.value`; `TSModule.source` / `imports` / `comments`; decorator positions; a call site's `method_name`, receiver and argument facets | empty / `None`. `TSModule.exports` **is** populated from `exports_json`; `imports` stay empty on a rebuilt module — they live on edges the containment fetch does not walk, and `get_imports()` is what reads them |
-| `code` on any node | the text the graph projected for that node, on a line-only span (columns `0`) |
+| `code` on any node | the text the graph projected for that node, on a line-only span (columns `0`). codeanalyzer-typescript 1.6.0 added `start_column` / `end_column` / `start_byte` / `end_byte` to every spanned label; this backend does not read them yet (#391) |
 | `get_call_targets(sig)` | an unresolved call site contributes `""` (in-memory: the call's `method_name`) |
 | `get_synthesized_callables()` | keyed by the anonymous node's own id (the analyzer's older compatibility key is JSON-only) |
-| `locate(path, line)` at module scope | `source == ""` plus a second `module_source_unavailable` diagnostic — `:TSModule` carries no `source`. In-memory: the module's text |
-| `get_source(node_id)` for a **body-node** id | **raises `NotImplementedError`** — the graph carries no text below callable granularity. In-memory: the span's slice |
-| `LocateResult.span` columns and byte offsets | placeholders; lines are real on both backends |
+| `locate(path, line)` at module scope | `source == ""` plus a second `module_source_unavailable` diagnostic. `:TSModule` **does** carry `source` since codeanalyzer-typescript 1.6.0 — this backend does not read it yet (#391), and the graph floor is 1.5.2, so a served graph may legitimately not have it either. In-memory: the module's text |
+| `get_source(node_id)` for a **body-node** id | **raises `NotImplementedError`** — this backend resolves no text below callable granularity: `:TSBodyNode` projects no `code`, and the module source plus byte offsets that would let it slice one (1.6.0) are unread (#391). In-memory: the span's slice |
+| `LocateResult.span` columns and byte offsets | placeholders; lines are real on both backends. Carried by a 1.6.0 graph, unread here (#391) |
 | `get_entrypoint_coverage()` | the anchor's `entrypoint_report_json` string, parsed — same report as in-memory, no lossiness. A graph without the property answers `entrypoint_report_unavailable` rather than empty-but-clean fields |
 
 Two more hold on **both** backends. `get_entrypoint_classes()` covers **classes only**: the wire
@@ -506,9 +507,13 @@ class LocateResult:
 | between two callables | same as module scope; it never snaps to the nearest callable |
 | file not analysed | diagnostic `file_not_in_graph` — distinct from a file that doesn't exist |
 
-**Gotcha:** over Neo4j, module-scope `source` is empty and carries `module_source_unavailable`.
-`:PyModule` nodes genuinely do not store source text. The local backend returns it. Do not read
-an empty `source` as "no code there".
+**Gotcha:** on **Python and TypeScript** over Neo4j, module-scope `source` is empty and carries
+`module_source_unavailable`; the local backend returns it. Do not read an empty `source` as "no code
+there". The graph stopped being the reason: `:PyModule.source` lands in codeanalyzer-python 1.5.2 and
+`:TSModule.source` in codeanalyzer-typescript 1.6.0, and these two backends do not read it yet
+(#396, #391). **Java** is the one that does, since codeanalyzer-java 3.2.0: module-scope `source` is
+the file's text on both of its backends, and the diagnostic is left for a module whose text the
+analyzer could not read.
 
 ---
 
@@ -930,7 +935,7 @@ Any accessor may attach these. They exist so an empty result is never ambiguous.
 | --- | --- |
 | `module_scope` | the position is real, but outside any callable |
 | `file_not_in_graph` | the file was not analysed — not "does not exist" |
-| `module_source_unavailable` | this backend cannot supply module text (Neo4j) |
+| `module_source_unavailable` | the backend cannot supply module text — Python and TypeScript over Neo4j always (#396, #391); Java only where the analyzer could not read the file |
 | `entrypoint_report_unavailable` | **you cannot tell whether an empty entrypoint list is real** |
 | `level_too_low` | the graph lacks the analysis level this question needs — *unanswerable, not negative* |
 | `graph_schema_mismatch` | analyzer/graph generation mismatch (raised, not attached) |
