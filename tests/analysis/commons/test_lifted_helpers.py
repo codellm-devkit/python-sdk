@@ -403,3 +403,52 @@ TAINT_DIGESTS = {"PY": "7187b2a862485643", "J": "f21a4e01ddc3e8a9", "TS": "eb9ac
 def test_the_generated_taint_statement_has_not_drifted(P):
     backend = dict(_path_backends())[P]
     assert hashlib.sha256(backend._TAINT.encode()).hexdigest()[:16] == TAINT_DIGESTS[P], backend._TAINT
+
+
+@pytest.mark.parametrize("P", ["PY", "J", "TS"])
+def test_the_sanitizer_acceptance_domain_is_delimited_on_every_graph_backend(P):
+    """``_EDGE_VARS`` is what Ruling A checks a variable sanitizer against, and it must be the *same*
+    domain ``_TAINT``'s cut can match -- the three disjuncts of
+    :func:`~cldk.analysis.commons.graphs.under_callable`, not a bare prefix.
+
+    A bare ``n.id STARTS WITH $callable_prefix`` accepts a variable that only occurs in a sibling
+    callable whose name starts with this one (Ruling K; on TypeScript ``create`` reaches every id of
+    ``createGuest``), and the delimited cut then severs nothing. That direction over-reports rather
+    than refutes, so it cannot put a live pair into ``exhausted`` -- but it hands the caller a
+    sanitizer they believe is in force, and it makes ``SelectorNotInGraph`` silent on a selector that
+    can never do anything. Three backends spelled this three ways before this assertion existed; the
+    local halves are delimited in the same commit.
+
+    Not covered by :data:`TAINT_DIGESTS`, which hashes ``_TAINT`` alone.
+    """
+    backend = dict(_path_backends())[P]
+    q = backend._EDGE_VARS
+    assert "$callable_prefix + '@'" in q, "the '@' body-node joiner is not delimited"
+    assert "$callable_prefix + '/'" in q, "the '/' nested-callable joiner is not delimited"
+    assert ".id = $callable_prefix" in q, "the callable's own id is no longer in its domain"
+
+
+@pytest.mark.parametrize(
+    "module,cls",
+    [
+        ("cldk.analysis.python.codeanalyzer.codeanalyzer", "PyCodeanalyzer"),
+        ("cldk.analysis.java.codeanalyzer.codeanalyzer", "JCodeanalyzer"),
+        ("cldk.analysis.typescript.codeanalyzer.codeanalyzer", "TSCodeanalyzer"),
+    ],
+)
+def test_the_local_acceptance_domain_is_delimited_too(module, cls):
+    """The local half of the same domain, asserted on source text because on Python and Java it has
+    no observable witness: both id grammars end in ``)``, so a bare prefix is self-delimiting by
+    accident there and only TypeScript can show the collision. A tripwire is the honest guard for a
+    correctness property whose counterexample the corpora cannot produce -- the alternative is a test
+    that passes under the mutation it names.
+
+    Pairs with
+    :func:`test_the_sanitizer_acceptance_domain_is_delimited_on_every_graph_backend`: six spellings,
+    one predicate.
+    """
+    import inspect
+
+    src = inspect.getsource(getattr(importlib.import_module(module), cls)._edge_vars_in)
+    assert "under_callable(" in src, "the acceptance domain stopped delimiting; a sibling callable's vars leak in"
+    assert ".startswith(" not in src, "a bare prefix accepts a variable the delimited cut cannot sever"

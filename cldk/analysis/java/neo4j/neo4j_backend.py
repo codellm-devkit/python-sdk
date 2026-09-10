@@ -969,15 +969,22 @@ class JNeo4jBackend(JavaAnalysisBackend):
     #: application name -- and ``test_java_neo4j_multi_application_scope.py`` classifies it on that
     #: basis.
     #:
-    #: A bare ``STARTS WITH``, deliberately wider than :attr:`_TAINT`'s delimited cut
-    #: (:func:`~cldk.analysis.commons.graphs.under_callable`): a sibling callable whose name merely
-    #: starts with this one contributes its edge variables here, so a variable may be *accepted* that
-    #: the cut cannot then match. That direction under-cuts -- a cut severing nothing over-reports --
-    #: and the direction this leg must refuse is the other one. A Java ``can://`` callable id ends in
-    #: ``)``, so the collision needs a same-arity overload of a longer name and cannot arise;
-    #: TypeScript's can (Ruling K), which is why the two ends are spelled the same way on all three
-    #: backends. One round trip per variable sanitizer, which is as often as a caller writes one.
-    _EDGE_VARS = "MATCH (n:JBodyNode)-[e:{rels}]->() WHERE n.id STARTS WITH $callable_prefix RETURN collect(DISTINCT e.var) AS vars"
+    #: The **delimited** predicate -- the three disjuncts of
+    #: :func:`~cldk.analysis.commons.graphs.under_callable` written in Cypher, the same shape
+    #: :attr:`_TAINT` gives ``$cut_callables`` and its own cut. Deliberately not a bare
+    #: ``STARTS WITH``, because the cut this domain exists to validate *for* is delimited: a variable
+    #: reachable only through an undelimited prefix (Ruling K -- a sibling callable whose name merely
+    #: starts with this one) would be *accepted* here and then sever nothing there, which is a
+    #: sanitizer the caller believes is in force and is not. Under-cutting only over-reports, so it
+    #: cannot manufacture a false refutation, but it is still an error the caller should have been
+    #: told about, and Ruling A's refusal only means something if this domain is exactly the set the
+    #: cut can match. One round trip per variable sanitizer, which is as often as a caller writes one.
+    #:
+    #: On Java the collision this refuses cannot arise -- a Java ``can://`` callable id ends in
+    #: ``)``, so it would need a same-arity overload of a longer name -- while TypeScript's can. The
+    #: spelling is shared anyway: one predicate across the six acceptance domains is one thing to
+    #: keep in step, and the id grammar is the analyzer's to change, not this backend's.
+    _EDGE_VARS = "MATCH (n:JBodyNode)-[e:{rels}]->() WHERE (n.id = $callable_prefix OR n.id STARTS WITH $callable_prefix + '@' OR n.id STARTS WITH $callable_prefix + '/') RETURN collect(DISTINCT e.var) AS vars"
 
     def _taint_walk(
         self,

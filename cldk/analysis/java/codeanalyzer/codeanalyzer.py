@@ -619,7 +619,7 @@ class JCodeanalyzer(JavaAnalysisBackend):
         no second traversal. Edges *leaving* a node under ``callable_id`` -- the same ``startNode``
         scoping the cut itself uses, so this validates exactly the domain the cut can match.
         ``J_CDG`` and the two port relationships on a pre-3.1.2 payload carry no ``var``; those
-        those ``None`` values are dropped, because ``resolve_sanitizers`` refuses a blank variable before it
+        ``None`` values are dropped, because ``resolve_sanitizers`` refuses a blank variable before it
         ever asks.
         """
         forward = self._sdg()[0]["forward"]

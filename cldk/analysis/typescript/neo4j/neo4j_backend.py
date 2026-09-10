@@ -1923,19 +1923,28 @@ class TSNeo4jBackend(TSAnalysisBackend):
     #: construction rather than by convention -- a callable id embeds the application name -- and
     #: ``test_typescript_neo4j_multi_application_scope.py`` classifies it on that basis.
     #:
-    #: A bare ``STARTS WITH``, deliberately wider than :attr:`_TAINT`'s delimited cut
-    #: (:func:`~cldk.analysis.commons.graphs.under_callable`), and on TypeScript that width is not
-    #: hypothetical: a callable id ends in a bare member name, so ``create``'s prefix really does
-    #: reach every edge of ``createGuest``. A variable may therefore be *accepted* here that the cut
-    #: cannot then match. That direction under-cuts -- a cut that severs nothing over-reports -- and
-    #: the one this leg must refuse is the other. Widening the domain is also what Ruling A asks for;
-    #: narrowing it here would refuse a real sanitizer, which is the failure that ruling exists to
-    #: prevent. One round trip per variable sanitizer, which is as often as a caller writes one.
+    #: The **delimited** predicate -- the three disjuncts of
+    #: :func:`~cldk.analysis.commons.graphs.under_callable` written in Cypher, the same shape
+    #: :attr:`_TAINT` gives ``$cut_callables`` and its own cut. Deliberately not a bare
+    #: ``STARTS WITH``, because the cut this domain exists to validate *for* is delimited: a variable
+    #: reachable only through an undelimited prefix (Ruling K -- a sibling callable whose name merely
+    #: starts with this one) would be *accepted* here and then sever nothing there, which is a
+    #: sanitizer the caller believes is in force and is not. Under-cutting only over-reports, so it
+    #: cannot manufacture a false refutation, but it is still an error the caller should have been
+    #: told about, and Ruling A's refusal only means something if this domain is exactly the set the
+    #: cut can match. One round trip per variable sanitizer, which is as often as a caller writes one.
+    #:
+    #: TypeScript is where this is not hypothetical: a callable id ends in a bare member name, so
+    #: ``create``'s undelimited prefix really does reach every edge of ``createGuest`` -- 13 of them
+    #: in the committed level-4 fixture. Narrowing does not refuse a real sanitizer, which is the
+    #: reading Ruling A might invite: a variable outside the delimited domain is not one the cut could
+    #: have severed for this callable, so refusing it reports the caller's mistake instead of hiding
+    #: it behind a cut that does nothing.
     #: The **bare** ``:TSBodyNode`` and not :attr:`_TAINT`'s ``:CanNode:TSBodyNode``, per the measured
     #: seek rule this backend's audit enforces: a ``STARTS WITH`` is a range seek and ``:CanNode``
     #: turns it into a range-seek union, while ``_TAINT`` pins its anchors by id and seeks the unique
     #: index. Same reason the Python twin spells it ``:PyBodyNode``.
-    _EDGE_VARS = "MATCH (n:TSBodyNode)-[r:{rels}]->() WHERE n.id STARTS WITH $callable_prefix RETURN collect(DISTINCT r.var) AS vars"
+    _EDGE_VARS = "MATCH (n:TSBodyNode)-[r:{rels}]->() WHERE (n.id = $callable_prefix OR n.id STARTS WITH $callable_prefix + '@' OR n.id STARTS WITH $callable_prefix + '/') RETURN collect(DISTINCT r.var) AS vars"
 
     def _taint_walk(
         self,

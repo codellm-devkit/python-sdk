@@ -1666,13 +1666,17 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     #: application-scoped, by construction rather than by convention -- a callable id embeds the
     #: application name -- and ``test_neo4j_multi_application_scope.py`` classifies it on that basis.
     #:
-    #: A bare ``STARTS WITH``, deliberately wider than :attr:`_TAINT`'s delimited cut
-    #: (:func:`~cldk.analysis.commons.graphs.under_callable`): a sibling callable whose name merely
-    #: starts with this one contributes its edge vars here, so a variable may be *accepted* that the
-    #: cut cannot then match. That direction under-cuts -- a cut that severs nothing over-reports --
-    #: and the one this leg must refuse is the other. One round trip per variable sanitizer, which is
-    #: as often as a caller writes one.
-    _EDGE_VARS = "MATCH (n:PyBodyNode)-[r:{rels}]->() WHERE n.id STARTS WITH $callable_prefix RETURN collect(DISTINCT r.var) AS vars"
+    #: The **delimited** predicate -- the three disjuncts of
+    #: :func:`~cldk.analysis.commons.graphs.under_callable` written in Cypher, the same shape
+    #: :attr:`_TAINT` gives ``$cut_callables`` and its own cut. Deliberately not a bare
+    #: ``STARTS WITH``, because the cut this domain exists to validate *for* is delimited: a variable
+    #: reachable only through an undelimited prefix (Ruling K -- a sibling callable whose name merely
+    #: starts with this one) would be *accepted* here and then sever nothing there, which is a
+    #: sanitizer the caller believes is in force and is not. Under-cutting only over-reports, so it
+    #: cannot manufacture a false refutation, but it is still an error the caller should have been
+    #: told about, and Ruling A's refusal only means something if this domain is exactly the set the
+    #: cut can match. One round trip per variable sanitizer, which is as often as a caller writes one.
+    _EDGE_VARS = "MATCH (n:PyBodyNode)-[r:{rels}]->() WHERE (n.id = $callable_prefix OR n.id STARTS WITH $callable_prefix + '@' OR n.id STARTS WITH $callable_prefix + '/') RETURN collect(DISTINCT r.var) AS vars"
 
     def _taint_walk(
         self,

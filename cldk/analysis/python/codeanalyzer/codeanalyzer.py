@@ -1505,9 +1505,17 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         ``startNode`` scoping the cut itself uses, so this validates exactly the domain the cut can
         match. Four of the five relationship types carry no ``var``; those ``None``s are dropped,
         because ``resolve_sanitizers`` refuses a blank variable before it asks.
+
+        "Under ``callable_id``" is
+        :func:`~cldk.analysis.commons.graphs.under_callable` and not ``startswith``, for Ruling K's
+        reason and to make the sentence above true: with a bare prefix test this domain would include
+        every variable of a sibling callable whose name merely starts with this one, and a sanitizer
+        naming one of those would be *accepted* here and then sever nothing in ``allow_edge``, which
+        is delimited. That direction only over-reports, so it cannot manufacture a false refutation,
+        but it hands the caller a sanitizer they believe is in force and is not.
         """
         forward = self._sdg()[0]["forward"]
-        return frozenset(var for src, outs in forward.items() if src.startswith(callable_id) for labels in outs.values() for _rel, var, _prov in labels if var)
+        return frozenset(var for src, outs in forward.items() if under_callable(src, (callable_id,)) for labels in outs.values() for _rel, var, _prov in labels if var)
 
     def paths_between(self, src: str, dst: str, *, src_within: str, dst_within: str, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
         """How a value reaches another value (see :meth:`PythonAnalysisBackend.paths_between`)."""
