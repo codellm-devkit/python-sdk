@@ -283,6 +283,36 @@ def test_complete_is_the_batch_flag_so_one_skipped_pair_flips_it_and_a_bigger_ca
     assert len(bigger.paths) == 1 and not bigger.complete, "the cap never fired, so raising it answers the same"
 
 
+def test_the_names_are_resolved_before_the_sanitizers():
+    """Step 3 before step 4 of the ordered contract, which the docstring asserts and nothing pinned:
+    swapping the two ``resolve_value`` loops with the ``resolve_sanitizers`` call passed the whole
+    suite. It matters because a caller with a typo in a *source* would be told about their
+    **sanitizer** instead -- and worse, a sanitizer selector is checked against the SDG edges of a
+    callable whose own name has not been judged yet."""
+    backend = _Recording()
+    reached = []
+
+    def _refuse(name, *, within):
+        raise SelectorNotInGraph("value", [name], 1, detail=f"relative to within={within!r}")
+
+    backend.resolve_value = _refuse
+    backend._edge_vars_in = lambda callable_id: reached.append(callable_id) or set()
+    with pytest.raises(SelectorNotInGraph):
+        backend.taint([("in", HANDLE)], [("sql", STORE)], sanitizers=[("answer", HANDLE)])
+    assert reached == [], "the sanitizer hook is not touched until every name has resolved"
+
+
+def test_roots_are_deduplicated_by_ref_so_one_position_is_audited_once():
+    """``roots`` is the audit line a caller reads a verdict against, and a duplicated selector must
+    not make a position appear twice in it -- ``resolved`` is built from it, so the repetition would
+    be visible in the sentence a report quotes. Unpinned until now: dropping the dedup to
+    ``[*srcs, *dsts]`` passed the whole suite."""
+    a, b = _value("in", HANDLE), _value("sql", STORE)
+    result = _Recording(rows=[(a.ref, b.ref, _witness(a, b))]).taint([("in", HANDLE), ("in", HANDLE)], [("sql", STORE)])
+    assert [n.ref for n in result.roots] == [a.ref, b.ref], "two selectors, one position, one root"
+    assert result.resolved == f"{HANDLE} parameter 'in', {STORE} parameter 'sql'"
+
+
 def test_the_two_walk_hooks_are_stubs_rather_than_abstract_methods():
     """Ruling G: an abstract method here would make every concrete backend un-instantiable until the
     last implementation lands, so they raise instead. Task 7 flips them, and this test is what says

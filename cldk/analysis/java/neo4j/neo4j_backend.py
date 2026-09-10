@@ -953,9 +953,9 @@ class JNeo4jBackend(JavaAnalysisBackend):
         return bool(self._run(query, src=src, dsts=[d for d in dsts if d != src], prefix=self._scope_prefix)[0]["ok"])
 
     #: Whether this application's parameter vertices have any outgoing SDG edge — the measurement
-    #: the four forward value accessors refuse on
+    #: the five forward value accessors refuse on
     #: (:data:`~cldk.analysis.java.backend.PORTS_DISCONNECTED`). Costs 6.5 ms on daytrader8 and
-    #: 185.4 ms on ThingsBoard, once per backend, and only when one of those four is called: the
+    #: 185.4 ms on ThingsBoard, once per backend, and only when one of those five is called: the
     #: "no" answer is the expensive one, because it has to look at every ``formal_in``.
     _PORTS_CARRY_DEPENDENCE = (
         "MATCH (b:JBodyNode)-[r:J_DDG|J_CDG|J_PARAM_IN|J_PARAM_OUT|J_SUMMARY]->(m:JBodyNode) "

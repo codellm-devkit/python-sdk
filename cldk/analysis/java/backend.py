@@ -238,19 +238,20 @@ def java_body_node_kind(node_id: str, kind: str, parameters: Sequence[JCallableP
     return kind, None
 
 
-#: Why the four forward value accessors refuse (D7), **when they do**. Up to codeanalyzer-java
+#: Why the five forward value accessors refuse (D7), **when they do**. Up to codeanalyzer-java
 #: 3.0.2 the L4 port lattice was emitted *disconnected* from the statement dependence graph: not
 #: one of the reference graph's 134,742 ``J_DDG`` and 46,936 ``J_CDG`` edges had a
 #: :data:`PORT_KINDS` vertex at either end, so a ``formal_in`` — the only thing
 #: :meth:`JavaAnalysisBackend.resolve_value` ever returns — had **out-degree zero** and every
 #: forward traversal seeded on one ended where it started. That made ``flows_to_call`` and
-#: ``flows_to_argument`` ``False`` for every input, ``paths_between`` empty for every input and
-#: ``slice_forward`` the seed alone — each indistinguishable from a proved absence of flow, which
-#: is exactly the ambiguous empty D7 forbids. They raise instead.
+#: ``flows_to_argument`` ``False`` for every input, ``paths_between`` empty for every input,
+#: ``slice_forward`` the seed alone and ``taint`` every requested pair refuted — each
+#: indistinguishable from a proved absence of flow, which is exactly the ambiguous empty D7
+#: forbids. They raise instead.
 #:
 #: **codeanalyzer-java 3.0.3 joins the two layers** (codeanalyzer-java#227): ``@formal_in:k → use``,
 #: ``return → @formal_out``, ``statement → <call>/actual_in:i`` and ``<call>/actual_out →
-#: statement``. On output from 3.0.3 the probe below answers ``True`` and all four accessors
+#: statement``. On output from 3.0.3 the probe below answers ``True`` and all five accessors
 #: answer, with no change here — which is the point of asking the *data* rather than the analyzer
 #: version. The refusal is kept because it can still fire honestly: the Neo4j floor is 3.0.1, so a
 #: graph emitted by 3.0.1 or 3.0.2 is still attachable, and ``--l3-engine wala`` leaves
@@ -1517,9 +1518,9 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
     # ONE COMPLETENESS PROTOCOL. Truncation is reported by ``complete`` on ``EdgePage`` / ``Slice``
     # / ``FlowPaths``, never by silently returning less.
     #
-    # FOUR ACCESSORS REFUSE ON A DISCONNECTED PORT LATTICE RATHER THAN ANSWERING A CONSTANT.
+    # FIVE ACCESSORS REFUSE ON A DISCONNECTED PORT LATTICE RATHER THAN ANSWERING A CONSTANT.
     # Asked of the analysis, never of the analyzer version: codeanalyzer-java joins the port lattice
-    # to the statement graph from 3.0.3, and on such output all four answer with no change here.
+    # to the statement graph from 3.0.3, and on such output all five answer with no change here.
     # See :data:`PORTS_DISCONNECTED`.
     # =====================================================================================
     @property
@@ -2149,9 +2150,11 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         is what keeps the verdict as precise as the walk's own knowledge; the signature cannot say
         so, which is why it is said here.
 
-        A local backend opens with ``self._require_dataflow()``: the graph backends do not measure
-        the analysis level (their attach probe never looks at the dependence relationships), so the
-        gate lives in the implementations that can answer rather than in :meth:`taint`.
+        **The level gate is not this method's**, unlike Python's and TypeScript's walks: Java has
+        :meth:`_require_dataflow` on the ABC, so :meth:`taint` asks it before the walk is ever
+        entered and an implementation that asked again would only be answering a question already
+        answered. Nor is the port-lattice gate: :meth:`taint` opens
+        :meth:`_require_connected_ports` too, in the same place the five sibling flow accessors do.
 
         A stub rather than an ``@abstractmethod`` while the implementations land, so a backend
         without one is refused when it is *called* rather than when it is constructed.
