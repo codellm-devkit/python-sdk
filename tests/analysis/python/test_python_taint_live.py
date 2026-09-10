@@ -22,19 +22,33 @@ making about two implementations of one hook is that they answer identically -- 
 means the same hop chains and the same refuted pairs, not two truthy results.
 
 **The fixture is small on purpose and its source is not free.** ``fixture/proj/app.py`` carries a
-caller (``Handler.handle``) whose parameter reaches a sink through two routes, but a *caller's*
-parameter is unusable as a source here: its ``@formal_in`` port and its ``@entry`` def-site are
-disjoint upstream, so the port a selector resolves to reaches no argument at all
-(codeanalyzer-python#204). Sourcing from ``("user_input", "handle")`` would therefore measure that
-defect and record a wrong expectation as a passing assertion. The usable witnesses start at a
-**callee's** parameter, and the 6-hop shape they take crosses two call boundaries in both
-directions::
+caller (``Handler.handle``) whose parameter reaches a sink through two routes. The witnesses
+:data:`SOURCES` uses start at a **callee's** parameter, and the 6-hop shape they take crosses two
+call boundaries in both directions::
 
     formal_in -> body -> formal_out -[return]-> actual_out -> stmt -> actual_in -[argument]-> formal_in
 
-Path counts on this graph are also **not route counts**: #204's secondary finding is that a
-reaching-definition ``var`` names the *use* rather than the def, which inflates them. So the numbers
-below are measured, and what they are asserted against is a hop chain wherever a chain will do.
+**Correction, measured in Task 8 on the current fixture graph.** An earlier version of this docstring
+said a *caller's* parameter was unusable as a source -- that ``Handler.handle``'s ``@formal_in`` port
+and its ``@entry`` def-site were disjoint upstream, so the port a selector resolves to reached no
+argument at all (codeanalyzer-python#204), and that sourcing from ``("user_input", "handle")`` would
+record a defect as a passing assertion. **That is no longer true of this graph, and both backends
+agree it is not.** ``taint([("user_input", "handle")], ...)`` returns **7 witnesses across 4 sinks**,
+each 3 hops, e.g.::
+
+    handle@formal_in:1 -[data user_input]-> handle@50:8 -[data answer]-> handle@53:8/actual_in:0
+                       -[argument cleaned]-> run_query@formal_in:0
+
+So a caller's parameter *does* reach the arguments it is passed to here, at 3 hops rather than 6.
+:data:`SOURCES` is left on the callees' parameters anyway -- it is what the existing assertions were
+measured against and rewriting them would discard that -- but nothing below rests on #204's symptom
+being present, and :data:`ALL_VALUES` includes ``("user_input", "handle")`` precisely because it now
+witnesses.
+
+Path counts on this graph are still **not route counts**: a reaching-definition ``var`` names the
+*use* rather than the def, which inflates them (two of the seven witnesses above differ only in which
+statement line the first ``data`` hop passes through). So the numbers below are measured, and what
+they are asserted against is a hop chain wherever a chain will do.
 
 Every ref is measured from the graph through ``resolve_value``. Nothing here hardcodes a ``can://``
 id: the leg-4a ledger did, its fixture was regenerated, and those ids now name nothing.
@@ -230,3 +244,103 @@ def test_both_backends_rank_the_two_witnesses_the_same_way(local, graph):
     assert got["local"] == got["graph"], "the two walks rank the same two witnesses differently"
     capped, full = got["local"]
     assert len(full) == 2 and capped == full[:1]
+
+
+#: Every parameter in ``fixture/proj/app.py``, as a caller writes a selector -- read off the source,
+#: not off a ``taint()`` result. Thirteen, which is what the fixture has: the plan asked for a
+#: "forty-source" batch and this project cannot supply forty *distinct* addressable values, so the
+#: batch is grown in the dimension the number was standing in for -- 13 x 13 = **169 pairs in one
+#: traversal**, against the 4 the module opened with. ``ch`` is the comprehension variable in
+#: ``scrub``, which the emitter lifts to a module-global port (``<global>:app::ch``) and which
+#: therefore addresses inside ``handle`` too.
+ALL_VALUES = [
+    ("raw", "scrub"),
+    ("ch", "scrub"),
+    ("raw", "relay"),
+    ("mid", "wrap"),
+    ("cleaned", "run_query"),
+    ("note", "run_query"),
+    ("user_input", "handle"),
+    ("ch", "handle"),
+    ("self", "handle"),
+    ("label", "report"),
+    ("self", "report"),
+    ("audit", "__init__"),
+    ("self", "__init__"),
+]
+
+#: ``Handler.report`` is never called, so ``label`` reaches nothing at all -- the one pair on this
+#: fixture that is refuted by the *program* rather than by a sanitizer.
+REFUTED = ([("label", "report")], [("cleaned", "run_query"), ("note", "run_query")])
+
+
+@pytest.mark.parametrize("backend_name", ["local", "graph"])
+def test_a_pair_the_program_never_connects_is_exhausted_with_an_empty_ledger(request, backend_name):
+    """The refutation certificate on a pair no sanitizer touched.
+
+    ``test_a_callable_sanitizer_cuts_its_own_pair...`` above reaches ``exhausted`` through the cut
+    predicate; this reaches it through the walk simply not connecting two positions, which is
+    triage's common case and the one where a wrong ``exhausted`` closes a live alert. The two use
+    different code paths -- a cut pair has rows filtered out inside ``ShortestPath``, an unconnected
+    pair never had a row -- and only the second one certifies anything about the program.
+
+    ``Handler.report`` is dead code in the fixture: nothing calls it, so ``label`` has no outgoing
+    dependence past its own body and the two sinks are unreachable from it by construction.
+    """
+    backend = request.getfixturevalue(backend_name)
+    r = backend.taint(*REFUTED)
+    assert r.paths == [], "report() is never called; a witness here would be a walk that invented an edge"
+    assert sorted(r.exhausted) == [("label", "cleaned"), ("label", "note")]
+    assert r.unresolved == [], "a certificate is only a certificate beside an empty ledger"
+    assert r.complete is True, "nothing truncated and nothing blocked"
+
+
+@pytest.mark.parametrize("backend_name", ["local", "graph"])
+def test_a_bounded_search_refuses_to_certify_the_same_pair(request, backend_name):
+    """The same unconnected pair, asked with ``depth=4``: still no witness, and now **no
+    certificate**.
+
+    This is the whole reason ``exhausted`` is named for the search and not for the conclusion. A
+    pair with no path within four hops is *unmeasured*, not refuted, and a field that reported it
+    the same way as an unbounded search would hand triage a refutation the search never made.
+    """
+    backend = request.getfixturevalue(backend_name)
+    r = backend.taint(REFUTED[0], REFUTED[1], depth=4)
+    assert r.paths == []
+    assert r.exhausted == [], "depth is not None, so nothing may be certified"
+    assert r.complete is True, "a bounded search that truncated nothing is still a complete answer"
+
+
+def test_a_169_pair_batch_accounts_for_every_pair_exactly_once(local, graph):
+    """m x n in one traversal, at 169 pairs -- and the arithmetic that a flat implementation fails.
+
+    Three claims, in the order they would break:
+
+    1. **Every requested pair is accounted for exactly once.** ``witnessed + exhausted +
+       degenerate == 13 * 13``. A flat ``LIMIT $cap`` satisfies no part of this: it returns witnesses
+       for whichever pairs the operator happened to reach first, and every pair it starved lands in
+       ``exhausted`` -- a *certified refutation* of a flow it never looked for. The identity is
+       structural, so it holds without anyone writing down what a previous run printed.
+    2. **``sources == sinks`` does not abort the batch.** 13 of the 169 pairs are degenerate, and
+       Neo4j refuses ``allShortestPaths`` when start and end coincide -- for the whole statement, not
+       for the row. Before ``b <> a`` went into the pattern this call raised
+       ``neo4j.exceptions.DatabaseError`` and returned nothing at all; the local replay answered.
+       That is the asymmetry a 4-pair measurement with disjoint sources and sinks cannot see.
+    3. **A ``degenerate_pair`` diagnostic does not void the batch's certificates.** Ruling I voids
+       ``exhausted`` on an *unclaimed* frontier key -- a diagnostic nothing can attribute to a pair.
+       A degenerate pair is attributable by construction (it is skipped by name), so the 139
+       certificates stand beside 13 diagnostics. ``complete`` is still ``False``, because the ledger
+       is not empty, and that is Ruling H being coarse on purpose.
+    """
+    got = {}
+    for name, backend in (("local", local), ("graph", graph)):
+        r = backend.taint(ALL_VALUES, ALL_VALUES, max_paths=10)
+        witnessed = {(p.hops[0].frm.ref.split("/", 3)[3], p.hops[-1].to.ref.split("/", 3)[3]) for p in r.paths}
+        got[name] = (len(witnessed), sorted(witnessed), sorted(r.exhausted), [d.code for d in r.unresolved], r.complete, len(r.paths))
+    assert got["local"] == got["graph"], "two walks, one answer -- including which pairs were refuted"
+    witnessed_count, _, exhausted, codes, complete, paths = got["local"]
+    assert codes == ["degenerate_pair"] * 13, "one per selector, since every selector is also a sink"
+    assert witnessed_count + len(exhausted) + 13 == len(ALL_VALUES) ** 2 == 169
+    assert (witnessed_count, len(exhausted), paths) == (17, 139, 28), "measured on the fixture; the identity above is what protects it"
+    assert complete is False, "13 diagnostics in the ledger, so the batch flag is False (Ruling H)"
+    assert exhausted, "and Ruling I does not void them: a degenerate pair is attributable by name"
