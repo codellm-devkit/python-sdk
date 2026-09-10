@@ -375,3 +375,23 @@ def test_the_taint_query_still_formats():
     out = q.format(rels=sdg_rel_pattern("PY"), depth="")
     assert "{{" not in out and "}}" not in out, "an escape survived formatting"
     assert out.count("allShortestPaths") == 1
+
+
+# ----------------------------------------------------------------------------------------------
+# Leg 4b, Task 7: the three ``_TAINT`` statements, now that all three exist.
+# ----------------------------------------------------------------------------------------------
+
+#: A digest of each graph backend's `_TAINT`, for `PATHS_DIGESTS`' reason: each is a call to
+#: `sdg_taint_query(...)` with its own arguments, so a change to the generator, to `path_order`, or
+#: to one backend's node label or scope callables moves every side that could be compared against it.
+#:
+#: **When this fails:** the statement changed. Print `backend._TAINT` and diff it against the
+#: previous value, decide whether the change was intended, and if it was, update the digest **in the
+#: same commit that changed the statement** -- never in a separate one.
+TAINT_DIGESTS = {"PY": "5e5b19785ef89b40", "J": "e044026c1df6827d", "TS": "095ad613e9a19952"}
+
+
+@pytest.mark.parametrize("P", ["PY", "J", "TS"])
+def test_the_generated_taint_statement_has_not_drifted(P):
+    backend = dict(_path_backends())[P]
+    assert hashlib.sha256(backend._TAINT.encode()).hexdigest()[:16] == TAINT_DIGESTS[P], backend._TAINT
