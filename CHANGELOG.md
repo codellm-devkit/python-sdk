@@ -5,6 +5,60 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.0.0-rc.5] - 2026-09-10
+
+Two changes, and they are the two halves of one question: what should happen when an analyzer ships
+a field the SDK has not learned about yet. Until now the answer was "refuse the entire payload."
+That answer caught a real bug within seconds — and it also meant a backward-compatible analyzer
+release could not be taken up at all until the SDK was edited first. This release takes up the fix
+and changes the answer.
+
+### Breaking
+
+**The schema-v2 mirrors relax from `extra="forbid"` to `extra="ignore"`.** A Java or TypeScript
+`analysis.json` carrying a field these models do not declare now parses, with that field dropped,
+where it previously raised.
+
+What it gives up, stated plainly because it is the whole cost: `forbid` was the drift detector. Under
+`ignore` an addition is absorbed silently, and the first symptom is a wrong answer from something
+reading a field the SDK never learned. The intended replacement is a comparison against each
+analyzer's published schema, reporting what is unmodelled instead of refusing to parse.
+
+Scoped narrower than the whole codebase, on a distinction that matters:
+
+- **relaxed** — `_Base` in `cldk/models/java` and `cldk/models/typescript`, the analyzer mirrors
+  validated from the wire, plus `JCompilationUnit`, which overrides `model_config` wholesale for its
+  alias settings and so never inherited the change (a subclass config replaces rather than merges);
+- **kept `forbid`** — `JCallableOverview` and `JClassOverview` in `projections.py`. Nothing calls
+  `model_validate` on them; this SDK builds them from graph rows. Strictness there catches our own
+  typo'd kwarg, not the analyzer's additions.
+
+`ignore` rather than `allow`, deliberately: `allow` keeps unknown fields in `model_extra` and so
+widens `model_dump_json()` with whatever the analyzer emitted, and several tests assert properties
+*of* dumps. A field the SDK does not model must not be able to change what a dump contains.
+
+**What this does not cost:** `extra` does not govern *required* fields, so "a 1.x `analysis.json` is
+refused, not parsed" survives intact — a v1 payload still fails, because it lacks what v2 requires
+rather than carrying extras.
+
+### Changed
+
+**Analyzer pins move to `codeanalyzer-python==1.5.1`, `codeanalyzer-java==3.1.2` and
+`codeanalyzer-typescript==1.5.3`.** All three shipped the same fix in lockstep: `param_in` and
+`param_out` edges now name the bound formal in `var`. The schemas had declared that property since
+the L4 layer landed while the projections wrote nothing, so a consumer predicate on it evaluated to
+null on every edge crossing a call boundary — and under Cypher's three-valued logic an `all()` over
+that null excludes the whole path. An interprocedural flow therefore read as a *proved absence* of
+flow, indistinguishable from a real negative.
+
+Measured on a graph emitted by rc.4's pinned `codeanalyzer-python` 1.5.0: `var` was null on 4 of 4
+`PY_PARAM_IN` edges and 6 of 6 `PY_PARAM_OUT`, while all 44 `PY_DDG` carried it. So this was the
+shipped state of rc.4, not a legacy-graph edge case. After the bump: 4 of 4 and 6 of 6 carry it.
+
+**No analyzer floor moves.** Each delta is the `var` fix plus release plumbing, with no change to the
+`can://` grammar. Raising a floor would refuse graphs that still work, since the fix only adds a
+property — and a capability difference belongs in a data-measured probe rather than a version literal.
+
 ## [v2.0.0-rc.4] - 2026-09-08
 
 One change, and it moves the identity of every node: the application segment of a `can://` id is
