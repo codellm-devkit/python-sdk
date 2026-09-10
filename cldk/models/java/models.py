@@ -729,10 +729,20 @@ class JCallGraphEdge(_Base):
 
 class JParamEdge(_Base):
     """An L4 ``param_in``/``param_out`` edge with global endpoints
-    (``<callable id>@L:C/actual_in:N`` → ``<callable id>@formal_in:N``)."""
+    (``<callable id>@L:C/actual_in:N`` → ``<callable id>@formal_in:N``).
+
+    ``var`` names the bound formal, and it arrived in codeanalyzer-java 3.1.2
+    (codeanalyzer-java#250). Before that the schema declared the property and the projection wrote
+    nothing, so a consumer predicate on it was ``null`` on every edge crossing a call boundary --
+    which under Cypher's three-valued logic drops the whole path and reads as a proved absence of
+    flow. ``Optional`` rather than required because a graph or an ``analysis.json`` from 3.1.1 or
+    earlier carries no such key, and both backends attach to artifacts they did not produce.
+    :class:`~cldk.models.typescript.models.TSParamEdge` has carried the same field since its own
+    analyzer added it."""
 
     src: str
     dst: str
+    var: Optional[str] = None
 
 
 class JExternalSymbol(_Base):
