@@ -1462,10 +1462,15 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         cut severs only the callable the caller named it in. Both are ``None`` when nothing is
         sanitized -- the documented "no filtering" default, and no per-node cost on the common call.
 
-        The ledger comes back empty for the graph backend's measured reason
-        (:meth:`~cldk.analysis.python.neo4j.neo4j_backend.PyNeo4jBackend._taint_walk`): an
-        unresolved dispatch emits no dependence edge at all, so the frontier is an absence here too,
-        and the analyzer's own ``call_sites`` do not say which callee it failed to resolve either.
+        The ledger comes back empty, and the graph backend's twin states the reason in full
+        (:meth:`~cldk.analysis.python.neo4j.neo4j_backend.PyNeo4jBackend._taint_walk`). In short: a
+        signal does exist here, as ``PyCallsite.callee_signature is None`` -- the leg-4b fixture's
+        ``scrub`` has two call sites and exactly one reads that way, matching the 5-of-6 the graph
+        measures -- so this is a refusal to file rather than an absence to report. Filing a
+        diagnostic voids ``exhausted`` for the whole batch (Ruling I), and a signal that cannot yet
+        be told apart from an ordinary call into a library would void every refutation in every
+        application that makes one. Same consequence, equally uncatchable from in here: a pair whose
+        flow leaves through an unresolved call is certified ``exhausted``.
         """
         self._require_dataflow()
         adjacency, nodes = self._sdg()

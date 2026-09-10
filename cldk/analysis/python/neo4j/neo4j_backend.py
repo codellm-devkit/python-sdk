@@ -1676,16 +1676,27 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         avoid, and a Python-side sort would silently disagree with
         :func:`~cldk.analysis.commons.graphs.path_order`.
 
-        **The ledger comes back empty, and that is a measured limitation rather than a shortcut.**
-        An unresolved dispatch is not observable from inside this walk: when the analyzer cannot
-        resolve a call it emits no ``PY_PARAM_IN``/``PY_PARAM_OUT`` for it at all, so the frontier
-        is an *absence* of edges, indistinguishable here from a call that genuinely passes nothing
-        tainted. The graph's ``:PyExternal`` ghosts are the opposite case -- a call resolved *to*
-        something outside the project -- and reporting those as frontier findings would file a
-        diagnostic against every pair in any application that calls a library function, emptying
-        ``exhausted`` for all of them (Ruling I) and destroying the refutation this accessor is for.
+        **The ledger comes back empty, and that is a deliberate refusal rather than a missing
+        signal.** A frontier signal does exist, on this backend and on the local one: here an
+        unresolved dispatch leaves a ``kind:'call'`` body node with no outgoing ``PY_RESOLVES_TO``,
+        and in process it is ``PyCallsite.callee_signature is None``. Measured on the leg-4b
+        fixture, 5 of its 6 call nodes resolve and one does not, so the signal is real and cheap to
+        read -- what is missing is the confidence to act on it, not the observation.
+
+        It is not filed because the granularity is wrong in the one direction that matters. A
+        diagnostic empties ``exhausted`` for the *whole batch* (Ruling I, see
+        :func:`~cldk.analysis.commons.graphs.taint_verdict`), so a frontier signal that also fires
+        on the ordinary case -- a call resolved to something outside the project, which on this
+        graph is a ``PY_RESOLVES_TO`` into a ``:PyExternal`` ghost -- would void every refutation in
+        every application that calls a library function. This fixture suggests the two cases are
+        separable (the external call carries its target, the unresolved one carries nothing), but
+        six call sites are not a corpus, and a refutation instrument may not be wired to a signal on
+        that evidence. Telling "unresolved dispatch" apart from "resolved external" well enough to
+        file only the first is future work, and leg 4b's corpus check is where the separation gets
+        measured -- deferring to it is the plan, not the justification.
+
         Consequence, stated because nothing here can catch it: a pair whose flow leaves through an
-        unresolved call is certified ``exhausted``. That is what leg 4b's corpus check is for.
+        unresolved call is certified ``exhausted``.
         """
         rows = self._run(
             self._TAINT.format(rels=SDG_REL_PATTERN, depth="" if depth is None else depth),
