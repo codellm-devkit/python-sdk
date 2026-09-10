@@ -25,13 +25,24 @@ artifact six, and the J-7 leaf accessors (`get_interfaces`/`get_enums`/`get_enum
 `get_records`, names shared with TypeScript). Both backends answer identically, including the miss
 paths; the policy lives once on `JavaAnalysisBackend` because `JNeo4jBackend` rebuilds the canonical
 `JApplication` and answers from it. Four things Java says rather than answering, each measured:
-`slice_forward` / `paths_between` / `flows_to_call` / `flows_to_argument` raise (the analyzer's L4
-port lattice carries no dependence edge, codeanalyzer-java#227); `get_entrypoint_coverage` reports
+`slice_forward` / `paths_between` / `flows_to_call` / `flows_to_argument` raise **when the attached
+analysis has no dependence edge leaving a `formal_in`** (codeanalyzer-java#227) — the probe reads the
+data, never a version, so a graph re-emitted by >= 3.0.3 answers instead: measured on daytrader8,
+`_ports_carry_dependence` is `True` and none of the four refuses there; `get_entrypoint_coverage` reports
 `entrypoint_report_unavailable` and the three config-read accessors raise on an analysis older than
 codeanalyzer-java 3.1.0, which is the release that added both overlays (the probe is the entrypoint
 report's presence, measured from the data, never a version string); `get_external_symbols` raises
 off a local run (`--external-calls` is opt-in and `--emit neo4j` forces it); the CRUD accessors
 still raise. `docs/agent-api-reference.md` has the full lossiness list.
+
+**All three languages, since leg 4b (#382):** `taint(sources, sinks, sanitizers=(), *, depth=None,
+max_paths=10)` on every facade — m sources against n sinks in one traversal, with `TaintResult`
+adding `exhausted` (pairs searched to exhaustion: the refutation `paths_between` cannot give),
+`roots`, `resolved` and `unresolved`. Three rules the docstrings carry and the tests pin: an explicit
+`depth` empties `exhausted` by rule; `complete` is the batch's flag and one blocked pair voids every
+absence claim in the result; `max_paths` caps per pair, never per call. The source/sink/sanitizer
+vocabulary is the caller's — no framework catalogue ships. Java shares the `formal_in` dependence
+probe above, so `taint` refuses on the same analyses the four verbs do.
 
 The legacy `CLDK(language="<lang>").analysis(...)` entry still works as a compat shim. Adding a
 language means a new factory method + facade + backend ABC/impl(s) + models + tests — **update this
