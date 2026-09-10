@@ -986,8 +986,11 @@ class TSAnalysisBackend(AnalysisBackend[TSApplication, TSModule, TSType, TSCalla
         Returns:
             A :class:`~cldk.analysis.commons.results.TaintResult`: ``paths`` are the witnesses,
             ``exhausted`` the pairs searched to exhaustion with a clean ledger, ``roots`` and
-            ``resolved`` what every name matched, ``unresolved`` the ledger, and ``complete`` is
-            ``True`` only when nothing was truncated and no pair was skipped. A pair is named in
+            ``resolved`` what every name matched, ``unresolved`` the ledger, and ``complete`` is the
+            whole batch's flag: ``True`` only when nothing was truncated **and** the ledger is empty,
+            so one skipped or blocked pair makes it ``False`` however cleanly the rest answered --
+            and where nothing was truncated, a bigger ``max_paths`` returns that same ``False``. A
+            pair is named in
             ``exhausted`` by the two strings the caller passed, so two sources sharing a name in
             different callables read as one pair there -- ``roots`` is what tells them apart.
 

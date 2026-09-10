@@ -634,7 +634,9 @@ class FlowPaths(BoundedResult):
     Attributes:
         paths: The paths, in :func:`~cldk.analysis.python.backend.hop_sort_key` order.
         complete: ``False`` when ``max_paths`` cut the list; ``True`` when these are all the
-            shortest paths there are (including when there are none).
+            shortest paths there are (including when there are none). :class:`TaintResult` narrows
+            it -- there, truncation is only one of the ways it can be ``False`` -- so on a taint
+            verdict, ``False`` is not on its own a reason to raise the cap and ask again.
     """
 
     paths: list[FlowPath]
@@ -649,8 +651,16 @@ class TaintResult(FlowPaths):
     stopped the rest.
 
     A subclass of :class:`FlowPaths` rather than a new shape: the witnesses *are* flow paths, each
-    already carrying ``weakest``, and ``complete`` already means "were all the witnesses returned".
-    Three fields are added and nothing is redefined.
+    already carrying ``weakest``, and ``complete`` still answers "did this call return everything it
+    found". Three fields are added, and ``complete`` is narrowed.
+
+    **What ``complete`` says here.** ``True`` only when nothing was truncated **and**
+    :attr:`unresolved` is empty. It is one flag for the whole batch, so a single skipped or blocked
+    pair makes it ``False`` however cleanly the other pairs answered -- deliberately, because the
+    alternative is ``True`` beside a non-empty ledger, which tells a caller who reads only the flag
+    that the batch was fully searched when part of it was not. The consequence to know: ``False``
+    does not mean "raise ``max_paths`` and ask again". Where ``paths`` was not truncated a bigger cap
+    returns the same flag, and :attr:`unresolved` is what says why.
 
     **What ``exhausted`` claims.** A pair is listed when all three hold: the call passed
     ``depth=None``, the search found no path for it, and no :attr:`unresolved` diagnostic implicates

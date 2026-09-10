@@ -209,6 +209,21 @@ def test_a_sanitizer_that_does_not_resolve_raises_before_the_walk():
     assert backend.walks == [], "sanitizers are resolved before the traversal, not applied after it"
 
 
+def test_complete_is_the_batch_flag_so_one_skipped_pair_flips_it_and_a_bigger_cap_will_not_help():
+    """``complete`` is ``not truncated and not ledger``: the whole batch's flag, not the trim's, so an
+    otherwise clean batch whose only irregularity is one degenerate pair answers ``False``. A caller
+    reading ``FlowPaths.complete``'s inherited text would re-run with a bigger ``max_paths`` and get
+    the same flag, so the two are pinned together here -- nothing was truncated, so nothing about the
+    cap can change it, and ``unresolved`` is where the reason is."""
+    a, b = _value("x", "f"), _value("y", "g")
+    rows = [(a.ref, b.ref, _witness(a, b))]
+    result = _Recording(rows=rows).taint([("x", "f"), ("y", "g")], [("y", "g")])
+    assert len(result.paths) == 1 and not result.complete
+    assert [d.code for d in result.unresolved] == ["degenerate_pair"]
+    bigger = _Recording(rows=rows).taint([("x", "f"), ("y", "g")], [("y", "g")], max_paths=99)
+    assert len(bigger.paths) == 1 and not bigger.complete, "the cap never fired, so raising it answers the same"
+
+
 def test_the_two_walk_hooks_are_stubs_rather_than_abstract_methods():
     """Ruling G: an abstract method here would make every concrete backend un-instantiable until the
     last implementation lands, so they raise instead. Task 7 flips them, and this test is what says
