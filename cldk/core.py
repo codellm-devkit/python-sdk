@@ -27,16 +27,14 @@ The CLDK supports the following languages:
       tables, call graphs, and code metrics.
     - **Python**: Static analysis via codeanalyzer-python backend (Jedi plus
       PyCG call-graph construction).
-    - **C**: Basic analysis via libclang for parsing and extracting code structure.
 
 Typical usage involves instantiating :class:`CLDK` with a target language, then
 calling :meth:`CLDK.analysis` to obtain a language-specific analysis facade.
 
 Note:
     This module requires language-specific backends to be available:
-    - Java: ``codeanalyzer-*.jar`` (auto-downloaded or specified via path)
+    - Java: ``codeanalyzer-java`` (the ``cldk[java]`` extra; carries the jar and its JVM)
     - Python: ``codeanalyzer-python`` (auto-installed in virtualenv)
-    - C: ``libclang`` (must be installed on the system)
 """
 
 from pathlib import Path
@@ -46,7 +44,6 @@ import warnings
 from typing import List
 
 from cldk.analysis import AnalysisLevel
-from cldk.analysis.c import CAnalysis
 from cldk.analysis.java import JavaAnalysis
 from cldk.analysis.commons.backend_config import (
     CodeAnalyzerConfig,
@@ -98,7 +95,7 @@ class CLDK:
 
     Args:
         language: The target programming language for analysis. Supported values
-            are ``"java"``, ``"python"``, and ``"c"`` (case-sensitive).
+            are ``"java"``, ``"python"``, and ``"typescript"`` (case-sensitive).
 
     Attributes:
         language (str): The programming language specified during initialization.
@@ -111,7 +108,6 @@ class CLDK:
     See Also:
         - :class:`~cldk.analysis.java.JavaAnalysis`: Java-specific analysis facade.
         - :class:`~cldk.analysis.python.PythonAnalysis`: Python-specific analysis facade.
-        - :class:`~cldk.analysis.c.CAnalysis`: C-specific analysis facade.
     """
 
     def __init__(self, language: str) -> None:
@@ -119,8 +115,8 @@ class CLDK:
 
         Args:
             language: The programming language to use for analysis. Must be one
-                of the supported languages: ``"java"``, ``"python"``, or ``"c"``.
-                The language string is case-sensitive.
+                of the supported languages: ``"java"``, ``"python"``, or
+                ``"typescript"``. The language string is case-sensitive.
         """
         self.language: str = language
 
@@ -128,7 +124,6 @@ class CLDK:
     @staticmethod
     def java(
         project_path: str | Path | None = None,
-        source_code: str | None = None,
         *,
         analysis_level: str = AnalysisLevel.symbol_table,
         target_files: List[str] | None = None,
@@ -142,33 +137,21 @@ class CLDK:
                 :class:`Neo4jConnectionConfig` (the graph is read out of band over Bolt). When
                 provided, the path is validated — it must exist and be a directory — regardless of
                 backend.
-            source_code: Single Java source string (deprecated; pass ``project_path`` instead).
             analysis_level: Analysis depth (see :class:`~cldk.analysis.AnalysisLevel`).
             target_files: Restrict analysis to these files.
             eager: Force regeneration of cached analysis.
-            backend: Backend configuration. Defaults to :class:`CodeAnalyzerConfig`.
+            backend: Backend configuration. Defaults to :class:`CodeAnalyzerConfig`; pass a
+                :class:`Neo4jConnectionConfig` to use the read-only Neo4j backend.
 
         Raises:
-            CldkInitializationException: If neither or both of ``project_path`` / ``source_code``
-                are provided.
+            CldkInitializationException: If ``project_path`` is missing and the backend is not
+                Neo4j. (The 1.x ``source_code`` single-file mode was removed in 2.0.)
         """
-        # The read-only Neo4j backend reads a graph populated out of band, so it needs neither
-        # project_path nor source_code.
-        is_neo4j = isinstance(backend, Neo4jConnectionConfig)
-        if project_path is None and source_code is None and not is_neo4j:
-            raise CldkInitializationException("Either project_path or source_code must be provided.")
-        if project_path is not None and source_code is not None:
-            raise CldkInitializationException("Both project_path and source_code are provided. Please provide only one.")
-        if source_code is not None:
-            warnings.warn(
-                "Passing source_code for Java analysis is deprecated and will be removed in a "
-                "future release; provide project_path instead.",
-                DeprecationWarning,
-                stacklevel=2,
-            )
+        # The read-only Neo4j backend reads a graph populated out of band, so it needs no project_path.
+        if project_path is None and not isinstance(backend, Neo4jConnectionConfig):
+            raise CldkInitializationException("project_path must be provided.")
         return JavaAnalysis(
             project_dir=_normalize_project_path(project_path),
-            source_code=source_code,
             analysis_level=analysis_level,
             target_files=target_files,
             eager_analysis=eager,
@@ -225,9 +208,9 @@ class CLDK:
             target_files: Restrict analysis to these files.
             eager: Force regeneration of cached analysis.
             backend: Backend configuration. Defaults to :class:`CodeAnalyzerConfig`; pass a
-                :class:`TSCodeAnalyzerConfig` to set TypeScript-only knobs such as ``tsc_only``
-                (passes ``--tsc-only``), or a :class:`Neo4jConnectionConfig` to use the read-only
-                Neo4j backend.
+                :class:`TSCodeAnalyzerConfig` (its ``tsc_only`` is a deprecated no-op —
+                codeanalyzer-typescript removed ``--tsc-only`` in 1.0.0), or a
+                :class:`Neo4jConnectionConfig` to use the read-only Neo4j backend.
         """
         return TypeScriptAnalysis(
             project_dir=_normalize_project_path(project_path),
@@ -236,11 +219,6 @@ class CLDK:
             eager_analysis=eager,
             backend=backend,
         )
-
-    @staticmethod
-    def c(project_path: str | Path) -> CAnalysis:
-        """Create a C analysis facade for the given project directory."""
-        return CAnalysis(project_dir=_normalize_project_path(project_path))
 
     def analysis(
         self,
@@ -254,11 +232,11 @@ class CLDK:
         cache_dir: str | Path | None = None,
         use_ray: bool = False,
         neo4j_config: "Neo4jConnectionConfig | None" = None,
-    ) -> JavaAnalysis | PythonAnalysis | CAnalysis | TypeScriptAnalysis:
+    ) -> JavaAnalysis | PythonAnalysis | TypeScriptAnalysis:
         """Deprecated entry point. Use the per-language factory methods instead.
 
         ``CLDK(language).analysis(...)`` is retained as a thin compatibility shim that forwards to
-        :meth:`java` / :meth:`python` / :meth:`typescript` / :meth:`c` with an appropriate
+        :meth:`java` / :meth:`python` / :meth:`typescript` with an appropriate
         ``backend=`` configuration object.
 
         The former ``analysis_json_path`` is folded into the unified ``cache_dir`` (it is used as
@@ -266,12 +244,12 @@ class CLDK:
         supported: the backend binary ships with the packaged dependency, and passing it is ignored.
 
         .. deprecated::
-            Use :meth:`CLDK.java`, :meth:`CLDK.python`, :meth:`CLDK.typescript`, or :meth:`CLDK.c`
+            Use :meth:`CLDK.java`, :meth:`CLDK.python`, or :meth:`CLDK.typescript`
             with a ``backend=<config>`` object.
         """
         warnings.warn(
             "CLDK(language).analysis(...) is deprecated; use the per-language factory methods "
-            "CLDK.java()/CLDK.python()/CLDK.typescript()/CLDK.c() with a backend=<config> object.",
+            "CLDK.java()/CLDK.python()/CLDK.typescript() with a backend=<config> object.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -288,9 +266,10 @@ class CLDK:
         cache_root = cache_dir if cache_dir is not None else analysis_json_path
 
         if self.language == "java":
+            if source_code is not None:
+                raise CldkInitializationException("source_code mode was removed in 2.0; pass project_path")
             return CLDK.java(
                 project_path=project_path,
-                source_code=source_code,
                 analysis_level=analysis_level,
                 target_files=target_files,
                 eager=eager,
@@ -318,8 +297,6 @@ class CLDK:
                 eager=eager,
                 backend=backend,
             )
-        elif self.language == "c":
-            return CLDK.c(project_path)
         else:
             raise NotImplementedError(f"Analysis support for {self.language} is not implemented yet.")
 

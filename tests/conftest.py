@@ -23,6 +23,7 @@ import os
 os.putenv("ASAN_DISABLE", "1")
 os.putenv("ASAN_OPTIONS", "verify_asan_link_order=0")
 
+import gzip
 import json
 from pdb import set_trace
 import shutil
@@ -32,6 +33,9 @@ from urllib.request import urlretrieve
 
 # third part imports
 import toml
+import re
+from typing import Dict
+
 import pytest
 
 
@@ -48,7 +52,7 @@ def analysis_json_fixture():
     # Load the configuration
     config = toml.load(pyproject_path)
 
-    return Path(config["tool"]["cldk"]["testing"]["sample-application-analysis-json"]) / "slim"
+    return Path(config["tool"]["cldk"]["testing"]["sample-application-analysis-json"]) / "v2" / "a1"
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -56,18 +60,25 @@ def analysis_json(analysis_json_fixture) -> str:
     """Opens the analysis.json file and returns the contents as a json string"""
     json_file = {}
     # Read the json file and return it as a json string
-    with open(os.path.join(analysis_json_fixture, "analysis.json"), "r", encoding="utf-8") as json_data:
+    with gzip.open(os.path.join(analysis_json_fixture, "analysis.json.gz"), "rt", encoding="utf-8") as json_data:
         json_file = json.dumps(json.load(json_data))
 
     return json_file
+
+
+@pytest.fixture(scope="session")
+def analysis_json_a4(analysis_json_fixture) -> str:
+    """The codeanalyzer-java 3.1.0 ``-a 4`` fixture (``v2/a4``) as a JSON string."""
+    with gzip.open(analysis_json_fixture.parent / "a4" / "analysis.json.gz", "rt", encoding="utf-8") as json_data:
+        return json.dumps(json.load(json_data))
 
 
 @pytest.fixture(scope="session", autouse=True)
 def codeanalyzer_backend_path():
     """Backend-path override for the Java analyzer in tests.
 
-    Returns None so the analyzer uses its default: the ``codeanalyzer-*.jar`` bundled under
-    ``cldk/analysis/java/codeanalyzer/jar/``, run on a cached JDK (``[java, -jar, <jar>]``).
+    Returns None so the analyzer uses its default: ``codeanalyzer_java.command()`` — the jar and
+    the JVM the pinned ``codeanalyzer-java`` wheel carries.
     """
     return None
 
@@ -158,34 +169,6 @@ def test_fixture_pbw():
 
 
 @pytest.fixture(scope="session", autouse=True)
-def test_fixture_binutils():
-    """Create a test fixture for the analysis of C applications"""
-    # ----------------------------------[ SETUP ]----------------------------------
-    # Path to your pyproject.toml
-    pyproject_path = Path(__file__).parent.parent / "pyproject.toml"
-
-    # Load the configuration
-    config = toml.load(pyproject_path)
-
-    # Access the test data path
-    test_data_path = config["tool"]["cldk"]["testing"]["sample-c-application"]
-    filename = Path(test_data_path).absolute() / "binutils.zip"
-
-    # Extract the zip file to the test data path
-    with zipfile.ZipFile(filename, "r") as zip_ref:
-        zip_ref.extractall(test_data_path)
-
-    # ------------------------------ [ TEST FIXTURE ]------------------------------
-    # Binutils sample application path
-    yield Path(test_data_path) / "binutils"
-
-    # ---------------------------------[ TEARDOWN ]--------------------------------
-    # Remove the binutils sample application that was downloaded for testing
-    for directory in Path(test_data_path).iterdir():
-        if directory.exists() and directory.is_dir():
-            shutil.rmtree(directory)
-
-@pytest.fixture(scope="session", autouse=True)
 def java_code() -> str:
     """
     Returns sample Java source code for analysis.
@@ -205,3 +188,53 @@ def java_code() -> str:
     javafile = Path(test_data_path).absolute() / ("WeatherServlet.java")
     with open(javafile) as f:
         return f.read()
+
+
+#: The variable that gates every module which *writes* to a Neo4j server. Such a module skips
+#: itself when the variable is unset (deliberately: #324 -- there is no default URI, because a
+#: default of bolt://localhost:7687 is an ssh tunnel on at least one development machine), and a
+#: skipped module is indistinguishable from a passing one in pytest's summary line. Hence the hook
+#: below. It keys on the variable name in the skip reason, so a new write-gated module is named
+#: without editing anything here.
+WRITE_GATE_VAR = "CLDK_TEST_NEO4J_WRITE_URI"
+
+#: A spelling that was retired, mapped to the one that replaced it. Setting a retired name
+#: used to be silent: the suite read the new name, found nothing, and skipped -- so a stale
+#: shell export made a run end green having verified nothing (python-sdk#362). Erroring is
+#: the whole point; a warning would be just as easy to miss as the skip was.
+RETIRED_VARS = {
+    "CLDK_TEST_NEO4J_JAVA_APP": "CLDK_TEST_NEO4J_APP",
+    "CLDK_TEST_NEO4J_JAVA_SCALE_APP": "CLDK_TEST_NEO4J_SCALE_APP",
+    "CLDK_TEST_PYTHON_NEO4J_URI": "CLDK_TEST_NEO4J_PYTHON_URI",
+    "CLDK_TEST_PYTHON_NEO4J_USER": "CLDK_TEST_NEO4J_PYTHON_USER",
+    "CLDK_TEST_PYTHON_NEO4J_PASSWORD": "CLDK_TEST_NEO4J_PYTHON_PASSWORD",
+    "CLDK_TEST_PYTHON_NEO4J_APP": "CLDK_TEST_NEO4J_PYTHON_APP",
+}
+
+
+def pytest_configure(config):
+    """Refuse to run when a retired variable is set, naming what replaced it."""
+    import os
+    stale = sorted(f"{old} is now {new}" for old, new in RETIRED_VARS.items() if os.environ.get(old))
+    if stale:
+        raise pytest.UsageError("retired test variables are set, and the suite no longer reads them: " + "; ".join(stale))
+
+
+def pytest_terminal_summary(terminalreporter):
+    """Name the write-gated modules that did not run, and what would run them.
+
+    Reporting only: it prints and never changes the exit status. An unset gate is a valid way to
+    run the suite, not a failure -- the point is that it stops being a silent one.
+    """
+    gated: Dict[str, set] = {}
+    for report in terminalreporter.stats.get("skipped", []):
+        for var in sorted(set(re.findall(r"CLDK_TEST_[A-Z0-9_]+", str(report.longrepr)))):
+            gated.setdefault(var, set()).add(report.nodeid.split("::")[0])
+    if not gated:
+        return
+    terminalreporter.section("modules NOT run, and the variable that would run them", sep="-")
+    for var, modules in sorted(gated.items()):
+        terminalreporter.line(f"  {var}")
+        for module in sorted(modules):
+            terminalreporter.line(f"    {module}")
+    terminalreporter.line(f"  set {WRITE_GATE_VAR} / _WRITE_USER / _WRITE_PASSWORD to a disposable Neo4j server to run them (there are no defaults)")

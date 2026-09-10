@@ -41,7 +41,7 @@ from typing import Union
 # The canonical sub-directory name each language's artifacts live under inside the shared cache
 # root. Keyed so that a polyglot repository analyzed under more than one language does not have its
 # backends overwrite a single shared ``analysis.json``.
-_CACHE_KEYS = {"java": "java", "python": "python", "typescript": "typescript", "c": "c"}
+_CACHE_KEYS = {"java": "java", "python": "python", "typescript": "typescript"}
 
 
 @dataclass
@@ -77,13 +77,14 @@ class PyCodeAnalyzerConfig(CodeAnalyzerConfig):
 class TSCodeAnalyzerConfig(CodeAnalyzerConfig):
     """Select the in-process codeanalyzer backend for TypeScript.
 
-    Adds the TypeScript-only call-graph knob on top of :class:`CodeAnalyzerConfig`.
+    Kept distinct from :class:`CodeAnalyzerConfig` for the one knob it used to add; that knob is
+    now a no-op, and the class stays so existing call sites keep constructing it.
 
     Attributes:
-        tsc_only: If ``True``, restrict the analyzer to the tsc resolver call graph by passing
-            ``--tsc-only`` (codeanalyzer-typescript >= 0.4.2). Defaults to ``False`` (let the
-            binary choose its default). This is the supported replacement for the obsolete
-            ``--call-graph-provider both``.
+        tsc_only: **Deprecated, no-op.** codeanalyzer-typescript removed ``--tsc-only`` in 1.0.0:
+            the call graph always carries both resolvers, each edge tagged with its provenance
+            (``tsc`` / ``defuse`` / ``import``). Passing ``True`` emits a :class:`DeprecationWarning`
+            and changes nothing; filter edges by ``provenance`` instead.
     """
 
     tsc_only: bool = False
@@ -126,7 +127,7 @@ def cache_subdir(cache_dir: Union[str, Path, None], project_dir: Union[str, Path
         cache_dir: The cache root from the backend config. When ``None``, defaults to
             ``<project_dir>/.codeanalyzer``.
         project_dir: The project directory, used to derive the default root.
-        language: The canonical language key (``"java"``, ``"python"``, ``"typescript"``, ``"c"``).
+        language: The canonical language key (``"java"``, ``"python"``, ``"typescript"``).
 
     Returns:
         ``<root>/<language>`` as an absolute path, or ``None`` if no root can be determined

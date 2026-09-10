@@ -37,6 +37,8 @@ from cldk.analysis.commons.backend_config import CodeAnalyzerConfig
 
 _CACHE_DIR = _tempfile.mkdtemp()
 _BK = CodeAnalyzerConfig(cache_dir=_CACHE_DIR)
+_BK4 = CodeAnalyzerConfig(cache_dir=_tempfile.mkdtemp())  # the -a 4 fixture (call graph)
+TRADE_DIRECT = "com.ibm.websphere.samples.daytrader.impl.direct.TradeDirect"
 
 
 def _write_java_output(payload):
@@ -69,64 +71,44 @@ def test_get_symbol_table_is_not_null(test_fixture, analysis_json):
         )
         assert analysis.get_symbol_table() is not None
 
-def test_get_symbol_table_source_code(java_code):
-    """Should return a symbol table for source analysis with expected class/method count"""
-
-    # Initialize the CLDK object with the project directory, language, and analysis_backend
-    cldk = CLDK(language="java")
-    analysis = cldk.analysis(
-        source_code=java_code,
-        eager=True,
-        analysis_level=AnalysisLevel.symbol_table,
-    )
-
-    # assert on expected class name and method count in the symbol table
-    expected_class_name = "com.acme.modres.WeatherServlet"
-    assert analysis.get_symbol_table() is not None
-    assert len(analysis.get_symbol_table().keys()) == 1
-    assert expected_class_name in analysis.get_methods().keys()
-    assert len(analysis.get_methods().get(expected_class_name).keys()) == 9
-
 def test_get_imports(test_fixture, analysis_json):
-    """Should return NotImplemented for get_imports()"""
+    """The distinct, sorted import targets of the project (#366); the per-accessor policy and both
+    backends are in ``test_java_v1_accessors.py``."""
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
         )
 
-        # When this is implemented please add a real test case
-        with pytest.raises(NotImplementedError) as except_info:
-            java_analysis.get_imports()
-        assert except_info.type == NotImplementedError
+        imports = java_analysis.get_imports()
+        assert imports == sorted(set(imports)) and len(imports) == 268
+        assert "com.ibm.websphere.samples.daytrader.util.Log" in imports
 
 
 def test_get_variables(test_fixture, analysis_json):
-    """Should return NotImplemented for get_variables()"""
+    """The locals each callable declares, keyed by the J-1 call-graph key (#366)."""
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
         )
 
-        # When this is implemented please add a real test case
-        with pytest.raises(NotImplementedError) as except_info:
-            java_analysis.get_variables()
-        assert except_info.type == NotImplementedError
+        variables = java_analysis.get_variables()
+        assert len(variables) == 1216 and sum(len(v) for v in variables.values()) == 854
+        with pytest.raises(TypeError):
+            java_analysis.get_variables(qualified_class_name="anything")
 
 
 def test_get_service_entry_point_classes(test_fixture, analysis_json):
@@ -137,7 +119,6 @@ def test_get_service_entry_point_classes(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -158,7 +139,6 @@ def test_get_service_entry_point_methods(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -179,7 +159,6 @@ def test_get_application_view(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -193,11 +172,6 @@ def test_get_application_view(test_fixture, analysis_json):
         for _, compilation_unit in app.symbol_table.items():
             assert isinstance(compilation_unit, JCompilationUnit)
 
-        # Test that with source code is not implemented yet
-        java_analysis.source_code = "TradeAction.java"
-        with pytest.raises(NotImplementedError) as except_info:
-            java_analysis.get_application_view()
-        assert except_info.type == NotImplementedError
 
 
 def test_get_symbol_table(test_fixture, analysis_json):
@@ -208,7 +182,6 @@ def test_get_symbol_table(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -230,7 +203,6 @@ def test_get_compilation_units(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -249,17 +221,15 @@ def test_get_class_hierarchy(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
         )
 
-        # When this is implemented please add a real test case
-        with pytest.raises(NotImplementedError) as except_info:
-            java_analysis.get_class_hierarchy()
-        assert except_info.type == NotImplementedError
+        hierarchy = java_analysis.get_class_hierarchy()
+        assert hierarchy.number_of_nodes() == 170 and hierarchy.number_of_edges() == 103
+        assert hierarchy.edges["com.ibm.websphere.samples.daytrader.web.prims.PingServlet", "javax.servlet.http.HttpServlet"]["type"] == "EXTENDS"
 
 
 def test_is_parsable(test_fixture, analysis_json):
@@ -270,7 +240,6 @@ def test_is_parsable(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -293,7 +262,6 @@ def test_get_raw_ast(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -311,17 +279,16 @@ def test_get_raw_ast(test_fixture, analysis_json):
         assert raw_ast.root_node is not None
 
 
-def test_get_call_graph(test_fixture, analysis_json):
+def test_get_call_graph(test_fixture, analysis_json_a4):
     """Should return the Call Graph"""
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.side_effect = _write_java_output(analysis_json)
+        run_mock.side_effect = _write_java_output(analysis_json_a4)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
-            backend=_BK,
-            analysis_level=AnalysisLevel.symbol_table,
+            backend=_BK4,
+            analysis_level=AnalysisLevel.call_graph,
             target_files=None,
             eager_analysis=False,
         )
@@ -329,21 +296,21 @@ def test_get_call_graph(test_fixture, analysis_json):
         call_graph = java_analysis.get_call_graph()
         assert call_graph is not None
         assert isinstance(call_graph, nx.DiGraph)
-        # check that the call graph is not empty
+        # check that the call graph is not empty, and keyed by "<type fqn>.<signature>" strings (J-1)
         assert len(call_graph.nodes) > 0
         assert len(call_graph.edges) > 0
+        assert all(isinstance(node, str) and node.startswith("com.ibm.") for node in call_graph.nodes)
 
 
-def test_get_call_graph_json(test_fixture, analysis_json):
+def test_get_call_graph_json(test_fixture, analysis_json_a4):
     """Should return the Call Graph as JSON"""
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.side_effect = _write_java_output(analysis_json)
+        run_mock.side_effect = _write_java_output(analysis_json_a4)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
-            backend=_BK,
+            backend=_BK4,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
             eager_analysis=False,
@@ -359,97 +326,76 @@ def test_get_call_graph_json(test_fixture, analysis_json):
         assert isinstance(call_graph[0], dict)
 
 
-def test_get_callers(test_fixture, analysis_json):
+def test_get_callers(test_fixture, analysis_json_a4):
     """Should return the callers"""
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.side_effect = _write_java_output(analysis_json)
+        run_mock.side_effect = _write_java_output(analysis_json_a4)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
-            backend=_BK,
+            backend=_BK4,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
             eager_analysis=False,
         )
 
         # Test using call graph
-        callers = java_analysis.get_callers("com.ibm.websphere.samples.daytrader.util.Log", "log(java.lang.String)", False)
+        callers = java_analysis.get_callers(TRADE_DIRECT, "getConn()", False)
         assert callers is not None
         assert isinstance(callers, Dict)
         assert "caller_details" in callers
-        assert len(callers["caller_details"]) == 18
+        assert len(callers["caller_details"]) == 24
         for method in callers["caller_details"]:
             assert isinstance(method["caller_method"], JMethodDetail)
-
-        # TODO: This code doesn't work because
-        # it is looking for `is_target_method_a_constructor`
-        # Uncomment this next test section when fixed
 
         # Test using symbol table
-        callers = java_analysis.get_callers("com.ibm.websphere.samples.daytrader.util.Log", "log(java.lang.String)", True)
+        callers = java_analysis.get_callers(TRADE_DIRECT, "getConn()", True)
         assert callers is not None
         assert isinstance(callers, Dict)
         assert "caller_details" in callers
-        assert len(callers["caller_details"]) == 18
+        assert len(callers["caller_details"]) > 0
         for method in callers["caller_details"]:
             assert isinstance(method["caller_method"], JMethodDetail)
 
-        # Test using code parameter
-        java_analysis.source_code = "dummy code"
-        with pytest.raises(NotImplementedError) as except_info:
-            java_analysis.get_callers("com.ibm.websphere.samples.daytrader.util.Log", "log(String)", False)
-        assert except_info.type == NotImplementedError
 
-
-def test_get_callees(test_fixture, analysis_json):
+def test_get_callees(test_fixture, analysis_json_a4):
     """Should return the callees"""
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.side_effect = _write_java_output(analysis_json)
+        run_mock.side_effect = _write_java_output(analysis_json_a4)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
-            backend=_BK,
+            backend=_BK4,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
             eager_analysis=False,
         )
 
-        # Test with a class that has no callees
-        callees = java_analysis.get_callees("com.ibm.websphere.samples.daytrader.util.Log", "log(java.lang.String)", False)
+        # Test with a method that has no callees
+        callees = java_analysis.get_callees(TRADE_DIRECT, "getConn()", False)
         assert callees is not None
         assert isinstance(callees, Dict)
         assert "callee_details" in callees
         assert len(callees["callee_details"]) == 0
 
-        # Test with a class that has callees
-        callees = java_analysis.get_callees("com.ibm.websphere.samples.daytrader.web.websocket.ActionMessage", "doDecoding(java.lang.String)", False)
+        # Test with a method that has callees
+        sell = "sell(java.lang.String, java.lang.Integer, int)"
+        callees = java_analysis.get_callees(TRADE_DIRECT, sell, False)
         assert callees is not None
         assert isinstance(callees, Dict)
         assert "callee_details" in callees
-        assert len(callees["callee_details"]) == 2
+        assert len(callees["callee_details"]) == 15
         for method in callees["callee_details"]:
             assert isinstance(method["callee_method"], JMethodDetail)
 
-        # TODO: This code doesn't work because
-        # it is looking for `is_target_method_a_constructor`
-        # Uncomment this next test section when fixed
-
-        # # Test using symbol table
-        callees = java_analysis.get_callees("com.ibm.websphere.samples.daytrader.web.websocket.ActionMessage", "doDecoding(java.lang.String)", True)
+        # Test using symbol table
+        callees = java_analysis.get_callees(TRADE_DIRECT, sell, True)
         assert callees is not None
         assert isinstance(callees, Dict)
         assert "callee_details" in callees
-        assert len(callees["callee_details"]) == 2
-
-        # Test using code parameter
-        java_analysis.source_code = "dummy code"
-        with pytest.raises(NotImplementedError) as except_info:
-            java_analysis.get_callees("com.ibm.websphere.samples.daytrader.util.Log", "log(String)", False)
-        assert except_info.type == NotImplementedError
+        assert len(callees["callee_details"]) > 0
 
 
 def test_get_methods(test_fixture, analysis_json):
@@ -460,7 +406,6 @@ def test_get_methods(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -483,7 +428,6 @@ def test_get_classes(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -506,7 +450,6 @@ def test_get_classes_by_criteria(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -544,7 +487,6 @@ def test_get_class(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -564,7 +506,6 @@ def test_get_method(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -585,7 +526,6 @@ def test_get_method_parameters(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -611,7 +551,6 @@ def test_get_java_file(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -622,8 +561,7 @@ def test_get_java_file(test_fixture, analysis_json):
         java_file = java_analysis.get_java_file("com.ibm.websphere.samples.daytrader.util.Log")
         assert java_file is not None
         assert isinstance(java_file, str)
-        relative_file = java_file.split("/src/")[1]
-        assert relative_file == "main/java/com/ibm/websphere/samples/daytrader/util/Log.java"
+        assert java_file == "src/main/java/com/ibm/websphere/samples/daytrader/util/Log.java"  # the symbol-table key: repo-relative
 
         # Test compilation unit for this file
         comp_unit = java_analysis.get_java_compilation_unit(java_file)
@@ -639,7 +577,6 @@ def test_get_methods_in_class(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -663,7 +600,6 @@ def test_get_fields(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -677,25 +613,9 @@ def test_get_fields(test_fixture, analysis_json):
         assert len(fields) == 8
         for field in fields:
             assert isinstance(field, JField)
-            # Analyses generated by codeanalyzer < 2.3.8 lack variable_initializers
-            assert field.variable_initializers is None
-
-
-def test_get_fields_variable_initializers(java_code):
-    """Should return per-variable initializer text for fields"""
-
-    cldk = CLDK(language="java")
-    analysis = cldk.analysis(
-        source_code=java_code,
-        eager=True,
-        analysis_level=AnalysisLevel.symbol_table,
-    )
-
-    fields = analysis.get_fields("com.acme.modres.WeatherServlet")
-    by_variable = {variable: field for field in fields for variable in field.variables}
-    assert by_variable["serialVersionUID"].variable_initializers == {"serialVersionUID": "1L"}
-    assert by_variable["WEATHER_API_KEY"].variable_initializers == {"WEATHER_API_KEY": '"WEATHER_API_KEY"'}
-    assert by_variable["customerInfo"].variable_initializers == {}
+        by_name = {field.name: field for field in fields}
+        assert by_name["serialVersionUID"].variable_initializers == {"serialVersionUID": "650652242288745600L"}
+        assert by_name["TSIA"].variable_initializers is None
 
 
 def test_get_nested_classes(test_fixture, analysis_json):
@@ -706,7 +626,6 @@ def test_get_nested_classes(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -729,7 +648,6 @@ def test_get_sub_classes(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -759,7 +677,6 @@ def test_get_extended_classes(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -789,7 +706,6 @@ def test_get_implemented_interfaces(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -811,34 +727,34 @@ def test_get_implemented_interfaces(test_fixture, analysis_json):
             assert isinstance(extend, str)
 
 
-def test_get_class_call_graph(test_fixture, analysis_json):
+def test_get_class_call_graph(test_fixture, analysis_json_a4):
     """Should return the class call graph"""
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
-        run_mock.side_effect = _write_java_output(analysis_json)
+        run_mock.side_effect = _write_java_output(analysis_json_a4)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
-            backend=_BK,
+            backend=_BK4,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
             eager_analysis=False,
         )
 
         # Call using call graph
-        call_graph = java_analysis.get_class_call_graph("com.ibm.websphere.samples.daytrader.impl.direct.TradeDirectDBUtils", "buildDB(java.io.PrintWriter, InputStream)", False)
+        create_holding = "createHolding(java.sql.Connection, int, java.lang.String, double, java.math.BigDecimal)"
+        call_graph = java_analysis.get_class_call_graph(TRADE_DIRECT, create_holding, False)
         assert call_graph is not None
         assert isinstance(call_graph, List)
-        assert len(call_graph) >= 0
+        assert len(call_graph) == 3
         for graph in call_graph:
             assert isinstance(graph, Tuple)
 
         # Call using symbol table
-        call_graph = java_analysis.get_class_call_graph("com.ibm.websphere.samples.daytrader.impl.direct.TradeDirectDBUtils", "buildDB(java.io.PrintWriter, InputStream)", True)
+        call_graph = java_analysis.get_class_call_graph(TRADE_DIRECT, create_holding, True)
         assert call_graph is not None
         assert isinstance(call_graph, List)
-        assert len(call_graph) >= 0
+        assert len(call_graph) > 0
         for graph in call_graph:
             assert isinstance(graph, Tuple)
 
@@ -851,7 +767,6 @@ def test_get_entry_point_classes(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
@@ -874,7 +789,6 @@ def test_get_entry_point_methods(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
@@ -899,22 +813,15 @@ def test_remove_all_comments(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
             eager_analysis=False,
         )
 
-        # TODO: The code is broken. It requires Treesitter but JCodeanalyzer does not!
-
-        try:
+        # J-10: the one 1.x accessor that only ever worked in single-file mode says so
+        with pytest.raises(NotImplementedError, match="single-file source mode was removed in 2.0"):
             java_analysis.remove_all_comments()
-        except NotImplementedError:
-            assert True
-            return
-
-        assert False, "Did not raise NotImplementedError"
 
 
 def test_get_methods_with_annotations(test_fixture, analysis_json):
@@ -925,44 +832,28 @@ def test_get_methods_with_annotations(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
             eager_analysis=False,
         )
 
-        # TODO: The code is broken. It requires Treesitter but JCodeanalyzer does not!
-
-        annotations = ["WebServlet"]
-        try:
-            code_with_annotations = java_analysis.get_methods_with_annotations(annotations)
-        except NotImplementedError:
-            assert True
-            return
-
-        assert False, "Did not raise NotImplementedError"
+        # ``WebServlet`` annotates 53 **types** in this fixture and no callable, so a
+        # callable-level filter reports nothing for it -- the same split get_decorated_callables has.
+        assert java_analysis.get_methods_with_annotations(["WebServlet"]) == {}
+        overridden = java_analysis.get_methods_with_annotations(["Override"])["Override"]
+        assert len(overridden) == 328
+        assert set(overridden[0]) == {"class", "signature", "method_name", "body"}
 
 
 def test_get_test_methods(test_fixture, analysis_json):
-    """Should return test methods"""
-    java_code_with_test_annotations = """package com.ibm.websphere.samples.daytrader.web.prims.ejb3;    
-import org.junit.jupiter.api.Test;
-import static org.junit.jupiter.api.Assertions.assertEquals;
-public class TradeDirectDBUtilsTest {
-    @Test
-    public void testBuildDB() {
-        assertEquals(1, 1);
-    }
-}
-"""
+    """Should return test methods, read off the analyzer's own annotations."""
 
     # Patch subprocess so that it does not run codeanalyzer
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=java_code_with_test_annotations,
             backend=_BK,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
@@ -970,8 +861,38 @@ public class TradeDirectDBUtilsTest {
         )
 
         test_methods = java_analysis.get_test_methods()
-        assert test_methods is not None
-        assert isinstance(test_methods, Dict)
+        assert test_methods == {}  # daytrader8 ships no @Test methods; the walk itself is what is exercised
+
+
+def test_get_test_methods_reads_the_annotations_not_the_module_source(test_fixture, analysis_json, monkeypatch):
+    """The mechanism, on a corpus with no ``@Test`` in it: swap the marker set for one daytrader8
+    *does* carry and the same walk answers.
+
+    Why it matters: the 1.x version re-parsed each ``JCompilationUnit.source`` with Tree-sitter,
+    and a Neo4j-backed analysis has no module source at all, so it returned ``{}`` there whatever
+    the corpus held. daytrader8 cannot witness that — it has zero ``@Test`` methods — which is why
+    the real marker set is exercised on ThingsBoard in ``test_java_neo4j_scale.py``.
+    """
+    monkeypatch.setattr("cldk.analysis.java.java_analysis._TEST_ANNOTATIONS", frozenset({"Override"}))
+    with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
+        run_mock.side_effect = _write_java_output(analysis_json)
+        java_analysis = JavaAnalysis(
+            project_dir=test_fixture,
+            backend=_BK,
+            analysis_level=AnalysisLevel.call_graph,
+            target_files=None,
+            eager_analysis=False,
+        )
+
+        marked = java_analysis.get_test_methods()
+        # One entry per annotated callable — 328 ``@Override`` callables in the a1 fixture — keyed by
+        # the J-1 call-graph node key, which is unique application-wide where a bare method name is not.
+        assert len(marked) == 328
+        methods = java_analysis.get_methods()
+        for key, code in marked.items():
+            assert "can://" not in key
+            klass = key[: key.rindex("(")].rsplit(".", 1)[0]  # the documented split (CHANGELOG, J-1)
+            assert code == methods[klass][key[len(klass) + 1 :]].code
 
 
 def test_get_calling_lines(test_fixture, analysis_json):
@@ -982,25 +903,16 @@ def test_get_calling_lines(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
             eager_analysis=False,
         )
 
-        # TODO: The code is broken. It requires Treesitter but JCodeanalyzer does not!
-
-        try:
-            calling_lines = java_analysis.get_calling_lines("trace(String)")
-            assert calling_lines is not None
-            assert isinstance(calling_lines, List)
-            assert len(calling_lines) > 0
-        except NotImplementedError:
-            assert True
-            return
-
-        assert False, "Did not raise NotImplementedError"
+        # This fixture is a level-1 payload -- an empty call graph (0 nodes, 0 edges) -- so there
+        # is no call site to report a line for. The real lines are asserted on the level-4 fixture
+        # in ``test_java_v1_accessors.py`` and against the live graph.
+        assert java_analysis.get_calling_lines("trace(String)") == []
 
 
 def test_get_call_targets(test_fixture, analysis_json):
@@ -1011,24 +923,17 @@ def test_get_call_targets(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
             eager_analysis=False,
         )
 
-        # TODO: The code is broken. It requires Treesitter but JCodeanalyzer does not!
-        try:
-            call_targets = java_analysis.get_call_targets("trace(String)")
-            assert call_targets is not None
-            assert isinstance(call_targets, Set)
-            assert len(call_targets) > 0
-        except NotImplementedError:
-            assert True
-            return
-
-        assert False, "Did not raise NotImplementedError"
+        declared = java_analysis.get_methods_in_class("com.ibm.websphere.samples.daytrader.impl.direct.TradeDirect")
+        call_targets = java_analysis.get_call_targets(declared)
+        assert isinstance(call_targets, set) and len(call_targets) == 53
+        assert "cancelOrder" in call_targets
+        assert java_analysis.get_call_targets({}) == set()
 
 
 def test_get_all_comments(test_fixture, analysis_json):
@@ -1039,7 +944,6 @@ def test_get_all_comments(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
@@ -1068,7 +972,6 @@ def test_get_all_docstrings(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.call_graph,
             target_files=None,
@@ -1100,7 +1003,6 @@ def test_get_class_miss_returns_none(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -1117,7 +1019,6 @@ def test_get_method_miss_returns_none(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -1137,7 +1038,6 @@ def test_get_java_file_miss_returns_none(test_fixture, analysis_json):
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -1157,7 +1057,6 @@ def test_get_method_parameters_miss_returns_empty_list(test_fixture, analysis_js
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -1175,7 +1074,6 @@ def test_get_comments_in_a_method_miss_returns_empty_list(test_fixture, analysis
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -1196,7 +1094,6 @@ def test_call_graph_target_method_miss_mid_construction_no_crash(test_fixture, a
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -1223,7 +1120,6 @@ def test_call_graph_source_method_miss_mid_construction_no_crash(test_fixture, a
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
@@ -1262,7 +1158,6 @@ def test_get_comments_in_a_class_miss_returns_empty_list(test_fixture, analysis_
         run_mock.side_effect = _write_java_output(analysis_json)
         java_analysis = JavaAnalysis(
             project_dir=test_fixture,
-            source_code=None,
             backend=_BK,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
