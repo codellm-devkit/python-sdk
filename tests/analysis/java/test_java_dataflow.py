@@ -695,8 +695,15 @@ def _with_param_vars(payload: str) -> str:
     the same reason: the shape under test has to come from the real payload rather than from a
     hand-written one, so a regeneration that changes what is being added fails the count below.
 
-    The name written on each edge is the formal position its own endpoint already spells --
-    ``@formal_in:0`` becomes ``p0``, ``@formal_out`` becomes ``ret`` -- so a label that reached the
+    A ``param_in`` name here is **fabricated from the formal position** its own endpoint spells --
+    ``@formal_in:0`` becomes ``p0`` -- because a 3.1.0 payload records the argument's *position* and
+    never its name, so the name 3.1.2 writes there cannot be recovered from this fixture. Measured on
+    the pinned 3.1.2 (a local ``-a 4`` run over the same daytrader8 sources): all 1,932 ``param_in``
+    edges carry a ``var``, and it is the **actual argument's** name (``tSIA``, ``volume``). The
+    ``param_out`` name is not fabricated: all 909 of that run's carry ``$ret``, which is what is
+    written here.
+
+    Fabricated or not, each name is tied to the edge it belongs on, so a label that reached the
     adjacency off the *wrong* edge shows up as the wrong name rather than as a name that is merely
     present. All 355 endpoints spell one, asserted rather than assumed.
     """
@@ -708,7 +715,7 @@ def _with_param_vars(payload: str) -> str:
         named += 1
     for edge in application["param_out"]:
         assert edge["src"].endswith("@formal_out"), f"a param_out edge starting somewhere other than a formal_out: {edge['src']}"
-        edge["var"] = "ret"
+        edge["var"] = "$ret"
         named += 1
     assert named == 355, f"the 3.1.2 shape names all 355 param edges, not {named}"
     return json.dumps(payload_json)
@@ -735,8 +742,13 @@ def test_a_java_param_edge_carries_the_variable_the_analyzer_put_on_it(ref, para
     ``getattr(e, "var", None)`` at ``JCodeanalyzer._sdg``, not a constructed label: the count and the
     name of every param edge in the adjacency come back out of the traversal, and the consumer the
     hardcoded ``None`` blinded -- ``_edge_vars_in`` -- gains exactly the two crossing names ``sell``
-    scopes and nothing else. Whether the pinned analyzer writes ``var`` in practice is unverified in
-    this repo: there is no jar and no JVM.
+    scopes and nothing else.
+
+    That the pinned analyzer writes ``var`` at all is measured rather than assumed: the 3.1.2 wheel's
+    jar, run at ``-a 4`` over the same daytrader8 sources this fixture was cut from, names every one
+    of its 1,932 ``param_in`` and 909 ``param_out`` edges. What that run cannot stand in for is *this*
+    payload, which is why the fix is witnessed on a4 plus :func:`_with_param_vars` rather than on a
+    second application.
     """
     old_labels = [(rel, var) for outs in ref._sdg()[0]["forward"].values() for labels in outs.values() for rel, var, _prov in labels if rel.startswith("J_PARAM")]
     assert len(old_labels) == 355, "a4 was emitted by 3.1.0: 258 param_in + 97 param_out, none carrying a var"
@@ -749,7 +761,7 @@ def test_a_java_param_edge_carries_the_variable_the_analyzer_put_on_it(ref, para
         ("J_PARAM_IN", "p2"): 8,
         ("J_PARAM_IN", "p3"): 6,
         ("J_PARAM_IN", "p4"): 4,
-        ("J_PARAM_OUT", "ret"): 97,
+        ("J_PARAM_OUT", "$ret"): 97,
     }, "every param edge reaches the adjacency under its own formal's name"
 
     scope = ref.resolve_callable(SELL).ref
