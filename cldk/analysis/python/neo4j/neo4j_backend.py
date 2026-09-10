@@ -1656,14 +1656,23 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         "c_line: head([(c:PyCallable)-[:PY_HAS_BODY_NODE]->(n) | c.start_line])",
     )
 
-    #: The variable names on SDG edges *leaving* a node inside ``$prefix`` -- ``startNode``, matching
-    #: :attr:`_TAINT`'s cut predicate exactly, so a sanitizer this validates is one that predicate
-    #: can actually match (Ruling A / :func:`~cldk.analysis.commons.resolve.resolve_sanitizers`).
+    #: The variable names on SDG edges *leaving* a node inside ``$callable_prefix`` -- ``startNode``,
+    #: the same end of the hop :attr:`_TAINT`'s cut predicate reads, so a sanitizer this validates is
+    #: one that predicate can actually match (Ruling A /
+    #: :func:`~cldk.analysis.commons.resolve.resolve_sanitizers`).
     #:
-    #: ``$prefix`` here is a **callable's** ``can://`` ref, not the application's: narrower than the
-    #: usual scope and application-stamped by the same construction, since a callable id embeds the
-    #: application. One round trip per variable sanitizer, which is as often as a caller writes one.
-    _EDGE_VARS = "MATCH (n:PyBodyNode)-[r:{rels}]->() WHERE n.id STARTS WITH $prefix RETURN collect(DISTINCT r.var) AS vars"
+    #: The parameter is named apart from every other statement's ``$prefix`` because it holds a
+    #: different thing: a **callable's** ``can://`` ref, not the application's. It is still
+    #: application-scoped, by construction rather than by convention -- a callable id embeds the
+    #: application name -- and ``test_neo4j_multi_application_scope.py`` classifies it on that basis.
+    #:
+    #: A bare ``STARTS WITH``, deliberately wider than :attr:`_TAINT`'s delimited cut
+    #: (:func:`~cldk.analysis.commons.graphs.under_callable`): a sibling callable whose name merely
+    #: starts with this one contributes its edge vars here, so a variable may be *accepted* that the
+    #: cut cannot then match. That direction under-cuts -- a cut that severs nothing over-reports --
+    #: and the one this leg must refuse is the other. One round trip per variable sanitizer, which is
+    #: as often as a caller writes one.
+    _EDGE_VARS = "MATCH (n:PyBodyNode)-[r:{rels}]->() WHERE n.id STARTS WITH $callable_prefix RETURN collect(DISTINCT r.var) AS vars"
 
     def _taint_walk(self, srcs, dsts, *, cuts, cut_callables, depth, max_paths):
         """The sanitized shortest walks, server-side (see :meth:`PythonAnalysisBackend._taint_walk`).
@@ -1724,7 +1733,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         ``None`` would be answering a question no caller can ask -- ``resolve_sanitizers`` refuses a
         blank variable before it gets here.
         """
-        rows = self._run(self._EDGE_VARS.format(rels=SDG_REL_PATTERN), prefix=callable_id)
+        rows = self._run(self._EDGE_VARS.format(rels=SDG_REL_PATTERN), callable_prefix=callable_id)
         return frozenset(v for v in rows[0]["vars"] if v)
 
     def call_paths_between(self, src: str, dst: str, *, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:

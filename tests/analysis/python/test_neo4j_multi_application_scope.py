@@ -155,11 +155,19 @@ _SOURCE_NODES: Dict[str, List[Dict[str, Any]]] = {
     "PyExternal": [{"id": f"can://{app}/@external/os/path", "name": "path", "module": "os"} for app in (APP_A, APP_B)],
 }
 
-#: The three spellings of the application scope a statement may carry: the whole application
-#: (``$prefix``); for a narrowed bulk fetch, a list of per-module prefixes (``$prefixes``); and for
+#: The four spellings of the application scope a statement may carry: the whole application
+#: (``$prefix``); for a narrowed bulk fetch, a list of per-module prefixes (``$prefixes``); for
 #: ``locate``, one module's own prefix per position (``pos.module_prefix``, minted from the same
-#: application name). ``file_key IN $mods`` is *not* one: a module key is not application-stamped.
-_MATCHES_BY_PREFIX = re.compile(r"\.id STARTS WITH (\$prefix\b|pos\.module_prefix\b)|any\(p IN \$prefixes WHERE \w+\.id STARTS WITH p\)")
+#: application name); and for ``_EDGE_VARS``, one **callable's** own ref (``$callable_prefix``).
+#: ``file_key IN $mods`` is *not* one: a module key is not application-stamped.
+#:
+#: The last two are narrower than the application and still satisfy this audit, for the same reason
+#: and only that reason: both are minted from an id that already embeds the application name, so a
+#: node in a second application cannot start with either. ``$callable_prefix`` is spelled apart from
+#: ``$prefix`` on purpose -- it was ``$prefix`` too, which made this classification read as though
+#: ``_EDGE_VARS`` were scoped the way its 20 siblings are, when what makes it scoped is a property of
+#: the value bound to it. A distinct name keeps the invariant checkable rather than annotated.
+_MATCHES_BY_PREFIX = re.compile(r"\.id STARTS WITH (\$prefix\b|\$callable_prefix\b|pos\.module_prefix\b)|any\(p IN \$prefixes WHERE \w+\.id STARTS WITH p\)")
 
 
 def _is_scoped(statement: str) -> bool:
