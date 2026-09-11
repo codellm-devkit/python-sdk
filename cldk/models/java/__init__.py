@@ -29,6 +29,8 @@ from .models import (
     JGraphEdges,
     JImport,
     JType,
+    JViewDispatch,
+    JViewDispatchUnresolved,
 )
 
 from .projections import JCallableOverview, JClassOverview
@@ -46,6 +48,8 @@ __all__ = [
     "JGraphEdges",
     "JImport",
     "JType",
+    "JViewDispatch",
+    "JViewDispatchUnresolved",
     "JCallableOverview",
     "JClassOverview",
     "CRUDOperationType",

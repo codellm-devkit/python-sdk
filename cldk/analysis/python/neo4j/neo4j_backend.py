@@ -75,10 +75,14 @@ present in both, zero weight/provenance mismatches). The residual gap is not in 
   dangling reference and is silently dropped by the writer. Those edges never reach Neo4j, so the
   call graph here can
   be missing a small fraction of external-target edges. This is a producer bug, not a query bug.
-* **Projection-lossy fields** (inherent to what the graph stores — see :mod:`reconstruct`): comments
+* **Projection-lossy fields** (what this backend reads back — see :mod:`reconstruct`): comments
   collapse to a single docstring (module-level comments dropped); ``PyVariableDeclaration.value`` and
-  its column span, plus per-binding import detail, are not recoverable; the order of ``call_graph``
+  its column span, plus per-binding import detail, come back empty; the order of ``call_graph``
   edges and a callable's ``call_sites`` / ``local_variables`` is positional, not insertion order.
+  All but the comments stopped being the graph's limit at codeanalyzer-python 1.5.2, which projects
+  ``:PyVariable.value_json``, all six span properties wherever a span is declared, and
+  ``PY_IMPORTS.positions_json``; taking them up is python-sdk#396, and the floor stays 1.5.0 until
+  it does, so a served graph may not carry them either.
 
 Everything else round-trips identically to ``PyCodeanalyzer``.
 """

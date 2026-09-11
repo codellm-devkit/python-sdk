@@ -159,14 +159,18 @@ def test_the_import_set_is_smaller_than_the_per_file_declarations(backends):
 
 # ---- get_variables ----------------------------------------------------------------------------
 def test_the_local_variables_agree_name_type_and_line(backends):
-    """``J_DECLARES_VAR`` carries a **line-only** span, so the columns and byte offsets are
-    placeholders over the graph exactly as they are everywhere else on this surface; everything
-    that is a fact about the variable agrees."""
+    """``:JVariable`` carries no column, so those stay placeholders over the graph exactly as they
+    are everywhere else on this surface; its **byte offsets** are real since codeanalyzer-java 3.2.0
+    (863 of daytrader8's 863 locals carry them) and are asserted equal. ``JLocalVariable.code``
+    raises on **both** backends and is not asserted: ``_thread_type`` threads a type's fields,
+    callables and body nodes into the compilation unit and not a callable's locals, so neither side
+    has a unit to slice -- the same answer from the same model, not a projection gap."""
     ref, neo = backends
     local, graph = ref.get_variables(), neo.get_variables()
     assert set(local) == set(graph) and len(local) == DT_CALLABLES
     for key, declared in local.items():
         assert [(v.name, v.type, v.start_line, v.initializer) for v in declared] == [(v.name, v.type, v.start_line, v.initializer) for v in graph[key]], key
+        assert [v.span.bytes for v in declared] == [v.span.bytes for v in graph[key]], f"{key}: the two backends place the same local at different bytes"
     assert sum(1 for v in local.values() if v) == DT_DECLARING_LOCALS
     assert sum(len(v) for v in local.values()) == DT_LOCALS
 
@@ -255,8 +259,9 @@ def test_the_call_targets_agree(backends):
 # ---- get_calling_lines --------------------------------------------------------------------------
 def test_the_calling_lines_agree_and_are_absolute_file_lines(backends):
     """Leg 3a made these agree rather than shift by a declaration prefix; this is the assertion
-    that keeps them agreeing over a real projection, where ``code`` and ``code_start_line`` really
-    do differ between the two backends."""
+    that keeps them agreeing over a real projection. It was written when ``code`` and
+    ``code_start_line`` still differed between the two backends, which is what made the shift
+    possible; 3.2.0 makes both equal, and these lines are absolute file lines either way."""
     ref, neo = backends
     lines = ref.get_calling_lines("getStatement")
     assert lines == neo.get_calling_lines("getStatement")

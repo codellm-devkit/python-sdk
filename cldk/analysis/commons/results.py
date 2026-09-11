@@ -275,9 +275,11 @@ class SliceNode(BaseModel):
         defined_in: For a ``global``, the module it is defined in (``"payment"``) — the same
             vocabulary as :attr:`ModuleRef.module_name`. ``None`` for everything else, whose
             defining scope is the enclosing callable in :attr:`callable`.
-        source: The text, when the backend can produce it; ``None`` when it cannot. The Neo4j graph
-            carries no text below callable granularity (see :class:`LocateResult`), so it is
-            ``None`` there for anything finer.
+        source: The text, when the backend can produce it; ``None`` when it cannot. Whether a
+            Neo4j graph carries text below callable granularity is the projection's choice, so it
+            depends on the language: Java's does since codeanalyzer-java 3.2.0 and answers the same
+            text as its local backend, Python's does not and is ``None`` there for anything finer
+            (see :class:`LocateResult`).
         ref: The analyzer's own id for this node — **opaque**. Pass it back; do not parse it, and
             do not build one. The one sanctioned use is
             :meth:`~cldk.analysis.python.backend.PythonAnalysisBackend.get_source`, and that

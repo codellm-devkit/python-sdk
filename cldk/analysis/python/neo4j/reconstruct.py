@@ -29,10 +29,19 @@ Parity caveats (inherent to what the projection stores, not bugs):
 * Comments collapse to a single ``docstring`` string. We rebuild one ``PyComment(is_docstring=True)``;
   non-docstring comments, multiplicity and positions are not recoverable. Module-level comments are
   not projected at all, so ``PyModule.comments`` comes back empty.
-* ``PyVariableDeclaration.value`` and ``start_column`` / ``end_column`` are not projected (only
-  ``initializer`` and the line span are), so they rehydrate as ``None`` / ``-1``.
+* ``PyVariableDeclaration.value`` rehydrates as ``None`` and its columns as ``-1``: this module
+  reads ``initializer`` and the line span only.
 * ``PyModule.imports`` are reconstructed from the *aggregated* ``PY_IMPORTS`` edges (per-binding
   alias pairing and positions are lost).
+
+The last two were the projection's limits until codeanalyzer-python 1.5.2, which added
+``:PyModule.source``, all six span properties (``start_column`` / ``end_column`` / ``start_byte`` /
+``end_byte`` beside the line pair) wherever a span is declared, ``:PyVariable.value_json``,
+``:PyBodyNode.callee_signature``, ``PY_IMPORTS.positions_json`` and a span on ``PY_DECORATED_BY``.
+Reading them is python-sdk#396; until it lands they are the *backend's* limits, not the graph's, and
+the attach floor stays 1.5.0, so a served graph may well not carry them. The one that already flows
+free is a call site's columns -- :func:`callsite` reads them with a ``-1`` default, so a 1.5.2 graph
+supplies them and an older one does not.
 """
 
 from __future__ import annotations
@@ -129,10 +138,12 @@ def callsite(props: Props, *, callee_signature: str | None = None) -> PyCallsite
 
     1.4.0 emits one call site as a body node (#120), not a dedicated ``:PyCallSite`` label — the
     graph carries ``method_name`` / ``receiver_expr`` / ``receiver_type`` / ``return_type`` /
-    ``is_constructor_call`` and the line span, same as before. It does not project
-    ``argument_types`` or ``start_column``/``end_column`` — those fall back to their existing
-    empty/``-1`` defaults below, the same "projection-lossy field" shape as everything else in
-    this module.
+    ``is_constructor_call`` and the line span, same as before. ``argument_types`` is not projected at
+    all and falls back to its empty default below, the same "projection-lossy field" shape as
+    everything else in this module. ``start_column`` / ``end_column`` are read with a ``-1``
+    default, so they are real on a graph emitted by codeanalyzer-python 1.5.2 or newer (which
+    projects all six span properties) and ``-1`` on anything older -- the floor is 1.5.0, so both
+    shapes are served.
 
     ``callee_signature`` is NOT one of ``props`` (the call node itself carries no such property —
     callee resolution lives on the separate ``PY_RESOLVES_TO`` edge to the resolved target, a
@@ -168,8 +179,9 @@ def external_symbol(props: Props) -> PyExternalSymbol:
 def body_node(props: Props) -> BodyNode:
     """Rebuild a :class:`BodyNode` from a ``:PyBodyNode`` node's properties.
 
-    Line-only ``span``: the projection writes ``start_line`` / ``end_line`` and nothing finer, so
-    the columns and UTF-8 ``bytes`` offsets rehydrate as ``0`` — the same projection-lossy shape as
+    Line-only ``span``: this function reads ``start_line`` / ``end_line`` and nothing finer, so
+    the columns and UTF-8 ``bytes`` offsets rehydrate as ``0`` (codeanalyzer-python 1.5.2 projects
+    them; taking them up is python-sdk#396) — the same projection-lossy shape as
     :func:`callsite`, and the reason ``LocateResult.span`` documents which of its fields are real
     per backend. ``span`` stays ``None`` when the node carries no lines at all: the emitter prunes
     them from synthetic analysis vertices (``@entry`` / ``@exit`` / ``@formal_in:N``), which have no

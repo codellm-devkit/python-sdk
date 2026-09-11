@@ -19,7 +19,8 @@ at the 3.0.1 floor, schema v2 (the pin itself is ``[tool.backend-versions]`` in 
 
 The wire is one containment tree: ``JAnalysis{analyzer, application}`` →
 ``JApplication{symbol_table{path → JCompilationUnit}, call_graph, param_in, param_out, artifacts,
-dependencies, config_uses, config_reads_unresolved, entrypoint_report}`` →
+dependencies, config_uses, config_reads_unresolved, view_dispatches, view_dispatches_unresolved,
+entrypoint_report}`` →
 ``JCompilationUnit{types{name → JType}}`` → ``JType{fields{}, callables{signature →
 JCallable}, types{}}`` → ``JCallable{body{}, cfg, cdg, ddg, summary, types{}}``. Every node carries a
 ``can://`` ``id`` and a ``kind``; a unit carries its full ``source`` once and every node's text is a
@@ -83,10 +84,10 @@ class JSpan(_Base):
     sums over ``getBytes(UTF_8)``).
 
     **``-1`` in any position means "not known", never zero.** A span rebuilt from the Neo4j
-    projection carries real lines and ``-1`` for both columns and both byte offsets, because the
-    graph writes ``start_line``/``end_line`` and nothing else -- a ``0`` there would read as column
-    one, offset zero, which is a position, and a wrong one. Off ``analysis.json`` every position is
-    the analyzer's own.
+    projection carries real lines and real byte offsets -- codeanalyzer-java 3.2.0 writes both -- and
+    ``-1`` for both columns, which the graph does not write at all; a ``0`` there would read as
+    column one, which is a position, and a wrong one. Off ``analysis.json`` every position is the
+    analyzer's own.
     """
 
     start: Tuple[int, int]
@@ -455,12 +456,12 @@ class JCallable(_Node):
         and ``TreesitterJava.get_calling_lines`` were written against; the declaration slice
         (``span``) only when there is no body (abstract / interface methods).
 
-        That holds for a callable read from ``analysis.json``. One read from the Neo4j projection
-        instead carries the whole **declaration** — the graph projects one line range per callable
-        and no ``body_span`` — so its ``code`` starts at ``public …`` and *ends with* what this
-        property would return. Likewise :attr:`body` there holds the ``call`` nodes only, about 30%
-        of the graph's body nodes, so :attr:`call_sites` is complete and nothing else about the
-        body is.
+        It holds on both backends: codeanalyzer-java 3.2.0 projects ``body_start_byte``, so a
+        callable rebuilt from the Neo4j graph slices the same body block out of the same
+        ``:JModule.source`` (before 3.2.0 it carried the whole declaration, which is the floor
+        ``JNeo4jBackend`` now refuses below). What still differs there is :attr:`body`, which holds
+        the ``call`` nodes only — about 30% of the graph's body nodes — so :attr:`call_sites` is
+        complete and nothing else about the body is.
         """
         return self._slice(self.body_span or self.span)
 
@@ -469,13 +470,14 @@ class JCallable(_Node):
         """The file line :attr:`code` starts on: the body block's first line, or the declaration's
         when there is no body.
 
-        **It differs by backend wherever the opening brace does not sit on the declaration's first
-        line** — 398 of daytrader8's 1,216 callables. The Neo4j projection carries one line range
-        per callable and no ``body_span``, so this is the *declaration's* first line there and the
-        *body block's* here, exactly as :attr:`code` is the declaration there and the body block
-        here. The two agree on every callable whose ``{`` is on the signature's own line.
+        **The body span's own first line, when it is known.** Off ``analysis.json`` it always is.
+        The Neo4j projection carries the body block as byte offsets, so :attr:`code` is the body
+        block on both backends, but a ``body_start_line`` beside them is not guaranteed — where it is
+        absent this falls back to the declaration's first line, which is the body block's too except
+        where the opening brace sits on a later line (398 of daytrader8's 1,216 callables). ``-1``
+        only when the callable has no span at all: an implicit ``<init>()``, which has no text.
         """
-        if self.body_span is not None:
+        if self.body_span is not None and self.body_span.start[0] != -1:
             return self.body_span.start[0]
         return self.start_line
 
@@ -861,6 +863,44 @@ class JConfigRead(_Base):
     prov: List[str] = []
 
 
+class JViewDispatch(_Base):
+    """One resolved view dispatch (codeanalyzer-java 3.3.0, spec 2026-09-11 § 4): the body node that
+    hands the request to a view template and the :class:`JArtifact` it reaches.
+
+    ``src`` is the dispatching body node's id (``<callable id>@<line>:<col>``) — a
+    ``RequestDispatcher.forward`` / ``include`` or ``sendRedirect`` call, a ``ModelAndView``
+    construction or ``setViewName``, or a Spring controller's ``return``; ``dst`` is the artifact's
+    ``can://<app>/artifact/<path>`` id. ``via`` names the mechanism (``forward | include | redirect |
+    view-name | navigation``) and ``prov`` the tier that closed the target: ``["literal"]`` is a string
+    at the site, ``["dataflow"]`` a local or parameter traced over the L3/L4 substrate — both mean
+    exactly one target — and ``["table"]`` (3.3.1, § 4.5) a lookup into a static string table, which
+    is a **may-dispatch**: one edge per entry of the table, from the same site. Kept ``str`` rather
+    than ``Literal`` on purpose, as :class:`JConfigRead.reason` is: ``navigation`` is reserved and
+    unemitted today, and a closed type here would break on the analyzer release that fills it."""
+
+    src: str
+    dst: str
+    via: str
+    prov: List[str] = []
+
+
+class JViewDispatchUnresolved(_Base):
+    """A detected dispatch that closed on no artifact — first class, so a page nobody can trace stays
+    as visible as one that resolves. ``target`` is the decoded literal when there was one and
+    ``None`` for ``reason="non-literal"``; ``reason`` is ``non-literal`` / ``no-such-artifact`` (a
+    servlet URL, a ``*.faces`` route, a file outside the repository) / ``ambiguous`` (a view name
+    matching two templates); ``prov`` lists every tier attempted. ``callee`` is the dispatching
+    callee's ``@external`` id for a call site and the enclosing callable's id for a ``return`` site.
+    **JSON-only**: the projection has no node for a target that resolved to nothing."""
+
+    site: str
+    callee: str
+    target: Optional[str] = None
+    via: str
+    reason: str
+    prov: List[str] = []
+
+
 class JApplication(_Base):
     """The application root. ``call_graph``/``param_in``/``param_out`` are absent below the level
     that computes them — empty here, never ``None``.
@@ -888,6 +928,12 @@ class JApplication(_Base):
     config_uses: Optional[List[JConfigUse]] = None
     config_reads_unresolved: Optional[List[JConfigRead]] = None
     entrypoint_report: Optional[JEntrypointReport] = None
+    #: The 3.3.0 view-dispatch layer. ``None`` here means only "the key is absent": 3.3.x writes both
+    #: lists only when non-empty, so — unlike the 3.1.0 trio — no key on the wire is unconditional and
+    #: the backends decide "predates the pass" from the analyzer generation instead
+    #: (:data:`~cldk.analysis.java.backend.VIEW_DISPATCH_UNAVAILABLE`).
+    view_dispatches: Optional[List[JViewDispatch]] = None
+    view_dispatches_unresolved: Optional[List[JViewDispatchUnresolved]] = None
 
     def model_post_init(self, __context: Any) -> None:
         for path, unit in self.symbol_table.items():

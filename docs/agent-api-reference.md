@@ -46,8 +46,9 @@ disconnected old copy that the new application-prefix delete cannot reach.
 
 ## TypeScript
 
-Status: leg 2.5b (`codeanalyzer-typescript` 1.5.2 pinned; graphs emitted by 1.5.2 or newer
-served — see the floor below). What attaches
+Status: leg 2.5b (`codeanalyzer-typescript` 1.6.0 pinned; graphs emitted by 1.5.2 or newer
+served — the pin is what the SDK installs and the floor what it requires, two numbers that move
+independently; see the floor below). What attaches
 today is the **1.x accessor surface** — symbol table, classes / interfaces /
 enums / type aliases / namespaces, methods, fields, call graph, call sites, decorators, externals,
 synthesized callables, the four bulk accessors and the repository-artifact layer — on both backends.
@@ -154,12 +155,12 @@ documented empty comes back.
 | `get_application_view().param_in` / `.param_out` | empty — leg 2.5a reads **no** dataflow overlay (2.5b does). `.config_reads` and `.unresolved_imports` are empty for their own reasons: the config-read edge carries no `site`, so the view's entries would not be the ones in-process holds (`get_unresolved_config_reads()` is where they are reachable), and no accessor reads `TS_UNRESOLVED_IMPORT`. `.artifacts` / `.dependencies` / `.config_uses` **are** populated, from the same rows the dedicated accessors return |
 | `TSCallable.comments`, `type_parameters`, `overload_signatures`, `body`, `cfg`/`cdg`/`ddg`/`summary` | empty. `parameters` are populated from `parameters_json` on a 1.4.0 graph |
 | `TSEnumMember.value`; `TSModule.source` / `imports` / `comments`; decorator positions; a call site's `method_name`, receiver and argument facets | empty / `None`. `TSModule.exports` **is** populated from `exports_json`; `imports` stay empty on a rebuilt module — they live on edges the containment fetch does not walk, and `get_imports()` is what reads them |
-| `code` on any node | the text the graph projected for that node, on a line-only span (columns `0`) |
+| `code` on any node | the text the graph projected for that node, on a line-only span (columns `0`). codeanalyzer-typescript 1.6.0 added `start_column` / `end_column` / `start_byte` / `end_byte` to every spanned label; this backend does not read them yet (#391) |
 | `get_call_targets(sig)` | an unresolved call site contributes `""` (in-memory: the call's `method_name`) |
 | `get_synthesized_callables()` | keyed by the anonymous node's own id (the analyzer's older compatibility key is JSON-only) |
-| `locate(path, line)` at module scope | `source == ""` plus a second `module_source_unavailable` diagnostic — `:TSModule` carries no `source`. In-memory: the module's text |
-| `get_source(node_id)` for a **body-node** id | **raises `NotImplementedError`** — the graph carries no text below callable granularity. In-memory: the span's slice |
-| `LocateResult.span` columns and byte offsets | placeholders; lines are real on both backends |
+| `locate(path, line)` at module scope | `source == ""` plus a second `module_source_unavailable` diagnostic. `:TSModule` **does** carry `source` since codeanalyzer-typescript 1.6.0 — this backend does not read it yet (#391), and the graph floor is 1.5.2, so a served graph may legitimately not have it either. In-memory: the module's text |
+| `get_source(node_id)` for a **body-node** id | **raises `NotImplementedError`** — this backend resolves no text below callable granularity: `:TSBodyNode` projects no `code`, and the module source plus byte offsets that would let it slice one (1.6.0) are unread (#391). In-memory: the span's slice |
+| `LocateResult.span` columns and byte offsets | placeholders; lines are real on both backends. Carried by a 1.6.0 graph, unread here (#391) |
 | `get_entrypoint_coverage()` | the anchor's `entrypoint_report_json` string, parsed — same report as in-memory, no lossiness. A graph without the property answers `entrypoint_report_unavailable` rather than empty-but-clean fields |
 
 Two more hold on **both** backends. `get_entrypoint_classes()` covers **classes only**: the wire
@@ -238,8 +239,9 @@ Java-specific facts:
 accessors** — `get_callables_overview`, `get_method_bodies`, `get_decorated_callables`,
 `get_callsites_for`, `get_external_symbols`, `get_entrypoints` / `get_entrypoint_classes` /
 `get_entrypoint_coverage`, `get_artifacts` / `get_dependencies` / `get_config_keys` /
-`get_config_uses` / `get_unresolved_config_reads` / `get_config_readers`, and `get_interfaces` /
-`get_enums` / `get_enum_members` / `get_records`. Five rules:
+`get_config_uses` / `get_unresolved_config_reads` / `get_config_readers`, `get_view_dispatches` /
+`get_unresolved_view_dispatches` / `get_view_dispatchers`, and `get_interfaces` / `get_enums` /
+`get_enum_members` / `get_records`. Six rules:
 
 - **`get_entrypoint_coverage` reads the report from codeanalyzer-java 3.1.0 on.** 3.1.0
   (codeanalyzer-java#235) emits the entrypoint pass's own coverage record — `entrypoint_report` on
@@ -253,6 +255,19 @@ accessors** — `get_callables_overview`, `get_method_bodies`, `get_decorated_ca
   count of syntactically-marked callables is not a coverage record. The marks themselves are real
   and unambiguous — 133 callables and 66 types of daytrader8's 1,216 and 149, 1,501 callables and
   904 types of ThingsBoard's — and `get_entrypoints` / `get_entrypoint_classes` return those.
+- **`get_view_dispatches` reads codeanalyzer-java 3.3.0's view layer, and is the one accessor
+  gated on the analyzer generation.** JSP, Facelets and Thymeleaf templates are `:Artifact` nodes
+  with `roles: ["view-template"]`, and a `J_DISPATCHES_TO` edge (`view_dispatches[]` on the wire)
+  runs from the body node that hands the request over — a `forward` / `include` / `sendRedirect`
+  call, a `ModelAndView` construction or `setViewName`, or a Spring controller's `return` — to the
+  artifact it reaches, with `via` naming the mechanism and `prov` the tier: `literal` and
+  `dataflow` mean exactly one target, `table` (3.3.1) is a may-dispatch over a static string table,
+  one edge per entry. `get_view_dispatchers(path)` resolves the sites to their callables;
+  `get_unresolved_view_dispatches()` is the JSON-only record of what closed on nothing, so the
+  Neo4j backend refuses it rather than answering `[]`. Unlike the 3.1.0 trio there is no
+  always-present key to probe, so a pre-3.3.0 analysis is refused from `analyzer.version` /
+  `analyzer_version`. On daytrader8 with 3.3.3: 37 edges at level 1–2 (3 literal, 34 table), 54 at
+  level 4, 19 of 23 JSPs reached.
 - **A marker matches an annotation by simple name.** `get_decorated_callables(["Test"])`,
   `["@Test"]` and `["org.junit.Test"]` are the same query: the Java wire carries an annotation's
   simple name, so both sides are compared on the segment after the last `.` with a leading `@`
@@ -307,8 +322,8 @@ java = CLDK.java(backend=Neo4jConnectionConfig(
     application_name="daytrader8"))
 ```
 
-**Analyzer floor: codeanalyzer-java 3.1.1** (the pin is `[tool.backend-versions]` in
-`pyproject.toml` and is ahead of the floor; `--emit neo4j` always runs at level 4 and
+**Analyzer floor: codeanalyzer-java 3.2.0** (the pin is `[tool.backend-versions]` in
+`pyproject.toml` and is equal to the floor; `--emit neo4j` always runs at level 4 and
 forces external calls). Attaching to a graph refuses rather than answering empty, and the message
 names what it found and the floor:
 
@@ -316,15 +331,21 @@ names what it found and the floor:
 | --- | --- |
 | no `J_HAS_MODULE` / `J_HAS_METHOD` / `J_HAS_BODY_NODE` / `J_CALLS` (a pre-3.0.1 Java graph, a graph from another language's analyzer, an empty database) | refused — `GraphSchemaMismatch`, naming the missing types and the ones found |
 | no `:JApplication {id: can://<application_name>}` | refused — that root is the anchor every statement walks out from, so a wrong application would make every answer empty |
-| `analyzer_version` below 3.1.1, unreadable, or absent | refused |
-| 3.1.1 and newer | served, silent |
+| `analyzer_version` below 3.2.0, unreadable, or absent | refused |
+| 3.2.0 and newer | served, silent |
 
-3.1.1 moved the application to the outermost segment of the `can://` grammar
-(`can://<app>/java/<file>/…`, was `can://java/<app>/…`) and made `@external` ids language-neutral
-(`can://<app>/@external/…`). A 3.1.0 graph has every relationship type and the right body-node
-shape, and still answers every prefix-scoped statement with zero rows, so it is refused rather than
-served. **Migration:** re-emit with `codeanalyzer-java>=3.1.1 --emit neo4j`, wiping the database
-first — old and new ids do not collide.
+3.2.0 is the release whose projection carries the canonical text model: `:JModule.source` holds each
+file whole, and a `start_byte`/`end_byte` pair reaches `:JType`, `:JField`, `:JVariable`,
+`:JCallable` (plus `body_start_byte`) and `:JBodyNode`, so every node's text is a slice of its own
+module. A 3.1.x graph carries text as `:JCallable.code` and no byte offsets at all, so on it every
+*other* node's `code` rebuilds as `""` — served silently as though the file held nothing — which is
+why it is refused rather than degraded. Two generations earlier, 3.1.1 moved the application to the
+outermost segment of the `can://` grammar (`can://<app>/java/<file>/…`, was `can://java/<app>/…`) and
+made `@external` ids language-neutral (`can://<app>/@external/…`); a 3.1.0 graph has every
+relationship type and the right body-node shape and still answers every prefix-scoped statement with
+zero rows. **Migration:** re-emit with `codeanalyzer-java>=3.2.0 --emit neo4j`. Wipe the database
+first when the graph predates 3.1.1 — those ids do not collide with the current ones, so the two
+generations would coexist rather than overwrite.
 
 Locally the same rule applies to the cache: an `analysis.json` with no `schema_version` (1.x
 output) is refused with a re-run message, not parsed into an empty application.
@@ -344,14 +365,13 @@ last two from codeanalyzer-java 3.1.0; they raise on an older analysis rather th
 and issuing no new Cypher. Note what each one is: `get_imports()` is the project's **distinct
 sorted set** of import targets (the projection aggregates a module's imports per target, so file
 order is not recoverable); `get_variables()` is **local variables only**, keyed by the
-`"<type fqn>.<signature>"` call-graph key and ordered by `(line, name)` because `:JLocal` carries a
-line-only span (fields are `get_fields`, parameters are `get_method_parameters`, and an unexpected
+`"<type fqn>.<signature>"` call-graph key and ordered by `(line, name)` because `:JLocal` carries no
+column (fields are `get_fields`, parameters are `get_method_parameters`, and an unexpected
 keyword raises `TypeError` rather than being ignored); `get_class_hierarchy()` reads each
 declaration's own `base_types`/`interfaces` rather than `J_EXTENDS`/`J_IMPLEMENTS`, which is why
 library supertypes are in it — those two relationships join **8** of daytrader8's type pairs where
 the declarations join **103**; `get_methods_with_annotations()` keys by the spelling you passed and
-its `body` is `JCallable.code`, so it is the body block in-process and the whole declaration over
-the graph; `get_call_targets()` is simple-name matching with no overload resolution (use the call
+its `body` is `JCallable.code`, the body block on either backend; `get_call_targets()` is simple-name matching with no overload resolution (use the call
 graph for what actually runs); `get_calling_lines()` is absolute **file** lines.
 **Three accessors still raise `NotImplementedError`** —
 `get_service_entry_point_classes` / `get_service_entry_point_methods`, which the **§4 erratum** in
@@ -369,24 +389,26 @@ names its upstream issue where there is one:
   (`p.Outer.m(int).$anon$0`). External callees are not in this graph.
 - **CRUD accessors raise** (`codeanalyzer-java#187`): schema v2 carries no CRUD enrichment, and an
   empty list would read as "this application touches no database".
-- **Over Neo4j, `JCallable.code` is the whole declaration**, not the body block (upstream
-  `codeanalyzer-java#176`), `code_start_line` is the declaration's first line rather than the body
-  block's (they differ on 398 of daytrader8's 1,216 callables), a module carries no `source` at all,
-  and every column and byte offset is `-1` — "not known", never zero. Line numbers are exact. The
-  one exception is a `JCallableParameter`, which round-trips out of `:JCallable.parameters_json`
-  with the analyzer's own columns *and* byte offsets; those offsets index a module `source` this
-  backend does not carry, so they locate the parameter in the file on disk and nothing else.
-- **`get_source` inherits that difference, and so does `LocateResult.source`.** For a callable it is
-  the **body block** on the `analysis.json` backend and the whole **declaration** over Neo4j; the
-  relation is exact and total — the declaration *ends with* the body block — and asserted on all
-  1,117 body-bearing callables of daytrader8 by the live suite, so either text can be relied on for
-  what it is. For a **body node** (the statement or call site `locate` returns in `node_id`) there
-  is text only on the `analysis.json` backend: `:JBodyNode` carries a line range and no text, and
-  there is no module `source` to slice one out of, so `get_source` raises over Neo4j and `describe`
-  leaves `source=None` — never the enclosing declaration standing in for it. A **module-scope**
-  `locate` over Neo4j is `source=""` plus a `module_source_unavailable` diagnostic. A
-  `resolve_value` ref (a `formal_in` vertex) has no text on either backend: it is a dataflow
-  position, not a region of the file.
+- **Over Neo4j, every column is `-1`** — "not known", never zero. Line numbers and byte offsets
+  are exact: the projection writes `start_line`/`end_line` and a `start_byte`/`end_byte` pair, and
+  no column anywhere. A `JCallableParameter` is the one node whose columns are real, round-tripping
+  out of `:JCallable.parameters_json` with the analyzer's own span.
+- **Text is the same on both backends since codeanalyzer-java 3.2.0.** `JCallable.code`, `get_source`,
+  `LocateResult.source` and `describe` all answer the same slice of the same file, at every
+  granularity: a callable's **body block**, a type's or field's or local's declaration, a single
+  statement or call site, and a module's whole text at module scope. Each is sliced out of
+  `:JModule.source` by the node's own byte offsets, so equality — not `endswith`, not "the same
+  length" — is what the live suite asserts, on all 1,117 body-bearing callables of daytrader8.
+  Before 3.2.0 the graph carried one line range per callable and text only as `:JCallable.code`, so
+  a callable came back as the whole **declaration** (which *ends with* the body block),
+  `code_start_line` was the declaration's first line rather than the body block's, a body node had
+  no text at all, and a module-scope `locate` was `""` plus a `module_source_unavailable`
+  diagnostic (upstream `codeanalyzer-java#176`). Three cases still have no text, on **both**
+  backends and for the same reason each time — nothing in the file to point at: an implicit
+  callable (a compiler-generated `<init>()`), an `@external` callable, and a `resolve_value` ref (a
+  `formal_in` vertex is a dataflow position, not a region of the file). `module_source_unavailable`
+  survives as a *data* diagnostic: it fires on a module whose text the analyzer could not read or
+  decode, which on a 3.2.0 graph of daytrader8 is none of the 141.
 - **Over Neo4j, `cfg`/`cdg`/`ddg`/`summary` are `None` and `param_in`/`param_out` are empty at
   every level**, and re-ingesting will not change that: `--emit neo4j` already forces level 4, so
   the analyzer computed them — this leg simply does not project them back out (leg 3b reads the
@@ -505,9 +527,13 @@ class LocateResult:
 | between two callables | same as module scope; it never snaps to the nearest callable |
 | file not analysed | diagnostic `file_not_in_graph` — distinct from a file that doesn't exist |
 
-**Gotcha:** over Neo4j, module-scope `source` is empty and carries `module_source_unavailable`.
-`:PyModule` nodes genuinely do not store source text. The local backend returns it. Do not read
-an empty `source` as "no code there".
+**Gotcha:** on **Python and TypeScript** over Neo4j, module-scope `source` is empty and carries
+`module_source_unavailable`; the local backend returns it. Do not read an empty `source` as "no code
+there". The graph stopped being the reason: `:PyModule.source` lands in codeanalyzer-python 1.5.2 and
+`:TSModule.source` in codeanalyzer-typescript 1.6.0, and these two backends do not read it yet
+(#396, #391). **Java** is the one that does, since codeanalyzer-java 3.2.0: module-scope `source` is
+the file's text on both of its backends, and the diagnostic is left for a module whose text the
+analyzer could not read.
 
 ---
 
@@ -956,7 +982,7 @@ Any accessor may attach these. They exist so an empty result is never ambiguous.
 | --- | --- |
 | `module_scope` | the position is real, but outside any callable |
 | `file_not_in_graph` | the file was not analysed — not "does not exist" |
-| `module_source_unavailable` | this backend cannot supply module text (Neo4j) |
+| `module_source_unavailable` | the backend cannot supply module text — Python and TypeScript over Neo4j always (#396, #391); Java only where the analyzer could not read the file |
 | `entrypoint_report_unavailable` | **you cannot tell whether an empty entrypoint list is real** |
 | `level_too_low` | the graph lacks the analysis level this question needs — *unanswerable, not negative* |
 | `graph_schema_mismatch` | analyzer/graph generation mismatch (raised, not attached) |

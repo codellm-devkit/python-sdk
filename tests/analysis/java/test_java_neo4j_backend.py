@@ -40,22 +40,26 @@ lower is skipped rather than silently re-analysed.
 **The tolerances, each with its cause** (nothing here is a tolerance because it was inconvenient;
 see :mod:`cldk.analysis.java.neo4j.reconstruct` for the projection's side of each):
 
-* ``JCompilationUnit.source`` is ``""`` — a module's text is not projected at all.
-* ``JCallable.code`` is the whole **declaration**, the local backend's is the **body block**: the
-  projection carries one line range per callable, the declaration's, and no ``body_span``. The
-  relation is exact and total, so it is asserted rather than skipped:
-  ``neo.code.endswith(ref.code)``. ``code_start_line`` therefore agrees except where the opening
-  brace sits below the declaration's first line. ``calling_lines`` used to shift by that same
-  prefix and no longer do: they are absolute file lines, which both backends can spell, so they
-  are asserted equal on every edge rather than tolerated.
+* **Text is not a tolerance any more.** codeanalyzer-java 3.2.0 projects the whole file as
+  ``:JModule.source`` and a ``start_byte``/``end_byte`` pair on the nodes under it, so
+  ``JCompilationUnit.source`` and every ``code`` are asserted **equal**, not related: both sides are
+  the same slice of the same file. Before 3.2.0 ``JCallable.code`` was the whole declaration against
+  the local backend's body block and this suite asserted ``neo.code.endswith(ref.code)``
+  (codeanalyzer-java#176); that is the divergence the 3.2.0 floor exists to have closed.
+  ``calling_lines`` are absolute file lines, which both backends can spell, so they are asserted
+  equal on every edge.
+* ``JCompilationUnit.comments`` is ``[]``: comment *nodes* are still not projected, so a unit's own
+  comment list is empty even though the text they were cut from is now present. A type's and a
+  callable's javadoc rides its own property and is asserted.
 * Order within one source line is not recoverable: a field, a local variable and a call site carry
   a line but no column in the graph, so a declaration's ``field_declarations`` and
   ``local_variables`` are compared as multisets. Annotation order is not recoverable at all
-  (``J_ANNOTATED_BY`` carries only ``arguments``), so ``annotations`` is compared as a multiset.
-* **Every column and every byte offset is ``-1``** on every node, not ``0``: the projection writes
-  ``start_line``/``end_line`` and nothing else, so a position within a line and an offset into a
-  ``source`` the graph does not carry are *not known*. The sentinel is asserted, not skipped, on
-  types, callables, fields and call sites — a ``0`` would read as column one, offset zero.
+  (``J_ANNOTATED_BY`` carries ``arguments`` and the application's own byte offsets, not an index),
+  so ``annotations`` is compared as a multiset.
+* **Every column is ``-1``** on every node, not ``0``: the projection writes ``start_line``/
+  ``end_line`` and byte offsets and no column anywhere, so a position *within* a line is not known.
+  The sentinel is asserted, not skipped, on types, callables, fields and call sites — a ``0`` would
+  read as column one. Byte offsets are the opposite case and are asserted equal.
 * ``imports`` are aggregated per import target, so a file's import order is not recoverable; the
   set is.
 * ``get_all_docstrings`` reports the javadoc of each file's *declarations* — type, callable, field,
@@ -74,6 +78,8 @@ import os
 from pathlib import Path
 
 import pytest
+
+from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 
 logging.getLogger("neo4j").setLevel(logging.ERROR)
 
@@ -159,7 +165,8 @@ def test_symbol_table_parity(backends):
         other = st_n[key]
         assert (other.file_path, other.package, other.content_hash) == (unit.file_path, unit.package, unit.content_hash)
         assert sorted(other.imports) == sorted(unit.imports), f"{key}: import set differs"
-        assert other.source == "" and other.comments == []  # documented: not projected
+        assert other.source == unit.source, f"{key}: the module text is the same file on both backends"
+        assert other.comments == []  # documented: comment nodes are not projected
 
 
 def test_application_view_parity(backends):
@@ -194,7 +201,8 @@ def test_type_parity(backends):
         assert (o.is_entrypoint_class, o.qualified_name, o.parent_type, o.name) == (t.is_entrypoint_class, t.qualified_name, t.parent_type, t.name), name
         assert (o.start_line, o.end_line) == (t.start_line, t.end_line), name
         assert (o.start_column, o.end_column) == (-1, -1), f"{name}: a column the graph does not carry must be -1, not 0"
-        assert o.span.bytes == (-1, -1), f"{name}: a byte offset into a source the graph does not carry must be -1, not 0"
+        assert o.span.bytes == t.span.bytes, f"{name}: the byte offsets differ, so the two backends are not slicing the same text"
+        assert o.code == t.code, f"{name}: the declaration text differs"
         assert _annotations(o) == _annotations(t), name
         assert sorted(o.fields) == sorted(t.fields) and sorted(o.callables) == sorted(t.callables) and sorted(o.types) == sorted(t.types), name
         assert sorted(o.nested_type_declarations) == sorted(t.nested_type_declarations), name
@@ -210,7 +218,8 @@ def test_field_parity(backends):
         assert [f.name for f in fr] == [f.name for f in fn], name
         for a, b in zip(fr, fn):
             assert (b.id, b.type, b.modifiers, b.initializer, b.start_line, b.end_line) == (a.id, a.type, a.modifiers, a.initializer, a.start_line, a.end_line), f"{name}.{a.name}"
-            assert (b.start_column, b.end_column) == (-1, -1) and b.span.bytes == (-1, -1), f"{name}.{a.name}: columns and byte offsets are not projected"
+            assert (b.start_column, b.end_column) == (-1, -1), f"{name}.{a.name}: columns are not projected"
+            assert (b.span.bytes, b.code) == (a.span.bytes, a.code), f"{name}.{a.name}: the field text differs"
             assert _annotations(b) == _annotations(a), f"{name}.{a.name}"
             assert b.variables == a.variables and b.variable_initializers == a.variable_initializers
 
@@ -228,7 +237,8 @@ def test_callable_parity(backends):
             assert (o.is_implicit, o.is_entrypoint, o.is_constructor, o.is_static) == (m.is_implicit, m.is_entrypoint, m.is_constructor, m.is_static), where
             assert (o.start_line, o.end_line) == (m.start_line, m.end_line), where
             if o.span is not None:  # absent on the implicit callables, on both backends
-                assert (o.start_column, o.end_column) == (-1, -1) and o.span.bytes == (-1, -1), f"{where}: columns and byte offsets are not projected"
+                assert (o.start_column, o.end_column) == (-1, -1), f"{where}: columns are not projected"
+                assert o.span.bytes == m.span.bytes, f"{where}: the declaration's byte offsets differ"
             assert o.thrown_exceptions == m.thrown_exceptions and o.cyclomatic_complexity == m.cyclomatic_complexity, where
             assert sorted(o.referenced_types) == sorted(m.referenced_types) and sorted(o.accessed_fields) == sorted(m.accessed_fields), where
             assert (o.refs is None) == (m.refs is None), where
@@ -238,11 +248,10 @@ def test_callable_parity(backends):
             # Local variables: same multiset; within-line order is not recoverable.
             key = lambda v: (v.name, v.type, v.initializer, v.start_line)
             assert sorted(map(key, o.variable_declarations)) == sorted(map(key, m.variable_declarations)), where
-            # ``code``: identical without a body, otherwise the body block behind its declaration.
-            if m.code:
-                assert o.code.endswith(m.code), where
-            else:
-                assert o.code == "", where
+            # ``code``: the same body block, sliced out of the same ``:JModule.source``. Equality is
+            # what 3.2.0 buys -- ``endswith`` was the pre-3.2.0 relation (codeanalyzer-java#176).
+            assert o.code == m.code, where
+            assert o.code_start_line == m.code_start_line, where
 
 
 def test_parameter_parity(backends):
@@ -401,6 +410,11 @@ def test_artifact_layer_parity(backends):
     # ``test_java_entrypoints_live.py`` states that lossiness and pins the counts.
     assert sorted((u.src, u.dst, tuple(u.prov)) for u in neo.get_config_uses()) == sorted((u.src, u.dst, tuple(u.prov)) for u in ref.get_config_uses())
     assert {(r.callee, r.key, r.reason) for r in neo.get_unresolved_config_reads()} == {(r.callee, r.key, r.reason) for r in ref.get_unresolved_config_reads()}
+    # The 3.3.0 view-dispatch layer: identical resolved edges; the unresolved record is JSON-only,
+    # which the graph backend states by refusing rather than by an empty list.
+    assert [(d.src, d.dst, d.via, tuple(d.prov)) for d in neo.get_view_dispatches()] == [(d.src, d.dst, d.via, tuple(d.prov)) for d in ref.get_view_dispatches()]
+    with pytest.raises(CodeanalyzerExecutionException):
+        neo.get_unresolved_view_dispatches()
     # The Java wire's own artifact models carry two fields the shared Py* ones have no home for.
     assert sorted(neo.application.artifacts) == sorted(ref.application.artifacts)
     assert {p: (a.text_truncated, a.sha256) for p, a in neo.application.artifacts.items()} == {p: (a.text_truncated, a.sha256) for p, a in ref.application.artifacts.items()}

@@ -32,17 +32,17 @@ Same environment as ``test_java_neo4j_backend.py``::
     CLDK_TEST_JAVA_CACHE=/path/to/dir \        # a level-4 reference analysis.json
     uv run pytest tests/analysis/java/test_java_addressing_live.py
 
-**The two tolerances, each with its cause, both asserted rather than skipped:**
+**The one tolerance, asserted rather than skipped:** every column is ``-1`` over Neo4j -- the
+projection writes ``start_line`` / ``end_line`` and byte offsets, and no column anywhere -- so spans
+are compared on their **lines**, and their byte offsets are compared for equality.
 
-* ``LocateResult.source`` and :meth:`get_source` on a callable are the **body block** locally and
-  the whole **declaration** over Neo4j, which *ends with* it (codeanalyzer-java#176: the graph
-  carries one line range per callable and no ``body_span``). Asserted as ``endswith``.
-* Every column and byte offset is ``-1`` over Neo4j -- the projection writes ``start_line`` /
-  ``end_line`` and nothing else -- so spans are compared on their **lines**.
-
-A body node's *source* is not a tolerance but a documented absence: the graph carries no text below
-callable granularity, so :meth:`describe` fills it locally and leaves it ``None`` over Neo4j, and
-that is asserted too.
+**Text is no longer a tolerance.** codeanalyzer-java 3.2.0 projects ``:JModule.source`` plus a
+``start_byte``/``end_byte`` pair down to the body nodes, so ``LocateResult.source``,
+:meth:`get_source` and :meth:`describe` are asserted **equal** on both backends -- the same slice of
+the same file, at every granularity including a single statement. Before 3.2.0 the graph carried one
+line range per callable and no ``body_span``, this suite asserted ``endswith`` on a callable, and a
+body node's source was ``None`` over Neo4j (codeanalyzer-java#176). That is the divergence the 3.2.0
+floor exists to have closed.
 
 Read-only, like every other Neo4j suite here.
 """
@@ -154,17 +154,20 @@ def test_locate_many_agrees_on_every_callable_and_every_module(backends):
         assert a.body is None or a.body.callee is None or a.body.callee == b.body.callee, where
         assert (a.span.start[0], a.span.end[0]) == (b.span.start[0], b.span.end[0]), where
         if a.callable is not None:
-            assert b.source.endswith(a.source), f"{where}: the graph's text is the declaration, which must end with the body block"
+            assert b.source == a.source, f"{where}: the two backends sliced different text out of the same file"
         with_body += a.body is not None
     assert with_body > 100, "no position landed on a body node; the comparison proved nothing about them"
 
 
-def test_a_module_scope_result_says_the_graph_has_no_module_text(backends):
+def test_a_module_scope_result_carries_the_module_text_on_both_backends(backends):
+    """``module_source_unavailable`` is a *data* diagnostic, not a backend one: it fires when the unit
+    carries no ``source``, which on a 3.2.0 graph is no unit at all (141/141 carry it). A graph that
+    lost a file's text would still say so here, and say it per module."""
     ref, neo = backends
     path = next(iter(ref.get_symbol_table()))
     assert [d.code for d in ref.locate(path, 1).diagnostics] == ["module_scope"]
-    assert [d.code for d in neo.locate(path, 1).diagnostics] == ["module_scope", "module_source_unavailable"]
-    assert neo.locate(path, 1).source == "" and ref.locate(path, 1).source
+    assert [d.code for d in neo.locate(path, 1).diagnostics] == ["module_scope"]
+    assert neo.locate(path, 1).source == ref.locate(path, 1).source != ""
 
 
 def test_the_body_node_ids_are_the_ones_the_graph_carries(backends):
@@ -275,18 +278,19 @@ def test_get_source_holds_the_documented_relation_on_every_callable(backends):
     for key, row in sorted(ref._addressing.by_key.items()):
         if row.callable.is_implicit:
             continue
-        assert neo.get_source(key).endswith(ref.get_source(key)), key
+        assert neo.get_source(key) == ref.get_source(key), key
         compared += 1
     assert compared == 1117, compared
 
 
-def test_describe_fills_a_callable_on_both_and_a_body_node_only_locally(backends):
+def test_describe_fills_the_same_text_on_both_backends(backends):
+    """A callable and a single statement, both granularities: 3.2.0 puts byte offsets on the body
+    nodes too, so ``describe`` no longer answers ``None`` over Neo4j where it answers text locally."""
     ref, neo = backends
     found = next(r for r in ref.locate_many(_positions(ref)) if r.body is not None)
-    assert ref.describe([found])[0].source
-    assert neo.describe([found])[0].source is None
+    assert neo.describe([found])[0].source == ref.describe([found])[0].source != None
     node = ref.resolve_callable(found.callable.signature, in_class=found.type.signature)
-    assert neo.describe([node])[0].source.endswith(ref.describe([node])[0].source)
+    assert neo.describe([node])[0].source == ref.describe([node])[0].source
 
 
 def test_has_resolution_edges_is_true_on_a_graph_emitted_the_documented_way(backends):

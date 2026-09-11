@@ -109,6 +109,8 @@ from cldk.models.java.models import (
     JLocalVariable,
     JMethodDetail,
     JType,
+    JViewDispatch,
+    JViewDispatchUnresolved,
 )
 from cldk.models.java.projections import JCallableOverview, JClassOverview
 from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException, CodeanalyzerUsageException, SelectorNotInGraph
@@ -152,6 +154,29 @@ CONFIG_OVERLAY_UNAVAILABLE = (
     "application-scope overlays (config_uses, config_reads_unresolved, entrypoint_report), so an empty answer here would say "
     "'this application reads no configuration' where the truth is that nothing looked. Re-analyse, or re-emit your Neo4j graph, with "
     "codeanalyzer-java 3.1.0 or newer. get_config_keys() is unaffected: the keys a config artifact declares are read at every generation."
+)
+
+#: Why the three view-dispatch accessors refuse on an analysis that predates the pass.
+#: codeanalyzer-java 3.3.0 (spec 2026-09-11, codeanalyzer-java#259) added the view-dispatch layer;
+#: 3.3.1 (#261) its table tier. Unlike the 3.1.0 trio there is **no unconditional witness** for it:
+#: both lists are written only when non-empty, ``J_DISPATCHES_TO`` is declared only once an edge
+#: exists, and the release added no always-present key. So this is the one overlay decided from the
+#: analyzer generation — ``analyzer.version`` on the wire, ``analyzer_version`` on the ``:JApplication``
+#: anchor — because the alternative, answering ``[]`` off a 3.2.0 analysis, would say "this
+#: application reaches no view" where the truth is that nothing looked (D7).
+VIEW_DISPATCH_UNAVAILABLE = (
+    "the view-dispatch layer cannot be answered for application {app!r}: this analysis was produced by codeanalyzer-java {version}, and the "
+    "layer (view_dispatches, view_dispatches_unresolved, J_DISPATCHES_TO) exists only from 3.3.0. An empty answer here would say 'this "
+    "application reaches no view' where the truth is that nothing looked. Re-analyse, or re-emit your Neo4j graph, with codeanalyzer-java "
+    "3.3.0 or newer. get_artifacts() is unaffected."
+)
+
+#: What the graph backend raises from ``get_unresolved_view_dispatches``: the projection carries no
+#: node for a target that resolved to nothing, so the record is reachable from ``analysis.json`` only.
+VIEW_DISPATCH_UNRESOLVED_JSON_ONLY = (
+    "unresolved view dispatches for application {app!r} are not in the graph: codeanalyzer-java writes view_dispatches_unresolved into "
+    "analysis.json only (a target that resolved to no artifact has no node to project an edge to), so this backend cannot tell 'every "
+    "dispatch resolved' from 'the record is elsewhere'. Read them off the local codeanalyzer backend."
 )
 
 #: What ``get_external_symbols`` raises on a payload whose run never homed out-of-project call
@@ -535,16 +560,16 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
     # callable (:meth:`_body_nodes`), the text of one (:meth:`_body_source`), and whether call
     # sites resolve at all (:attr:`has_resolution_edges`).
     #
-    # WHAT STILL DIFFERS, AND IT IS THE DATA, NOT THE CODE. ``JCallable.code`` is the **body
-    # block** off ``analysis.json`` and the whole **declaration** off the Neo4j projection
-    # (codeanalyzer-java#176: the graph carries one line range per callable and no ``body_span``),
-    # so :meth:`get_source` and :attr:`LocateResult.source` return the declaration over Neo4j —
-    # stated on :meth:`JavaAnalysis.get_source`, in the lossiness table of
-    # ``docs/agent-api-reference.md``, and asserted by the live parity suite as
-    # ``neo.code.endswith(ref.code)``. A **module** carries no ``source`` at all there, so a
-    # module-scope :meth:`locate` answers ``""`` plus a ``module_source_unavailable`` diagnostic;
-    # and a body node has no text on either side of the graph, so it hydrates only locally.
-    # None of that is branched on: it falls out of what the models hold.
+    # WHAT STILL DIFFERS, AND IT IS THE DATA, NOT THE CODE. **Text no longer differs.**
+    # codeanalyzer-java 3.2.0 projects ``:JModule.source`` plus the byte offsets every node's text is
+    # a slice of, so :meth:`get_source`, :attr:`LocateResult.source` and a module-scope
+    # :meth:`locate` read the same characters on both backends and the live parity suite asserts
+    # ``neo.code == ref.code`` (it asserted ``neo.code.endswith(ref.code)`` while the graph carried
+    # the whole declaration and no ``body_span`` — codeanalyzer-java#176, fixed by the 3.2.0 text
+    # model, which is why ``JNeo4jBackend`` floors there). What is still thinner over Neo4j is the
+    # *set* of nodes, not their text: a body node has text only where the projection wrote offsets
+    # for it, and ``JCallable.body`` holds the ``call`` nodes only. None of that is branched on: it
+    # falls out of what the models hold.
     #
     # NO ``can://`` AND NO ORDINAL leaves this surface except in ``ref`` / ``node_id`` (E6/E7);
     # every error names what missed and suggests nothing (E8).
@@ -655,9 +680,10 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         names = java_module_dotted(unit.package, unit.types)
         module_ref = ModuleRef(path=key, module_name=names[0] if names else None)
         if row is None:
-            # The graph carries no module ``source``, so the text a module-scope result would hand
-            # back does not exist there. Read off the data rather than off which backend is running:
-            # "" is never returned as if it were the file.
+            # Read off the data rather than off which backend is running: "" is never returned as
+            # if it were the file. Since codeanalyzer-java 3.2.0 the projection carries
+            # ``:JModule.source``, so this diagnostic fires on a module whose text is genuinely
+            # missing -- an unreadable or undecodable file -- and on nothing else.
             diagnostics = [Diagnostic(code="module_scope", message=f"line {line} is at module scope in {key}.")]
             if not unit.source:
                 diagnostics.append(Diagnostic(code="module_source_unavailable", message=f"no source text is available for {key} on this backend."))
@@ -827,17 +853,17 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         statement or call site an alert landed on can be re-fetched, not just its enclosing
         callable. Round-tripped, never composed by the caller (E6).
 
-        **What comes back for a callable differs by backend, and the difference is the graph's.**
-        Off ``analysis.json`` it is the **body block**; off the Neo4j projection it is the whole
-        **declaration**, which ends with that body block — the graph carries one line range per
-        callable and no ``body_span`` (codeanalyzer-java#176). The relation is exact and total, and
-        the live parity suite asserts it rather than tolerating it.
+        **The same text on both backends**: the callable's body block, or the statement's own
+        region, sliced out of the module's text. Before codeanalyzer-java 3.2.0 the graph carried
+        one line range per callable, no ``body_span`` and no module text, so a callable came back as
+        the whole **declaration** and a body node not at all (codeanalyzer-java#176); 3.2.0 projects
+        ``:JModule.source`` plus byte offsets down to ``:JBodyNode``, and the live parity suite
+        asserts equality rather than tolerating a difference.
 
         Raises:
             KeyError: Nothing this backend holds is named by ``node_id``, or it names a node with
-                no recoverable text — an implicit callable (no span and no body at all), or, on the
-                Neo4j backend, any body node, since the graph carries no text below callable
-                granularity. The message names the reason.
+                no recoverable text — an implicit callable (no span and no body at all), or any
+                node the projection placed nowhere in a file. The message names the reason.
         """
         found = self._sources_for([node_id])
         if node_id not in found:
@@ -908,11 +934,10 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
 
         Afterwards ``source=None`` means exactly one thing: *this position exists and the backend
         has no text for it*. It never means "the lookup failed", because a ref naming nothing raises
-        instead. Which positions have no text differs by backend, honestly: a ``kind="callable"``
-        node hydrates on both (as the declaration over Neo4j, the body block locally); a
-        ``parameter`` hydrates on neither, having no span in the analyzer's own model; a statement
-        or call site hydrates only locally, because the graph carries no text below callable
-        granularity.
+        instead. Which positions have no text no longer differs by backend: a ``kind="callable"``
+        node and a statement or call site both hydrate on either, to the same slice of the same file
+        (codeanalyzer-java 3.2.0 carries byte offsets down to ``:JBodyNode``); a ``parameter``
+        hydrates on neither, having no span in the analyzer's own model.
 
         Raises:
             KeyError: A ``ref`` names nothing this backend can find — a ref comes from this SDK, so
@@ -1238,6 +1263,102 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
                 found[row.key] = row
         return [JCallableOverview.of(r.key, r.type, r.callable, path=r.path) for r in found.values()]
 
+    # -----[ the view-dispatch layer (codeanalyzer-java 3.3.0, python-sdk#404) ]-----
+    @abstractmethod
+    def _analyzer_generation(self) -> Tuple[int, int, int] | None:
+        """The ``(major, minor, patch)`` of the codeanalyzer-java that produced this analysis —
+        ``analyzer.version`` off the wire, ``analyzer_version`` off the ``:JApplication`` anchor —
+        or ``None`` when it cannot be read. The one version-shaped probe in this contract, and
+        :data:`VIEW_DISPATCH_UNAVAILABLE` says why it has to be one."""
+
+    def _view_overlay(self) -> Tuple[List[JViewDispatch], List[JViewDispatchUnresolved]]:
+        """This analysis's view-dispatch lists, or raise if the analyzer predates the pass.
+
+        Raises:
+            CodeanalyzerExecutionException: The analysis was produced by codeanalyzer-java older
+                than 3.3.0, or by one whose version cannot be read (:data:`VIEW_DISPATCH_UNAVAILABLE`).
+        """
+        generation = self._analyzer_generation()
+        if generation is None or generation < (3, 3, 0):
+            version = "unknown" if generation is None else ".".join(map(str, generation))
+            raise CodeanalyzerExecutionException(VIEW_DISPATCH_UNAVAILABLE.format(app=self._application_name, version=version))
+        app = self.get_application_view()
+        return list(app.view_dispatches or []), list(app.view_dispatches_unresolved or [])
+
+    def _view_artifact_paths(self) -> Dict[str, str]:
+        """``artifact id -> repo-relative path`` for every inventoried artifact."""
+        return {a.id: path for path, a in self.get_application_view().artifacts.items()}
+
+    @staticmethod
+    def _view_matches(path: str, view: str) -> bool:
+        """Segment-aligned suffix match: ``quoteDataPrimitive.jsp`` and
+        ``src/main/webapp/quoteDataPrimitive.jsp`` both name the same artifact; ``DataPrimitive.jsp``
+        names nothing. Never a substring (E8)."""
+        return path == view or path.endswith("/" + view)
+
+    def get_view_dispatches(self, view: str | None = None) -> List[JViewDispatch]:
+        """Every view dispatch the analyzer resolved: a body node that hands the request to a view
+        template, and the artifact it reaches.
+
+        Args:
+            view: Restrict to one view, matched as a segment-aligned suffix of the artifact's
+                repo-relative path (``home.jsp``, ``WEB-INF/jsp/home.jsp``, or the whole path).
+                ``None`` returns every edge.
+
+        Returns:
+            :class:`~cldk.models.java.models.JViewDispatch`, sorted by ``(src, dst)``. ``prov`` is
+            the tier that closed the target — see the model's note on ``["table"]``, the one
+            many-per-site kind. Empty means the pass ran and resolved nothing.
+
+        Raises:
+            CodeanalyzerExecutionException: See :meth:`_view_overlay`.
+        """
+        dispatches, _ = self._view_overlay()
+        if view is None:
+            return dispatches
+        paths = self._view_artifact_paths()
+        return [d for d in dispatches if self._view_matches(paths.get(d.dst, ""), view)]
+
+    def get_unresolved_view_dispatches(self) -> List[JViewDispatchUnresolved]:
+        """Every detected dispatch that closed on no artifact — a variable target, a servlet URL,
+        a view name matching two templates — kept first class so a page nobody can trace stays as
+        visible as one that resolves.
+
+        Returns:
+            :class:`~cldk.models.java.models.JViewDispatchUnresolved`, sorted by
+            ``(site, reason, target)``; ``prov`` lists every tier attempted.
+
+        Raises:
+            CodeanalyzerExecutionException: See :meth:`_view_overlay`; and on the Neo4j backend
+                always (:data:`VIEW_DISPATCH_UNRESOLVED_JSON_ONLY`), because the projection carries
+                no node for a target that resolved to nothing.
+        """
+        _, unresolved = self._view_overlay()
+        return unresolved
+
+    def get_view_dispatchers(self, path: str) -> List[JCallableOverview]:
+        """Overviews of every callable that dispatches to one view — :meth:`get_view_dispatches`
+        resolved from body nodes back to the callables that own them.
+
+        Args:
+            path: The view's repo-relative path or any segment-aligned suffix of it, matched as in
+                :meth:`get_view_dispatches`.
+
+        Returns:
+            One overview per distinct callable, in the addressing index's order; a callable that
+            reaches the view from several sites (or through a table's many entries) appears once.
+            Empty means nothing dispatches to it.
+
+        Raises:
+            CodeanalyzerExecutionException: See :meth:`_view_overlay`.
+        """
+        found: Dict[str, _Addressed] = {}
+        for edge in self.get_view_dispatches(path):
+            row = self._addressing.by_id.get(edge.src.rpartition("@")[0])
+            if row is not None:
+                found[row.key] = row
+        return [JCallableOverview.of(r.key, r.type, r.callable, path=r.path) for r in found.values()]
+
     # -----[ the type-kind leaf accessors (J-7) ]-----
     def get_interfaces(self) -> Dict[str, JType]:
         """Every interface, keyed by qualified name — the subset of :meth:`get_all_classes` whose
@@ -1385,9 +1506,8 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         Neither sibling language has this accessor, so it is designed rather than ported, and the
         pattern it follows is :meth:`JavaAnalysis.get_test_methods`: read the **analyzer's own**
         annotations off the model (``J_ANNOTATED_BY``; 26,162 edges on the reference graph) rather
-        than re-parsing a source string, so it answers identically on both backends -- a
-        Neo4j-backed analysis carries no module source at all, and the 1.x tree-sitter version
-        returned ``{}`` there.
+        than re-parsing a source string, so it answers identically on both backends -- the 1.x
+        tree-sitter version returned ``{}`` on any projection that carried no module text.
 
         Args:
             annotations: Annotation names, matched by the J-5 marker rule
@@ -1405,10 +1525,8 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
             * ``class`` -- the declaring type's qualified name;
             * ``signature`` -- the callable's signature within that type;
             * ``method_name`` -- its simple name (the 1.x key, kept);
-            * ``body`` -- :attr:`~cldk.models.java.models.JCallable.code` (the 1.x key, kept).
-              Note this is the body block off ``analysis.json`` and the whole declaration off the
-              Neo4j projection, exactly as it is for :meth:`JavaAnalysis.get_test_methods`; it is a
-              documented property of the model, not a divergence introduced here.
+            * ``body`` -- :attr:`~cldk.models.java.models.JCallable.code` (the 1.x key, kept),
+              the body block on either backend since codeanalyzer-java 3.2.0.
 
             ``class`` and ``signature`` are new against 1.x, which returned the simple name alone.
             A simple name is not an address in Java -- 200 of daytrader8's 581 distinct signatures

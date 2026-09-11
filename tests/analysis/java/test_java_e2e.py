@@ -94,3 +94,24 @@ def test_call_graph_nodes_are_fqn_dot_signature_strings(analysis):
             # J-8/#8: absolute file lines, sorted — not offsets into ``JCallable.code``, which is a
             # different string on each backend.
             assert data["calling_lines"] == sorted(data["calling_lines"]) and all(n > 0 for n in data["calling_lines"])
+
+
+def test_view_dispatches_reach_daytrader8s_jsps(analysis):
+    """codeanalyzer-java 3.3.x (python-sdk#404): at level 1 and 2 the literal tier closes 3 sites
+    and the table tier (3.3.1) 34 more -- every page in ``TradeConfig.webUI`` that exists on disk,
+    from ``TradeConfigServlet``'s two sites -- so 37 edges reach 19 of daytrader8's 23 JSPs. The
+    call-graph tier that binds ``TradeServletAction.requestDispatch`` runs at level 4 only, which
+    these two levels do not reach. Measured off the 3.3.3 jar, not off the SDK."""
+    edges = analysis.get_view_dispatches()
+    assert len(edges) == 37
+    assert {(e.via, tuple(e.prov)) for e in edges} == {("forward", ("literal",)), ("include", ("literal",)), ("include", ("table",))}
+    assert len({e.dst for e in edges}) == 19
+    assert [d.key for d in analysis.get_view_dispatchers("PingServlet2Jsp.jsp")] == [
+        "com.ibm.websphere.samples.daytrader.web.prims.PingServlet2Jsp.doGet(javax.servlet.http.HttpServletRequest, javax.servlet.http.HttpServletResponse)"
+    ]
+    unresolved = analysis.get_unresolved_view_dispatches()
+    assert {u.reason for u in unresolved} == {"no-such-artifact", "non-literal"}
+    assert {u.target for u in unresolved if u.reason == "no-such-artifact"} == {"welcome.faces", "/servlet/PingServlet2IncludeRcv", "/servlet/PingServlet2ServletRcv"}
+    views = {p for p, a in analysis.get_artifacts().items() if "view-template" in a.roles}
+    assert len(views) == 38 and all(p.endswith((".jsp", ".xhtml")) for p in views)
+
