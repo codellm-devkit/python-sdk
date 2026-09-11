@@ -72,6 +72,8 @@ from cldk.models.java.models import (
     JField,
     JMethodDetail,
     JType,
+    JViewDispatch,
+    JViewDispatchUnresolved,
 )
 from cldk.models.java.projections import JCallableOverview, JClassOverview
 from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
@@ -1948,6 +1950,47 @@ class JavaAnalysis:
             key: The bare configuration key, matched as :meth:`get_config_uses` matches it.
         """
         return self.backend.get_config_readers(key)
+
+    # -----[ the view-dispatch layer (codeanalyzer-java 3.3.0) ]-----
+    def get_view_dispatches(self, view: str | None = None) -> List[JViewDispatch]:
+        """Return every resolved view dispatch: which body node hands the request to which view
+        template (JSP, Facelet, Thymeleaf) — a ``forward`` / ``include`` / ``sendRedirect`` call, a
+        ``ModelAndView`` construction or ``setViewName``, or a Spring controller's ``return``.
+
+        Args:
+            view: When given, only edges whose view's repo-relative path ends with it,
+                segment-aligned (``home.jsp`` or ``WEB-INF/jsp/home.jsp``).
+
+        Raises:
+            CodeanalyzerExecutionException: The analysis predates codeanalyzer-java 3.3.0, which is
+                where the pass exists; an older analysis is refused rather than answered ``[]``.
+
+        See Also:
+            :meth:`get_view_dispatchers`: The same edges, resolved to their dispatching callables.
+            :meth:`get_unresolved_view_dispatches`: The dispatches this cannot show.
+        """
+        return self.backend.get_view_dispatches(view)
+
+    def get_unresolved_view_dispatches(self) -> List[JViewDispatchUnresolved]:
+        """Return every detected dispatch that closed on no view — a variable target, a servlet URL,
+        a view name matching two templates — with its reason and the tiers attempted.
+
+        Raises:
+            CodeanalyzerExecutionException: The analysis predates codeanalyzer-java 3.3.0; or, on the
+                Neo4j backend, always — the record lives in ``analysis.json`` only.
+        """
+        return self.backend.get_unresolved_view_dispatches()
+
+    def get_view_dispatchers(self, path: str) -> List[JCallableOverview]:
+        """Return overviews of every callable that dispatches to the view at ``path``.
+
+        Args:
+            path: The view's repo-relative path or any segment-aligned suffix of it.
+
+        Raises:
+            CodeanalyzerExecutionException: As :meth:`get_view_dispatches`.
+        """
+        return self.backend.get_view_dispatchers(path)
 
     # -----[ the type-kind leaf accessors (J-7) ]-----
     def get_interfaces(self) -> Dict[str, JType]:

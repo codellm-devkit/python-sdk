@@ -161,6 +161,14 @@ def _recorded_verdict(verdict_file: Path, analysis_json_file: Path) -> List[Diag
         return None
 
 
+def _semver(raw: object) -> Tuple[int, int, int] | None:
+    """``"3.3.2"`` → ``(3, 3, 2)``; anything that is not three integers is ``None``."""
+    parts = str(raw or "").split("-", 1)[0].split(".")
+    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+        return None
+    return int(parts[0]), int(parts[1]), int(parts[2])
+
+
 class JCodeanalyzer(JavaAnalysisBackend):
     """Build and query the application view of a Java project by invoking codeanalyzer-java.
 
@@ -186,6 +194,10 @@ class JCodeanalyzer(JavaAnalysisBackend):
             directory from elsewhere, and in stdout-pipe mode (no ``analysis_json_path``), where the
             payload occupies the same pipe the log would.
     """
+
+    def _analyzer_generation(self) -> Tuple[int, int, int] | None:
+        """``analyzer.version`` off the wire, as a comparable tuple; ``None`` if it is not a semver."""
+        return _semver(self.analysis.analyzer.version)
 
     def __init__(
         self,

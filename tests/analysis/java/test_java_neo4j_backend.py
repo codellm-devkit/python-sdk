@@ -79,6 +79,8 @@ from pathlib import Path
 
 import pytest
 
+from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
+
 logging.getLogger("neo4j").setLevel(logging.ERROR)
 
 NEO4J_URI = os.environ.get("CLDK_TEST_NEO4J_URI", "bolt://localhost:7687")
@@ -408,6 +410,11 @@ def test_artifact_layer_parity(backends):
     # ``test_java_entrypoints_live.py`` states that lossiness and pins the counts.
     assert sorted((u.src, u.dst, tuple(u.prov)) for u in neo.get_config_uses()) == sorted((u.src, u.dst, tuple(u.prov)) for u in ref.get_config_uses())
     assert {(r.callee, r.key, r.reason) for r in neo.get_unresolved_config_reads()} == {(r.callee, r.key, r.reason) for r in ref.get_unresolved_config_reads()}
+    # The 3.3.0 view-dispatch layer: identical resolved edges; the unresolved record is JSON-only,
+    # which the graph backend states by refusing rather than by an empty list.
+    assert [(d.src, d.dst, d.via, tuple(d.prov)) for d in neo.get_view_dispatches()] == [(d.src, d.dst, d.via, tuple(d.prov)) for d in ref.get_view_dispatches()]
+    with pytest.raises(CodeanalyzerExecutionException):
+        neo.get_unresolved_view_dispatches()
     # The Java wire's own artifact models carry two fields the shared Py* ones have no home for.
     assert sorted(neo.application.artifacts) == sorted(ref.application.artifacts)
     assert {p: (a.text_truncated, a.sha256) for p, a in neo.application.artifacts.items()} == {p: (a.text_truncated, a.sha256) for p, a in ref.application.artifacts.items()}

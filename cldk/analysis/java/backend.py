@@ -109,6 +109,8 @@ from cldk.models.java.models import (
     JLocalVariable,
     JMethodDetail,
     JType,
+    JViewDispatch,
+    JViewDispatchUnresolved,
 )
 from cldk.models.java.projections import JCallableOverview, JClassOverview
 from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException, CodeanalyzerUsageException, SelectorNotInGraph
@@ -152,6 +154,29 @@ CONFIG_OVERLAY_UNAVAILABLE = (
     "application-scope overlays (config_uses, config_reads_unresolved, entrypoint_report), so an empty answer here would say "
     "'this application reads no configuration' where the truth is that nothing looked. Re-analyse, or re-emit your Neo4j graph, with "
     "codeanalyzer-java 3.1.0 or newer. get_config_keys() is unaffected: the keys a config artifact declares are read at every generation."
+)
+
+#: Why the three view-dispatch accessors refuse on an analysis that predates the pass.
+#: codeanalyzer-java 3.3.0 (spec 2026-09-11, codeanalyzer-java#259) added the view-dispatch layer;
+#: 3.3.1 (#261) its table tier. Unlike the 3.1.0 trio there is **no unconditional witness** for it:
+#: both lists are written only when non-empty, ``J_DISPATCHES_TO`` is declared only once an edge
+#: exists, and the release added no always-present key. So this is the one overlay decided from the
+#: analyzer generation — ``analyzer.version`` on the wire, ``analyzer_version`` on the ``:JApplication``
+#: anchor — because the alternative, answering ``[]`` off a 3.2.0 analysis, would say "this
+#: application reaches no view" where the truth is that nothing looked (D7).
+VIEW_DISPATCH_UNAVAILABLE = (
+    "the view-dispatch layer cannot be answered for application {app!r}: this analysis was produced by codeanalyzer-java {version}, and the "
+    "layer (view_dispatches, view_dispatches_unresolved, J_DISPATCHES_TO) exists only from 3.3.0. An empty answer here would say 'this "
+    "application reaches no view' where the truth is that nothing looked. Re-analyse, or re-emit your Neo4j graph, with codeanalyzer-java "
+    "3.3.0 or newer. get_artifacts() is unaffected."
+)
+
+#: What the graph backend raises from ``get_unresolved_view_dispatches``: the projection carries no
+#: node for a target that resolved to nothing, so the record is reachable from ``analysis.json`` only.
+VIEW_DISPATCH_UNRESOLVED_JSON_ONLY = (
+    "unresolved view dispatches for application {app!r} are not in the graph: codeanalyzer-java writes view_dispatches_unresolved into "
+    "analysis.json only (a target that resolved to no artifact has no node to project an edge to), so this backend cannot tell 'every "
+    "dispatch resolved' from 'the record is elsewhere'. Read them off the local codeanalyzer backend."
 )
 
 #: What ``get_external_symbols`` raises on a payload whose run never homed out-of-project call
@@ -1234,6 +1259,102 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
             # sources the schema allows, the declaration's own id. One lookup covers both: a
             # callable id carries no ``@`` of its own.
             row = self._addressing.by_id.get(use.src) or self._addressing.by_id.get(use.src.rpartition("@")[0])
+            if row is not None:
+                found[row.key] = row
+        return [JCallableOverview.of(r.key, r.type, r.callable, path=r.path) for r in found.values()]
+
+    # -----[ the view-dispatch layer (codeanalyzer-java 3.3.0, python-sdk#404) ]-----
+    @abstractmethod
+    def _analyzer_generation(self) -> Tuple[int, int, int] | None:
+        """The ``(major, minor, patch)`` of the codeanalyzer-java that produced this analysis —
+        ``analyzer.version`` off the wire, ``analyzer_version`` off the ``:JApplication`` anchor —
+        or ``None`` when it cannot be read. The one version-shaped probe in this contract, and
+        :data:`VIEW_DISPATCH_UNAVAILABLE` says why it has to be one."""
+
+    def _view_overlay(self) -> Tuple[List[JViewDispatch], List[JViewDispatchUnresolved]]:
+        """This analysis's view-dispatch lists, or raise if the analyzer predates the pass.
+
+        Raises:
+            CodeanalyzerExecutionException: The analysis was produced by codeanalyzer-java older
+                than 3.3.0, or by one whose version cannot be read (:data:`VIEW_DISPATCH_UNAVAILABLE`).
+        """
+        generation = self._analyzer_generation()
+        if generation is None or generation < (3, 3, 0):
+            version = "unknown" if generation is None else ".".join(map(str, generation))
+            raise CodeanalyzerExecutionException(VIEW_DISPATCH_UNAVAILABLE.format(app=self._application_name, version=version))
+        app = self.get_application_view()
+        return list(app.view_dispatches or []), list(app.view_dispatches_unresolved or [])
+
+    def _view_artifact_paths(self) -> Dict[str, str]:
+        """``artifact id -> repo-relative path`` for every inventoried artifact."""
+        return {a.id: path for path, a in self.get_application_view().artifacts.items()}
+
+    @staticmethod
+    def _view_matches(path: str, view: str) -> bool:
+        """Segment-aligned suffix match: ``quoteDataPrimitive.jsp`` and
+        ``src/main/webapp/quoteDataPrimitive.jsp`` both name the same artifact; ``DataPrimitive.jsp``
+        names nothing. Never a substring (E8)."""
+        return path == view or path.endswith("/" + view)
+
+    def get_view_dispatches(self, view: str | None = None) -> List[JViewDispatch]:
+        """Every view dispatch the analyzer resolved: a body node that hands the request to a view
+        template, and the artifact it reaches.
+
+        Args:
+            view: Restrict to one view, matched as a segment-aligned suffix of the artifact's
+                repo-relative path (``home.jsp``, ``WEB-INF/jsp/home.jsp``, or the whole path).
+                ``None`` returns every edge.
+
+        Returns:
+            :class:`~cldk.models.java.models.JViewDispatch`, sorted by ``(src, dst)``. ``prov`` is
+            the tier that closed the target — see the model's note on ``["table"]``, the one
+            many-per-site kind. Empty means the pass ran and resolved nothing.
+
+        Raises:
+            CodeanalyzerExecutionException: See :meth:`_view_overlay`.
+        """
+        dispatches, _ = self._view_overlay()
+        if view is None:
+            return dispatches
+        paths = self._view_artifact_paths()
+        return [d for d in dispatches if self._view_matches(paths.get(d.dst, ""), view)]
+
+    def get_unresolved_view_dispatches(self) -> List[JViewDispatchUnresolved]:
+        """Every detected dispatch that closed on no artifact — a variable target, a servlet URL,
+        a view name matching two templates — kept first class so a page nobody can trace stays as
+        visible as one that resolves.
+
+        Returns:
+            :class:`~cldk.models.java.models.JViewDispatchUnresolved`, sorted by
+            ``(site, reason, target)``; ``prov`` lists every tier attempted.
+
+        Raises:
+            CodeanalyzerExecutionException: See :meth:`_view_overlay`; and on the Neo4j backend
+                always (:data:`VIEW_DISPATCH_UNRESOLVED_JSON_ONLY`), because the projection carries
+                no node for a target that resolved to nothing.
+        """
+        _, unresolved = self._view_overlay()
+        return unresolved
+
+    def get_view_dispatchers(self, path: str) -> List[JCallableOverview]:
+        """Overviews of every callable that dispatches to one view — :meth:`get_view_dispatches`
+        resolved from body nodes back to the callables that own them.
+
+        Args:
+            path: The view's repo-relative path or any segment-aligned suffix of it, matched as in
+                :meth:`get_view_dispatches`.
+
+        Returns:
+            One overview per distinct callable, in the addressing index's order; a callable that
+            reaches the view from several sites (or through a table's many entries) appears once.
+            Empty means nothing dispatches to it.
+
+        Raises:
+            CodeanalyzerExecutionException: See :meth:`_view_overlay`.
+        """
+        found: Dict[str, _Addressed] = {}
+        for edge in self.get_view_dispatches(path):
+            row = self._addressing.by_id.get(edge.src.rpartition("@")[0])
             if row is not None:
                 found[row.key] = row
         return [JCallableOverview.of(r.key, r.type, r.callable, path=r.path) for r in found.values()]

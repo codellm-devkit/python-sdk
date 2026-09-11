@@ -239,8 +239,9 @@ Java-specific facts:
 accessors** — `get_callables_overview`, `get_method_bodies`, `get_decorated_callables`,
 `get_callsites_for`, `get_external_symbols`, `get_entrypoints` / `get_entrypoint_classes` /
 `get_entrypoint_coverage`, `get_artifacts` / `get_dependencies` / `get_config_keys` /
-`get_config_uses` / `get_unresolved_config_reads` / `get_config_readers`, and `get_interfaces` /
-`get_enums` / `get_enum_members` / `get_records`. Five rules:
+`get_config_uses` / `get_unresolved_config_reads` / `get_config_readers`, `get_view_dispatches` /
+`get_unresolved_view_dispatches` / `get_view_dispatchers`, and `get_interfaces` / `get_enums` /
+`get_enum_members` / `get_records`. Six rules:
 
 - **`get_entrypoint_coverage` reads the report from codeanalyzer-java 3.1.0 on.** 3.1.0
   (codeanalyzer-java#235) emits the entrypoint pass's own coverage record — `entrypoint_report` on
@@ -254,6 +255,19 @@ accessors** — `get_callables_overview`, `get_method_bodies`, `get_decorated_ca
   count of syntactically-marked callables is not a coverage record. The marks themselves are real
   and unambiguous — 133 callables and 66 types of daytrader8's 1,216 and 149, 1,501 callables and
   904 types of ThingsBoard's — and `get_entrypoints` / `get_entrypoint_classes` return those.
+- **`get_view_dispatches` reads codeanalyzer-java 3.3.0's view layer, and is the one accessor
+  gated on the analyzer generation.** JSP, Facelets and Thymeleaf templates are `:Artifact` nodes
+  with `roles: ["view-template"]`, and a `J_DISPATCHES_TO` edge (`view_dispatches[]` on the wire)
+  runs from the body node that hands the request over — a `forward` / `include` / `sendRedirect`
+  call, a `ModelAndView` construction or `setViewName`, or a Spring controller's `return` — to the
+  artifact it reaches, with `via` naming the mechanism and `prov` the tier: `literal` and
+  `dataflow` mean exactly one target, `table` (3.3.1) is a may-dispatch over a static string table,
+  one edge per entry. `get_view_dispatchers(path)` resolves the sites to their callables;
+  `get_unresolved_view_dispatches()` is the JSON-only record of what closed on nothing, so the
+  Neo4j backend refuses it rather than answering `[]`. Unlike the 3.1.0 trio there is no
+  always-present key to probe, so a pre-3.3.0 analysis is refused from `analyzer.version` /
+  `analyzer_version`. On daytrader8 with 3.3.3: 37 edges at level 1–2 (3 literal, 34 table), 54 at
+  level 4, 19 of 23 JSPs reached.
 - **A marker matches an annotation by simple name.** `get_decorated_callables(["Test"])`,
   `["@Test"]` and `["org.junit.Test"]` are the same query: the Java wire carries an annotation's
   simple name, so both sides are compared on the segment after the last `.` with a leading `@`

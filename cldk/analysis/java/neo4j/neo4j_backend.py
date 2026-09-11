@@ -134,6 +134,7 @@ from cldk.analysis.java.backend import (
     JavaAnalysisBackend,
     duplicate_type_name,
     unhomed_endpoint,
+    VIEW_DISPATCH_UNRESOLVED_JSON_ONLY,
 )
 from cldk.analysis.java.neo4j import reconstruct as R
 from cldk.models.java import JGraphEdges
@@ -150,6 +151,8 @@ from cldk.models.java.models import (
     JCompilationUnit,
     JConfigRead,
     JConfigUse,
+    JViewDispatch,
+    JViewDispatchUnresolved,
     JDdgEdge,
     JDecorator,
     JEntrypointReport,
@@ -594,7 +597,35 @@ class JNeo4jBackend(JavaAnalysisBackend):
             # ``None`` and ``[]`` are different answers here: see :meth:`_overlay_rows`.
             config_uses=None if report is None else uses,
             config_reads_unresolved=None if report is None else reads,
+            # From 3.3.0 the edge is read whatever the application reaches (``[]`` is a real answer);
+            # before it the key stays ``None`` and the accessors refuse on the generation. The
+            # unresolved record is JSON-only and never rebuilt here -- see
+            # :meth:`get_unresolved_view_dispatches`.
+            view_dispatches=self._view_dispatch_rows() if (self._analyzer_version or (0, 0, 0)) >= (3, 3, 0) else None,
         )
+
+    def _view_dispatch_rows(self) -> List[JViewDispatch]:
+        """``J_DISPATCHES_TO`` (codeanalyzer-java 3.3.0): the source is a body node under the id
+        prefix, the target an artifact reached from the application anchor — the two id spaces meet
+        on this edge exactly as they do on ``J_USES_CONFIG``."""
+        rows = self._run(
+            "MATCH (:JApplication {id: $app_id})-[:HAS_ARTIFACT]->(a:Artifact)<-[d:J_DISPATCHES_TO]-(src) "
+            f"WHERE {_scoped('src')} RETURN src.id AS src, a.id AS dst, d.via AS via, d.prov AS prov ORDER BY src.id, a.id",
+            app_id=self._application_id,
+            prefix=self._scope_prefix,
+        )
+        return [JViewDispatch(src=r["src"], dst=r["dst"], via=r["via"], prov=list(r["prov"] or [])) for r in rows]
+
+    def _analyzer_generation(self) -> Tuple[int, int, int] | None:
+        """``analyzer_version`` off the ``:JApplication`` anchor, read once at attach by
+        :meth:`_probe_schema`."""
+        return self._analyzer_version
+
+    def get_unresolved_view_dispatches(self) -> List[JViewDispatchUnresolved]:
+        """Always raises: the record is JSON-only (:data:`VIEW_DISPATCH_UNRESOLVED_JSON_ONLY`). The
+        generation check runs first, so a pre-3.3.0 graph gets the more useful of the two reasons."""
+        self._view_overlay()
+        raise CodeanalyzerExecutionException(VIEW_DISPATCH_UNRESOLVED_JSON_ONLY.format(app=self._application_name))
 
     # =====================================================================================
     # The reconstructed view and its index (both built on first use)

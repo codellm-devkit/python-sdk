@@ -5,6 +5,64 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.0.0-rc.7] - 2026-09-11
+
+The Java facade learns the view layer codeanalyzer-java 3.3.0–3.3.2 added, and the 2.0 line takes up
+everything rc.6 shipped from `main` (the 3.2.0 text model and the sibling-analyzer pins) — this is
+the first release cut from `release/2.0` that contains rc.6.
+
+### Added
+
+**Java view dispatches** (`python-sdk#404`, spec `codellm-devkit/.github`
+`docs/design/specs/2026-09-11-java-view-templates-and-dispatch.md`). JSP, Facelets and Thymeleaf
+templates are artifacts with `roles: ["view-template"]`, and the analyzer now says which code reaches
+one. Three accessors on `JavaAnalysis`, both backends:
+
+- `get_view_dispatches(view=None) -> List[JViewDispatch]` — every resolved dispatch: the body node
+  that hands the request over (a `forward` / `include` / `sendRedirect` call, a `ModelAndView`
+  construction or `setViewName`, or a Spring controller's `return`) and the artifact it reaches,
+  with `via` naming the mechanism and `prov` the tier. `literal` and `dataflow` mean exactly one
+  target; `table` (3.3.1) is a may-dispatch over a static string table, one edge per entry, from
+  the same site. `view` filters by a segment-aligned suffix of the artifact's path.
+- `get_view_dispatchers(path) -> List[JCallableOverview]` — the same edges resolved to the callables
+  that own the dispatching sites.
+- `get_unresolved_view_dispatches() -> List[JViewDispatchUnresolved]` — what closed on nothing (a
+  variable target, a servlet URL, a view name matching two templates), with its reason and the tiers
+  attempted. JSON-only: the graph has no node for a target that resolved to nothing, so the Neo4j
+  backend refuses this one rather than answering `[]`.
+
+Two models, `JViewDispatch` and `JViewDispatchUnresolved`, on `JApplication.view_dispatches` /
+`.view_dispatches_unresolved`; the Neo4j backend reads `J_DISPATCHES_TO` back into the former.
+
+One rule stated because it is the only one of its kind: **this layer is gated on the analyzer
+generation.** The 3.1.0 config trio is probed by an always-present sibling key; 3.3.x added none —
+both lists are written only when non-empty and the edge type is declared only once an edge exists —
+so a pre-3.3.0 analysis is refused from `analyzer.version` (wire) / `analyzer_version` (graph) instead,
+because `[]` off a 3.2.0 analysis would say "reaches no view" where the truth is that nothing looked.
+
+Measured on daytrader8 with 3.3.3: 37 edges at level 1–2 (3 `literal`, 34 `table`), 54 at level 4,
+19 of 23 JSPs reached; the `TradeConfig.webUI` table's 17 on-disk pages all reached.
+
+### Changed
+
+- `codeanalyzer-java` pin `3.2.0` → **`3.3.3`** (the `java` extra and `[tool.backend-versions]`).
+  3.3.0 adds the view-template role, `J_DISPATCHES_TO`, and `argument_expr` on `return` body nodes;
+  3.3.1 the table tier; 3.3.2 narrows the Jakarta entrypoint finder to lifecycle methods, so
+  helpers taking servlet-typed parameters are no longer entrypoints and the interprocedural
+  config-use and view-dispatch tiers bind their parameters (daytrader8 entrypoint marks
+  135 → 196: 21 helpers dropped, 82 `init`/`destroy`/`doFilter`/`onMessage` gained); 3.3.3 fixes
+  the `NullPointerException` 3.3.0–3.3.2 threw on any unbuilt project with a dispatch call, which
+  this SDK's `test_java_degradation.py` was the first to hit (codeanalyzer-java#265).
+- `release/2.0` absorbed `main` at rc.6.
+
+### Verification
+
+The Java suite offline on both backends over a1 with the layer injected (edges, suffix filter,
+dispatcher resolution, the JSON-only refusal on the graph, the pre-3.3.0 refusal, the empty answer
+on a 3.3.x payload that reaches nothing, and the answered-once check across backends); the public
+surface pins the three signatures; e2e against the 3.3.3 wheel on daytrader8 at level 1 and 2
+asserts the 37 edges, the 19 views, the three unresolved URLs and the 38 view-template artifacts.
+
 ## [v2.0.0-rc.6] - 2026-09-10
 
 The Java Neo4j backend stops being the lossy one about source text. Until now a graph-backed Java
