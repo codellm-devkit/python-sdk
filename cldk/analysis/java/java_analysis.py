@@ -54,7 +54,7 @@ from tree_sitter import Tree
 
 from cldk.analysis.commons.backend_config import CodeAnalyzerConfig, JavaBackend, Neo4jConnectionConfig, cache_subdir
 from cldk.analysis.commons.bounds import DEFAULT_DEPTH, DEFAULT_MAX_NODES, DEFAULT_MAX_PATHS, DEFAULT_PAGE_SIZE
-from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, FlowPaths, LocateResult, Slice, SliceNode
+from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, FlowPaths, LocateResult, Slice, SliceNode, TaintResult
 from cldk.analysis.commons.treesitter import TreesitterJava
 from cldk.models.java import JCallable
 from cldk.models.java import JApplication
@@ -1650,6 +1650,74 @@ class JavaAnalysis:
             CodeanalyzerExecutionException: The analyzer's port lattice carries no dependence edge.
         """
         return self.backend.flows_to_argument(src, callee, arg, within=within, depth=depth)
+
+    def taint(
+        self,
+        sources: Sequence[Tuple[str, str]],
+        sinks: Sequence[Tuple[str, str]],
+        sanitizers: Sequence[Tuple[str, str] | str] = (),
+        *,
+        depth: int | None = None,
+        max_paths: int = DEFAULT_MAX_PATHS,
+    ) -> TaintResult:
+        """Which of these sources reach which of these sinks, and what to make of the ones that do not.
+
+        m sources against n sinks in one traversal, where :meth:`paths_between` proves one flow::
+
+            r = java.taint(
+                sources=[("userID", "TradeAppServlet.doPost")],
+                sinks=[("sql", "TradeDirect.getOrders")],
+                sanitizers=["TradeAppServlet.escapeUserID", ("checked", "TradeAppServlet.doPost")],
+            )
+            for path in r.paths:
+                print(" -> ".join(h.to.name for h in path.hops))
+            for src, sink in r.exhausted:
+                print(src, "does not reach", sink)
+
+        **``exhausted`` is the reason to call this and the only output that can do harm.** A pair is
+        listed there when it was searched to exhaustion and nothing was found — the refutation
+        :meth:`paths_between`'s ``[]`` cannot give — and only when all three hold: no witness, no
+        diagnostic in ``unresolved`` implicating it, and **``depth`` was ``None``**. An explicit
+        ``depth`` empties ``exhausted`` by rule, because a bound turns a real long flow into an empty
+        result and a wrong refutation closes a live alert.
+
+        **``complete`` is the batch's flag, not the pair's.** While it is ``False``, no absence claim
+        stands on any pair in the result: one blocked pair voids the whole batch's ``exhausted``.
+
+        **Sources, sinks and sanitizers are the caller's to supply** — no framework catalogue ships
+        here. A bare ``str`` cuts a *callable* on the path (a transforming sanitizer, resolved with
+        :meth:`resolve_callable` and so named as a callable *this application* declares); a
+        ``(name, within)`` pair cuts a *variable* inside that callable, which is the only thing that
+        severs a *validating* guard, since a guard never sits on the data path. Both cuts are applied
+        inside the search, so the result is the shortest **unsanitized** route.
+
+        **Java refuses this on a disconnected port lattice**, exactly as :meth:`slice_forward`,
+        :meth:`paths_between`, :meth:`flows_to_call` and :meth:`flows_to_argument` do
+        (codeanalyzer-java#227). The gate is asked of the data — whether this application's
+        ``formal_in`` vertices carry any outgoing SDG edge — and never of the analyzer's version, so
+        output that connects the two layers makes this answer with no change here. Names and bounds
+        are judged first, so a typo is reported as a typo.
+
+        Args:
+            sources: The values taint enters at, each ``(name, within)``.
+            sinks: The values it must not reach, addressed the same way.
+            sanitizers: Bare names cut callables; ``(name, within)`` pairs cut variables.
+            depth: Most hops; ``None`` (the default) for no bound, and ``exhausted`` is empty
+                whenever it is set.
+            max_paths: Most witnesses **per pair**, not per call.
+
+        Raises:
+            AmbiguousName / SelectorNotInGraph: A name, or a sanitizer's ``within``, matched more
+                than one thing or nothing — including a sanitizer whose shape disagrees with what it
+                resolves to.
+            TypeError: ``sources`` or ``sinks`` is a bare string, which would unpack into a pair.
+            ValueError: A bound is out of range, ``sources`` or ``sinks`` is empty, or a sanitizer
+                names a blank variable.
+            CodeanalyzerExecutionException: The analyzer's port lattice carries no dependence edge.
+            CodeanalyzerUsageException: This analysis was built below
+                ``analysis_level="system_dependency_graph"``.
+        """
+        return self.backend.taint(sources, sinks, sanitizers, depth=depth, max_paths=max_paths)
 
     @property
     def has_resolution_edges(self) -> bool:

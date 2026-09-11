@@ -82,6 +82,13 @@ same match that produced them.
 **Value flow** — `paths_between`, `flows_to_call`, `flows_to_argument`. Each hop is labelled
 `data`, `argument`, `return` or `control`, so a path is evidence rather than an assertion.
 
+**Taint** — `taint(sources, sinks, sanitizers=())`. m sources against n sinks in one traversal, and
+the only accessor that can say a flow does **not** exist: a pair in `exhausted` was searched to
+exhaustion. You supply the vocabulary — the SDK ships no framework catalogue. A sanitizer is told
+apart by shape: a bare `str` cuts a callable (a transforming sanitizer), a `(name, within)` pair cuts
+a variable (a validating guard, which never sits on the data path). Both cuts apply inside the
+search, so a witness is an *unsanitized* route.
+
 **Inventory** — `get_entrypoints`, `get_entrypoint_classes`, `get_entrypoint_coverage`,
 `get_external_symbols`, the artifact and dependency getters, `get_config_keys` and the config-read
 accessors.
@@ -122,12 +129,17 @@ differently.
    and let ambiguity raise.
 2. **`flows_to_argument` is coarse on Java.** Every actual of a call site is fed by the statement
    containing it, so it answers `True` for any argument of a reached call. Paths are complete;
-   per-argument precision is not there yet.
-3. **DDG provenance differs by language** — three tiers in Python, two in Java, one in TypeScript.
+   per-argument precision is not there yet. The same coarseness reaches `taint`: a Java parameter
+   crossing carries no variable name, so a `(name, within)` sanitizer cannot cut one. It under-cuts,
+   which over-reports; it never invents a refutation.
+3. **`taint`'s `exhausted` is void unless you check two other fields.** An explicit `depth` empties
+   it by rule, and `complete is False` voids the whole batch's absence claims — not just the pair the
+   diagnostic names. Read `unresolved` first, then `complete`, then `exhausted`.
+4. **DDG provenance differs by language** — three tiers in Python, two in Java, one in TypeScript.
    `prov` says which; do not compare tiers across languages.
-4. **`get_source` over Neo4j is the declaration, in process it is the body block.** Both are
+5. **`get_source` over Neo4j is the declaration, in process it is the body block.** Both are
    documented, and the relation between them is exact — but they are not the same string.
-5. **A polyglot application is pushed in all languages, or none.** A `--emit neo4j` push is
+6. **A polyglot application is pushed in all languages, or none.** A `--emit neo4j` push is
    destructive and the application prefix is shared, so pushing one language sweeps derived rows
    (notably `@external` ghosts) belonging to its siblings until they push again.
 

@@ -1,4 +1,5 @@
 # tests/analysis/commons/test_lifted_helpers.py
+import hashlib
 import importlib, pytest
 
 LIFTED = {
@@ -7,7 +8,7 @@ LIFTED = {
         "reject_bare_string", "check_selector", "encode_cursor", "decode_cursor", "keyset_where", "cursor_params",
         "edge_page", "EdgeOrder"],
     "cldk.analysis.commons.graphs": ["bounded_subgraph", "hop_sort_key", "slice_resolved", "cone_sinks",
-        "as_slice_node", "flow_path", "edge_sort_key", "sdg_rels", "sdg_rel_pattern", "via_table"],
+        "as_slice_node", "flow_path", "edge_sort_key", "sdg_rels", "sdg_rel_pattern", "via_table", "via_case", "path_order"],
     "cldk.analysis.commons.keys": ["resolve_module_key", "scope_paths", "call_graph_scope", "module_key_of", "module_dotted"],
 }
 
@@ -191,3 +192,263 @@ def test_every_in_memory_reaches_routes_through_the_shared_rule(module, owner):
     source = inspect.getsource(getattr(importlib.import_module(module), owner).reaches)
     assert "call_reaches(" in source, f"{owner}.reaches does not use the shared rule"
     assert "nx.descendants" not in source, f"{owner}.reaches still asks descendants, which excludes the source"
+
+
+# ----------------------------------------------------------------------------------------------
+# Leg 4a, Task 1: the SDG path Cypher's two shared fragments.
+#
+# The three Neo4j backends each carried an identical *expression* computing a per-language *value*:
+# ``_VIA_CASE`` and ``_PATH_ORDER`` are built from that backend's ``VIA`` table, so the strings
+# differ (``J_DDG`` against ``PY_DDG``) while the code producing them did not. That is what makes
+# them liftable as functions of ``P`` rather than as constants.
+# ----------------------------------------------------------------------------------------------
+
+
+def _path_backends():
+    """The three backends and their relationship-type prefixes, imported lazily like every other
+    backend reference in this file so a missing install extra cannot fail collection."""
+    from cldk.analysis.java.neo4j.neo4j_backend import JNeo4jBackend
+    from cldk.analysis.python.neo4j.neo4j_backend import PyNeo4jBackend
+    from cldk.analysis.typescript.neo4j.neo4j_backend import TSNeo4jBackend
+
+    return [("PY", PyNeo4jBackend), ("J", JNeo4jBackend), ("TS", TSNeo4jBackend)]
+
+
+def test_the_three_constants_differ_only_in_the_relationship_prefix():
+    """What is and is not shared, stated exactly.
+
+    The values are **not** interchangeable -- three distinct strings, because each names its own
+    language's relationship types. What was duplicated is the expression, and the only difference
+    between the results is the prefix, which is why one function of ``P`` replaces three constants.
+    A future divergence beyond the prefix would fail here rather than being absorbed silently.
+    """
+    from cldk.analysis.commons.graphs import path_order, via_case
+
+    assert len({via_case(P) for P in ("PY", "J", "TS")}) == 3
+    assert len({path_order(P) for P in ("PY", "J", "TS")}) == 3
+    for P in ("J", "TS"):
+        assert via_case(P).replace(f"{P}_", "PY_") == via_case("PY")
+        assert path_order(P).replace(f"{P}_", "PY_") == path_order("PY")
+
+
+# ----------------------------------------------------------------------------------------------
+# Leg 4a, Task 2: the whole path statement.
+#
+# Five things differ between the three backends' ``_PATHS``, and all five are parameters: the node
+# label, the endpoint scope, the interior scope, the node projection, and -- found while writing
+# this -- the relationship variable, which Java spells ``e`` where the other two spell ``r``. That
+# last one is semantically inert; it is a parameter so this lift can be byte-identical rather than a
+# judgement call. Normalising it is a separate, arguable change.
+#
+# The arguments themselves live at each backend's own ``sdg_path_query(...)`` call site, not here --
+# these tests judge ``backend._PATHS``, the statement that ships, rather than a reconstruction of it
+# from a second, hand-kept copy of its arguments.
+# ----------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("P", ["PY", "J", "TS"])
+def test_the_generated_statement_still_formats(P):
+    """The result is a ``.format()`` template, not a finished statement -- the runners supply ``rels``
+    and ``depth``.
+
+    What formatting must leave behind is *single* braces: Cypher map literals need them, so
+    ``{{id:$src}}`` becoming ``{id:$src}`` is the point. What it must **not** leave is a doubled
+    brace, which would mean an escape the template never resolved and a statement the server would
+    reject.
+    """
+    from cldk.analysis.commons.graphs import sdg_rel_pattern
+
+    backend = dict(_path_backends())[P]
+    out = backend._PATHS.format(rels=sdg_rel_pattern(P), depth="")
+    assert "{{" not in out and "}}" not in out, "an escape survived formatting"
+    assert "{id:$src}" in out and "{id:$dst}" in out
+    assert out.count("allShortestPaths") == 1
+
+
+def test_the_scope_predicates_are_written_where_the_backend_writes_them():
+    """Not a restatement of the digest below: it pins *which* backend scopes what, so a future
+    edit that moved Python onto the prefix predicate would fail here with a reason rather than
+    silently changing a statement whose omission was measured and is sanctioned (see
+    tests/analysis/python/test_neo4j_multi_application_scope.py -- id-keying is a scope kind).
+    """
+    backends = dict(_path_backends())
+    py, j, ts = (backends[P]._PATHS for P in ("PY", "J", "TS"))
+    assert "STARTS WITH" not in py, "Python's path statement is scoped by id, deliberately"
+    assert j.count("STARTS WITH $prefix") == 3, "Java scopes both endpoints and the interior"
+    assert ts.count("STARTS WITH $p") == 1, "TypeScript scopes the interior only"
+
+
+# ----------------------------------------------------------------------------------------------
+# Leg 4a, Task 3: the byte-identity guard expires the moment ``_PATHS`` becomes the call it used to
+# be compared against.
+#
+# Once each backend's ``_PATHS`` became a call to ``sdg_path_query(...)`` with its own arguments,
+# comparing that call's result against itself proved nothing: a change to ``sdg_path_query``,
+# ``path_order`` or ``via_case`` moves both sides together and passes silently. The digest below is
+# what still fails when the statement itself changes.
+# ----------------------------------------------------------------------------------------------
+
+#: A digest of each backend's `_PATHS`, pinned so that a change to the shared generator, to
+#: `path_order`/`via_case`, or to a backend's own arguments cannot pass unnoticed.
+#:
+#: This replaces the byte-identity comparison leg 4a retired. While `_PATHS` was a hand-written
+#: literal, comparing it against `sdg_path_query()` proved the generator reproduced it -- the two
+#: sides were independent. Once `_PATHS` became that call itself, both sides of that equality moved
+#: together, so only a digest still fails when the statement itself changes.
+#:
+#: **When this fails:** the statement changed. Print `backend._PATHS` and diff it against the
+#: previous value to see how, decide whether the change was intended, and if it was, update the
+#: digest **in the same commit that changed the statement** -- never in a separate one, or the two
+#: stop being reviewable together.
+PATHS_DIGESTS = {"PY": "c1ea290360d42460", "J": "236a302937bcd98a", "TS": "a710986b595dc4df"}
+
+
+@pytest.mark.parametrize("P", ["PY", "J", "TS"])
+def test_the_generated_statement_has_not_drifted(P):
+    backend = dict(_path_backends())[P]
+    assert hashlib.sha256(backend._PATHS.encode()).hexdigest()[:16] == PATHS_DIGESTS[P], backend._PATHS
+
+
+# ----------------------------------------------------------------------------------------------
+# Leg 4b, Task 3: sdg_taint_query() -- the multi-source, multi-sink statement behind taint().
+# ----------------------------------------------------------------------------------------------
+
+
+def test_the_taint_query_is_null_safe_and_caps_per_pair():
+    """Three properties, each of which has a specific failure mode if absent."""
+    from cldk.analysis.commons.graphs import sdg_taint_query
+
+    q = sdg_taint_query("PY", node_label="PyBodyNode", projection="ref: n.id")
+    assert "coalesce(r.var, '')" in q, "a bare r.var <> $v refutes every interprocedural flow"
+    assert "collect(p)[0..$cap]" in q, "a flat LIMIT lets one prolific pair starve the rest"
+    assert "a.id IN $srcs" in q and "b.id IN $dsts" in q, "taint is m x n in one statement"
+    assert "allShortestPaths" in q, "a variable-length pattern enumerates trails and will not finish"
+    assert "b <> a" in q, "Neo4j aborts the whole batch when one requested pair is source == sink"
+
+
+def test_the_taint_query_groups_by_pair():
+    """The result must say which source reached which sink; a caller cannot recover it otherwise."""
+    from cldk.analysis.commons.graphs import sdg_taint_query
+
+    q = sdg_taint_query("PY", node_label="PyBodyNode", projection="ref: n.id")
+    assert "a.id AS src" in q and "b.id AS dst" in q
+
+
+def test_the_taint_query_uses_callables_not_string_replace():
+    """The scope injection points are callables, mirroring ``sdg_path_query`` -- a textual
+    ``.replace('n.', 'a.')`` would corrupt any fragment containing ``fn.`` (-> ``fa.``)."""
+    from cldk.analysis.commons.graphs import sdg_taint_query
+
+    q = sdg_taint_query(
+        "J",
+        node_label="JBodyNode",
+        endpoint_scope=lambda v: f"{v}.id STARTS WITH $prefix",
+        interior_scope=lambda v: f"{v}.id STARTS WITH $prefix",
+        projection="ref: n.id",
+        rel_var="e",
+    )
+    assert q.count("STARTS WITH $prefix") == 3
+    assert "AND a.id STARTS WITH $prefix" in q
+    assert "AND b.id STARTS WITH $prefix" in q
+
+
+def test_the_taint_query_delimits_the_callable_cut_rather_than_bare_prefixing_it():
+    """The Cypher half of :func:`~cldk.analysis.commons.graphs.under_callable`, asserted here so the
+    two halves cannot drift: a TypeScript callable id has no closing delimiter, so a bare
+    ``n.id STARTS WITH q`` cuts ``createGuest`` when the caller named ``create`` -- 13 real ids in
+    the committed level-4 TypeScript fixture. Over-cutting adds pairs to ``exhausted``, which
+    certifies that no flow exists, so it is a false refutation and not a conservative default."""
+    from cldk.analysis.commons.graphs import sdg_taint_query
+
+    q = sdg_taint_query("PY", node_label="PyBodyNode", projection="ref: n.id")
+    assert "n.id STARTS WITH q)" not in q, "a bare prefix test over-cuts every sibling callable"
+    for disjunct in ("n.id = q", "n.id STARTS WITH q + '@'", "n.id STARTS WITH q + '/'"):
+        assert disjunct in q, f"the callable cut lost its {disjunct!r} disjunct"
+    for disjunct in ("startNode(r).id = c.prefix", "startNode(r).id STARTS WITH c.prefix + '@'", "startNode(r).id STARTS WITH c.prefix + '/'"):
+        assert disjunct in q, f"the variable cut's scope lost its {disjunct!r} disjunct"
+    assert "STARTS WITH c.prefix)" not in q, "the variable cut's scope is still a bare prefix test"
+    # The same asymmetry, reached through three-valued logic rather than through a prefix. ``var`` is
+    # null on every ``CDG``/``SUMMARY`` edge and on every param crossing emitted before the analyzers'
+    # ``var``-on-param-edge fix, and ``NULL = c.var`` is NULL, so ``NOT any(...)`` is NULL and the
+    # whole ``all()`` drops the path -- an over-cut, in the false-refutation direction, on exactly the
+    # edges an interprocedural flow has to use. Asserted by name because deleting the ``coalesce``
+    # leaves the offline semantics suite green: only a live graph carries the nulls.
+    assert "coalesce(r.var, '')" in q, "the variable cut lost its coalesce; a null var would over-cut"
+
+
+def test_the_taint_query_still_formats():
+    from cldk.analysis.commons.graphs import sdg_rel_pattern, sdg_taint_query
+
+    q = sdg_taint_query("PY", node_label="PyBodyNode", projection="ref: n.id")
+    out = q.format(rels=sdg_rel_pattern("PY"), depth="")
+    assert "{{" not in out and "}}" not in out, "an escape survived formatting"
+    assert out.count("allShortestPaths") == 1
+
+
+# ----------------------------------------------------------------------------------------------
+# Leg 4b, Task 7: the three ``_TAINT`` statements, now that all three exist.
+# ----------------------------------------------------------------------------------------------
+
+#: A digest of each graph backend's `_TAINT`, for `PATHS_DIGESTS`' reason: each is a call to
+#: `sdg_taint_query(...)` with its own arguments, so a change to the generator, to `path_order`, or
+#: to one backend's node label or scope callables moves every side that could be compared against it.
+#:
+#: **When this fails:** the statement changed. Print `backend._TAINT` and diff it against the
+#: previous value, decide whether the change was intended, and if it was, update the digest **in the
+#: same commit that changed the statement** -- never in a separate one.
+TAINT_DIGESTS = {"PY": "7187b2a862485643", "J": "f21a4e01ddc3e8a9", "TS": "eb9ac5abbd76fd14"}
+
+
+@pytest.mark.parametrize("P", ["PY", "J", "TS"])
+def test_the_generated_taint_statement_has_not_drifted(P):
+    backend = dict(_path_backends())[P]
+    assert hashlib.sha256(backend._TAINT.encode()).hexdigest()[:16] == TAINT_DIGESTS[P], backend._TAINT
+
+
+@pytest.mark.parametrize("P", ["PY", "J", "TS"])
+def test_the_sanitizer_acceptance_domain_is_delimited_on_every_graph_backend(P):
+    """``_EDGE_VARS`` is what Ruling A checks a variable sanitizer against, and it must be the *same*
+    domain ``_TAINT``'s cut can match -- the three disjuncts of
+    :func:`~cldk.analysis.commons.graphs.under_callable`, not a bare prefix.
+
+    A bare ``n.id STARTS WITH $callable_prefix`` accepts a variable that only occurs in a sibling
+    callable whose name starts with this one (Ruling K; on TypeScript ``create`` reaches every id of
+    ``createGuest``), and the delimited cut then severs nothing. That direction over-reports rather
+    than refutes, so it cannot put a live pair into ``exhausted`` -- but it hands the caller a
+    sanitizer they believe is in force, and it makes ``SelectorNotInGraph`` silent on a selector that
+    can never do anything. Three backends spelled this three ways before this assertion existed; the
+    local halves are delimited in the same commit.
+
+    Not covered by :data:`TAINT_DIGESTS`, which hashes ``_TAINT`` alone.
+    """
+    backend = dict(_path_backends())[P]
+    q = backend._EDGE_VARS
+    assert "$callable_prefix + '@'" in q, "the '@' body-node joiner is not delimited"
+    assert "$callable_prefix + '/'" in q, "the '/' nested-callable joiner is not delimited"
+    assert ".id = $callable_prefix" in q, "the callable's own id is no longer in its domain"
+
+
+@pytest.mark.parametrize(
+    "module,cls",
+    [
+        ("cldk.analysis.python.codeanalyzer.codeanalyzer", "PyCodeanalyzer"),
+        ("cldk.analysis.java.codeanalyzer.codeanalyzer", "JCodeanalyzer"),
+        ("cldk.analysis.typescript.codeanalyzer.codeanalyzer", "TSCodeanalyzer"),
+    ],
+)
+def test_the_local_acceptance_domain_is_delimited_too(module, cls):
+    """The local half of the same domain, asserted on source text because on Python and Java it has
+    no observable witness: both id grammars end in ``)``, so a bare prefix is self-delimiting by
+    accident there and only TypeScript can show the collision. A tripwire is the honest guard for a
+    correctness property whose counterexample the corpora cannot produce -- the alternative is a test
+    that passes under the mutation it names.
+
+    Pairs with
+    :func:`test_the_sanitizer_acceptance_domain_is_delimited_on_every_graph_backend`: six spellings,
+    one predicate.
+    """
+    import inspect
+
+    src = inspect.getsource(getattr(importlib.import_module(module), cls)._edge_vars_in)
+    assert "under_callable(" in src, "the acceptance domain stopped delimiting; a sibling callable's vars leak in"
+    assert ".startswith(" not in src, "a bare prefix accepts a variable the delimited cut cannot sever"

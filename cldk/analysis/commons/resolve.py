@@ -48,7 +48,7 @@ addressing layer exists to prevent. Every string in an ``AmbiguousName`` genuine
 
 from __future__ import annotations
 
-from typing import Callable, List, NamedTuple, Optional, Sequence, Tuple, TypeVar
+from typing import Callable, Collection, Dict, List, NamedTuple, Optional, Sequence, Tuple, TypeVar, Union
 
 from cldk.analysis.commons.keys import module_dotted
 from cldk.utils.exceptions import AmbiguousName, SelectorNotInGraph
@@ -409,3 +409,102 @@ def body_node_kind(kind: str, var: Optional[str]) -> tuple[str, Optional[str], O
             return _PASSING_KINDS[kind], None, None
         return _PASSING_KINDS[kind], value_candidate(var).leaf, None
     return kind, None, None
+
+
+def resolve_sanitizers(
+    sanitizers: Sequence[Union[str, Tuple[str, str]]],
+    *,
+    resolve_callable: Callable[[str], "T"],
+    edge_vars_in: Callable[[str], Collection[str]],
+) -> Tuple[List[Dict[str, str]], List[str]]:
+    """Turn caller-written sanitizer selectors into what :func:`~cldk.analysis.commons.graphs.sdg_taint_query`
+    needs: ``(cuts, cut_callable_ids)``, bound respectively to its ``$cuts`` and ``$cut_callables``.
+
+    Two shapes, two meanings (spec T6) -- a bare string cuts a **callable** (every body node under
+    it is off-limits), a ``(name, within)`` pair cuts a **variable**, scoped to the callable
+    ``within`` names. They are different mechanisms for a reason: a validating guard
+    (``if not re.match(...): abort``) never sits on the data path, so only a variable cut severs
+    it; a transforming sanitizer (the application's own ``escape_html(x)`` wrapper) does sit on the
+    path and is naturally named as the callable it is -- and since the bare shape goes through
+    :func:`resolve_callable`, the name it needs is the wrapper's, not that of the library function
+    the wrapper delegates to.
+
+    **The shape decides which resolver runs, and neither is a fallback for the other.** A bare
+    name that :func:`resolve_callable` cannot resolve raises -- it is never retried as a variable
+    selector, because that would need a ``within=`` this shape does not carry, and inventing one
+    (or guessing the caller meant something else) is exactly the confident-wrong-answer failure
+    the addressing layer exists to prevent. Symmetrically, a pair whose name *does* resolve as a
+    callable is not "upgraded" into a bare-string cut; the caller wrote a pair, so it is resolved
+    as one, and if that fails it fails loudly.
+
+    A variable selector is **not** validated with ``resolve_value``. Measured on a live graph:
+    ``resolve_value`` addresses only ``formal_in`` port vertices -- parameters -- while a cut
+    matches ``r.var`` on *edges*, most of which are locals (``cleaned``, ``result``, ``answer``
+    and the like never appear as a ``formal_in``). Routing a variable selector through
+    ``resolve_value`` would raise :class:`~cldk.utils.exceptions.SelectorNotInGraph` for a
+    legitimate sanitizer that appears on real edges, telling the caller it does not exist when it
+    does. So the existence check is against ``edge_vars_in(prefix)`` -- the variable names actually
+    carried by SDG edges scoped to the named callable -- which is the same domain the amended
+    ``sdg_taint_query`` predicate matches against, and which both backends can answer cheaply (one
+    ``DISTINCT r.var`` query on Neo4j scoped by the callable's id prefix; the adjacency the local
+    backends already build, for the in-process side).
+
+    The scoping is not cosmetic: the amended predicate matches a cut's ``var`` only on edges whose
+    start node falls under the resolved callable's ``prefix`` (its ``ref``), so ``cuts`` carries
+    ``{"var": ..., "prefix": ...}`` maps rather than a flat list of names -- a global cut on a
+    common name like ``result`` or ``token`` would sever flows the caller never named in every
+    *other* callable, over-cutting into a false refutation.
+
+    Args:
+        sanitizers: Each entry is either a bare callable name (cuts the callable) or a
+            ``(name, within)`` pair (cuts the variable ``name``, scoped to callable ``within``).
+        resolve_callable: A bound ``resolve_callable(name)`` -- see
+            :meth:`~cldk.analysis.python.backend.PythonAnalysisBackend.resolve_callable`. Called
+            with the bare name directly for a callable cut, and with ``within`` (via
+            :func:`resolve_within`) for a variable cut's scope.
+        edge_vars_in: Given a resolved callable's ``prefix``, the variable names present on SDG
+            edges scoped to it -- the domain a variable selector is checked against (Ruling A;
+            never ``resolve_value``, which addresses parameters, not the locals a real edge var
+            usually is).
+
+    Returns:
+        ``(cuts, cut_callable_ids)`` -- ``cuts`` is a list of ``{"var": str, "prefix": str}`` maps,
+        ready to bind as ``sdg_taint_query``'s ``$cuts``; ``cut_callable_ids`` is a list of
+        ``can://`` ids, ready to bind as its ``$cut_callables``.
+
+    Raises:
+        ValueError: A pair's variable name is empty or whitespace-only. The amended predicate
+            matches a cut's ``var`` against ``coalesce(r.var, '')``, so an empty string would read
+            as "cut every hop with no var, in that callable" -- most control and summary edges,
+            and (below the analyzer floor) every param edge too. Refused here rather than passed
+            through silently.
+        SelectorNotInGraph: A bare name did not resolve as a callable, a pair's ``within`` did not
+            resolve as a callable, or a pair's variable does not appear on any SDG edge scoped to
+            ``within``. Each resolver's own failure is the error -- there is no catch-and-retry
+            under the other shape.
+        AmbiguousName: A bare name, or a pair's ``within``, matched more than one callable.
+    """
+    cuts: List[Dict[str, str]] = []
+    cut_callable_ids: List[str] = []
+    for sanitizer in sanitizers:
+        if isinstance(sanitizer, str):
+            cut_callable_ids.append(resolve_callable(sanitizer).ref)
+            continue
+        name, within = sanitizer
+        if not name or not name.strip():
+            raise ValueError(
+                f"a sanitizer variable must not be empty or whitespace-only (within={within!r}): "
+                "the taint predicate reads a blank var as \"cut every hop with no var\", which "
+                "would sever most control/summary edges in that callable rather than the one "
+                "variable intended"
+            )
+        owner = resolve_within(resolve_callable, within)
+        if name not in edge_vars_in(owner.ref):
+            raise SelectorNotInGraph(
+                "variable",
+                [name],
+                1,
+                detail=f"no SDG edge scoped to {within!r} carries this variable; resolve_value only addresses parameters, not locals",
+            )
+        cuts.append({"var": name, "prefix": owner.ref})
+    return cuts, cut_callable_ids

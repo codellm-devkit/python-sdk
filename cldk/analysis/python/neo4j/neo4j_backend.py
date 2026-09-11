@@ -89,7 +89,7 @@ import logging
 from collections import defaultdict
 from contextlib import contextmanager
 from functools import cached_property
-from typing import Any, Callable, Dict, FrozenSet, List, Sequence, Tuple
+from typing import Any, Callable, Dict, FrozenSet, List, Mapping, Sequence, Tuple
 
 import networkx as nx
 from codeanalyzer.schema import model_dump_json
@@ -97,6 +97,7 @@ from codeanalyzer.schema.ids import application_id, module_id
 from codeanalyzer.schema.py_schema import PyEntrypointReport
 
 from cldk.analysis.commons.backend import semver as _semver
+from cldk.analysis.commons.graphs import path_order, sdg_path_query, sdg_taint_query
 from cldk.analysis.commons.keys import module_key_of
 from cldk.analysis.commons.resolve import CallableCandidate, body_node_kind, resolve_callable_signature, resolve_value_name, resolve_within, value_candidate
 from cldk.analysis.commons.results import BodyRef, CallableRef, Diagnostic, EdgePage, EntrypointCoverage, FlowPath, FlowPaths, LocateResult, ModuleRef, PathHop, Slice, SliceNode, TypeRef
@@ -1582,26 +1583,6 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         return [_call_neighbour(r, self._module_key) for r in self._run(self._CALLEES, sig=sig, prefix=self._scope_prefix)]
 
     # -----[ paths, mixed queries, hydration ]-----
-    #: The caller's word for a hop, computed in Cypher so the ORDER BY below sorts by the same
-    #: vocabulary :func:`~cldk.analysis.python.backend.hop_sort_key` sorts by. Ordering by the raw
-    #: ``type(r)`` instead would be just as deterministic and a *different* order (``PY_CDG`` before
-    #: ``PY_DDG`` before ``PY_PARAM_IN``, against ``argument`` before ``control`` before ``data``),
-    #: so the two backends would truncate ``max_paths`` to different witnesses.
-    _VIA_CASE = "CASE type(relationships(p)[i]) " + " ".join(f"WHEN '{rel}' THEN '{word}'" for rel, word in VIA.items()) + " ELSE type(relationships(p)[i]) END"
-
-    #: One string per path, ordered exactly as Python would order the tuple
-    #: :func:`~cldk.analysis.python.backend.hop_sort_key` builds. ``\u0001`` is the separator
-    #: rather than ``|`` for that reason and only that reason: string comparison agrees with
-    #: field-by-field comparison **only** when the separator sorts below every character a field
-    #: can hold, and ``|`` (0x7C) sorts *above* every lowercase letter, which would order a
-    #: variable ``x`` after ``xy``. ``elementId`` is the last field of each hop and breaks the
-    #: tie between parallel relationships a caller cannot tell apart; it is stable for repeated
-    #: calls against one database and means nothing outside it.
-    _PATH_ORDER = (
-        "reduce(k = '', i IN range(0, length(p) - 1) | k + " + _VIA_CASE + " + '\\u0001' + coalesce(relationships(p)[i].var, '') "
-        "+ '\\u0001' + nodes(p)[i + 1].id + '\\u0001' + elementId(relationships(p)[i]) + '\\u0001')"
-    )
-
     #: ``allShortestPaths`` and not a plain variable-length match. A variable-length pattern
     #: enumerates *trails*, which is the shape that never terminated in Task 6 (``EXISTS { (a)-[:
     #: PY_CALLS*1..]->(a) }``, killed at 600s); ``allShortestPaths`` is a bidirectional BFS, and
@@ -1612,14 +1593,12 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     #: ``$cap`` is ``max_paths + 1`` so one extra row is what reports the truncation, rather than a
     #: second ``count(p)`` traversal for a number the caller cannot act on (see
     #: :class:`~cldk.analysis.commons.results.FlowPaths`).
-    _PATHS = (
-        "MATCH (a:PyBodyNode {{id:$src}}) MATCH (b:PyBodyNode {{id:$dst}}) "
-        "MATCH p = allShortestPaths((a)-[:{rels}*1..{depth}]->(b)) "
-        "WITH p, " + _PATH_ORDER + " AS key ORDER BY length(p), key LIMIT $cap "
-        "RETURN [n IN nodes(p) | {{ref: n.id, kind: n.kind, var: n.var, line: n.start_line, "
+    _PATHS = sdg_path_query(
+        "PY",
+        node_label="PyBodyNode",
+        projection="ref: n.id, kind: n.kind, var: n.var, line: n.start_line, "
         "callable: head([(c:PyCallable)-[:PY_HAS_BODY_NODE]->(n) | c.signature]), "
-        "c_line: head([(c:PyCallable)-[:PY_HAS_BODY_NODE]->(n) | c.start_line])}}] AS ns, "
-        "[r IN relationships(p) | {{via: type(r), var: r.var, prov: r.prov}}] AS rs"
+        "c_line: head([(c:PyCallable)-[:PY_HAS_BODY_NODE]->(n) | c.start_line])",
     )
 
     #: The same query over the call graph. ``all(n IN nodes(p) WHERE n:PyCallable)`` keeps a
@@ -1636,7 +1615,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         "MATCH (a:PyCallable {{signature:$src}}) WHERE a.id STARTS WITH $prefix "
         "MATCH (b:PyCallable {{signature:$dst}}) WHERE b.id STARTS WITH $prefix "
         "MATCH p = allShortestPaths((a)-[:PY_CALLS*1..{depth}]->(b)) WHERE all(n IN nodes(p) WHERE n:PyCallable) "
-        "WITH p, " + _PATH_ORDER + " AS key ORDER BY length(p), key LIMIT $cap "
+        "WITH p, " + path_order("PY") + " AS key ORDER BY length(p), key LIMIT $cap "
         "RETURN [n IN nodes(p) | {{signature: n.signature, name: n.name, ref: n.id, "
         "line: n.start_line, module: n.module}}] AS ns, "
         "[r IN relationships(p) | {{via: type(r), var: null, prov: null}}] AS rs"
@@ -1662,6 +1641,113 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         a = self.resolve_value(src, within=src_within)
         b = self.resolve_value(dst, within=dst_within)
         return self._paths(self._PATHS, _slice_node, a, b, src=a.ref, dst=b.ref, depth=depth, max_paths=max_paths)
+
+    #: ``taint()``'s statement: the same shortest-path search as :attr:`_PATHS`, but m sources
+    #: against n sinks in one traversal, with the sanitizer cut **inside** the pattern and the cap
+    #: applied per pair. Everything that differs from :attr:`_PATHS` is argued in
+    #: :func:`~cldk.analysis.commons.graphs.sdg_taint_query`'s own docstring; the two share this
+    #: backend's ``node_label`` and projection verbatim, which is what makes a taint witness and a
+    #: ``paths_between`` witness describe a node identically.
+    _TAINT = sdg_taint_query(
+        "PY",
+        node_label="PyBodyNode",
+        projection="ref: n.id, kind: n.kind, var: n.var, line: n.start_line, "
+        "callable: head([(c:PyCallable)-[:PY_HAS_BODY_NODE]->(n) | c.signature]), "
+        "c_line: head([(c:PyCallable)-[:PY_HAS_BODY_NODE]->(n) | c.start_line])",
+    )
+
+    #: The variable names on SDG edges *leaving* a node inside ``$callable_prefix`` -- ``startNode``,
+    #: the same end of the hop :attr:`_TAINT`'s cut predicate reads, so a sanitizer this validates is
+    #: one that predicate can actually match (Ruling A /
+    #: :func:`~cldk.analysis.commons.resolve.resolve_sanitizers`).
+    #:
+    #: The parameter is named apart from every other statement's ``$prefix`` because it holds a
+    #: different thing: a **callable's** ``can://`` ref, not the application's. It is still
+    #: application-scoped, by construction rather than by convention -- a callable id embeds the
+    #: application name -- and ``test_neo4j_multi_application_scope.py`` classifies it on that basis.
+    #:
+    #: The **delimited** predicate -- the three disjuncts of
+    #: :func:`~cldk.analysis.commons.graphs.under_callable` written in Cypher, the same shape
+    #: :attr:`_TAINT` gives ``$cut_callables`` and its own cut. Deliberately not a bare
+    #: ``STARTS WITH``, because the cut this domain exists to validate *for* is delimited: a variable
+    #: reachable only through an undelimited prefix (Ruling K -- a sibling callable whose name merely
+    #: starts with this one) would be *accepted* here and then sever nothing there, which is a
+    #: sanitizer the caller believes is in force and is not. Under-cutting only over-reports, so it
+    #: cannot manufacture a false refutation, but it is still an error the caller should have been
+    #: told about, and Ruling A's refusal only means something if this domain is exactly the set the
+    #: cut can match. One round trip per variable sanitizer, which is as often as a caller writes one.
+    _EDGE_VARS = "MATCH (n:PyBodyNode)-[r:{rels}]->() WHERE (n.id = $callable_prefix OR n.id STARTS WITH $callable_prefix + '@' OR n.id STARTS WITH $callable_prefix + '/') RETURN collect(DISTINCT r.var) AS vars"
+
+    def _taint_walk(
+        self,
+        srcs: Sequence[SliceNode],
+        dsts: Sequence[SliceNode],
+        *,
+        cuts: List[Dict[str, str]],
+        cut_callables: List[str],
+        depth: int | None,
+        max_paths: int,
+    ) -> Tuple[List[Tuple[str, str, FlowPath]], Mapping[Tuple[str, str], List[Diagnostic]]]:
+        """The sanitized shortest walks, server-side (see :meth:`PythonAnalysisBackend._taint_walk`).
+
+        One statement for the whole batch, and one row per witness -- ``a.id AS src`` / ``b.id AS
+        dst`` carry the pairing back, because the m*n batching is only useful if the grouping
+        survives it. Ordering, the per-pair ``$cap`` and both cuts are the statement's
+        (:func:`~cldk.analysis.commons.graphs.sdg_taint_query`), so nothing is re-sorted or
+        re-filtered here: a Python-side filter is the false-refutation bug that function exists to
+        avoid, and a Python-side sort would silently disagree with
+        :func:`~cldk.analysis.commons.graphs.path_order`.
+
+        **The ledger comes back empty, and that is a deliberate refusal rather than a missing
+        signal.** A frontier signal does exist, on this backend and on the local one: here an
+        unresolved dispatch leaves a ``kind:'call'`` body node with no outgoing ``PY_RESOLVES_TO``,
+        and in process it is ``PyCallsite.callee_signature is None``. Measured on the leg-4b
+        fixture, 5 of its 6 call nodes resolve and one does not, so the signal is real and cheap to
+        read -- what is missing is the confidence to act on it, not the observation.
+
+        It is not filed because the granularity is wrong in the one direction that matters. A
+        diagnostic empties ``exhausted`` for the *whole batch* (Ruling I, see
+        :func:`~cldk.analysis.commons.graphs.taint_verdict`), so a frontier signal that also fires
+        on the ordinary case -- a call resolved to something outside the project, which on this
+        graph is a ``PY_RESOLVES_TO`` into a ``:PyExternal`` ghost -- would void every refutation in
+        every application that calls a library function. This fixture suggests the two cases are
+        separable (the external call carries its target, the unresolved one carries nothing), but
+        six call sites are not a corpus, and a refutation instrument may not be wired to a signal on
+        that evidence. Telling "unresolved dispatch" apart from "resolved external" well enough to
+        file only the first is future work, and leg 4b's corpus check is where the separation gets
+        measured -- deferring to it is the plan, not the justification.
+
+        Consequence, stated because nothing here can catch it: a pair whose flow leaves through an
+        unresolved call is certified ``exhausted``.
+        """
+        rows = self._run(
+            self._TAINT.format(rels=SDG_REL_PATTERN, depth="" if depth is None else depth),
+            srcs=[n.ref for n in srcs],
+            dsts=[n.ref for n in dsts],
+            cuts=cuts,
+            cut_callables=cut_callables,
+            cap=max_paths + 1,
+            prefix=self._scope_prefix,
+        )
+        return [
+            (
+                r["src"],
+                r["dst"],
+                flow_path([_slice_node(n, self._module_key) for n in r["ns"]], [(e["via"], e["var"], e["prov"]) for e in r["rs"]], via=VIA),
+            )
+            for r in rows
+        ], {}
+
+    def _edge_vars_in(self, callable_id: str) -> FrozenSet[str]:
+        """The edge variables scoped to this callable (see :meth:`PythonAnalysisBackend._edge_vars_in`).
+
+        ``r.var`` is absent on four of the five relationship types, so the collected list carries
+        ``None``; it is dropped rather than kept, because a membership test against a set holding
+        ``None`` would be answering a question no caller can ask -- ``resolve_sanitizers`` refuses a
+        blank variable before it gets here.
+        """
+        rows = self._run(self._EDGE_VARS.format(rels=SDG_REL_PATTERN), callable_prefix=callable_id)
+        return frozenset(v for v in rows[0]["vars"] if v)
 
     def call_paths_between(self, src: str, dst: str, *, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
         """How one callable reaches another (see :meth:`PythonAnalysisBackend.call_paths_between`)."""

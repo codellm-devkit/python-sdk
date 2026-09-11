@@ -217,7 +217,8 @@ bounds rule (slices bounded by default, predicates and path queries unbounded, b
 predicate returns a *wrong* answer rather than a small one) and the same `complete` protocol.
 Java-specific facts:
 
-- **All four interprocedural value verbs answer from codeanalyzer-java 3.0.3.** `slice_forward`,
+- **All four interprocedural value verbs answer from codeanalyzer-java 3.0.3** (`taint` is a fifth
+  and shares the check exactly). `slice_forward`,
   `paths_between`, `flows_to_call` and `flows_to_argument` used to raise, because the analyzer
   emitted the L4 port lattice disconnected from the statement dependence graph; 3.0.3 joins the
   two, so a value can be followed out of a parameter, across call boundaries, into a callee's
@@ -419,7 +420,11 @@ names its upstream issue where there is one:
   site is fed by the one statement containing it, not by the reaching definition of that particular
   argument. Paths are complete and the hop vocabulary is honest, but `flows_to_argument` cannot be
   read as per-argument precision: on daytrader8 every argument of a reached call site answers
-  `True` together. Do not assert a tighter shape than the analyzer promises.
+  `True` together. Do not assert a tighter shape than the analyzer promises. The same coarseness
+  reaches `taint`: a Java `*_PARAM_IN` crossing carries no `var` (0 of 76,791 edges on daytrader8),
+  so a `(name, within)` sanitizer cannot sever a parameter crossing — it lands on the statement hop
+  before it or on nothing. That **under**-cuts, which over-reports a flow; it never manufactures a
+  refutation, which is the direction that would matter.
 - **`ddg` edges naming an endpoint that is not a body node are gone** (`codeanalyzer-java#228`,
   fixed in 3.0.3). Up to 3.0.2, 87 of daytrader8's 5,434 `ddg` edges named an endpoint the analyzer
   never emitted as a body node — all `points-to`, over 38 distinct keys of the shape `<line>:0` —
@@ -466,6 +471,7 @@ Most questions decompose into these. Start here, then use the tables below.
 | a callable name | its source | `get_method_bodies([sig])` or `get_source(node_id)` |
 | a callable | who calls it / what it calls | `get_callers(...)` / `get_callees(...)` |
 | a value and a sink | does one reach the other | `flows_to_call(...)` / `flows_to_argument(...)` |
+| many values and many sinks | which pairs flow, and which are **refuted** | `taint(sources, sinks, sanitizers)` |
 | a config key | which code reads it | `get_config_readers(key)` |
 | nothing, want the surface | entrypoints | `get_entrypoints()` + `get_entrypoint_coverage()` |
 
@@ -741,8 +747,8 @@ literal at the call site, `"dataflow"` a key reached over the DDG or the call gr
 All implemented, on both backends: the three per-callable graphs (`get_cfg` / `get_cdg` /
 `get_ddg`), the slices (`slice_backward` / `slice_forward` / `backward_cone`), the call-graph
 questions (`reaches` / `callers_of` / `callees_of` / `call_paths_between`), the value-flow
-questions (`paths_between` / `flows_to_call` / `flows_to_argument`), the addressing step behind
-them (`resolve_callable` / `resolve_value`) and `describe`.
+questions (`paths_between` / `flows_to_call` / `flows_to_argument`), the m*n batch with sanitizers
+(`taint`), the addressing step behind them (`resolve_callable` / `resolve_value`) and `describe`.
 
 Names in, names out. No `can://` URIs, no ordinals — you say `"invoice_id"`, not `"…@formal_in:1"`.
 
@@ -753,6 +759,7 @@ Names in, names out. No `can://` URIs, no ordinals — you say `"invoice_id"`, n
 | `paths_between(src, dst, src_within=, dst_within=, depth=None, max_paths=10)` | how one reaches the other | `py.paths_between("invoice_id", "invoice_ids", src_within="PaymentPortal.invoice_transaction", dst_within="PaymentPortal._process_transaction")` |
 | `flows_to_call(src, callee, within=, depth=None)` | reaches **any call to** X | `py.flows_to_call("invoice_id", "_process_transaction", within="PaymentPortal.invoice_transaction")` |
 | `flows_to_argument(src, callee, arg, within=, depth=None)` | reaches X's **named argument** | `py.flows_to_argument("invoice_id", "_process_transaction", arg="invoice_ids", within="…invoice_transaction")` |
+| `taint(sources, sinks, sanitizers=(), depth=None, max_paths=10)` | which of m sources reach which of n sinks, and which pairs are **refuted** | `py.taint([("invoice_id", "PaymentPortal.invoice_transaction")], [("query", "AccountMove._execute")], sanitizers=["PaymentPortal._sanitize_id"])` |
 | `reaches(src, dst, depth=None)` | is there a call path | `py.reaches("invoice_transaction", "AccountMove.write")` |
 | `call_paths_between(src, dst, depth=None, max_paths=10)` | show the call chains | `py.call_paths_between("PaymentPortal.invoice_transaction", "AccountMove.write")` |
 | `resolve_callable(name, in_class=, in_module=)` | what a name means, before asking | `py.resolve_callable("write", in_class="AccountMove").callable` |
@@ -767,6 +774,32 @@ Names in, names out. No `can://` URIs, no ordinals — you say `"invoice_id"`, n
 
 **`flows_to_call` and `flows_to_argument` are different questions.** A tainted value can reach a
 function without reaching the parameter that matters. Ask the one you mean.
+
+**`taint` is the only one that can tell you a flow does *not* exist.** `paths_between` returning `[]`
+and `flows_to_call` returning `False` cannot distinguish "no flow exists" from "the flow left the
+part of the graph I can see", so neither is a refutation. `taint` asks m sources against n sinks in
+one traversal and reports each pair three ways: a witness in `paths`, a **refutation** in
+`exhausted`, or a reason in `unresolved`. Three rules make `exhausted` safe to act on:
+
+* A pair is listed only when it has **no witness, no diagnostic implicating it, and `depth is
+  None`**. An explicit `depth` empties `exhausted` entirely — by rule, not by tendency — because a
+  bound turns a long real flow into an empty result, and a wrong refutation closes a live alert.
+* `complete` is the **batch's** flag, not the pair's. One skipped or blocked pair makes it `False`
+  however cleanly the rest answered, and while it is `False` no absence claim stands on *any* pair in
+  the result. Read `unresolved` before reading `exhausted`.
+* `max_paths` caps witnesses **per pair**, not per call. With one sink and forty sources a flat cap
+  would let one prolific pair starve the other thirty-nine into looking refuted.
+
+**Sources, sinks and sanitizers are yours to supply.** The SDK ships no framework catalogue and
+derives no default set — a per-language vocabulary of taint sources is policy that rots, and this is
+the mechanism. A sanitizer is two things wearing one word, told apart by **shape**: a bare `str` cuts
+a *callable* on the path — a transforming sanitizer, named as the wrapper *in this application* that
+calls `html.escape`, because the bare shape is resolved with `resolve_callable` — and a
+`(name, within)` pair cuts a *variable* inside that callable, which is the only thing that severs a
+*validating* guard — a guard never sits on the data path at all, it reads the value and throws. Both
+cuts are applied inside the search, so what comes back is the shortest **unsanitized** route rather
+than a filtered list of sanitized ones. Measured on superset-frontend: `sanitizeHtmlIfNeeded`'s `htmlString` reaches two
+sinks; cutting one callable refutes that pair and leaves the sibling witnessed in the same result.
 
 **A slice is a set; a path is a sequence.** `slice_backward` answers "what is in scope"; a 10k-node
 cone can contain millions of paths, so it never returns them. `paths_between` answers "how does A
@@ -869,11 +902,11 @@ are in the result, and a sink nothing calls comes back as its own one-node cone 
 empty answer you could not tell from a name that matched nothing. `sl.root` is the single seed for the
 slices; a multi-sink cone has `sl.roots` and raises if you ask it for one.
 
-**Three bound themselves by default; five do not, and the split is the whole point.** The
+**Three bound themselves by default; six do not, and the split is the whole point.** The
 *slices* (`slice_backward`, `slice_forward`, `backward_cone`) default to `depth=5`: a bounded slice
 is a **complete** answer to a narrower question, and `total` tells you so. The *predicates*
 (`reaches`, `flows_to_call`, `flows_to_argument`) and the *path queries* (`paths_between`,
-`call_paths_between`) default to `depth=None`, unbounded: a hop budget on a boolean or a path list
+`call_paths_between`, `taint`) default to `depth=None`, unbounded: a hop budget on a boolean or a path list
 is not a smaller answer but a wrong one — "no flow" and "no flow within five hops" collapse into
 the same `False` / `[]` with nothing in the result to tell them apart. Measured:
 `flows_to_call("kwargs", "Website.create", within="Website.configurator_apply")` is `False` at five
@@ -930,6 +963,7 @@ Any accessor may attach these. They exist so an empty result is never ambiguous.
 | — | a scoping keyword naming nothing raises `SelectorNotInGraph`; it is an error, not a diagnostic |
 | `no_match`, `ambiguous`, `unknown_callable`, `unknown_param`, `did_you_mean` | declared in the `Diagnostic` code vocabulary, but **nothing emits them**: resolution failures are raised (`AmbiguousName` / `SelectorNotInGraph`), not attached, and `did_you_mean` in particular can never fire — E8 puts typo-tolerant matching out of scope in the error path as much as in the resolver |
 | `unresolved_dispatch` | an edge the traversal could not follow |
+| `degenerate_pair` | a `taint()` pair whose source and sink resolved to the same position — skipped rather than searched, so it is in neither `paths` nor `exhausted` |
 
 **The rule behind all of them:** an empty result that could mean two things is a defect. When you
 get nothing back, check the diagnostics before concluding the answer is "no".

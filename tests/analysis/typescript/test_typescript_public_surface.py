@@ -99,6 +99,7 @@ SURFACE = {
     "callees_of": "(self, name: 'str', *, in_class: 'str | None' = None, in_module: 'str | None' = None) -> 'List[SliceNode]'",
     "callers_of": "(self, name: 'str', *, in_class: 'str | None' = None, in_module: 'str | None' = None) -> 'List[SliceNode]'",
     "flows_to_argument": "(self, src: 'str', callee: 'str', arg: 'str', *, within: 'str', depth: 'int | None' = None) -> 'bool'",
+    "taint": "(self, sources: 'Sequence[Tuple[str, str]]', sinks: 'Sequence[Tuple[str, str]]', sanitizers: 'Sequence[Tuple[str, str] | str]' = (), *, depth: 'int | None' = None, max_paths: 'int' = 10) -> 'TaintResult'",
     "flows_to_call": "(self, src: 'str', callee: 'str', *, within: 'str', depth: 'int | None' = None) -> 'bool'",
     "get_cdg": "(self, callable: 'str', *, in_class: 'str | None' = None, page_size: 'int' = 10000, cursor: 'str | None' = None) -> 'EdgePage[TSCdgEdge]'",
     "get_cfg": "(self, callable: 'str', *, in_class: 'str | None' = None, page_size: 'int' = 10000, cursor: 'str | None' = None) -> 'EdgePage[TSCfgEdge]'",

@@ -63,8 +63,9 @@ class Diagnostic(BaseModel):
             populated**. E8 (leg 1.5) put typo-tolerant matching out of scope "not in the
             resolver, not in the error path", so nothing in the SDK constructs a ``Diagnostic``
             with suggestions or with ``code="did_you_mean"``; the codes actually emitted are
-            ``file_not_in_graph``, ``module_scope``, ``module_source_unavailable`` and
-            ``entrypoint_report_unavailable``. The field and the code stay because both are part
+            ``file_not_in_graph``, ``module_scope``, ``module_source_unavailable``,
+            ``entrypoint_report_unavailable``, and — since ``taint()`` — ``unresolved_dispatch``
+            and ``degenerate_pair``. The field and the code stay because both are part
             of a published model contract (``docs/agent-api-reference.md``) that a caller may
             already destructure; removing either is a separate, breaking change.
     """
@@ -82,6 +83,7 @@ class Diagnostic(BaseModel):
         "unresolved_dispatch",
         "graph_schema_mismatch",
         "entrypoint_report_unavailable",
+        "degenerate_pair",
     ]
     message: str
     suggestions: list[str] = []
@@ -632,7 +634,9 @@ class FlowPaths(BoundedResult):
     Attributes:
         paths: The paths, in :func:`~cldk.analysis.python.backend.hop_sort_key` order.
         complete: ``False`` when ``max_paths`` cut the list; ``True`` when these are all the
-            shortest paths there are (including when there are none).
+            shortest paths there are (including when there are none). :class:`TaintResult` narrows
+            it -- there, truncation is only one of the ways it can be ``False`` -- so on a taint
+            verdict, ``False`` is not on its own a reason to raise the cap and ask again.
     """
 
     paths: list[FlowPath]
@@ -640,3 +644,61 @@ class FlowPaths(BoundedResult):
 
     def _items(self) -> list:
         return self.paths
+
+
+class TaintResult(FlowPaths):
+    """Which of the requested (source, sink) pairs flow, which were searched to exhaustion, and what
+    stopped the rest.
+
+    A subclass of :class:`FlowPaths` rather than a new shape: the witnesses *are* flow paths, each
+    already carrying ``weakest``, and ``complete`` still answers "did this call return everything it
+    found". Three fields are added, and ``complete`` is narrowed.
+
+    **What ``complete`` says here.** ``True`` only when nothing was truncated **and**
+    :attr:`unresolved` is empty. It is one flag for the whole batch, so a single skipped or blocked
+    pair makes it ``False`` however cleanly the other pairs answered -- deliberately, because the
+    alternative is ``True`` beside a non-empty ledger, which tells a caller who reads only the flag
+    that the batch was fully searched when part of it was not. The consequence to know: ``False``
+    does not mean "raise ``max_paths`` and ask again". Where ``paths`` was not truncated a bigger cap
+    returns the same flag, and :attr:`unresolved` is what says why.
+
+    **What ``exhausted`` claims.** A pair is listed when all three hold: the call passed
+    ``depth=None``, the search found no path for it, and no :attr:`unresolved` diagnostic implicates
+    it. That is a claim about **the emitted graph plus the ledger, and never about the program** —
+    which is why the field is named for the search rather than for the conclusion. The step from
+    "exhausted" to "this alert is a false positive" is the caller's, deliberately: the DDG's
+    ``points-to`` edges over-approximate, which is the safe direction for an absence claim, but the
+    call structure *under*-approximates wherever dispatch is unresolved, so a missing call edge means
+    a real flow can exist with no path in the graph. Absence of path bounds the program only where the
+    frontier was fully resolved, and :attr:`unresolved` is what enumerates where it was not.
+
+    **Why it is stored rather than derived.** It is computable — ``all_pairs − pairs_with_paths −
+    pairs_with_unresolved`` when ``depth is None``, and ``∅`` otherwise — and that is the reason not
+    to: the load-bearing answer must not be a subtraction the caller can get wrong, and a subtraction
+    with a mode switch in front of it is worse than one without.
+
+    Attributes:
+        exhausted: The ``(source, sink)`` pairs searched to exhaustion with a clean ledger, named by
+            the same strings the caller passed — never a ``can://`` id. Empty whenever ``depth`` was
+            not ``None``.
+        roots: What each selector matched, so a conclusion is auditable rather than asserted.
+        resolved: The human-readable form of ``roots``, via ``slice_resolved``.
+        unresolved: The ledger of everything that stopped a pair short of an answer, whatever stopped
+            it. Two codes reach it: ``unresolved_dispatch`` for a frontier the walk could not follow,
+            and ``degenerate_pair`` for a requested pair whose source and sink resolved to the same
+            position, which is skipped rather than searched. Both name the
+            affected pair in ``message`` prose — the same convention every other diagnostic in
+            this SDK follows (e.g. the Neo4j backend's ``module_scope`` message). ``Diagnostic`` has
+            no structured field for a pair today, so this is a human-readable explanation, not
+            something to compute with: the pair→diagnostic association ``exhausted`` needs is tracked
+            internally by the implementation before each ``Diagnostic`` is built, never recovered by
+            parsing ``message`` back out — that would resurrect the derivation this stored field
+            exists to avoid. A caller that needs the association programmatically wants an additive
+            ``subject`` field on ``Diagnostic``, which widens a published model contract
+            (``docs/agent-api-reference.md``) and should be requested rather than assumed here.
+    """
+
+    exhausted: list[tuple[str, str]]
+    roots: list[SliceNode]
+    resolved: str
+    unresolved: list[Diagnostic]

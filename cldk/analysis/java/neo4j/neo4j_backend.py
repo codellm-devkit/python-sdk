@@ -112,13 +112,13 @@ import logging
 import re
 from collections import defaultdict
 from functools import cached_property
-from typing import Any, Dict, FrozenSet, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Sequence, Tuple
 
 import networkx as nx
 
 from cldk.analysis.commons.bounds import DEFAULT_PAGE_SIZE, EdgeOrder, check_page_size, cursor_params, encode_cursor, keyset_where
-from cldk.analysis.commons.graphs import flow_path, slice_resolved
-from cldk.analysis.commons.results import EdgePage, FlowPaths, Slice, SliceNode
+from cldk.analysis.commons.graphs import flow_path, sdg_path_query, sdg_taint_query, slice_resolved
+from cldk.analysis.commons.results import Diagnostic, EdgePage, FlowPath, FlowPaths, Slice, SliceNode
 from cldk.analysis.java.backend import (
     CDG_ORDER,
     CFG_ORDER,
@@ -891,19 +891,9 @@ class JNeo4jBackend(JavaAnalysisBackend):
         return Slice(nodes=nodes, roots=[root], resolved=slice_resolved([root]), total=row["total"])
 
     # -----[ paths and the flow predicate ]-----
-    #: The caller's word for a hop, computed in Cypher so the ORDER BY below sorts by the same
-    #: vocabulary :func:`~cldk.analysis.commons.graphs.hop_sort_key` sorts by. Ordering by the raw
-    #: ``type(rel)`` instead would be just as deterministic and a *different* order, so the two
-    #: backends would truncate ``max_paths`` to different witnesses.
-    _VIA_CASE = "CASE type(relationships(p)[i]) " + " ".join(f"WHEN '{rel}' THEN '{word}'" for rel, word in VIA.items()) + " ELSE type(relationships(p)[i]) END"
-
-    #: One string per path, ordered exactly as Python would order the tuple ``hop_sort_key`` builds.
-    #: ``U+0001`` is the separator rather than ``|`` for one reason: string comparison agrees with
-    #: field-by-field comparison **only** when the separator sorts below every character a field can
-    #: hold, and ``|`` (0x7C) sorts *above* every lowercase letter. ``elementId`` is the last field
-    #: of each hop and breaks the tie between parallel relationships a caller cannot tell apart.
+    #: See :func:`~cldk.analysis.commons.graphs.path_order`.
     #:
-    #: **The per-callable graph orders do not have this tie-break, and that asymmetry is deliberate
+    #: **The per-callable graph orders do not have that tie-break, and that asymmetry is deliberate
     #: but not free.** ``CFG_ORDER``/``CDG_ORDER``/``DDG_ORDER`` (``cldk/analysis/java/backend.py``)
     #: end at ``coalesce(kind,'')`` / ``dst`` / ``coalesce(prov,[])`` — no ``elementId``, because
     #: the key has to be *the same key the in-memory backend sorts by*, and there is no element id
@@ -915,28 +905,19 @@ class JNeo4jBackend(JavaAnalysisBackend):
     #: 22.5 MB daytrader8 ``-a 4`` payload (6,984 ``cfg``, 4,416 ``cdg`` and 5,434 ``ddg`` edges,
     #: every one with a distinct key within its callable). If an analyzer ever emits one, the fix
     #: is a fourth component both backends can compute, not an ``elementId`` only one of them has.
-    _PATH_ORDER = (
-        "reduce(k = '', i IN range(0, length(p) - 1) | k + " + _VIA_CASE + " + '\\u0001' + coalesce(relationships(p)[i].var, '') "
-        "+ '\\u0001' + nodes(p)[i + 1].id + '\\u0001' + elementId(relationships(p)[i]) + '\\u0001')"
-    )
-
-    #: ``allShortestPaths`` and not a plain variable-length match: a variable-length pattern
-    #: enumerates *trails*, which does not terminate on a real dependence graph, while
-    #: ``allShortestPaths`` is a bidirectional BFS. ``$cap`` is ``max_paths + 1`` so one extra row
-    #: reports the truncation, rather than a second traversal for a number the caller cannot act on.
     #:
     #: ``all(n IN nodes(p) WHERE …)`` is the **interior** scope, and it is not optional: without it
     #: only the two endpoints carry the application prefix and a path could route through another
     #: application's nodes and come back. Leg 2.5b found exactly that leak twice in its own path
     #: enumerators; Neo4j inlines an ``all()`` node predicate into the shortest-path search itself,
     #: so it is a correctness win at no cost.
-    _PATHS = (
-        "MATCH (a:JBodyNode {{id:$src}}) WHERE a.id STARTS WITH $prefix "
-        "MATCH (b:JBodyNode {{id:$dst}}) WHERE b.id STARTS WITH $prefix "
-        "MATCH p = allShortestPaths((a)-[:{rels}*1..{depth}]->(b)) WHERE all(n IN nodes(p) WHERE n.id STARTS WITH $prefix) "
-        "WITH p, " + _PATH_ORDER + " AS key ORDER BY length(p), key LIMIT $cap "
-        "RETURN [n IN nodes(p) | {{ref: n.id, kind: n.kind, line: n.start_line}}] AS ns, "
-        "[e IN relationships(p) | {{via: type(e), var: e.var, prov: e.prov}}] AS rs"
+    _PATHS = sdg_path_query(
+        "J",
+        node_label="JBodyNode",
+        endpoint_scope=_scoped,
+        interior_scope=_scoped,
+        projection="ref: n.id, kind: n.kind, line: n.start_line",
+        rel_var="e",
     )
 
     def _value_paths(self, a: SliceNode, b: SliceNode, depth: int | None, max_paths: int) -> FlowPaths:
@@ -952,6 +933,128 @@ class JNeo4jBackend(JavaAnalysisBackend):
             for r in rows[:max_paths]
         ]
         return FlowPaths(paths=paths, complete=len(rows) <= max_paths)
+
+    #: ``taint()``'s statement: the same shortest-path search as :attr:`_PATHS`, m sources against n
+    #: sinks in one traversal, with the sanitizer cut **inside** the pattern and the cap applied per
+    #: pair. Everything that differs from :attr:`_PATHS` is argued in
+    #: :func:`~cldk.analysis.commons.graphs.sdg_taint_query`; the two share this backend's
+    #: ``node_label``, its ``rel_var`` and its projection verbatim, which is what makes a taint
+    #: witness and a ``paths_between`` witness describe a vertex identically -- neither joins a
+    #: callable back, because :meth:`~cldk.analysis.java.backend.JavaAnalysisBackend._body_slice_node`
+    #: recovers the owner, the file and the parameter names from the id prefix and the index this
+    #: backend already holds.
+    #:
+    #: The interior predicate is here for :attr:`_PATHS`'s reason and not by analogy with it: a
+    #: variable-length pattern binds only its endpoints, so scoping those leaves every node between
+    #: them free and a walk could enter another application and come back. Both endpoints keep their
+    #: own ``STARTS WITH`` alongside, redundantly and deliberately, because the audit judges **per
+    #: bound variable**.
+    _TAINT = sdg_taint_query(
+        "J",
+        node_label="JBodyNode",
+        endpoint_scope=_scoped,
+        interior_scope=_scoped,
+        projection="ref: n.id, kind: n.kind, line: n.start_line",
+        rel_var="e",
+    )
+
+    #: The variable names on SDG edges *leaving* a node inside ``$callable_prefix`` -- ``startNode``,
+    #: the same end of the hop :attr:`_TAINT`'s cut predicate reads, so a sanitizer this validates is
+    #: one that predicate can actually match (Ruling A /
+    #: :func:`~cldk.analysis.commons.resolve.resolve_sanitizers`).
+    #:
+    #: The parameter is named apart from every other statement's ``$prefix`` because it holds a
+    #: different thing: a **callable's** ``can://`` ref, not the application's. It is still
+    #: application-scoped, by construction rather than by convention -- a callable id embeds the
+    #: application name -- and ``test_java_neo4j_multi_application_scope.py`` classifies it on that
+    #: basis.
+    #:
+    #: The **delimited** predicate -- the three disjuncts of
+    #: :func:`~cldk.analysis.commons.graphs.under_callable` written in Cypher, the same shape
+    #: :attr:`_TAINT` gives ``$cut_callables`` and its own cut. Deliberately not a bare
+    #: ``STARTS WITH``, because the cut this domain exists to validate *for* is delimited: a variable
+    #: reachable only through an undelimited prefix (Ruling K -- a sibling callable whose name merely
+    #: starts with this one) would be *accepted* here and then sever nothing there, which is a
+    #: sanitizer the caller believes is in force and is not. Under-cutting only over-reports, so it
+    #: cannot manufacture a false refutation, but it is still an error the caller should have been
+    #: told about, and Ruling A's refusal only means something if this domain is exactly the set the
+    #: cut can match. One round trip per variable sanitizer, which is as often as a caller writes one.
+    #:
+    #: On Java the collision this refuses cannot arise -- a Java ``can://`` callable id ends in
+    #: ``)``, so it would need a same-arity overload of a longer name -- while TypeScript's can. The
+    #: spelling is shared anyway: one predicate across the six acceptance domains is one thing to
+    #: keep in step, and the id grammar is the analyzer's to change, not this backend's.
+    _EDGE_VARS = "MATCH (n:JBodyNode)-[e:{rels}]->() WHERE (n.id = $callable_prefix OR n.id STARTS WITH $callable_prefix + '@' OR n.id STARTS WITH $callable_prefix + '/') RETURN collect(DISTINCT e.var) AS vars"
+
+    def _taint_walk(
+        self,
+        srcs: Sequence[SliceNode],
+        dsts: Sequence[SliceNode],
+        *,
+        cuts: List[Dict[str, str]],
+        cut_callables: List[str],
+        depth: int | None,
+        max_paths: int,
+    ) -> Tuple[List[Tuple[str, str, FlowPath]], Mapping[Tuple[str, str], List[Diagnostic]]]:
+        """The sanitized shortest walks, server-side (see :meth:`JavaAnalysisBackend._taint_walk`).
+
+        One statement for the whole batch, and one row per witness -- ``a.id AS src`` / ``b.id AS
+        dst`` carry the pairing back, because the m*n batching is only useful if the grouping
+        survives it. Ordering, the per-pair ``$cap`` and both cuts are the statement's
+        (:func:`~cldk.analysis.commons.graphs.sdg_taint_query`), so nothing is re-sorted or
+        re-filtered here: a Python-side filter is the false-refutation bug that function exists to
+        avoid, and a Python-side sort would silently disagree with
+        :func:`~cldk.analysis.commons.graphs.path_order`. Rows come back untrimmed, including the
+        ``max_paths + 1``-th, which is what lets ``taint()`` report truncation without counting
+        twice.
+
+        Neither gate is asked here. :meth:`JavaAnalysisBackend.taint` asks
+        :meth:`_require_dataflow` (a no-op on this backend -- ``--emit neo4j`` always runs at full
+        depth) and :meth:`_require_connected_ports` before the walk is entered.
+
+        **The ledger comes back empty, and that is a refusal to file rather than a missing signal.**
+        Java's frontier signal exists on this graph as a ``kind:'call'`` body node with no outgoing
+        ``J_RESOLVES_TO``, which is what :meth:`_resolution_edges_present` already probes for. It is
+        not filed because the granularity is wrong in the one direction that matters: a diagnostic
+        empties ``exhausted`` for the *whole batch* (Ruling I), so a signal that also fires on the
+        ordinary case -- a call into the JDK, which on this graph resolves into a ``:JExternal``
+        ghost or nothing at all -- would void every refutation in every application that calls a
+        library. Telling "unresolved dispatch" apart from "resolved external" well enough to file
+        only the first is future work, and leg 4b's corpus check is where the separation gets
+        measured.
+
+        Consequence, stated because nothing here can catch it: a pair whose flow leaves through an
+        unresolved dispatch is certified ``exhausted``.
+        """
+        query = self._TAINT.format(rels=SDG_REL_PATTERN, depth="" if depth is None else depth)
+        rows = self._run(
+            query,
+            srcs=[n.ref for n in srcs],
+            dsts=[n.ref for n in dsts],
+            cuts=cuts,
+            cut_callables=cut_callables,
+            cap=max_paths + 1,
+            prefix=self._scope_prefix,
+        )
+        return [
+            (
+                r["src"],
+                r["dst"],
+                flow_path([self._body_slice_node(n["ref"], n["kind"], n["line"]) for n in r["ns"]], [(e["via"], e["var"], e["prov"]) for e in r["rs"]], via=VIA),
+            )
+            for r in rows
+        ], {}
+
+    def _edge_vars_in(self, callable_id: str) -> FrozenSet[str]:
+        """The edge variables scoped to this callable (see :meth:`JavaAnalysisBackend._edge_vars_in`).
+
+        ``collect(DISTINCT e.var)`` returns a ``null`` for every hop that carries no ``var`` --
+        ``J_CDG`` and ``J_SUMMARY`` by construction, and ``J_PARAM_IN``/``J_PARAM_OUT`` on a graph
+        emitted before codeanalyzer-java 3.1.2 -- and those are dropped, because
+        ``resolve_sanitizers`` refuses a blank variable before it ever asks.
+        """
+        rows = self._run(self._EDGE_VARS.format(rels=SDG_REL_PATTERN), callable_prefix=callable_id)
+        return frozenset(v for v in rows[0]["vars"] if v)
 
     #: ``WITH DISTINCT m`` before the membership test is what makes this a pruning BFS instead of a
     #: trail enumeration. Every hop is inside the application, by the same whole-path predicate
@@ -972,9 +1075,9 @@ class JNeo4jBackend(JavaAnalysisBackend):
         return bool(self._run(query, src=src, dsts=[d for d in dsts if d != src], prefix=self._scope_prefix)[0]["ok"])
 
     #: Whether this application's parameter vertices have any outgoing SDG edge — the measurement
-    #: the four forward value accessors refuse on
+    #: the five forward value accessors refuse on
     #: (:data:`~cldk.analysis.java.backend.PORTS_DISCONNECTED`). Costs 6.5 ms on daytrader8 and
-    #: 185.4 ms on ThingsBoard, once per backend, and only when one of those four is called: the
+    #: 185.4 ms on ThingsBoard, once per backend, and only when one of those five is called: the
     #: "no" answer is the expensive one, because it has to look at every ``formal_in``.
     _PORTS_CARRY_DEPENDENCE = (
         "MATCH (b:JBodyNode)-[r:J_DDG|J_CDG|J_PARAM_IN|J_PARAM_OUT|J_SUMMARY]->(m:JBodyNode) "

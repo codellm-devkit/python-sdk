@@ -33,16 +33,16 @@ import re
 import subprocess
 from pathlib import Path
 from subprocess import CompletedProcess
-from typing import Any, Dict, Iterable, List, Sequence, Tuple, Union
+from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Sequence, Tuple, Union
 
 import networkx as nx
 from pydantic import ValidationError
 
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.bounds import DEFAULT_PAGE_SIZE, check_page_size, edge_page
-from cldk.analysis.commons.graphs import flow_path, shortest_walks, slice_resolved
+from cldk.analysis.commons.graphs import flow_path, shortest_walks, slice_resolved, under_callable
 from cldk.analysis.commons.levels import ANALYZER_LEVELS, LEVEL_NAMES, analyzer_level
-from cldk.analysis.commons.results import Diagnostic, EdgePage, FlowPaths, Slice, SliceNode
+from cldk.analysis.commons.results import Diagnostic, EdgePage, FlowPath, FlowPaths, Slice, SliceNode
 from cldk.analysis.java.backend import (
     CDG_ORDER,
     CFG_ORDER,
@@ -511,7 +511,12 @@ class JCodeanalyzer(JavaAnalysisBackend):
             # are used as-is: joining them again would mint ids that name nothing.
             for rel, edges in (("J_PARAM_IN", self.application.param_in), ("J_PARAM_OUT", self.application.param_out)):
                 for e in edges or []:
-                    link(e.src, e.dst, (rel, None, ()))
+                    # ``getattr``, not ``e.var``: ``JParamEdge`` gained the field in codeanalyzer-java
+                    # 3.1.2 (codeanalyzer-java#250) and an older payload's edge carries none. Hard-coding ``None`` here (as
+                    # this did) left ``_edge_vars_in`` blind to every call-crossing variable, so a
+                    # real sanitizer was refused as nonexistent and ``allow_edge``'s ``var == c["var"]``
+                    # could never cut at a call boundary -- the one place a taint cut most wants to.
+                    link(e.src, e.dst, (rel, getattr(e, "var", None), tuple(getattr(e, "prov", None) or ())))
             self._sdg_cache = ({"forward": forward, "backward": backward}, nodes)
         return self._sdg_cache
 
@@ -544,6 +549,81 @@ class JCodeanalyzer(JavaAnalysisBackend):
         described[a.ref] = a
         paths = [flow_path([described[a.ref]] + [described[ref] for ref, _ in walk], [label for _, label in walk], via=VIA) for walk in walks[:max_paths]]
         return FlowPaths(paths=paths, complete=len(walks) <= max_paths)
+
+    def _taint_walk(
+        self,
+        srcs: Sequence[SliceNode],
+        dsts: Sequence[SliceNode],
+        *,
+        cuts: List[Dict[str, str]],
+        cut_callables: List[str],
+        depth: int | None,
+        max_paths: int,
+    ) -> Tuple[List[Tuple[str, str, FlowPath]], Mapping[Tuple[str, str], List[Diagnostic]]]:
+        """The sanitized shortest walks, in process (see :meth:`JavaAnalysisBackend._taint_walk`).
+
+        **No** ``self._require_dataflow()`` here, unlike Python's and TypeScript's local walks:
+        Java's level gate and its port-lattice gate both live on
+        :meth:`JavaAnalysisBackend.taint`, which opens them before the walk is entered, and asking
+        again would answer a question already answered.
+
+        One :func:`~cldk.analysis.commons.graphs.shortest_walks` call **per pair**, which is what
+        makes ``max_paths + 1`` a per-pair cap here the way ``collect(p)[0..$cap]`` is one over
+        Cypher -- a single walk over the flattened lists would let one prolific pair starve the rest.
+        Pairs are deduplicated by resolved position first, for the reason
+        :func:`~cldk.analysis.commons.graphs.taint_verdict` deduplicates the requested ones: two
+        selectors naming one position are one pair, and walking it twice would report each witness
+        twice and make a cap of *m* yield *2m*. The graph side gets that free from ``a.id IN $srcs``.
+
+        Both cuts are :func:`~cldk.analysis.commons.graphs.shortest_walks`' predicates rather than a
+        filter over what it returns, which is the property the design rests on: the breadth-first
+        pass must measure the shortest *satisfying* distance, or a sanitized short route hides a
+        clean longer one and the pair comes back refuted. ``allow_edge`` reads the hop's **start**
+        node, mirroring the Cypher predicate's ``startNode(r)``, so a variable cut severs only the
+        callable the caller named it in -- daytrader8 carries ``arg0`` under both ``buy`` and
+        ``completeOrder``, and cutting one leaves the other's four witnesses standing. Both are
+        ``None`` when nothing is sanitized: the documented "no filtering" default, and no per-node
+        cost on the common call.
+
+        :func:`~cldk.analysis.commons.graphs.under_callable`, never a bare ``startswith``: a Java
+        ``can://`` callable id ends in ``)``, so a prefix collision needs a same-arity overload of a
+        longer name and cannot happen -- but the predicate is shared with TypeScript, where it can
+        (Ruling K), and one spelling on all three backends is what keeps that from being re-derived.
+
+        The ledger comes back empty. Java's frontier signal exists in the payload -- a
+        ``JCallSite`` whose ``callee_signature`` is empty -- but filing a diagnostic voids
+        ``exhausted`` for the whole batch (Ruling I), and a signal that cannot be told apart from an
+        ordinary call into the JDK would void every refutation in every application that makes one.
+        Same consequence, equally uncatchable from in here: a pair whose flow leaves through an
+        unresolved dispatch is certified ``exhausted``.
+        """
+        adjacency, nodes = self._sdg()
+        allow_node = (lambda nid: not under_callable(nid, cut_callables)) if cut_callables else None
+        allow_edge = (lambda frm, _rel, var: not any(var == c["var"] and under_callable(frm, (c["prefix"],)) for c in cuts)) if cuts else None
+        pairs: Dict[Tuple[str, str], SliceNode] = {}
+        for a in srcs:
+            for b in dsts:
+                pairs.setdefault((a.ref, b.ref), a)
+        rows = []
+        for (src_ref, dst_ref), a in pairs.items():
+            walks = shortest_walks(adjacency["forward"], src_ref, dst_ref, depth, max_paths + 1, via=VIA, allow_edge=allow_edge, allow_node=allow_node)
+            described = {ref: self._body_slice_node(ref, *nodes[ref]) for walk in walks for ref, _ in walk if ref in nodes}
+            described[src_ref] = a
+            rows.extend((src_ref, dst_ref, flow_path([described[src_ref]] + [described[ref] for ref, _ in walk], [label for _, label in walk], via=VIA)) for walk in walks)
+        return rows, {}
+
+    def _edge_vars_in(self, callable_id: str) -> FrozenSet[str]:
+        """The edge variables scoped to this callable (see :meth:`JavaAnalysisBackend._edge_vars_in`).
+
+        Off the adjacency :meth:`_sdg` already caches, so a variable sanitizer costs a scan of it and
+        no second traversal. Edges *leaving* a node under ``callable_id`` -- the same ``startNode``
+        scoping the cut itself uses, so this validates exactly the domain the cut can match.
+        ``J_CDG`` and the two port relationships on a pre-3.1.2 payload carry no ``var``; those
+        ``None`` values are dropped, because ``resolve_sanitizers`` refuses a blank variable before it
+        ever asks.
+        """
+        forward = self._sdg()[0]["forward"]
+        return frozenset(var for src, outs in forward.items() if under_callable(src, (callable_id,)) for labels in outs.values() for _rel, var, _prov in labels if var)
 
     def _value_reaches(self, src: str, dsts: Sequence[str], depth: int | None) -> bool:
         """See :meth:`JavaAnalysisBackend._value_reaches`."""

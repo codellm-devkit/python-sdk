@@ -35,7 +35,7 @@ from collections import defaultdict
 from functools import cached_property, partial
 from pathlib import Path
 from subprocess import CompletedProcess
-from typing import Dict, Iterator, List, Sequence, Set, Tuple, Union
+from typing import Dict, FrozenSet, Iterator, List, Mapping, Sequence, Set, Tuple, Union
 
 import networkx as nx
 
@@ -51,7 +51,7 @@ from cldk.analysis.commons.bounds import (
     check_page_size,
     edge_page,
 )
-from cldk.analysis.commons.graphs import call_reaches, cone_sinks, flow_path, shortest_walks, slice_resolved
+from cldk.analysis.commons.graphs import call_reaches, cone_sinks, flow_path, shortest_walks, slice_resolved, under_callable
 from cldk.analysis.commons.keys import body_key_column, resolve_module_key
 from cldk.analysis.commons.levels import ANALYZER_LEVELS, LEVEL_NAMES, analyzer_level
 from cldk.analysis.commons.resolve import CallableCandidate, resolve_callable_signature, resolve_value_name, resolve_within
@@ -61,6 +61,7 @@ from cldk.analysis.commons.results import (
     Diagnostic,
     EdgePage,
     EntrypointCoverage,
+    FlowPath,
     FlowPaths,
     LocateResult,
     ModuleRef,
@@ -1337,6 +1338,94 @@ class TSCodeanalyzer(TSAnalysisBackend):
     #: :func:`~cldk.analysis.commons.graphs.hop_sort_key` order -- the shared implementation, bound
     #: to TypeScript's ``via`` table.
     _shortest_walks = staticmethod(partial(shortest_walks, via=VIA))
+
+    def _taint_walk(
+        self,
+        srcs: Sequence[SliceNode],
+        dsts: Sequence[SliceNode],
+        *,
+        cuts: List[Dict[str, str]],
+        cut_callables: List[str],
+        depth: int | None,
+        max_paths: int,
+    ) -> Tuple[List[Tuple[str, str, FlowPath]], Mapping[Tuple[str, str], List[Diagnostic]]]:
+        """The sanitized shortest walks, in process (see :meth:`TSAnalysisBackend._taint_walk`).
+
+        ``self._require_dataflow()`` first, per Ruling F and :meth:`TSAnalysisBackend.taint`'s own
+        note: the level gate is a local backend's to ask, because the graph backends have no level to
+        measure. It is first so that a *direct* call to this hook is diagnosed by level rather than by
+        an empty walk. Through ``taint()`` it never fires -- resolution runs before the walk and the
+        ports it addresses exist only at level 4, so a shallow caller hears ``SelectorNotInGraph``
+        naming their value instead. Python's :meth:`~cldk.analysis.python.backend.PythonAnalysisBackend.taint`
+        docstring carries the whole argument, including why the unreachable gate is still worth having.
+
+        One :func:`~cldk.analysis.commons.graphs.shortest_walks` call **per pair**, which is what
+        makes ``max_paths + 1`` a per-pair cap here the way ``collect(p)[0..$cap]`` is one over
+        Cypher -- a single walk over the flattened source and sink lists would let one prolific pair
+        starve the rest. Pairs are deduplicated by resolved position first, for the same reason
+        :func:`~cldk.analysis.commons.graphs.taint_verdict` deduplicates the requested ones: two
+        selectors naming one position are one pair, and walking it twice would report each witness
+        twice and make a cap of *m* yield *2m*. The graph side gets that free from ``a.id IN $srcs``.
+
+        Both cuts are :func:`~cldk.analysis.commons.graphs.shortest_walks`' predicates rather than a
+        filter over the walks it returns, which is the property the whole design rests on: the
+        breadth-first pass must measure the shortest *satisfying* distance, or a sanitized short
+        route hides a clean longer one and the pair comes back refuted. ``allow_edge`` reads the
+        hop's **start** node, mirroring the Cypher predicate's ``startNode(r)`` term, so a variable
+        cut severs only the callable the caller named it in. Both are ``None`` when nothing is
+        sanitized -- the documented "no filtering" default, and no per-node cost on the common call.
+
+        Scoping goes through :func:`~cldk.analysis.commons.graphs.under_callable` and never through
+        ``startswith``, and on TypeScript that is not a stylistic preference (Ruling K): a
+        TypeScript callable id ends in a bare member name, so ``.../UserService/create`` is a strict
+        non-delimited prefix of ``.../UserService/createGuest`` and a bare prefix test would sever
+        every hop in the sibling the caller never named. Python and Java ids end in ``)``, which is
+        why the Python twin can get away with the shorter spelling.
+
+        The ledger comes back empty, and the graph backend's twin states the reason in full
+        (:meth:`~cldk.analysis.typescript.neo4j.neo4j_backend.TSNeo4jBackend._taint_walk`). In
+        short: a signal does exist here, as ``TSBodyNode.callee is None`` on a ``call`` node -- the
+        same one :attr:`has_resolution_edges` reads at the application level, and measured 0 of the
+        a4 fixture's 31 call nodes, so the fixture has nothing to file -- so this is a refusal to
+        file rather than an absence to report. Filing a diagnostic voids ``exhausted`` for the whole
+        batch (Ruling I), and a signal that cannot yet be told apart from an ordinary call into an
+        ambient declaration would void every refutation in every application that makes one. Same
+        consequence, equally uncatchable from in here: a pair whose flow leaves through an
+        unresolved call is certified ``exhausted``.
+        """
+        self._require_dataflow()
+        adjacency, nodes = self._sdg
+        allow_node = (lambda nid: not under_callable(nid, cut_callables)) if cut_callables else None
+        allow_edge = (lambda frm, _rel, var: not any(var == c["var"] and under_callable(frm, (c["prefix"],)) for c in cuts)) if cuts else None
+        pairs: Dict[Tuple[str, str], SliceNode] = {}
+        for a in srcs:
+            for b in dsts:
+                pairs.setdefault((a.ref, b.ref), a)
+        rows = []
+        for (src_ref, dst_ref), a in pairs.items():
+            walks = self._shortest_walks(adjacency["forward"], src_ref, dst_ref, depth, max_paths + 1, allow_edge=allow_edge, allow_node=allow_node)
+            described = {ref: self._slice_node(ref) for walk in walks for ref, _ in walk if ref in nodes}
+            described[src_ref] = a
+            rows.extend((src_ref, dst_ref, flow_path([described[src_ref]] + [described[ref] for ref, _ in walk], [label for _, label in walk], via=VIA)) for walk in walks)
+        return rows, {}
+
+    def _edge_vars_in(self, callable_id: str) -> FrozenSet[str]:
+        """The edge variables scoped to this callable (see :meth:`TSAnalysisBackend._edge_vars_in`).
+
+        Off the adjacency this backend already builds and caches, so a variable sanitizer costs a
+        scan of it and no second traversal. Edges *leaving* a node under ``callable_id`` -- the same
+        ``startNode`` scoping the cut itself uses, so this validates exactly the domain the cut can
+        match. Two of the five relationship types carry no ``var`` (``TS_CDG`` and ``TS_SUMMARY``);
+        those ``None`` values are dropped, because ``resolve_sanitizers`` refuses a blank variable
+        before it asks.
+
+        :func:`~cldk.analysis.commons.graphs.under_callable` and not ``startswith`` for Ruling K's
+        reason, spelled out in :meth:`_taint_walk`: with a bare prefix test ``create``'s domain would
+        silently include every variable of ``createGuest``, and a sanitizer naming one of those would
+        be *accepted* here and then cut nothing there -- a sanitizer the caller believes is in force.
+        """
+        forward = self._sdg[0]["forward"]
+        return frozenset(var for src, outs in forward.items() if under_callable(src, (callable_id,)) for labels in outs.values() for _rel, var, _prov in labels if var)
 
     def paths_between(self, src: str, dst: str, *, src_within: str, dst_within: str, depth: int | None = None, max_paths: int = DEFAULT_MAX_PATHS) -> FlowPaths:
         """How a value reaches another value (see :meth:`TSAnalysisBackend.paths_between`)."""

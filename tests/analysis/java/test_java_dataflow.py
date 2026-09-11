@@ -36,6 +36,7 @@ are in this fixture, so ``get_ddg`` is asserted to contain them: the shape canno
 
 import inspect
 import json
+import re
 from collections import Counter
 
 import pytest
@@ -632,3 +633,253 @@ def test_the_slice_and_the_call_graph_accessors_are_not_guarded(both, ref):
     """The gap is stated exactly, not widened: the call-graph half and the backward slice answer."""
     assert isinstance(ref.slice_backward("conn", within=GET_STATEMENT), Slice)
     assert both.reaches(SELL, GET_STATEMENT) and both.callers_of(GET_STATEMENT) and both.backward_cone([GET_STATEMENT])
+
+
+# ----------------------------------------------------------------------------------------------
+# Leg 4b, Task 7: the local ``taint`` walk, offline.
+#
+# ``taint()`` is a refutation instrument: its ``exhausted`` list certifies "no flow exists between
+# this source and this sink", so **over-cutting is far worse than under-cutting**. Cutting more than
+# the caller named removes paths, removing paths adds pairs to ``exhausted``, and a wrong
+# ``exhausted`` closes an alert on a live flow. Under-cutting merely over-reports. Every count below
+# was measured off this fixture through ``shortest_walks`` directly, never read back out of the
+# implementation, and every cut is asserted to leave its *siblings* standing.
+#
+# Sources are a **callee's** ``formal_in`` (Ruling J), for the reason the Python fixture documents:
+# a caller's own parameter and its def-site are disjoint upstream.
+# ----------------------------------------------------------------------------------------------
+BUY = f"{DIRECT}.buy(java.lang.String, java.lang.String, double, int)"
+COMPLETE_ORDER = f"{DIRECT}.completeOrder(java.lang.Integer, boolean)"
+SET_IN_GLOBAL_TXN = f"{DIRECT}.setInGlobalTxn(boolean)"
+ROLL_BACK = f"{DIRECT}.rollBack(java.sql.Connection, java.lang.Exception)"
+
+#: As a caller writes them: four pairs with 2 + 4 + 1 + 2 = 9 witnesses at unbounded depth.
+TAINT_SOURCES = [("orderProcessingMode", BUY), ("orderID", COMPLETE_ORDER)]
+TAINT_SINKS = [("inGlobalTxn", SET_IN_GLOBAL_TXN), ("conn", ROLL_BACK)]
+#: One pair, 2 witnesses -- the only shape a cap of 1 can be measured on.
+TAINT_PAIR = ([("orderProcessingMode", BUY)], [("inGlobalTxn", SET_IN_GLOBAL_TXN)])
+
+
+def test_the_local_java_walk_does_not_re_ask_the_level_gate(ref):
+    """Ruling F **as amended**: Python's and TypeScript's local walks open with
+    ``self._require_dataflow()``, and Java's must not -- Java carries that gate on the ABC's
+    ``taint()``, which asks it before the walk is entered. The hook is called directly on a backend
+    whose ``analysis_level`` says level 1: it answers rather than raising, because by the time a walk
+    runs the question has been settled, and ``taint()`` is asserted to raise on the same backend.
+
+    Two gates, not one: the port-lattice refusal is also ``taint()``'s, in the same place the five
+    sibling flow accessors ask for it."""
+    ref.analysis_level = "symbol_table"
+    try:
+        assert ref._taint_walk([], [], cuts=[], cut_callables=[], depth=None, max_paths=1) == ([], {})
+        with pytest.raises(CodeanalyzerUsageException, match="program_dependency_graph"):
+            ref.taint(TAINT_SOURCES, TAINT_SINKS)
+    finally:
+        ref.analysis_level = "system_dependency_graph"
+
+
+def test_taint_refuses_while_the_port_lattice_carries_no_dependence_edge(disconnected):
+    """The sixth guarded accessor. On a pre-3.0.3 emission every pair would come back refuted for a
+    reason that has nothing to do with the program -- an ``exhausted`` list that is an artefact of
+    the analyzer -- which is exactly the output this leg must never produce. Both backends refuse,
+    and the graph backend refuses before it would have reached Cypher."""
+    with pytest.raises(CodeanalyzerExecutionException, match="port"):
+        disconnected.taint(TAINT_SOURCES, TAINT_SINKS)
+
+
+def _with_param_vars(payload: str) -> str:
+    """The same fixture with a ``var`` on every ``param_in``/``param_out`` edge -- the shape
+    codeanalyzer-java 3.1.2 (codeanalyzer-java#250) emits and this fixture, at 3.1.0, does not.
+
+    Built by **addition** the way :func:`_without_port_crossings` is built by subtraction, and for
+    the same reason: the shape under test has to come from the real payload rather than from a
+    hand-written one, so a regeneration that changes what is being added fails the count below.
+
+    A ``param_in`` name here is **fabricated from the formal position** its own endpoint spells --
+    ``@formal_in:0`` becomes ``p0`` -- because a 3.1.0 payload records the argument's *position* and
+    never its name, so the name 3.1.2 writes there cannot be recovered from this fixture. Measured on
+    the pinned 3.1.2 (a local ``-a 4`` run over the same daytrader8 sources): all 1,932 ``param_in``
+    edges carry a ``var``, and it is the **actual argument's** name (``tSIA``, ``volume``). The
+    ``param_out`` name is not fabricated: all 909 of that run's carry ``$ret``, which is what is
+    written here.
+
+    Fabricated or not, each name is tied to the edge it belongs on, so a label that reached the
+    adjacency off the *wrong* edge shows up as the wrong name rather than as a name that is merely
+    present. All 355 endpoints spell one, asserted rather than assumed.
+    """
+    payload_json = json.loads(payload)
+    application = payload_json["application"]
+    named = 0
+    for edge in application["param_in"]:
+        edge["var"] = "p" + re.search(r"@formal_in:(\d+)$", edge["dst"]).group(1)
+        named += 1
+    for edge in application["param_out"]:
+        assert edge["src"].endswith("@formal_out"), f"a param_out edge starting somewhere other than a formal_out: {edge['src']}"
+        edge["var"] = "$ret"
+        named += 1
+    assert named == 355, f"the 3.1.2 shape names all 355 param edges, not {named}"
+    return json.dumps(payload_json)
+
+
+@pytest.fixture(scope="module")
+def param_vars(analysis_json_a4):
+    """The local backend over a payload shaped like codeanalyzer-java 3.1.2's."""
+    return _local(_with_param_vars(analysis_json_a4))
+
+
+def test_a_java_param_edge_carries_the_variable_the_analyzer_put_on_it(ref, param_vars):
+    """``J_PARAM_IN``/``J_PARAM_OUT`` must reach the adjacency with whatever ``var`` the payload put
+    on them. This backend hardcoded ``None``, which was true until codeanalyzer-java 3.1.2
+    (codeanalyzer-java#250) added the property, and became a lie that cost two things:
+    ``_edge_vars_in`` could not see a call-crossing variable, so ``resolve_sanitizers`` refused a
+    real one as nonexistent (Ruling A exists to prevent that); and ``allow_edge``'s
+    ``var == c["var"]`` could never match a param edge, so a scoped variable cut was structurally
+    incapable of cutting at a call boundary.
+
+    **This fixture cannot witness the fix**, so the fix is witnessed on a payload built from it:
+    a4 was emitted by 3.1.0, whose 258 ``param_in`` and 97 ``param_out`` edges carry no ``var`` key
+    at all, and :func:`_with_param_vars` writes the ones 3.1.2 would. What runs is the real
+    ``getattr(e, "var", None)`` at ``JCodeanalyzer._sdg``, not a constructed label: the count and the
+    name of every param edge in the adjacency come back out of the traversal, and the consumer the
+    hardcoded ``None`` blinded -- ``_edge_vars_in`` -- gains exactly the two crossing names ``sell``
+    scopes and nothing else.
+
+    That the pinned analyzer writes ``var`` at all is measured rather than assumed: the 3.1.2 wheel's
+    jar, run at ``-a 4`` over the same daytrader8 sources this fixture was cut from, names every one
+    of its 1,932 ``param_in`` and 909 ``param_out`` edges. What that run cannot stand in for is *this*
+    payload, which is why the fix is witnessed on a4 plus :func:`_with_param_vars` rather than on a
+    second application.
+    """
+    old_labels = [(rel, var) for outs in ref._sdg()[0]["forward"].values() for labels in outs.values() for rel, var, _prov in labels if rel.startswith("J_PARAM")]
+    assert len(old_labels) == 355, "a4 was emitted by 3.1.0: 258 param_in + 97 param_out, none carrying a var"
+    assert all(var is None for _rel, var in old_labels), "this fixture's param edges carry no var; what follows is asserted on the 3.1.2 shape"
+
+    new_labels = [(rel, var) for outs in param_vars._sdg()[0]["forward"].values() for labels in outs.values() for rel, var, _prov in labels if rel.startswith("J_PARAM")]
+    assert Counter(new_labels) == {
+        ("J_PARAM_IN", "p0"): 157,
+        ("J_PARAM_IN", "p1"): 83,
+        ("J_PARAM_IN", "p2"): 8,
+        ("J_PARAM_IN", "p3"): 6,
+        ("J_PARAM_IN", "p4"): 4,
+        ("J_PARAM_OUT", "$ret"): 97,
+    }, "every param edge reaches the adjacency under its own formal's name"
+
+    scope = ref.resolve_callable(SELL).ref
+    assert param_vars._edge_vars_in(scope) - ref._edge_vars_in(scope) == {"p0", "p1"}, "sell's 12 crossings bind two distinct formals, and a sanitizer can now name either"
+
+
+def test_a_java_variable_cut_severs_a_call_boundary_and_only_the_scope_that_named_it(ref, param_vars):
+    """The payoff, end to end: the scoped variable cut over a hop that *is* a call boundary. On the
+    3.1.0 shape ``("p0", BUY)`` is refused as nonexistent -- ``_edge_vars_in`` cannot see a name that
+    reached the adjacency as ``None`` -- which is Ruling A refusing a real dataflow variable, the
+    exact failure the hardcoded ``None`` caused. On the 3.1.2 shape the same cut severs ``buy``'s
+    ``J_PARAM_IN`` crossings and takes both of its pairs from 6 witnesses to ``exhausted``.
+
+    ``completeOrder``'s 3 witnesses are untouched, and cutting ``p0`` *under* ``completeOrder``
+    changes nothing at all: ``allow_edge`` reads the hop's start node, so a cut severs only the
+    callable the caller scoped it to. That is what separates a scoped cut from a cut on every param
+    hop in the application -- and over-cutting is the one error this instrument must not make."""
+    with pytest.raises(SelectorNotInGraph, match="'p0'"):
+        ref.taint(TAINT_SOURCES, TAINT_SINKS, sanitizers=[("p0", BUY)], max_paths=10)
+
+    assert len(param_vars.taint(TAINT_SOURCES, TAINT_SINKS, max_paths=10).paths) == 9, "naming the param vars changes no unsanitized answer"
+    cut = param_vars.taint(TAINT_SOURCES, TAINT_SINKS, sanitizers=[("p0", BUY)], max_paths=10)
+    assert len(cut.paths) == 3 and {p.hops[0].frm.callable for p in cut.paths} == {COMPLETE_ORDER}
+    assert cut.exhausted == [("orderProcessingMode", "inGlobalTxn"), ("orderProcessingMode", "conn")] and cut.complete is True
+
+    elsewhere = param_vars.taint(TAINT_SOURCES, TAINT_SINKS, sanitizers=[("p0", COMPLETE_ORDER)], max_paths=10)
+    assert len(elsewhere.paths) == 9 and elsewhere.exhausted == [], "the same name under another scope cuts nothing"
+
+
+def test_the_local_java_walk_finds_the_measured_witnesses_and_refutes_nothing(ref):
+    """The anchor the rest of this group narrows: 9 witnesses over four pairs, each ending on a
+    ``J_PARAM_IN`` crossing into the sink callable's parameter. A walk that stopped at a call
+    boundary would still return rows; only the last hop says it crossed one."""
+    r = ref.taint(TAINT_SOURCES, TAINT_SINKS, max_paths=10)
+    assert len(r.paths) == 9 and r.exhausted == [] and r.complete is True
+    assert all(p.hops[-1].via == "argument" and p.hops[-1].to.kind == "parameter" for p in r.paths)
+    assert Counter(tuple(h.via for h in p.hops) for p in r.paths) == {
+        ("data", "control", "control", "data", "argument"): 4,
+        ("data", "control", "data", "argument"): 3,
+        ("data", "data", "argument"): 2,
+    }, "a control hop is a real dependence and the four-hop chain through it is the majority here"
+
+
+def test_the_local_java_walk_returns_one_row_past_the_cap_so_truncation_is_never_silent(ref):
+    """A walk that capped at ``max_paths`` rather than ``max_paths + 1`` would return a full-looking
+    result with ``complete=True`` -- a silent bound, which E5 forbids. ``taint()`` cannot detect
+    that from the rows it is handed, so the walk is tested here or nowhere."""
+    at_one = ref.taint(*TAINT_PAIR, max_paths=1)
+    assert len(at_one.paths) == 1 and at_one.complete is False
+    at_two = ref.taint(*TAINT_PAIR, max_paths=2)
+    assert len(at_two.paths) == 2 and at_two.complete is True
+
+
+def test_the_local_java_cap_keeps_a_prefix_of_one_total_order(ref):
+    """*Which* witness survives is stated, not incidental: ``shortest_walks``' replay sorts equal
+    length branches by ``(via, var, to)`` -- the components ``hop_sort_key`` documents, and what
+    Cypher's ``ORDER BY length(p), key`` produces -- so a cap is a prefix of a total order rather
+    than whichever branch the recursion reached first. Both witnesses of this pair are three hops
+    ``orderProcessingMode`` then ``arg0`` then the parameter crossing; they differ further in."""
+    one, many = ref.taint(*TAINT_PAIR, max_paths=1), ref.taint(*TAINT_PAIR, max_paths=5)
+    assert one.paths == many.paths[:1], "the local taint cap is not a prefix of one total order"
+    assert [h.var for h in one.paths[0].hops] == ["orderProcessingMode", "arg0", None]
+
+
+def test_the_local_java_walk_runs_once_per_distinct_pair_not_once_per_selector(ref):
+    """Two selectors naming one position are one pair. Walking it twice would report every witness
+    twice and make a cap of *m* yield *2m* -- the graph side gets this free from ``a.id IN $srcs``,
+    so the local side has to deduplicate to match."""
+    once = ref.taint(*TAINT_PAIR, max_paths=10)
+    twice = ref.taint([("orderProcessingMode", BUY), ("orderProcessingMode", BUY)], [("inGlobalTxn", SET_IN_GLOBAL_TXN)], max_paths=10)
+    assert len(twice.paths) == len(once.paths) == 2
+
+
+def test_a_local_java_callable_cut_severs_its_own_pairs_and_leaves_the_siblings_alone(ref):
+    """Cutting ``setInGlobalTxn`` refutes the two pairs that end in it and leaves the ``rollBack``
+    pairs' 4 + 2 witnesses untouched. A cut that closed all four would pass a naive "the sanitizer
+    worked" assertion while being the failure this leg is built to avoid."""
+    r = ref.taint(TAINT_SOURCES, TAINT_SINKS, sanitizers=[SET_IN_GLOBAL_TXN], max_paths=10)
+    assert len(r.paths) == 6, "the two rollBack pairs survive: 4 + 2 witnesses"
+    assert r.exhausted == [("orderProcessingMode", "inGlobalTxn"), ("orderID", "inGlobalTxn")]
+    assert r.complete is True
+
+
+def test_a_local_java_callable_cut_that_contains_the_source_yields_no_walk(ref):
+    """``allow_node`` is checked against ``src`` up front, because ``src`` is never itself a
+    ``steps()`` destination for either pass to filter. Without that check a source inside a cut
+    callable would still emit its first hop -- and a witness through a callable the caller declared
+    sanitized is a false positive with the sanitizer's own name on it."""
+    r = ref.taint([("orderProcessingMode", BUY)], TAINT_SINKS, sanitizers=[BUY], max_paths=10)
+    assert r.paths == []
+    assert r.exhausted == [("orderProcessingMode", "inGlobalTxn"), ("orderProcessingMode", "conn")]
+    assert r.complete is True
+
+
+def test_a_local_java_variable_cut_severs_a_call_boundary_and_only_the_pairs_that_cross_it(ref):
+    """``arg0`` is the formal that ``buy``'s calls bind across a ``J_PARAM_IN``, so cutting it inside
+    ``buy`` is a cut *at* a call boundary -- the thing the hardcoded ``None`` above made impossible.
+    Both of ``buy``'s pairs are refuted and both of ``completeOrder``'s keep every witness."""
+    r = ref.taint(TAINT_SOURCES, TAINT_SINKS, sanitizers=[("arg0", BUY)], max_paths=10)
+    assert len(r.paths) == 3, "completeOrder's two pairs survive: 1 + 2 witnesses"
+    assert {p.hops[0].frm.callable for p in r.paths} == {COMPLETE_ORDER}
+    assert r.exhausted == [("orderProcessingMode", "inGlobalTxn"), ("orderProcessingMode", "conn")]
+    assert r.complete is True
+
+
+def test_a_local_java_variable_cut_is_scoped_to_the_callable_it_names(ref):
+    """The decisive scoping witness: ``arg0`` is a real edge variable under **both** ``buy`` and
+    ``completeOrder`` (so Ruling A admits either), and cutting it under ``completeOrder`` severs
+    nothing at all -- all 9 witnesses stand and nothing is refuted. An unscoped cut on a name that
+    recurs like this would sever flows the caller never named: over-cut, false refutation."""
+    assert "arg0" in ref._edge_vars_in(ref.resolve_callable(COMPLETE_ORDER).ref)
+    r = ref.taint(TAINT_SOURCES, TAINT_SINKS, sanitizers=[("arg0", COMPLETE_ORDER)], max_paths=10)
+    assert len(r.paths) == 9 and r.exhausted == []
+
+
+def test_a_local_java_variable_sanitizer_that_names_nothing_still_raises(ref):
+    """Ruling A widened the domain to edge variables; it did not remove the check. A typo is refused
+    loudly rather than silently cutting nothing -- a sanitizer that cuts nothing is the over-report
+    direction, but a caller who believes it cut something is the over-cut direction one step later."""
+    with pytest.raises(SelectorNotInGraph):
+        ref.taint(TAINT_SOURCES, TAINT_SINKS, sanitizers=[("nosuchvar", BUY)])

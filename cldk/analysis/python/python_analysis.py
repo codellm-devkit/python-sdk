@@ -53,7 +53,7 @@ import networkx as nx
 from tree_sitter import Tree
 
 from cldk.analysis.commons.backend_config import Neo4jConnectionConfig, PyBackend, PyCodeAnalyzerConfig, cache_subdir
-from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, FlowPaths, LocateResult, Slice, SliceNode
+from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, FlowPaths, LocateResult, Slice, SliceNode, TaintResult
 from cldk.analysis.commons.treesitter import TreesitterPython
 from cldk.analysis.python.backend import DEFAULT_DEPTH, DEFAULT_MAX_NODES, DEFAULT_MAX_PATHS, DEFAULT_PAGE_SIZE, PythonAnalysisBackend
 from cldk.analysis.python.codeanalyzer import PyCodeanalyzer
@@ -1392,6 +1392,81 @@ class PythonAnalysis:
                 ``callee``, which is a mistake worth stopping on rather than a ``False``.
         """
         return self.backend.flows_to_argument(src, callee, arg, within=within, depth=depth)
+
+    def taint(
+        self,
+        sources: Sequence[Tuple[str, str]],
+        sinks: Sequence[Tuple[str, str]],
+        sanitizers: Sequence[Tuple[str, str] | str] = (),
+        *,
+        depth: int | None = None,
+        max_paths: int = DEFAULT_MAX_PATHS,
+    ) -> TaintResult:
+        """Which of these sources reach which of these sinks, and what to make of the ones that do not.
+
+        Where :meth:`paths_between` proves *one* flow, this asks m sources against n sinks in one
+        traversal and reports, per pair, whether a flow was found, refuted, or neither::
+
+            r = py.taint(
+                sources=[("invoice_id", "PaymentPortal.invoice_transaction")],
+                sinks=[("query", "AccountMove._execute")],
+                sanitizers=["PaymentPortal._sanitize_id", ("checked_id", "PaymentPortal.invoice_transaction")],
+            )
+            for path in r.paths:                       # the witnesses
+                print(" -> ".join(h.to.name for h in path.hops))
+            for src, sink in r.exhausted:              # searched, nothing found
+                print(src, "does not reach", sink)
+            for d in r.unresolved:                     # neither: read this before either
+                print(d.code, d.message)
+
+        **``exhausted`` is the reason to call this and the only output that can do harm.** A pair
+        listed there was searched to exhaustion with nothing found — the refutation
+        :meth:`paths_between` cannot give you, since its ``[]`` cannot tell "no flow exists" from
+        "the flow left the resolved graph". It is listed only when all three hold: the pair has no
+        witness, no diagnostic in ``unresolved`` implicates it, and **``depth`` was ``None``**. An
+        explicit ``depth`` empties ``exhausted`` by rule and not by tendency, because a bound turns
+        a real long flow into an empty result, and a wrong refutation closes a live alert.
+
+        **``complete`` is the batch's flag, not the pair's.** One skipped or blocked pair makes it
+        ``False`` however cleanly the rest answered, and while it is ``False`` no absence claim
+        stands on *any* pair in the result — the ledger voids the whole batch's ``exhausted``, not
+        just the pair it names. Read ``unresolved`` first; ``complete`` on its own does not say
+        "ask again with a bigger ``max_paths``".
+
+        **Sources, sinks and sanitizers are yours to supply.** This SDK ships no framework
+        catalogue and derives no default set: a per-language vocabulary of taint sources is policy
+        that rots, and this is the mechanism. A sanitizer is two things wearing one word, told
+        apart by shape — a bare ``str`` cuts a *callable* on the path: a transforming sanitizer,
+        named as the wrapper *in this application* that calls ``html.escape``, because the bare
+        shape is resolved with :meth:`resolve_callable`. A ``(name, within)`` pair cuts a *variable*
+        inside that callable, which is the only thing that severs a *validating* guard, because a
+        guard never sits on the data path at all. Both cuts are applied inside the search, so what
+        comes back is the shortest **unsanitized** route rather than a filtered list of sanitized
+        ones.
+
+        Args:
+            sources: The values taint enters at, each ``(name, within)`` — the addressing
+                :meth:`paths_between` already uses.
+            sinks: The values it must not reach, addressed the same way.
+            sanitizers: Bare names cut callables; ``(name, within)`` pairs cut variables.
+            depth: Most hops a path may take; ``None`` (the default) for no bound, and
+                ``exhausted`` is empty whenever it is set.
+            max_paths: Most witnesses **per pair**, not per call — with one sink and forty sources
+                a flat cap would let one prolific pair starve the other thirty-nine.
+
+        Raises:
+            AmbiguousName: A name, or a sanitizer's ``within``, matched more than one thing.
+            SelectorNotInGraph: A name matched nothing, or a sanitizer's shape disagrees with what
+                it resolves to.
+            TypeError: ``sources`` or ``sinks`` is a bare string, which would unpack into a pair.
+            ValueError: ``depth`` is not a positive ``int``, ``max_paths`` is below 1, ``sources``
+                or ``sinks`` is empty, or a sanitizer names a blank variable.
+
+        See Also:
+            :meth:`paths_between`: One source, one sink, and no refutation.
+            :meth:`slice_forward`: What one value reaches, as a set.
+        """
+        return self.backend.taint(sources, sinks, sanitizers, depth=depth, max_paths=max_paths)
 
     def describe(self, nodes: Sequence[object]) -> List[SliceNode]:
         """Fill in ``source`` for these positions, in one round trip.
