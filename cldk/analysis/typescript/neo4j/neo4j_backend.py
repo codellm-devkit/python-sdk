@@ -16,7 +16,8 @@
 
 """Neo4j-backed TypeScript analysis backend (read-only Cypher client) on the codeanalyzer-typescript
 schema-v2 graph vocabulary -- 1.2.0's ``can://`` grammar with the application moved outermost in
-1.5.1, through the 1.5.2 pin.
+1.5.1, through the 1.6.0 pin (the graph floor stays 1.5.2 -- the pin is what the SDK installs,
+the floor what it requires of a graph).
 
 A drop-in alternative to :class:`TSCodeanalyzer`: the same query surface, every method answered by
 Cypher over a live graph that ``codeanalyzer-typescript --emit neo4j`` populated out of band. This

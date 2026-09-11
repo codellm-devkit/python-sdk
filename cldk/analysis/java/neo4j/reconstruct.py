@@ -14,11 +14,12 @@
 # limitations under the License.
 ################################################################################
 
-"""Rebuild the ``cldk.models.java`` (schema v2) models from codeanalyzer-java 3.0.1 Neo4j node and
-edge property maps.
+"""Rebuild the ``cldk.models.java`` (schema v2) models from codeanalyzer-java Neo4j node and edge
+property maps.
 
 Pure functions: they take the flat property dictionaries the analyzer's Neo4j projection wrote
-(``schema.neo4j.json`` at the 3.0.1 tag is the authority for what each label carries) and return
+(``schema.neo4j.json`` at the 3.2.0 tag -- the attach floor -- is the authority for what each label
+carries; schema v2 itself landed at 3.0.1) and return
 the same pydantic objects the in-memory :class:`~cldk.analysis.java.codeanalyzer.JCodeanalyzer`
 returns. :class:`~cldk.analysis.java.neo4j.JNeo4jBackend` fetches the rows and assembles the
 containment tree; the per-node shape lives here.
@@ -29,29 +30,31 @@ daytrader8 callables, ``is_wildcard`` only on wildcard imports). An absent boole
 ``False`` in the contract, and reading one with a ``False`` default is not a default hiding drift.
 Every non-boolean property the contract declares on a label is read with ``props[...]``.
 
+**Text is one blob per file, sliced by byte offsets** -- the canonical schema's model since v2, and
+what codeanalyzer-java 3.2.0 finally projects. ``:JModule.source`` carries the whole file (141 of 141
+modules on the 3.2.0 reference graph) and every other node's ``code`` is
+``source[start_byte:end_byte]``, which is what :meth:`JCompilationUnit.slice` does. Offsets are
+projected on ``:JField`` (659/659), ``:JVariable`` (863/863), ``:JType`` (152/152), ``:JCallable``
+(1,127/1,229, plus ``body_start_byte`` on 1,097) and ``:JBodyNode`` (6,726/13,544); the annotation
+*application*'s offsets ride ``J_ANNOTATED_BY`` (817 edges). The 102 callables without offsets are
+**exactly** the synthesized implicit ``<init>()`` -- never written, so there is no text to want --
+which is why no callable's text is reachable through a projected ``:JCallable.code`` and not through
+a slice: this module reads that property no longer, and :func:`span` is the only text path.
+
 What the projection does **not** carry, and therefore comes back at the model's own empty default
 (measured against the live graph, not assumed):
 
-* **``JModule.source``** -- the graph stores each *callable's* own text in ``JCallable.code`` and
-  nothing else, so a reconstructed :class:`JCompilationUnit` has ``source=""``. Its ``span`` is
-  unknown too (``:JModule`` carries no lines at all), so it rehydrates as the model's own ``-1``.
-  A callable is pointed at the text the graph did project through :func:`thread_code`; every other
-  node's ``code`` is ``""``.
-* **every column and every byte offset** -- the projection writes ``start_line`` and ``end_line``
-  and no position within a line, and no offset into a ``source`` it does not carry. Both are
-  reported as :data:`_UNKNOWN` (``-1``), the model's own "not known", on every node: a ``0`` would
-  read as column one and offset zero, which is a position, and a wrong one. **One exception, and it
-  is deliberate:** a :class:`JCallableParameter` comes back with the analyzer's own columns *and*
-  byte offsets, because the projection serialises the whole parameter list into
-  ``:JCallable.parameters_json`` and it round-trips exactly (see :func:`parameters`). Those byte
-  offsets index the module ``source`` the graph does not carry, so they locate the parameter in the
-  file on disk and nothing this backend can hand you; ``JCallableParameter.code`` is unreachable on
-  either backend (a parameter is never threaded to its compilation unit, so slicing raises rather
-  than returning a silent empty).
-* **``JCallable.body_span``** -- the graph projects one line range per callable, the *declaration*
-  span. So ``JCallable.code`` here is the whole declaration (``public void f() {…}``), where the
-  local backend's is the body block (``{…}``); ``code_start_line`` is the declaration's first line,
-  which is the body block's first line too except where the opening brace sits on a later line.
+* **every column** -- the projection writes ``start_line``/``end_line`` and no position within a
+  line, so both columns are :data:`_UNKNOWN` (``-1``) on every node: a ``0`` would read as column
+  one, which is a position and a wrong one. **One exception, and it is deliberate:** a
+  :class:`JCallableParameter` comes back with the analyzer's own columns, because the projection
+  serialises the whole parameter list into ``:JCallable.parameters_json`` and it round-trips exactly
+  (see :func:`parameters`). Its byte offsets index the same module ``source`` as everything else, but
+  a parameter is never threaded to its compilation unit, so ``JCallableParameter.code`` raises on
+  either backend rather than returning a silent empty.
+* **a module without ``source``** -- an unreadable or non-UTF-8 file. Nothing in the reference graph
+  is one, and the degradation is per *file* rather than per node: every node in that module slices
+  an empty string and reports ``""`` (see :func:`compilation_unit`).
 * **comments** -- there are no ``:JComment`` nodes (0 in the reference graph). A type, callable,
   field, enum constant and record component carries a single ``docstring`` property holding its
   javadoc, rebuilt here as a one-element ``comments`` list; a non-javadoc comment on a declaration,
@@ -59,8 +62,9 @@ What the projection does **not** carry, and therefore comes back at the model's 
 * **``JCallable.body``** -- only the ``call`` nodes are rebuilt (what ``call_sites`` is a view
   over), which is roughly **30%** of what the graph holds (4,006 of daytrader8's 13,436
   ``:JBodyNode``); the ``entry``/``exit``/``statement``/``branch``/``loop``/``return`` nodes and the
-  parameter lattice are not. A call site's ``arguments`` (body-key references) and both columns are
-  not projected either.
+  parameter lattice are not. A call site's ``arguments`` (body-key references) are not projected
+  either. The 6,818 synthetic vertices of the port lattice carry no offsets and want none: none of
+  them stands for source text.
 * **``JBodyNode.callee``** (226 populated on the committed daytrader8 ``-a 4`` fixture, 0 here) -- the
   ``can://`` id of the resolved callee. The projection puts that edge on ``J_RESOLVES_TO``, which
   this module reads into ``callee_signature`` instead, and an id has no home on the public surface
@@ -71,13 +75,13 @@ What the projection does **not** carry, and therefore comes back at the model's 
   to a call site. It follows from the comment gap above: the graph has no comment node to attach.
 * ``cfg`` / ``cdg`` / ``ddg`` / ``summary`` (``None``: 3b reads them per callable on demand),
   ``type_parameters``, ``JCompilationUnit.comments``, ``JApplication.param_in`` / ``param_out`` /
-  ``external_symbols``, and a decorator's / import's / enum constant's / record component's span.
+  ``external_symbols``, and an import's / enum constant's / record component's span.
 """
 
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 
 from cldk.models.java.models import (
     JArtifact,
@@ -101,63 +105,66 @@ from cldk.models.java.models import (
 Props = Mapping[str, Any]
 
 
-class _ProjectedText:
-    """Stands in for the owning :class:`JCompilationUnit` on a callable, so its ``code`` view reads
-    the text the graph projected for it.
-
-    ``:JModule`` carries no ``source``, so a reconstructed unit can slice nothing; ``:JCallable``
-    carries its own ``code``. The models reach the unit only through the private ``_unit``
-    back-reference, and only for :meth:`JCompilationUnit.slice` and ``package`` -- so pointing a
-    callable at one of these is what turns ``JCallable.code`` from an empty slice into that text
-    (see :func:`thread_code`).
-    """
-
-    __slots__ = ("_code", "package")
-
-    def __init__(self, code: str, package: str) -> None:
-        self._code, self.package = code, package
-
-    def slice(self, span: JSpan) -> str:
-        """The callable's whole projected text: the graph keeps one text per callable, not the
-        module source the span would index into."""
-        return self._code
-
-
-def thread_code(unit: JCompilationUnit, code: Mapping[str, str]) -> None:
-    """Point every callable in ``unit`` at its projected text, keyed by node id.
-
-    Runs after the unit is validated, because :meth:`JCompilationUnit.model_post_init` threads
-    itself onto every node it owns and would otherwise win.
-    """
-
-    def walk(t: JType) -> None:
-        for c in t.callables.values():
-            c._unit = _ProjectedText(code.get(c.id, ""), unit.package)
-            for local in c.types.values():
-                walk(local)
-        for nested in t.types.values():
-            walk(nested)
-
-    for top in unit.types.values():
-        walk(top)
-
-
 # ----------------------------------------------------------------------------------------------
 # leaves
 # ----------------------------------------------------------------------------------------------
-#: The model's own "not known". The graph stores ``start_line``/``end_line`` and nothing else, so
-#: every column, every byte offset, and the whole span of a node it carries no lines for, are *not
-#: projected* -- reported as this rather than as a ``0``, which would read as "column one, offset
-#: zero" and index into a ``source`` that is ``""``.
+#: The model's own "not known". The graph stores no column anywhere, and no byte offset on the
+#: nodes listed in the module docstring -- reported as this rather than as a ``0``, which would read
+#: as "column one, offset zero", a position and a wrong one.
 _UNKNOWN = -1
 
 
+def _byte_offsets(props: Props) -> Tuple[int, int]:
+    """``(start_byte, end_byte)`` -- the slice of the owning module's ``source`` this node's text is
+    -- or ``(-1, -1)`` when the projection carries no offsets for it.
+
+    **Both or neither.** A half-known pair is the one shape that reads as data rather than as a gap:
+    ``(b0, -1)`` slices from ``b0`` to one byte before the end of the file, a wrong answer where
+    ``(-1, -1)`` is an empty one.
+    """
+    b0, b1 = props.get("start_byte"), props.get("end_byte")
+    return (_UNKNOWN, _UNKNOWN) if b0 is None or b1 is None else (b0, b1)
+
+
 def span(props: Props) -> Optional[JSpan]:
-    """The line-only span the projection carries, or ``None`` when it carries no lines (an implicit
-    callable). Both columns and both byte offsets are :data:`_UNKNOWN`: the graph projects neither
-    (see the module docstring)."""
+    """The node's span, or ``None`` when the projection places it nowhere at all (an implicit
+    callable, which was never written).
+
+    Lines are the graph's own; **columns are never projected** and stay :data:`_UNKNOWN`; byte
+    offsets come from ``start_byte``/``end_byte``, which codeanalyzer-java 3.2.0 writes on every
+    node whose text is a slice of its module's ``source``. Offsets without lines still make a span
+    -- that is the ``J_ANNOTATED_BY`` edge, which locates the annotation *application* the shared
+    ``:JAnnotation`` node cannot (see :func:`decorator`).
+    """
     start, end = props.get("start_line"), props.get("end_line")
-    return None if start is None or end is None else JSpan(start=(start, _UNKNOWN), end=(end, _UNKNOWN), bytes=(_UNKNOWN, _UNKNOWN))
+    offsets = _byte_offsets(props)
+    if start is None or end is None:
+        if offsets == (_UNKNOWN, _UNKNOWN):
+            return None
+        start = end = _UNKNOWN
+    return JSpan(start=(start, _UNKNOWN), end=(end, _UNKNOWN), bytes=offsets)
+
+
+def body_span(props: Props) -> Optional[JSpan]:
+    """The callable's **body block**: ``body_start_byte`` opens it and the callable's own
+    ``end_byte`` closes it.
+
+    ``None`` when either is absent -- an abstract or interface method has no body, an implicit
+    ``<init>()`` was never written -- which is what makes :attr:`JCallable.code` fall back to the
+    declaration span, exactly as it does off ``analysis.json``.
+
+    *The closing offset is measured, not assumed.* The projection carries no ``body_end_byte``, and
+    across both committed fixtures (``analysis_json/v2/{a1,a4}``, 1,182 callables carrying both
+    spans) there is **no callable** whose ``body_span.bytes[1]`` differs from its ``span.bytes[1]``
+    -- a Java method declaration's last character *is* its body's closing brace. Lines:
+    ``body_start_line`` where the projection carries one, else :data:`_UNKNOWN`, and
+    :attr:`JCallable.code_start_line` falls back to the declaration's first line then; the end line
+    is the declaration's, which closes that same brace.
+    """
+    b0, b1 = props.get("body_start_byte"), props.get("end_byte")
+    if b0 is None or b1 is None:
+        return None
+    return JSpan(start=(props.get("body_start_line", _UNKNOWN), _UNKNOWN), end=(props.get("end_line", _UNKNOWN), _UNKNOWN), bytes=(b0, b1))
 
 
 def _unknown_span() -> JSpan:
@@ -173,9 +180,14 @@ def docstring(props: Props) -> List[JComment]:
 
 
 def decorator(node: Props, edge: Props) -> JDecorator:
-    """An annotation use from its ``:JAnnotation`` node (keyed by name) and the ``J_ANNOTATED_BY``
-    edge's ``arguments`` (the source spellings)."""
-    return JDecorator(name=node["name"], args=list(edge.get("arguments") or []))
+    """An annotation use, from its ``:JAnnotation`` node (keyed by name) and the ``J_ANNOTATED_BY``
+    edge's own properties: the ``arguments`` (the source spellings) and the application's position.
+
+    The span rides the **edge** because the node cannot hold it: ``:JAnnotation`` is shared
+    vocabulary, deduped across every use site in the application, so it has no single position. The
+    edge carries the offsets and no lines, which is why :func:`span` builds a span from offsets
+    alone."""
+    return JDecorator(name=node["name"], args=list(edge.get("arguments") or []), span=span(edge))
 
 
 def field(props: Props, decorators: List[JDecorator]) -> JField:
@@ -238,10 +250,9 @@ def body_node(props: Props, callee_signature: Optional[str]) -> JBodyNode:
     ``:JBodyNode`` at all; those figures are measured on the same analyzer's JSON, where the spans
     the key would have to agree with do exist.)
     """
-    start, end = props.get("start_line"), props.get("end_line")
     return JBodyNode(
         kind=props["kind"],
-        span=None if start is None or end is None else JSpan(start=(start, _UNKNOWN), end=(end, _UNKNOWN), bytes=(_UNKNOWN, _UNKNOWN)),
+        span=span(props),
         callee=props.get("callee"),
         method_name=props.get("method_name"),
         receiver_expr=props.get("receiver_expr"),
@@ -303,6 +314,7 @@ def callable_(
         is_entrypoint=bool(props.get("is_entrypoint", False)),
         entrypoint_frameworks=list(props.get("entrypoint_frameworks") or []),
         span=span(props),
+        body_span=body_span(props),
     )
 
 
@@ -337,14 +349,22 @@ def type_(
 
 
 def compilation_unit(props: Props, *, import_declarations: List[JImport], types: Dict[str, JType]) -> JCompilationUnit:
+    """The file, and with it the one text blob every node under it slices its own ``code`` out of
+    (:meth:`JCompilationUnit.slice`).
+
+    ``source`` is read with ``.get`` -- **the deliberate exception** to this module's rule that every
+    non-boolean property the contract declares is read with ``props[...]``. A module the analyzer
+    could not read or could not decode carries no text, and that has to mean "no text for this whole
+    file", every node in it reporting ``""``, rather than an attach that raises over one file.
+    """
     return JCompilationUnit(
         id=props["id"],
         package=props["package"],
-        source="",
+        source=props.get("source") or "",
         content_hash=props.get("content_hash"),
         imports=import_declarations,
         types=types,
-        span=_unknown_span(),
+        span=span(props) or _unknown_span(),
     )
 
 

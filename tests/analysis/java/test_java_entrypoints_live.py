@@ -186,9 +186,9 @@ def test_method_bodies_and_call_sites_are_keyed_the_same_way(backends):
     ref, neo = backends
     keys = sorted(o.key for o in ref.get_callables_overview())
     assert set(ref.get_method_bodies(keys)) == set(neo.get_method_bodies(keys)), "the two disagree about which callables have text"
-    # The text itself differs by backend exactly as ``get_source`` does (codeanalyzer-java#176):
-    # the graph's ``code`` is the whole declaration, which ends with the body block.
-    assert all(neo.get_method_bodies(keys)[k].endswith(ref.get_method_bodies(keys)[k]) for k in ref.get_method_bodies(keys))
+    # The text is the same on both since 3.2.0: the same body block, sliced out of the same
+    # ``:JModule.source`` (it was the whole declaration over Neo4j -- codeanalyzer-java#176).
+    assert neo.get_method_bodies(keys) == ref.get_method_bodies(keys)
     a, b = ref.get_callsites_for(keys), neo.get_callsites_for(keys)
     assert set(a) == set(b) == set(keys)
     # Sorted, not in list order: the graph projects no **column** for a body node, so two calls on
