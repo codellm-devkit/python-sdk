@@ -21,6 +21,9 @@ We welcome PRs across all our repositories! When submitting:
 
 ## Development Guidelines
 
+### Repository layout
+- See [docs/architecture.md](docs/architecture.md) for how the SDK's models, backends, and shared result types fit together
+
 ### Code Quality
 - Follow the repository's established patterns
 - Include appropriate documentation

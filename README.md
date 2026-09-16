@@ -26,83 +26,98 @@
 
 # Codellm-Devkit (CLDK)
 
-**A unified, multilingual program-analysis SDK for Code LLMs.** CLDK turns raw source code into structured, LLM-ready program facts — symbol tables, call graphs, type hierarchies, and more — behind a single Python API, so you can build analysis-augmented LLM pipelines without wrangling a different static-analysis tool for every language.
+CLDK is a Python SDK that runs static program analysis on Java, Python, and TypeScript code. AI agents and LLM applications query code in all three languages through one API. Support for other languages is in development. [Krishna et al. (2025)](https://doi.org/10.1145/3696630.3728555) describe the design and how it supplies program-analysis context to LLMs that work on code.
 
-Under the hood, CLDK orchestrates mature analysis engines (WALA, Tree-sitter, Jedi, PyCG, ts-morph) and normalizes their output into consistent, typed [Pydantic](https://docs.pydantic.dev/) models. You get the same ergonomic interface whether you are analyzing Java, Python, or TypeScript.
+CLDK unifies language-specific static-analysis tools, formats, and program models so agents need not reconcile them. Each analyzer emits one shared schema. The SDK maps that schema onto typed [Pydantic](https://docs.pydantic.dev/) models. The agent queries those models through the API. The API answers the questions an agent asks while it reads, tests, or changes code:
 
-CLDK is:
+- Which callable contains this line?
+- What calls it, and what does it call?
+- How does a value move through the program?
+- Which callables are entry points?
+- Which packages does the project depend on?
+- Which code reads a configuration key?
 
-- **Unified** — one framework and one mental model across languages and analysis backends.
-- **Extensible** — designed to take on new languages, engines, and graph backends (e.g. Neo4j).
-- **Streamlined** — raw code in, structured LLM-ready facts out, with the tooling complexity hidden.
+Two backends answer every query. The local backend runs the analyzer. The Neo4j backend reads a graph the analyzer wrote earlier and never runs the analyzer. Both give the same answer. Where a backend cannot answer, it refuses and says why. It never returns an empty value that reads like a real answer.
 
-> Developed at IBM Research. CLDK is an actively evolving project — issues and contributions are welcome.
-
-## Table of Contents
-
-- [Cited By](#cited-by)
-- [Installation](#installation)
-- [Quick Start](#quick-start)
-- [Supported Languages & Backends](#supported-languages--backends)
-- [Architecture](#architecture)
-- [Documentation](#documentation)
-- [Contributing](#contributing)
-- [Citation](#citation)
-- [Maintainers](#maintainers)
+CLDK is developed at IBM Software Innovation Labs. Issues and contributions are welcome.
 
 ## Installation
 
-```bash
-pip install cldk
-```
-
-Optional extras:
+CLDK requires Python 3.11 or newer.
 
 ```bash
-pip install "cldk[neo4j]"   # read-only Neo4j graph backend (Java / Python / TypeScript)
+pip install cldk             # Python and TypeScript analysis
+pip install "cldk[java]"     # adds the Java analyzer: the jar and a bundled JVM
+pip install "cldk[neo4j]"    # adds the read-only Neo4j backend
+pip install "cldk[all]"      # everything above
 ```
+
+**Java call graphs need a JDK.** The bundled JVM is enough for the symbol table. From the call-graph level up, the analyzer compiles the project with its Maven or Gradle wrapper. `JAVA_HOME` must then point to a JDK with `javac` (Java 11 or newer). Without one, the analyzer still exits 0 but emits a call graph with declared edges only. CLDK logs the degradation at `WARNING`.
+
+```bash
+export JAVA_HOME=/path/to/jdk   # must contain bin/javac
+```
+
+**Upgrading from 1.x.** The old entry point `CLDK(language="java").analysis(...)` still works. It emits a `DeprecationWarning`. Use the factory methods.
 
 ## Quick Start
 
-Create a language-specific analysis facade with the per-language factory methods, then query it:
+The three steps below take a Python project from disk to a question about its code. Java and TypeScript facades answer the same calls, so the same steps apply with a different factory.
 
-```python
-from cldk import CLDK
+1. Create a facade. Each factory returns a typed analysis facade for its language. The call-graph level covers all three steps.
 
-# Pick a language — each returns a typed analysis facade.
-analysis = CLDK.java(project_path="/path/to/java/project")
-# analysis = CLDK.python(project_path="/path/to/python/project")
-# analysis = CLDK.typescript(project_path="/path/to/ts/project")
-```
+   ```python
+   from cldk import CLDK
+   from cldk.analysis import AnalysisLevel
 
-Walk the symbol table and pull method bodies:
+   analysis = CLDK.python(
+       project_path="/path/to/python/project",
+       analysis_level=AnalysisLevel.call_graph,
+   )
+   # CLDK.java(...) and CLDK.typescript(...) take the same arguments.
+   ```
 
-```python
-from cldk import CLDK
+2. Find the callable at a line, and read its source.
 
-analysis = CLDK.java(project_path="/path/to/java/project")
+   ```python
+   hit = analysis.locate("src/app/handlers.py", line=42)
+   print(hit.callable.signature if hit.callable else "module scope")
+   print(hit.source)   # the enclosing callable's text
+   ```
 
-for file_path, class_file in analysis.get_symbol_table().items():
-    for type_name, type_declaration in class_file.type_declarations.items():
-        for method in type_declaration.callable_declarations.values():
-            body = analysis.get_method_body(method.declaration)
-            print(f"{type_name}.{method.declaration}\n{body}\n")
-```
+3. If the line was inside a callable, ask who calls it.
 
-Build a call graph by raising the analysis level:
+   ```python
+   for caller in analysis.callers_of(hit.callable.signature):
+       print(caller.callable, caller.file, caller.line)
+   ```
 
-```python
-from cldk import CLDK
-from cldk.analysis import AnalysisLevel
+[Query Surface](#query-surface) lists what else a facade answers. [Backends](#backends) shows how to read a graph from Neo4j instead of running the analyzer.
 
-analysis = CLDK.python(
-    project_path="/path/to/python/project",
-    analysis_level=AnalysisLevel.call_graph,
-)
-call_graph = analysis.get_call_graph()  # a networkx.DiGraph
-```
+## Query Surface
 
-Select a backend by passing a typed config. For example, query a pre-populated graph **read-only** over Neo4j (no source or analyzer run needed):
+Every family below is on all three facades, except where the table says otherwise. The [agent API reference](./docs/agent-api-reference.md) names each accessor with its return type, its cost, and what will mislead you.
+
+| Family | Question it answers |
+| --- | --- |
+| Addressing | Which callable owns this line? What does this name resolve to? |
+| Symbol table | What does the project declare? |
+| Declarations by kind | Which interfaces, enums, records, type aliases, exports, or functions exist? (Java and TypeScript, with a different set on each) |
+| Call graph | What calls this, and what does it call? |
+| Per-callable graphs | How do control and data flow inside one callable? |
+| Slices and paths | What does this value depend on, and where does it flow? |
+| Taint | Do these sources reach these sinks? You supply the names. |
+| Entry points | Where does execution enter the application? |
+| Bulk projections | What are the callables, their bodies, decorators, and call sites, in one pass? |
+| Repository artifacts | What does the project depend on, and which code reads which configuration key? |
+| View dispatches | Which code renders which template? (Java only) |
+| Comments | What do the comments and docstrings say? (Java only) |
+
+Deeper questions need a higher analysis level. The default level is the symbol table. Pass `analysis_level=` to raise it, as in Quick Start step 1. Where a backend or a language cannot answer, the accessor refuses rather than returning an empty result. The reference lists every such case.
+
+## Backends
+
+The type of the `backend=` configuration selects the backend. `CodeAnalyzerConfig` and its subclasses run the analyzer locally. This is the default. `Neo4jConnectionConfig` reads a graph the analyzer emitted earlier with `--emit neo4j`, so no source checkout is needed:
 
 ```python
 from cldk import CLDK
@@ -111,107 +126,56 @@ from cldk.analysis.commons.backend_config import Neo4jConnectionConfig
 analysis = CLDK.python(
     backend=Neo4jConnectionConfig(
         uri="bolt://localhost:7687",
-        application_name="my-app",  # the graph is populated out of band
+        username="neo4j",
+        password="...",
+        application_name="my-app",  # the --app-name the graph was loaded with
     ),
 )
-classes = analysis.get_all_classes()
 ```
 
-> **`project_path` with the Neo4j backend:** it's **optional** — the graph is read over Bolt, so you can omit it as shown above. CLDK validates `project_path` only when you actually pass one (it must exist and be a directory, on every backend); passing `None` skips that check. Supply a real path only if you also need on-disk source access (e.g. file content/snippets) alongside the graph.
+| Language | Analyzer | Built on | Runs as |
+| --- | --- | --- | --- |
+| Java | [`codeanalyzer-java`](https://github.com/codellm-devkit/codeanalyzer-java) | JavaParser and WALA | a subprocess on the bundled JVM |
+| Python | [`codeanalyzer-python`](https://github.com/codellm-devkit/codeanalyzer-python) | Jedi, the standard-library `ast`, and a vendored Scalpel alias oracle | in-process |
+| TypeScript / JavaScript | [`codeanalyzer-typescript`](https://github.com/codellm-devkit/codeanalyzer-typescript) | the TypeScript compiler via ts-morph, Rapid Type Analysis, and a def-use linker | a self-contained binary |
 
-> **Deprecation:** the old `CLDK(language="java").analysis(...)` entry point still works as a thin compatibility shim (it emits a `DeprecationWarning`). Prefer the `CLDK.java()` / `CLDK.python()` / `CLDK.typescript()` factory methods.
+The reference's [Attach](./docs/agent-api-reference.md#attach) section and the per-language sections after it list the graph versions each backend accepts. They also show how to migrate an older graph.
 
-## Supported Languages & Backends
+## Read Next
 
-Each language is analyzed by a dedicated `codeanalyzer-*` engine; CLDK normalizes the result into typed models exposed through the same API. All three also support an optional **read-only Neo4j backend** — pass a `Neo4jConnectionConfig` and the SDK answers the same queries with Cypher over a graph the analyzer populates out of band (`--emit neo4j`).
-
-| Language | Analysis engine | What it provides |
-| --- | --- | --- |
-| **Java** | [`codeanalyzer-java`](https://github.com/codellm-devkit/codeanalyzer-java) | WALA + JavaParser. Bytecode-level call graphs, type hierarchies, symbol resolution, CRUD-operation and entry-point detection. Optional read-only **Neo4j** graph backend. |
-| **Python** | [`codeanalyzer-python`](https://github.com/codellm-devkit/codeanalyzer-python) | Jedi with PyCG-based call graphs. Symbol tables, call graphs, and class/method resolution. Optional read-only **Neo4j** graph backend. |
-| **TypeScript / JavaScript** | [`codeanalyzer-typescript`](https://github.com/codellm-devkit/codeanalyzer-typescript) | ts-morph with Jelly-based call graphs. Symbols, call graph, types, decorators, and call sites. Optional read-only **Neo4j** graph backend. |
-
-The backend is selected by the **type** of the `backend=` config you pass to a factory: the in-process analyzer (default) or a `Neo4jConnectionConfig` for the read-only graph backend.
-
-> **Analysis cache (Python):** caching is owned by `codeanalyzer-python` — the backend virtualenv and analysis cache live under `cache_dir` (default `<project>/.codeanalyzer`). The first run is slower (it provisions the backend virtualenv) and later runs reuse a checksum-validated cache. Add the cache directory to your `.gitignore`.
-
-## Architecture
-
-The user interacts only with the top-level `CLDK` interface (`core.py`), which configures the session, initializes the language-specific pipeline, and exposes a high-level, language-agnostic API. Each language module is built from two pieces: **data models** and an **analysis backend**.
-
-```mermaid
-graph TD
-    User <--> CLDK
-    CLDK --> M[cldk.models<br/>typed Pydantic schemas]
-    CLDK --> A[cldk.analysis]
-
-    A --> J[cldk.analysis.java]
-    A --> P[cldk.analysis.python]
-    A --> T[cldk.analysis.typescript]
-
-    J --> EJ[codeanalyzer-java<br/>WALA · JavaParser]
-    P --> EP[codeanalyzer-python<br/>Jedi · PyCG]
-    T --> ET[codeanalyzer-typescript<br/>ts-morph · Jelly]
-
-    J -. read-only .-> N[(Neo4j)]
-    P -. read-only .-> N
-    T -. read-only .-> N
-```
-
-**Data models** — each language has its own set of Pydantic models under `cldk.models` (`cldk.models.java`, `cldk.models.python`, `cldk.models.typescript`). They give you structured, typed, dot-accessible representations of classes, methods, fields, and statements, with JSON serialization and shared conventions across languages.
-
-**Analysis backends** — each language has a backend under `cldk.analysis.<language>` that coordinates its engine (see the table above) and maps the result onto the data models. The read-only Neo4j backends (`cldk.analysis.<language>.neo4j`) reconstruct the *same* models from a Cypher graph, so they are drop-in interchangeable with the in-process analyzers. Backends are orchestrated internally; you only call high-level methods such as `get_symbol_table()`, `get_method_body(...)`, and `get_call_graph(...)`, and CLDK handles tool coordination, parsing, and marshalling under the hood.
-
-## Documentation
-
-Full documentation lives at **[codellm-devkit.info](https://codellm-devkit.info)**.
+- [docs/agent-api-reference.md](./docs/agent-api-reference.md) is the full reference. It opens with the four moves most questions decompose into, then lists every accessor with its cost.
+- [docs/skills/using-cldk/SKILL.md](./docs/skills/using-cldk/SKILL.md) is a Claude Code skill. It states the invariants an agent must hold. Ids are opaque, levels gate accessors, bounds are never silent, and a refusal is not an empty answer. To install it, copy the directory into your skills folder.
+- [docs/architecture.md](./docs/architecture.md) shows how the SDK is laid out, for contributors.
+- [codellm-devkit.info](https://codellm-devkit.info) holds the full documentation.
 
 ## Contributing
 
-We welcome contributors of all experience levels — see the [CONTRIBUTING](./CONTRIBUTING.md) guide to get started.
+We welcome contributors of all experience levels. See the [CONTRIBUTING](./CONTRIBUTING.md) guide to get started.
 
 ## Citation
 
 If you use CLDK in your research, please cite:
 
 ```bibtex
-@article{krishna2024codellm,
-  title   = {Codellm-Devkit: A Framework for Contextualizing Code LLMs with Program Analysis Insights},
-  author  = {Krishna, Rahul and Pan, Rangeet and Pavuluri, Raju and Tamilselvam, Srikanth and Vukovic, Maja and Sinha, Saurabh},
-  journal = {arXiv preprint arXiv:2410.13007},
-  year    = {2024}
+@inproceedings{krishna2025codellm,
+  title     = {Codellm-Devkit: A Framework for Contextualizing Code LLMs with Program Analysis Insights},
+  author    = {Krishna, Rahul and Pan, Rangeet and Pavuluri, Raju and Tamilselvam, Srikanth and Vukovic, Maja and Sinha, Saurabh},
+  booktitle = {Proceedings of the 33rd ACM International Conference on the Foundations of Software Engineering (FSE Companion '25)},
+  pages     = {308--318},
+  year      = {2025},
+  publisher = {ACM},
+  doi       = {10.1145/3696630.3728555}
 }
 ```
 
-## Cited By
-
-CLDK ([Krishna et al., 2024](https://arxiv.org/abs/2410.13007)) is used and cited in a growing body of research on program analysis and code LLMs:
-
-- **SAINT: Service-Level Integration Test Generation with Program Analysis and LLM-Based Agents** — Pan, Pavuluri, Huang, Krishna et al. (2026). *ICSE*. [arXiv:2511.13305](https://arxiv.org/abs/2511.13305)
-- **RECON: An LLM-Enhanced Backward Constraint Analysis Framework** — Bappah et al. (2026). [arXiv:2606.10264](https://arxiv.org/abs/2606.10264)
-- **Architecting Open, Accountable, and Trustworthy AI-IDEs** — Contreras, Guerra & de Lara (2026). *Automated Software Engineering*. [doi:10.1007/s10515-026-00608-x](https://doi.org/10.1007/s10515-026-00608-x)
-- **Resolving Java Code Repository Issues with iSWE Agent** — Ganhotra et al. (2026). [arXiv:2603.11356](https://arxiv.org/abs/2603.11356)
-- **HookLens: Visual Analytics for Understanding React Hooks Structures** — Hwang et al. (2026). *IEEE PacificVis*. [arXiv:2602.17891](https://arxiv.org/abs/2602.17891)
-- **ASTER: Natural and Multi-Language Unit Test Generation with LLMs** — Pan, Kim, Krishna, Pavuluri & Sinha (2025). *ICSE-SEIP*. [arXiv:2409.03093](https://arxiv.org/abs/2409.03093)
-- **PRAXIS: Integrating Program Analysis with Observability for Root-Cause Analysis** — Cui, Krishna & Jha et al. (2025). [arXiv:2512.22113](https://arxiv.org/abs/2512.22113)
-- **Examining Software Developers' Needs for Privacy Enforcing Techniques: A Survey** — Theophilou & Kapitsaki (2025). *ACM SAC*. [arXiv:2512.14756](https://arxiv.org/abs/2512.14756)
-- **LLM as an Execution Estimator: Recovering Missing Dependency for Practical Time-Travelling Debugging** — Pei, Wang & Zhang et al. (2025). [arXiv:2508.18721](https://arxiv.org/abs/2508.18721)
-- **Agentic Multi-Modal LLMs for Software Comprehension: Structuring Code Summarization with Business Process Awareness** — Tamilselvam & Saxena (2025). *IEEE SSE*. [doi:10.1109/SSE67621.2025.00024](https://doi.org/10.1109/SSE67621.2025.00024)
-- **Phaedrus: Predicting Dynamic Application Behavior with Lightweight Generative Models and LLMs** — Chatterjee, Jadhav & Pande (2024). *PACMPL (OOPSLA)*. [arXiv:2412.06994](https://arxiv.org/abs/2412.06994)
-
-<sub>List compiled from Semantic Scholar / OpenAlex citation data; please open a PR to add a missing paper.</sub>
-
-Related publications:
-
-1. Pan, Rangeet, Myeongsoo Kim, Rahul Krishna, Raju Pavuluri, and Saurabh Sinha. "[Multi-language Unit Test Generation using LLMs.](https://arxiv.org/abs/2409.03093)" arXiv preprint arXiv:2409.03093 (2024).
-2. Pan, Rangeet, Rahul Krishna, Raju Pavuluri, Saurabh Sinha, and Maja Vukovic. "[Simplify your Code LLM solutions using CodeLLM Dev Kit (CLDK).](https://www.linkedin.com/pulse/simplify-your-code-llm-solutions-using-codellm-dev-kit-rangeet-pan-vnnpe/)" Blog.
+Research that uses or cites CLDK is listed in [docs/citations.md](./docs/citations.md).
 
 ## Maintainers
 
 | Name | Email |
 | --- | --- |
-| Rahul Krishna | [i.m.ralk@gmail.com](mailto:imralk+oss@gmail.com) |
-| Rangeet Pan | [rangeet.pan@ibm.com](mailto:rangeet.pan@gmail.com) |
+| Rahul Krishna | [i.m.ralk@gmail.com](mailto:i.m.ralk@gmail.com) |
+| Rangeet Pan | [rangeet.pan@ibm.com](mailto:rangeet.pan@ibm.com) |
 | Saurabh Sinha | [sinhas@us.ibm.com](mailto:sinhas@us.ibm.com) |
 
 Licensed under the [Apache License 2.0](./LICENSE).
