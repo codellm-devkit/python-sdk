@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.0.0-rc.8] - 2026-09-15
+
+### Changed
+
+- `codeanalyzer-python` pin `1.5.2` → **`1.5.3`** (`dependencies` and `[tool.backend-versions]`,
+  `python-sdk#410`). Two analyzer fixes, neither moving the schema (`schema_version` and the graph
+  `SCHEMA_VERSION` stay `2.0.0`; `PyNeo4jBackend._ANALYZER_FLOOR` stays `1.5.0`):
+  - the analyzer no longer ingests its own output (codeanalyzer-python#207). `discover_artifacts`
+    had no idea where the run writes, so an output or cache directory inside the input made run N
+    inventory run N-1's `analysis.json` and embed it whole. This SDK's default `cache_dir` is
+    `<project>/.codeanalyzer`, inside the input, so every local run was exposed.
+  - one body node per call site when two calls share a start position (codeanalyzer-python#215).
+    `getattr(o, n)(x)` starts the outer application and the inner `getattr` at the same column, and
+    the position-keyed `body` kept the inner one. Keys now carry a `/2`, `/3` disambiguator,
+    outermost first; `body_key_column` already splits on `/` and needed no change. A key that used
+    to collide now names the **outer** call, and a call whose callee is itself a call carries
+    `callee_signature: null` with `method_name: "<unknown>"`.
+
+### Verification
+
+The Python tier offline (`tests/analysis/python`, mocked Neo4j and the in-process analyzer):
+482 passed, 168 skipped, on 1.5.2 and on 1.5.3 alike — every skip is a live-Neo4j tier. No fixture
+expectation moved.
+
 ## [v2.0.0-rc.7] - 2026-09-11
 
 The Java facade learns the view layer codeanalyzer-java 3.3.0–3.3.2 added, and the 2.0 line takes up

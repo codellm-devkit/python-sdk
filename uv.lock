@@ -351,7 +351,7 @@ requires-dist = [
     { name = "cldk", extras = ["java"], marker = "extra == 'all'" },
     { name = "cldk", extras = ["neo4j"], marker = "extra == 'all'" },
     { name = "codeanalyzer-java", marker = "extra == 'java'", specifier = "==3.3.3" },
-    { name = "codeanalyzer-python", specifier = "==1.5.2" },
+    { name = "codeanalyzer-python", specifier = "==1.5.3" },
     { name = "codeanalyzer-typescript", specifier = "==1.6.0" },
     { name = "neo4j", marker = "extra == 'neo4j'", specifier = ">=5.14,<7" },
     { name = "networkx", specifier = ">=3.4.2,<4" },
@@ -409,7 +409,7 @@ wheels = [
 
 [[package]]
 name = "codeanalyzer-python"
-version = "1.5.2"
+version = "1.5.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "astor" },
@@ -426,9 +426,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "uv" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/71/c1/c76ad3a531d02f2548a8128c17c33c01c0d5aec240bd8e0dad93411590c3/codeanalyzer_python-1.5.2.tar.gz", hash = "sha256:18b1d81c44f0e0f1ab8dcb36a144345c58a51a55394a1a2b359d92c97c43df84", size = 234282, upload-time = "2026-09-10T21:45:35.272Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/59/9f/898ffe729c71c3ff1f1d1d8f13463c3a315c1d448152807bb66ff30d2b5b/codeanalyzer_python-1.5.3.tar.gz", hash = "sha256:d1ee224698c22a7c376b88e8b4431ac96a15949a789474c7c4490f7de958bbf1", size = 236787, upload-time = "2026-09-14T21:02:05.093Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/60/12/61fbed9875b06c061b24fcf4363e96215431db86efd895a2f4bd966c1d4f/codeanalyzer_python-1.5.2-py3-none-any.whl", hash = "sha256:7c0e1ed0b91fde5376f5c0cae70d48f85e83b0ff9e737c923b37c8e3375e2cd2", size = 239571, upload-time = "2026-09-10T21:45:33.895Z" },
+    { url = "https://files.pythonhosted.org/packages/8b/22/04258091baf77cebbd51c8a55792dd7383f853f723020a6faf4f5fb99b1f/codeanalyzer_python-1.5.3-py3-none-any.whl", hash = "sha256:6049e8bd8d27ebb73f8ae9dfd5eed6f21bc06f94348f3458c10806e243597328", size = 242306, upload-time = "2026-09-14T21:02:03.694Z" },
 ]
 
 [[package]]
