@@ -26,6 +26,10 @@ py = CLDK.python(project_path=".", backend=Neo4jConnectionConfig(
 py = CLDK.python(project_path="/path/to/project", backend=PyCodeAnalyzerConfig())
 ```
 
+`project_path` is optional with `Neo4jConnectionConfig`. Pass it when you also want file contents read from disk. Any `project_path` you pass must exist and be a directory, on every backend.
+
+**Analysis cache.** Local runs write under `cache_dir`. The default is `<project>/.codeanalyzer`, with one subdirectory per language. The Python analyzer also builds a virtualenv for the project there. The first Python run is therefore slower than later runs. Add the directory to your `.gitignore`.
+
 Attaching raises `GraphSchemaMismatch` if the graph was built by a different analyzer generation.
 That is deliberate: the alternative is every query silently returning zero rows. If you see it,
 the graph needs re-ingesting — it is not a bug in your query.
@@ -320,6 +324,12 @@ java = CLDK.java(project_path="/path/to/project", analysis_level="system_depende
 java = CLDK.java(backend=Neo4jConnectionConfig(
     uri="bolt://localhost:7687", username="neo4j", password="…",
     application_name="daytrader8"))
+```
+
+**Java call graphs need a JDK.** The bundled JVM is enough for level 1. From level 2 the analyzer compiles the project with its Maven or Gradle wrapper. `JAVA_HOME` must then point to a JDK with `javac` (Java 11 or newer). Without one, the run still exits 0 but degrades to declared call edges. [Diagnostics](#diagnostics) describes what the SDK records.
+
+```bash
+export JAVA_HOME=/path/to/jdk   # must contain bin/javac
 ```
 
 **Analyzer floor: codeanalyzer-java 3.2.0** (the pin is `[tool.backend-versions]` in
