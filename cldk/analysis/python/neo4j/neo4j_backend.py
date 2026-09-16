@@ -2064,6 +2064,13 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     # 1.4.1's own ``:PyCanNode(id)`` range index was measured and rejected: it spans all 955,961
     # application nodes, so seeking it walked a 40x larger range (locate 54 ms, but
     # ``_RESOLVE_CALLABLE_QUERY`` 19 -> 210 ms), and 1.4.0 graphs have no such label at all.
+    #
+    # The ``PY_DECORATED_BY`` disjunct (#408) adds one relationship expansion per candidate
+    # callable. Measured on odoo-slim-19 re-emitted by codeanalyzer-python 1.5.3 at level 1 (1,626
+    # modules, 15,549 callables, 5,615 decorator edges), 40 positions (20 decorator lines, 20 body
+    # lines), median of 5, same graph both ways: 71.0 ms without the disjunct placing 20/40, 70.2 ms
+    # with it placing 40/40. The plan still seeks ``pysymbol_id`` (``NodeUniqueIndexSeekByRange``);
+    # the disjunct runs as a ``SelectOrSemiApply`` over the seek's rows, never as a scan.
     _LOCATE_QUERY = (
         "UNWIND $positions AS pos "
         "OPTIONAL MATCH (:PyApplication {id: $app_id})-[:PY_HAS_MODULE]->(m:PyModule {file_key: pos.path}) "
