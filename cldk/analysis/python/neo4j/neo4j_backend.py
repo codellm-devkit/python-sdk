@@ -2037,7 +2037,15 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     #   the position is the innermost callable, which naturally treats a gap between two callables
     #   (or a module top-level line) the same way: no callable matches, so it falls through to
     #   module_scope rather than snapping to a neighbour. PY_HAS_METHOD is walked reversed for the
-    #   owning class (``type``);
+    #   owning class (``type``). ``start_line`` is the ``def`` line (``ast.FunctionDef.lineno``), and
+    #   Python's AST puts decorators *above* it, so a position on ``@http.route(...)`` sits in no
+    #   callable span; the ``EXISTS`` disjunct admits the callable whose ``PY_DECORATED_BY`` edge is
+    #   applied at or before the position and above its ``def`` (#408). The edge's ``start_line``
+    #   arrived with codeanalyzer-python 1.5.2; on an older graph the comparison is null, the
+    #   disjunct is false, and the position is module scope exactly as before. A decorated *class*
+    #   is not a callable and is deliberately not admitted. Ranking is unchanged — the def-based
+    #   width — so a decorator on a nested callable, which also lies inside the enclosing
+    #   callable's span, still resolves to the nested (narrower) one;
     # * the **body node** comes from PY_HAS_BODY_NODE off that same candidate callable, again by
     #   line containment, innermost first. Synthetic vertices (@entry / @exit / @formal_in:N) carry
     #   no span, so the emitter prunes their start_line/end_line away entirely — the
@@ -2056,6 +2064,13 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     # 1.4.1's own ``:PyCanNode(id)`` range index was measured and rejected: it spans all 955,961
     # application nodes, so seeking it walked a 40x larger range (locate 54 ms, but
     # ``_RESOLVE_CALLABLE_QUERY`` 19 -> 210 ms), and 1.4.0 graphs have no such label at all.
+    #
+    # The ``PY_DECORATED_BY`` disjunct (#408) adds one relationship expansion per candidate
+    # callable. Measured on odoo-slim-19 re-emitted by codeanalyzer-python 1.5.3 at level 1 (1,626
+    # modules, 15,549 callables, 5,615 decorator edges), 40 positions (20 decorator lines, 20 body
+    # lines), median of 5, same graph both ways: 71.0 ms without the disjunct placing 20/40, 70.2 ms
+    # with it placing 40/40. The plan still seeks ``pysymbol_id`` (``NodeUniqueIndexSeekByRange``);
+    # the disjunct runs as a ``SelectOrSemiApply`` over the seek's rows, never as a scan.
     _LOCATE_QUERY = (
         "UNWIND $positions AS pos "
         "OPTIONAL MATCH (:PyApplication {id: $app_id})-[:PY_HAS_MODULE]->(m:PyModule {file_key: pos.path}) "
@@ -2063,7 +2078,8 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         "OPTIONAL MATCH (c:PyCallable:PySymbol) "
         "WHERE c.id STARTS WITH pos.module_prefix "
         "AND c.start_line IS NOT NULL AND c.end_line IS NOT NULL "
-        "AND c.start_line <= pos.line AND pos.line <= c.end_line "
+        "AND ((c.start_line <= pos.line AND pos.line <= c.end_line) "
+        "OR EXISTS { (c)-[r:PY_DECORATED_BY]->() WHERE r.start_line <= pos.line AND pos.line < c.start_line }) "
         "WITH pos, m, c "
         "OPTIONAL MATCH (cls:PyClass)-[:PY_HAS_METHOD]->(c) "
         "WITH pos, m, c, cls "

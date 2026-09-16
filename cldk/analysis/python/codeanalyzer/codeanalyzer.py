@@ -301,12 +301,29 @@ def _resolve_callee(
     return cs if resolved == cs.callee_signature else cs.model_copy(update={"callee_signature": resolved})
 
 
+def _decorator_covers(c: PyCallable, line: int) -> bool:
+    """Whether ``line`` sits on (or between) the decorators applied to ``c`` -- at or after the first
+    recorded decorator's line and above ``c.start_line``, the ``def`` line. The same predicate the
+    Neo4j backend's ``PY_DECORATED_BY`` disjunct evaluates, so the two backends admit the same
+    callable for a decorator position (#408).
+
+    A decorator whose ``span`` was not recorded (every analysis from codeanalyzer-python 1.5.1 or
+    earlier) is skipped: nothing is inferred from the decorator's mere presence, so such a position
+    stays module scope exactly as before. Line-level only, deliberately -- the span starts at the
+    decorator *expression*, one column past the ``@``, so a column test would miss the ``@`` itself.
+    """
+    return any(d.span is not None and d.span.start[0] <= line < c.start_line for d in c.decorators)
+
+
 def _find_innermost(module: PyModule, line: int) -> Tuple[PyCallable, "PyClass | None"] | None:
     """The callable (and its immediate owning class, if any) whose span most tightly contains
     ``line`` — innermost first, so a closure nested inside a method wins over the method itself.
 
     Only real callable spans count: a blank line, a comment, or a gap between two callables' spans
-    contains no callable and must never snap to the nearest one (see :meth:`locate`).
+    contains no callable and must never snap to the nearest one (see :meth:`locate`). The one
+    widening is a decorator line: ``start_line`` is the ``def`` line and the AST puts decorators
+    above it, so :func:`_decorator_covers` admits the callable a decorator at that position applies
+    to (#408). The rank stays the def-based width, which is what the Neo4j backend ranks on too.
 
     Equal line widths tie — ``def one(self): return lambda: 2`` nests two callables on one line — and
     lines are all the Neo4j projection carries, so the tie breaks on the *longer signature*: a nested
@@ -322,7 +339,7 @@ def _find_innermost(module: PyModule, line: int) -> Tuple[PyCallable, "PyClass |
         nonlocal best, best_rank
         if c.start_line < 0 or c.end_line < 0:
             return
-        if not (c.start_line <= line <= c.end_line):
+        if not (c.start_line <= line <= c.end_line or _decorator_covers(c, line)):
             return
         rank = (c.end_line - c.start_line, -len(c.signature), c.signature)
         if best_rank is None or rank < best_rank:

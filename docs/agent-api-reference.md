@@ -525,6 +525,7 @@ class LocateResult:
 | inside a callable | `callable` is set, no diagnostic |
 | module top level | `callable is None`, diagnostic `module_scope` — a **real position**, not an absence |
 | between two callables | same as module scope; it never snaps to the nearest callable |
+| on a decorator line (Python) | `callable` is the decorated callable, no diagnostic. `start_line` is the `def` line, so the decorators sit above every span; both backends read where the decorator is *applied* (`decorators[].span` locally, `PY_DECORATED_BY.start_line` on a graph emitted by codeanalyzer-python ≥ 1.5.2; older graphs keep reporting `module_scope`). A **class** decorator is still module scope |
 | file not analysed | diagnostic `file_not_in_graph` — distinct from a file that doesn't exist |
 
 **Gotcha:** on **Python and TypeScript** over Neo4j, module-scope `source` is empty and carries
