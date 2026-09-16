@@ -355,3 +355,98 @@ def test_locate_body_key_column_is_parsed_not_string_compared():
     assert body_key_column("@entry") == -1  # synthetic vertices carry no column
     assert "29:10" < "29:4"  # ...which is why the string comparison had to go
     assert body_key_column("29:10") > body_key_column("29:4")
+
+
+# ================================================================================================
+# Decorator lines (#408). ``PyCallable.start_line`` is the ``def`` line -- codeanalyzer-python sets
+# it from ``ast.FunctionDef.lineno``, and Python's AST puts decorators *above* that line -- so a
+# position on a decorator sits inside no callable span and used to fall through to ``module_scope``.
+# A routed controller's ``@http.route(...)`` line is not module scope; it is the method's. Both
+# backends read the applied position the analyzer already records: ``PyCallable.decorators[].span``
+# locally, ``PY_DECORATED_BY.start_line`` on the graph (codeanalyzer-python 1.5.2).
+# ================================================================================================
+def test_locate_decorator_line_resolves_to_the_decorated_method(py_either):
+    """Line 31 is ``@property``, two lines above ``def cached``."""
+    r = py_either.locate("src/app.py", 31)
+    assert r.callable.signature == "src.app.Store.cached"
+    assert r.type.signature == "src.app.Store"
+    assert r.callable.class_signature == "src.app.Store"
+    assert r.diagnostics == []
+    assert r.body is None  # no body node starts above the def line
+
+
+def test_locate_every_line_from_the_first_decorator_to_end_line_is_the_method(py_either):
+    """A position between two decorators of one callable (line 32) resolves to it as well."""
+    for line in (31, 32, 33, 34):
+        r = py_either.locate("src/app.py", line)
+        assert r.callable is not None, line
+        assert r.callable.signature == "src.app.Store.cached", line
+        assert r.diagnostics == [], line
+
+
+def test_locate_decorator_on_a_nested_callable_resolves_to_the_nested_one(py_either):
+    """Line 37 (``@staticmethod``) lies inside ``outer``'s span *and* above ``helper``'s def.
+    ``helper`` wins on width, as the existing innermost rule says -- asserted, not assumed."""
+    r = py_either.locate("src/app.py", 37)
+    assert r.callable.signature == "src.app.Store.outer.<locals>.helper"
+    assert r.callable.class_signature is None
+    assert r.type is None
+    assert r.diagnostics == []
+    # ...and one line up, the enclosing method still owns the position.
+    assert py_either.locate("src/app.py", 36).callable.signature == "src.app.Store.outer"
+
+
+def test_locate_blank_line_between_callables_is_still_module_scope(py_either):
+    """The widening must not turn into a nearest-callable fallback: a blank line above a decorated
+    callable (30) and one below it (35) contain no callable and no decorator."""
+    for line in (30, 35, 41):
+        r = py_either.locate("src/app.py", line)
+        assert r.callable is None, line
+        assert r.type is None, line
+        assert "module_scope" in [d.code for d in r.diagnostics], line
+
+
+def test_locate_class_decorator_is_still_module_scope(py_either):
+    """``@dataclass`` on line 47 applies to a *class*, not a callable. A result with ``type`` set and
+    ``callable`` unset would be a new shape; until that is decided, the position keeps today's
+    behaviour -- pinned so the out-of-scope decision is visible rather than assumed."""
+    r = py_either.locate("src/app.py", 47)
+    assert r.callable is None
+    assert r.type is None
+    assert "module_scope" in [d.code for d in r.diagnostics]
+
+
+def test_locate_decorator_without_a_recorded_span_keeps_todays_behaviour(py_either):
+    """``@legacy`` on line 42 is recorded with no span -- the shape of every analysis and graph from
+    codeanalyzer-python 1.5.1 or earlier. Nothing raises, and the position is module scope exactly
+    as before; the ``def`` line itself (43) still resolves."""
+    r = py_either.locate("src/app.py", 42)
+    assert r.callable is None
+    assert "module_scope" in [d.code for d in r.diagnostics]
+    assert py_either.locate("src/app.py", 43).callable.signature == "src.app.Store.old"
+
+
+def test_locate_parity_decorator_positions_agree(py, py_local):
+    """Both backends, position by position, over every decorator-adjacent line the fixture has."""
+
+    def probe(backend, line):
+        r = backend.locate("src/app.py", line)
+        return (
+            r.callable.signature if r.callable else None,
+            r.type.signature if r.type else None,
+            r.body is None,
+            [d.code for d in r.diagnostics if d.code != "module_source_unavailable"],
+        )
+
+    lines = [30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 47]
+    assert [probe(py, line) for line in lines] == [probe(py_local, line) for line in lines]
+
+
+def test_locate_query_reads_the_decorator_edge_and_keeps_the_pysymbol_seek(py, fake_driver):
+    """The widening is one ``EXISTS`` disjunct over ``PY_DECORATED_BY``, and it must not cost the
+    per-module index seek ``test_locate_and_resolve_seek_the_pysymbol_index`` pins."""
+    py.locate("src/app.py", 31)
+    statement = next(s for s in fake_driver.statements if "UNWIND $positions AS pos" in s)
+    assert "OPTIONAL MATCH (c:PyCallable:PySymbol) " in statement
+    assert "[r:PY_DECORATED_BY]" in statement
+    assert "r.start_line <= pos.line AND pos.line < c.start_line" in statement

@@ -34,7 +34,7 @@ from cldk.analysis.commons.backend_config import Neo4jConnectionConfig
 
 from cldk.analysis.python.codeanalyzer.codeanalyzer import PyCodeanalyzer
 from cldk.analysis.python.neo4j import PyNeo4jBackend
-from cldk.models.python import BodyNode, PyApplication, PyCallable, PyClass, PyModule, Span
+from cldk.models.python import BodyNode, PyApplication, PyCallable, PyClass, PyDecorator, PyModule, Span
 
 # The full vocabulary codeanalyzer-python 1.4.0 emits (see cldk/analysis/python/neo4j/neo4j_backend
 # .py's module docstring / the leg-1 brief) — a reasonable "healthy v2 graph" default so fixtures
@@ -256,6 +256,26 @@ _LOCATE_SOURCE_LINES = [
     "",  # 27
     "    def two(self, x):",  # 28
     "        if x: return x",  # 29 — two body nodes tie on line width
+    "",  # 30
+    "    @property",  # 31 — first decorator: ast puts it *above* FunctionDef.lineno (#408)
+    "    @functools.lru_cache(maxsize=8)",  # 32 — second decorator
+    "    def cached(self):",  # 33 — start_line
+    "        return 3",  # 34
+    "",  # 35
+    "    def outer(self):",  # 36
+    "        @staticmethod",  # 37 — a decorator on a *nested* callable, inside outer's span
+    "        def helper():",  # 38
+    "            return 4",  # 39
+    "        return helper",  # 40
+    "",  # 41
+    "    @legacy",  # 42 — a decorator whose span the analyzer did not record (pre-1.5.2 shape)
+    "    def old(self):",  # 43
+    "        return 5",  # 44
+    "",  # 45
+    "",  # 46
+    "@dataclass",  # 47 — a *class* decorator: no callable applies, so still module scope
+    "class Config:",  # 48
+    "    x: int = 0",  # 49
 ]
 _LOCATE_MODULE_SOURCE = "".join(line + "\n" for line in _LOCATE_SOURCE_LINES)
 
@@ -294,6 +314,9 @@ _LOCATE_CLASSES = {
 # analysis vertices (@entry/@exit/@formal_in:N) that carry no span and can never contain a position.
 # ``has_span`` False is a callable the analyzer emitted with no span at all — an abstract method or a
 # protocol stub — whose source is unrecoverable, and which must degrade rather than raise.
+# ``decorators`` lists (name, start_line, end_line) where each decorator is *applied*; ``None`` lines
+# are a decorator the analyzer recorded without a span (every graph from 1.5.1 or earlier, and the
+# local ``PyDecorator.span`` default), which must leave ``locate`` exactly where it was (#408).
 _LOCATE_CALLABLE_SPECS = [
     {
         "signature": "src.app.Store.Meta.tag",
@@ -374,6 +397,45 @@ _LOCATE_CALLABLE_SPECS = [
         "has_span": False,
         "body": {},
     },
+    {
+        "signature": "src.app.Store.cached",
+        "name": "cached",
+        "start_line": 33,  # the ``def`` line; the decorators sit on 31-32, above it
+        "end_line": 34,
+        "class_signature": "src.app.Store",
+        "has_span": True,
+        "body": {"34:8": ("return", 34, 34)},
+        "decorators": [("property", 31, 31), ("functools.lru_cache", 32, 32)],
+    },
+    {
+        "signature": "src.app.Store.outer",
+        "name": "outer",
+        "start_line": 36,
+        "end_line": 40,
+        "class_signature": "src.app.Store",
+        "has_span": True,
+        "body": {"40:8": ("return", 40, 40)},
+    },
+    {
+        "signature": "src.app.Store.outer.<locals>.helper",
+        "name": "helper",
+        "start_line": 38,
+        "end_line": 39,
+        "class_signature": None,
+        "has_span": True,
+        "body": {"39:12": ("return", 39, 39)},
+        "decorators": [("staticmethod", 37, 37)],  # line 37 is also inside outer's 36-40
+    },
+    {
+        "signature": "src.app.Store.old",
+        "name": "old",
+        "start_line": 43,
+        "end_line": 44,
+        "class_signature": "src.app.Store",
+        "has_span": True,
+        "body": {"44:8": ("return", 44, 44)},
+        "decorators": [("legacy", None, None)],  # recorded, but with no span
+    },
 ]
 _LOCATE_SPEC = {c["signature"]: c for c in _LOCATE_CALLABLE_SPECS}
 
@@ -396,6 +458,7 @@ def _locate_pycallable(spec: dict, **children: Any) -> PyCallable:
         start_line=spec["start_line"],
         end_line=spec["end_line"],
         body={key: BodyNode(kind=kind, span=_locate_span(s, e) if s is not None else None) for key, (kind, s, e) in spec["body"].items()},
+        decorators=[PyDecorator(name=name, expression=f"@{name}", span=_locate_span(s, e) if s is not None else None) for name, s, e in spec.get("decorators", [])],
         **children,
     )
 
@@ -404,6 +467,7 @@ def _locate_application() -> PyApplication:
     """The fixture module as the in-process analyzer would hand it over."""
     inner = _locate_pycallable(_LOCATE_SPEC["src.app.Store.wrap.<locals>.inner"])
     lam = _locate_pycallable(_LOCATE_SPEC["src.app.Store.one.<locals>.<lambda>"])
+    helper = _locate_pycallable(_LOCATE_SPEC["src.app.Store.outer.<locals>.helper"])
     meta = PyClass(
         name="Meta",
         signature="src.app.Store.Meta",
@@ -418,13 +482,19 @@ def _locate_application() -> PyApplication:
             "one": _locate_pycallable(_LOCATE_SPEC["src.app.Store.one"], callables={"<lambda>": lam}),
             "two": _locate_pycallable(_LOCATE_SPEC["src.app.Store.two"]),
             "stub": _locate_pycallable(_LOCATE_SPEC["src.app.Store.stub"]),
+            "cached": _locate_pycallable(_LOCATE_SPEC["src.app.Store.cached"]),
+            "outer": _locate_pycallable(_LOCATE_SPEC["src.app.Store.outer"], callables={"helper": helper}),
+            "old": _locate_pycallable(_LOCATE_SPEC["src.app.Store.old"]),
         },
         types={"src.app.Store.Meta": meta},
     )
+    # A decorated *class*: the decorator applies to no callable, so a position on it stays module
+    # scope on both backends (#408 leaves the class case for its own decision).
+    config = PyClass(name="Config", signature="src.app.Config", decorators=[PyDecorator(name="dataclass", expression="@dataclass", span=_locate_span(47, 47))])
     module = PyModule(
         file_path=_LOCATE_MODULE_PATH,
         module_name="src.app",
-        types={"src.app.Store": store},
+        types={"src.app.Store": store, "src.app.Config": config},
         source=_LOCATE_MODULE_SOURCE,
     )
     return PyApplication(symbol_table={_LOCATE_MODULE_PATH: module})
@@ -482,6 +552,21 @@ def _locate_body_props(spec: dict) -> list[dict]:
     ]
 
 
+def _locate_contains(spec: dict, line: int, query: str) -> bool:
+    """The callable WHERE clause, evaluated the way Cypher would.
+
+    Plain span containment always; the ``PY_DECORATED_BY`` disjunct (#408) only when the query
+    actually names the relationship, and then only over decorator edges that *carry* a
+    ``start_line`` -- ``r.start_line <= pos.line`` is null, hence false, on an edge with no span,
+    exactly as on a graph emitted before codeanalyzer-python 1.5.2.
+    """
+    if spec["start_line"] <= line <= spec["end_line"]:
+        return True
+    if "PY_DECORATED_BY" not in query:
+        return False
+    return any(s is not None and s <= line < spec["start_line"] for _, s, _ in spec.get("decorators", []))
+
+
 def _locate_row(idx, module_props=None, callable_props=None, class_props=None, body_props=None) -> dict:
     return {"idx": idx, "module_props": module_props, "callable_props": callable_props, "class_props": class_props, "body_props": body_props}
 
@@ -520,7 +605,7 @@ def _locate_responder(query: str, params: dict) -> list[dict]:
             rows.append(_locate_row(pos["idx"]))  # no :PyModule for this file_key
             continue
         # ``OPTIONAL MATCH (c:PyCallable) WHERE c.id STARTS WITH pos.module_prefix AND ...``
-        matches = [c for c in _LOCATE_CALLABLE_SPECS if _locate_callable_id(c["signature"]).startswith(pos["module_prefix"]) and c["start_line"] <= pos["line"] <= c["end_line"]]
+        matches = [c for c in _LOCATE_CALLABLE_SPECS if _locate_callable_id(c["signature"]).startswith(pos["module_prefix"]) and _locate_contains(c, pos["line"], query)]
         if not matches:
             rows.append(_locate_row(pos["idx"], _LOCATE_MODULE_PROPS))
             continue
