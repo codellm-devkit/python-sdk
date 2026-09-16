@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [v2.0.0-rc.8] - 2026-09-15
 
+### Fixed
+
+- **`locate` places a position on a decorator line on the decorated callable, on both Python
+  backends** (`python-sdk#408`). `PyCallable.start_line` is the `def` line (`ast.FunctionDef.lineno`)
+  and Python's AST puts decorators above it, so `@http.route(...)` sat inside no callable span and
+  came back as `module_scope`. Both backends now read where the decorator is *applied*:
+  `_find_innermost` admits the callable whose `decorators[].span` starts at or before the line and
+  above its `def`; `_LOCATE_QUERY` gains one `EXISTS` disjunct over `PY_DECORATED_BY.start_line`,
+  which codeanalyzer-python 1.5.2 emits. Ranking is unchanged (the def-based width), so a decorator
+  on a nested callable resolves to the nested one. Three things deliberately stay as they were: a
+  position between two callables with no decorator over it is still `module_scope` (this is not a
+  nearest-callable fallback); a **class** decorator is still `module_scope` (a result with `type`
+  set and `callable` unset is a new shape and needs its own decision); and an analysis or graph from
+  codeanalyzer-python 1.5.1 or earlier, which records no decorator span, answers exactly as before.
+  Measured on odoo-slim-19 re-emitted by 1.5.3, 40 positions, median of 5, same graph both ways:
+  71.0 ms placing 20/40 → 70.2 ms placing 40/40; the plan still seeks `pysymbol_id`.
+
 ### Changed
 
 - `codeanalyzer-python` pin `1.5.2` → **`1.5.3`** (`dependencies` and `[tool.backend-versions]`,
