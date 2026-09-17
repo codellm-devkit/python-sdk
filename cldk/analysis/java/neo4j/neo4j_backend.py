@@ -645,7 +645,7 @@ class JNeo4jBackend(JavaAnalysisBackend):
         return self._application
 
     @cached_property
-    def _idx(self) -> Tuple[Dict[str, JType], Dict[str, str], Dict[str, Tuple[JType, JCallable]]]:
+    def _idx(self) -> Tuple[Dict[str, JType], Dict[str, str], Dict[str, Tuple[JType, JCallable]], Dict[str, List[str]]]:
         """The containment tree flattened once: every type (top-level, nested, local/anonymous) by
         its source-spelled qualified name, its file, and every callable by its ``can://`` id — the
         join that turns a call-graph endpoint into the ``"<type fqn>.<signature>"`` node key.
@@ -653,13 +653,16 @@ class JNeo4jBackend(JavaAnalysisBackend):
         types: Dict[str, JType] = {}
         file_of: Dict[str, str] = {}
         callables: Dict[str, Tuple[JType, JCallable]] = {}
+        contested: Dict[str, List[str]] = {}
 
         def add(t: JType, path: str) -> None:
             name = t.qualified_name
             if name in types:
-                raise CodeanalyzerExecutionException(duplicate_type_name(name))
-            types[name] = t
-            file_of[name] = path
+                # See JCodeanalyzer._add_type: recorded here, refused at the query.
+                contested.setdefault(name, [file_of[name]]).append(path)
+            else:
+                types[name] = t
+                file_of[name] = path
             for c in t.callables.values():
                 callables[c.id] = (t, c)
                 for local in c.types.values():
@@ -670,7 +673,7 @@ class JNeo4jBackend(JavaAnalysisBackend):
         for path, unit in self._application.symbol_table.items():
             for t in unit.types.values():
                 add(t, path)
-        return types, file_of, callables
+        return types, file_of, callables, contested
 
     @property
     def _types(self) -> Dict[str, JType]:
@@ -683,6 +686,10 @@ class JNeo4jBackend(JavaAnalysisBackend):
     @property
     def _callables(self) -> Dict[str, Tuple[JType, JCallable]]:
         return self._idx[2]
+
+    @property
+    def _contested(self) -> Dict[str, List[str]]:
+        return self._idx[3]
 
     # -----[ the addressing surface (leg 3b) — the three facts the shared implementation needs ]-----
     #: The one statement leg 3b's Task 1 adds. Anchored on the **bare** ``:JBodyNode`` label and a
@@ -1325,6 +1332,7 @@ class JNeo4jBackend(JavaAnalysisBackend):
         return dict(self._types)
 
     def get_class(self, qualified_class_name: str) -> JType | None:
+        self._refuse_if_contested(qualified_class_name)
         return self._types.get(qualified_class_name)
 
     def get_all_methods_in_application(self) -> Dict[str, Dict[str, JCallable]]:
