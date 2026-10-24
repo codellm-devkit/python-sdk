@@ -1,8 +1,14 @@
 """Tests for the Go analysis facade with the cango subprocess mocked — no binary, no Neo4j.
 
-The fixture ``fixture_analysis.json`` is a tiny real cango v2 payload (one module, one struct with
-one method, one package-level function, one call edge); the mocked subprocess writes it into the
-language-keyed cache directory, exactly as cango would at ``-o``.
+Two corpora, both driven through the mocked subprocess (which writes the payload into the cache dir
+exactly as cango would at ``-o``):
+
+* ``fixture_analysis.json`` — a tiny hand-built v2 payload (one module/struct/method/func/edge). The
+  deterministic level/cache/capture regression tests use it because they mutate ``max_level`` and the
+  call graph to simulate L1-vs-L2 generations.
+* ``tests/resources/go/analysis.json`` — the committed real ``can://go/litestream`` corpus (55
+  modules, 959 edges). The ``litestream_facade`` fixture runs the whole accessor surface over it, so
+  callers/callees/source are proven against genuine cango output, not a one-edge toy.
 """
 
 import json
@@ -19,6 +25,15 @@ from cldk.models.go import GoType
 from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 
 FIXTURE = Path(__file__).parent / "fixture_analysis.json"
+#: the committed real corpus, via the parents[2]/"resources" convention the TS/Java tests use
+GO_ANALYSIS = Path(__file__).resolve().parents[2] / "resources" / "go" / "analysis.json"
+
+# real, stable ids from the litestream corpus (abs/replica_client.go)
+LS_TYPE_ID = "can://go/litestream/abs/replica_client.go/github.com/benbjohnson/litestream/abs.ReplicaClient"
+LS_METHOD_ID = f"{LS_TYPE_ID}/github.com/benbjohnson/litestream/abs.ReplicaClient.DeleteAll"
+LS_FUNC_ID = "can://go/litestream/abs/replica_client.go/github.com/benbjohnson/litestream/abs.NewReplicaClient"
+LS_FUNC_SIG = "github.com/benbjohnson/litestream/abs.NewReplicaClient"
+LS_FUNC_CALLER_ID = "can://go/litestream/abs/replica_client.go/github.com/benbjohnson/litestream/abs.NewReplicaClientFromURL"
 
 
 def _fake_run_writing_output(payload: str):
@@ -192,3 +207,69 @@ def test_artifact_six_raise_on_local(go_analysis):
     for name in ("get_artifacts", "get_dependencies", "get_config_keys", "get_config_uses", "get_unresolved_config_reads"):
         with pytest.raises(CodeanalyzerExecutionException):
             getattr(go_analysis.backend, name)()
+
+
+# -----[ the whole accessor surface over the real litestream corpus ]-----
+@pytest.fixture(scope="module")
+def litestream_facade(tmp_path_factory):
+    """The facade over the committed real corpus, through the same mocked subprocess as
+    ``go_analysis`` — no binary, but 55 modules and 959 edges instead of a one-edge toy."""
+    import subprocess
+    from unittest.mock import patch
+
+    payload = GO_ANALYSIS.read_text(encoding="utf-8")
+    proj = tmp_path_factory.mktemp("litestream-facade")
+    with patch.dict("os.environ", {"CODEANALYZER_GO_BIN": "cango"}), patch.object(
+        subprocess, "run", _fake_run_writing_output(payload)
+    ):
+        yield CLDK.go(
+            project_path=str(proj),
+            analysis_level=AnalysisLevel.call_graph,
+            eager=True,
+            backend=CodeAnalyzerConfig(cache_dir=str(proj)),
+        )
+
+
+def test_real_corpus_scale(litestream_facade):
+    assert len(litestream_facade.get_symbol_table()) == 55
+    assert len(litestream_facade.get_application_view().call_graph) == 959
+
+
+def test_real_corpus_function_accessor(litestream_facade):
+    funcs = litestream_facade.get_functions()
+    assert LS_FUNC_SIG in funcs
+    assert funcs[LS_FUNC_SIG].id == LS_FUNC_ID
+
+
+def test_real_corpus_type_and_method(litestream_facade):
+    ty = litestream_facade.get_type(LS_TYPE_ID)
+    assert ty is not None and ty.kind == "struct"
+    methods = litestream_facade.get_methods_of(LS_TYPE_ID)
+    assert any(m.id == LS_METHOD_ID for m in methods.values())
+    assert any(f.type == "string" for f in litestream_facade.get_fields(LS_TYPE_ID))
+
+
+def test_real_corpus_callees_of_delete_all(litestream_facade):
+    """DeleteAll calls exactly two callees in this corpus and is called by none (measured)."""
+    callees = litestream_facade.get_callees(LS_METHOD_ID)
+    assert len(callees) == 2
+    assert all(e.src == LS_METHOD_ID for e in callees)
+    assert litestream_facade.get_callers(LS_METHOD_ID) == []
+
+
+def test_real_corpus_callers_of_constructor(litestream_facade):
+    callers = litestream_facade.get_callers(LS_FUNC_ID)
+    assert LS_FUNC_CALLER_ID in {e.src for e in callers}
+
+
+def test_real_corpus_source_slices_the_method(litestream_facade):
+    src = litestream_facade.get_source(LS_METHOD_ID)
+    assert src.startswith("func") and "DeleteAll" in src
+
+
+def test_real_corpus_call_graph_dangling_free(litestream_facade):
+    """Every one of the 959 edges lands on a node that carries its id (no dangling endpoints)."""
+    g = litestream_facade.get_call_graph()
+    assert g.number_of_edges() == 959
+    for src, dst in g.edges():
+        assert "id" in g.nodes[src] and "id" in g.nodes[dst]
