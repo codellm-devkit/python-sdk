@@ -84,3 +84,43 @@ def test_call_graph_dangling_free(analysis):
     g = analysis.get_call_graph()
     for src, dst in g.edges():
         assert "id" in g.nodes[src] and "id" in g.nodes[dst]
+
+
+# -----[ live run on the committed real application (litestream.zip) ]-----
+import zipfile  # noqa: E402
+
+_LITESTREAM_ZIP = Path(__file__).resolve().parents[2] / "resources" / "go" / "litestream.zip"
+
+
+@pytest.fixture(scope="module")
+def litestream_project(tmp_path_factory):
+    """Unzip the committed litestream app; the archive roots at ``litestream/`` (carries go.mod)."""
+    if not _LITESTREAM_ZIP.exists():
+        pytest.skip("litestream.zip resource not present")
+    dest = tmp_path_factory.mktemp("litestream-src")
+    with zipfile.ZipFile(_LITESTREAM_ZIP) as zf:
+        zf.extractall(dest)
+    root = dest / "litestream"
+    assert (root / "go.mod").exists(), "expected go.mod at the archive's litestream/ root"
+    return root
+
+
+@pytest.fixture(scope="module")
+def litestream_analysis(litestream_project, tmp_path_factory):
+    cache = tmp_path_factory.mktemp("litestream-cache")
+    return CLDK.go(
+        project_path=str(litestream_project),
+        analysis_level=AnalysisLevel.call_graph,
+        eager=True,
+        backend=CodeAnalyzerConfig(cache_dir=str(cache)),
+    )
+
+
+def test_litestream_app_analyzes(litestream_analysis):
+    """The real binary on the real app: a non-trivial symbol table and call graph, app id intact."""
+    assert litestream_analysis.get_application_view().id == "can://go/litestream"
+    assert len(litestream_analysis.get_symbol_table()) > 1
+    g = litestream_analysis.get_call_graph()
+    assert g.number_of_edges() > 0
+    for src, dst in g.edges():
+        assert "id" in g.nodes[src] and "id" in g.nodes[dst]
