@@ -1,14 +1,13 @@
 """Tests for the Go analysis facade with the cango subprocess mocked — no binary, no Neo4j.
 
-Two corpora, both driven through the mocked subprocess (which writes the payload into the cache dir
-exactly as cango would at ``-o``):
+One corpus, driven through the mocked subprocess (which writes the payload into the cache dir exactly
+as cango would at ``-o``): ``tests/resources/go/analysis.json``, the committed real
+``can://go/litestream`` corpus (55 modules, 959 edges).
 
-* ``fixture_analysis.json`` — a tiny hand-built v2 payload (one module/struct/method/func/edge). The
-  deterministic level/cache/capture regression tests use it because they mutate ``max_level`` and the
-  call graph to simulate L1-vs-L2 generations.
-* ``tests/resources/go/analysis.json`` — the committed real ``can://go/litestream`` corpus (55
-  modules, 959 edges). The ``litestream_facade`` fixture runs the whole accessor surface over it, so
-  callers/callees/source are proven against genuine cango output, not a one-edge toy.
+* The deterministic level/cache/capture regression tests mutate its ``max_level`` and call graph to
+  simulate L1-vs-L2 generations.
+* ``go_analysis`` runs the basic accessor smoke tests over it, and ``litestream_facade`` runs the
+  whole accessor surface, so callers/callees/source are proven against genuine cango output.
 """
 
 import json
