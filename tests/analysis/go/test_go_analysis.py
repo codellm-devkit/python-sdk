@@ -46,7 +46,7 @@ def _fake_run_writing_output(payload: str):
 
 @pytest.fixture
 def go_analysis(tmp_path, monkeypatch):
-    payload = FIXTURE.read_text(encoding="utf-8")
+    payload = GO_ANALYSIS.read_text(encoding="utf-8")
     monkeypatch.setenv("CODEANALYZER_GO_BIN", "cango")
     monkeypatch.setattr("subprocess.run", _fake_run_writing_output(payload))
     return CLDK.go(
