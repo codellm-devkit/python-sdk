@@ -61,7 +61,7 @@ def go_analysis(tmp_path, monkeypatch):
 def _level_aware_run(call_count):
     """A subprocess.run mock that writes an analysis.json whose max_level matches the `-a` flag it
     was given, and counts how many times cango was invoked."""
-    base = json.loads(FIXTURE.read_text(encoding="utf-8"))
+    base = json.loads(GO_ANALYSIS.read_text(encoding="utf-8"))
 
     def _run(cmd, *args, **kwargs):
         call_count.append(1)
