@@ -127,8 +127,8 @@ def test_requested_level_is_passed_to_cango(level, expected_a, tmp_path, monkeyp
         out = Path(cmd[cmd.index("-o") + 1]) if "-o" in cmd else None
         if out:
             out.mkdir(parents=True, exist_ok=True)
-            (out / "analysis.json").write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
-        return MagicMock(stdout=FIXTURE.read_text(encoding="utf-8"), returncode=0)
+            (out / "analysis.json").write_text(GO_ANALYSIS.read_text(encoding="utf-8"), encoding="utf-8")
+        return MagicMock(stdout=GO_ANALYSIS.read_text(encoding="utf-8"), returncode=0)
 
     monkeypatch.setenv("CODEANALYZER_GO_BIN", "cango")
     monkeypatch.setattr("subprocess.run", _capture)
