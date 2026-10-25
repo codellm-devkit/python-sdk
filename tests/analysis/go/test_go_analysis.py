@@ -23,7 +23,6 @@ from cldk.analysis.commons.backend_config import CodeAnalyzerConfig
 from cldk.models.go import GoType
 from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 
-FIXTURE = Path(__file__).parent / "fixture_analysis.json"
 #: the committed real corpus, via the parents[2]/"resources" convention the TS/Java tests use
 GO_ANALYSIS = Path(__file__).resolve().parents[2] / "resources" / "go" / "analysis.json"
 
