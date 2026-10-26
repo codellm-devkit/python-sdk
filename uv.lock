@@ -303,6 +303,7 @@ name = "cldk"
 version = "2.0.0"
 source = { editable = "." }
 dependencies = [
+    { name = "codeanalyzer-go" },
     { name = "codeanalyzer-python" },
     { name = "codeanalyzer-typescript" },
     { name = "networkx" },
@@ -350,6 +351,7 @@ test = [
 requires-dist = [
     { name = "cldk", extras = ["java"], marker = "extra == 'all'" },
     { name = "cldk", extras = ["neo4j"], marker = "extra == 'all'" },
+    { name = "codeanalyzer-go", specifier = "==0.1.0rc1" },
     { name = "codeanalyzer-java", marker = "extra == 'java'", specifier = "==3.3.3" },
     { name = "codeanalyzer-python", specifier = "==1.5.3" },
     { name = "codeanalyzer-typescript", specifier = "==1.6.0" },
@@ -394,6 +396,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/60/6c/8ca2efa64cf75a977a0d7fac081354553ebe483345c734fb6b6515d96bbc/click-8.2.1.tar.gz", hash = "sha256:27c491cc05d968d271d5a1db13e3b5a184636d9d930f148c50b038f0d0646202", size = 286342, upload-time = "2025-05-20T23:19:49.832Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/85/32/10bb5764d90a8eee674e9dc6f4db6a0ab47c8c4d0d83c27f7c39ac415a4d/click-8.2.1-py3-none-any.whl", hash = "sha256:61a3265b914e850b85317d0b3109c7f8cd35a670f963866005d6ef1d5175a12b", size = 102215, upload-time = "2025-05-20T23:19:47.796Z" },
+]
+
+[[package]]
+name = "codeanalyzer-go"
+version = "0.1.0rc1"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/32/65/0af9fd9e48ffab66493d2c3d62f5d00109cf3212d8a64071bf2d1481f551/codeanalyzer_go-0.1.0rc1-py3-none-macosx_10_12_x86_64.whl", hash = "sha256:7ab13b1cf86814e4f3035966f714b05a020992e71f199ad798ff5e87c2273b34", size = 4145429, upload-time = "2026-10-11T22:44:23.35Z" },
+    { url = "https://files.pythonhosted.org/packages/6f/5f/065bc30b54e4b2f4b57b9a5c06563018ee38ccb60dda3dde3378dc700557/codeanalyzer_go-0.1.0rc1-py3-none-macosx_11_0_arm64.whl", hash = "sha256:a4a03c3474b62f06bfa4dac0fd059ccb1738dec24550fdd148729fd9637ad8eb", size = 3797856, upload-time = "2026-10-11T22:44:25.54Z" },
+    { url = "https://files.pythonhosted.org/packages/0d/a4/576ff56a8c37ff69d783142b574db07a34da74a32fa17fd6ab14d8e72a01/codeanalyzer_go-0.1.0rc1-py3-none-manylinux2014_aarch64.whl", hash = "sha256:afaf08ba252f098ed9a80f7e6f3dfa06bb4da911c57e5ebeccae99fd708857ec", size = 3666158, upload-time = "2026-10-11T22:44:27.319Z" },
+    { url = "https://files.pythonhosted.org/packages/f9/77/c8f970bc71aa7fa74b1531c4819fe7e3ff902793dfb3d7593c175c15a13f/codeanalyzer_go-0.1.0rc1-py3-none-manylinux2014_x86_64.whl", hash = "sha256:680d97d2aa18c320dbf530b166d9a377a79a43fc250ee1490926a8b2d7a85de6", size = 4090421, upload-time = "2026-10-11T22:44:29.665Z" },
+    { url = "https://files.pythonhosted.org/packages/41/b0/7f5d00ff849f520f1956719ec03f8d809d05e4c8dffd9b8442fb09bc893f/codeanalyzer_go-0.1.0rc1-py3-none-win_amd64.whl", hash = "sha256:1150232c252f1eb179b1fb1dee1d08f9bb44d92423b169b0e4420e3c0b10828c", size = 4201789, upload-time = "2026-10-11T22:44:31.688Z" },
 ]
 
 [[package]]

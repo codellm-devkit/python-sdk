@@ -47,6 +47,7 @@ from cldk.analysis import AnalysisLevel
 from cldk.analysis.java import JavaAnalysis
 from cldk.analysis.commons.backend_config import (
     CodeAnalyzerConfig,
+    GoBackend,
     JavaBackend,
     Neo4jConnectionConfig,
     PyBackend,
@@ -55,6 +56,7 @@ from cldk.analysis.commons.backend_config import (
     TSCodeAnalyzerConfig,
 )
 from cldk.analysis.commons.treesitter import TreesitterJava
+from cldk.analysis.go import GoAnalysis
 from cldk.analysis.python.python_analysis import PythonAnalysis
 from cldk.analysis.typescript import TypeScriptAnalysis
 from cldk.utils.exceptions import CldkInitializationException
@@ -220,6 +222,39 @@ class CLDK:
             backend=backend,
         )
 
+    @staticmethod
+    def go(
+        project_path: str | Path | None = None,
+        *,
+        analysis_level: str = AnalysisLevel.symbol_table,
+        target_files: List[str] | None = None,
+        eager: bool = False,
+        backend: GoBackend | None = None,
+    ) -> GoAnalysis:
+        """Create a Go analysis facade.
+
+        Go is the SDK's first class-less, type-centric facade: the surface is
+        ``get_types`` / ``get_functions`` / ``get_methods_of``, never ``get_classes``.
+
+        Args:
+            project_path: Path to the Go module directory (needs a ``go.mod``). Optional only when
+                ``backend`` is a :class:`Neo4jConnectionConfig` (the graph is populated out of band
+                over Bolt). When provided, the path is validated — it must exist and be a directory.
+            analysis_level: Analysis depth (see :class:`~cldk.analysis.AnalysisLevel`); ``cango``
+                produces levels 1 (symbol table) and 2 (+ resolver call graph) only.
+            target_files: Restrict analysis to these files.
+            eager: Force regeneration of cached analysis.
+            backend: Backend configuration. Defaults to :class:`CodeAnalyzerConfig` (runs ``cango``);
+                pass a :class:`Neo4jConnectionConfig` to use the read-only Neo4j backend.
+        """
+        return GoAnalysis(
+            project_dir=_normalize_project_path(project_path),
+            analysis_level=analysis_level,
+            target_files=target_files,
+            eager_analysis=eager,
+            backend=backend,
+        )
+
     def analysis(
         self,
         project_path: str | Path | None = None,
@@ -232,11 +267,11 @@ class CLDK:
         cache_dir: str | Path | None = None,
         use_ray: bool = False,
         neo4j_config: "Neo4jConnectionConfig | None" = None,
-    ) -> JavaAnalysis | PythonAnalysis | TypeScriptAnalysis:
+    ) -> JavaAnalysis | PythonAnalysis | TypeScriptAnalysis | GoAnalysis:
         """Deprecated entry point. Use the per-language factory methods instead.
 
         ``CLDK(language).analysis(...)`` is retained as a thin compatibility shim that forwards to
-        :meth:`java` / :meth:`python` / :meth:`typescript` with an appropriate
+        :meth:`java` / :meth:`python` / :meth:`typescript` / :meth:`go` with an appropriate
         ``backend=`` configuration object.
 
         The former ``analysis_json_path`` is folded into the unified ``cache_dir`` (it is used as
@@ -249,7 +284,7 @@ class CLDK:
         """
         warnings.warn(
             "CLDK(language).analysis(...) is deprecated; use the per-language factory methods "
-            "CLDK.java()/CLDK.python()/CLDK.typescript() with a backend=<config> object.",
+            "CLDK.java()/CLDK.python()/CLDK.typescript()/CLDK.go() with a backend=<config> object.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -291,6 +326,17 @@ class CLDK:
                 raise CldkInitializationException("source_code mode is not supported for TypeScript; please pass project_path.")
             backend = neo4j_config if neo4j_config is not None else CodeAnalyzerConfig(cache_dir=cache_root)
             return CLDK.typescript(
+                project_path=project_path,
+                analysis_level=analysis_level,
+                target_files=target_files,
+                eager=eager,
+                backend=backend,
+            )
+        elif self.language == "go":
+            if source_code is not None:
+                raise CldkInitializationException("source_code mode is not supported for Go; please pass project_path.")
+            backend = neo4j_config if neo4j_config is not None else CodeAnalyzerConfig(cache_dir=cache_root)
+            return CLDK.go(
                 project_path=project_path,
                 analysis_level=analysis_level,
                 target_files=target_files,

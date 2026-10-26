@@ -37,6 +37,7 @@ dependencies = [
     "tree-sitter-javascript==0.23.1",
     "codeanalyzer-python==1.5.3",
     "codeanalyzer-typescript==1.6.0",
+    "codeanalyzer-go==0.1.0rc1",
 ]
 
 [project.optional-dependencies]
@@ -89,6 +90,7 @@ include = [
 codeanalyzer-java = "3.3.3"
 codeanalyzer-python = "1.5.3"
 codeanalyzer-typescript = "1.6.0"
+codeanalyzer-go = "0.1.0rc1"
 
 ########################################
 # Tool configurations

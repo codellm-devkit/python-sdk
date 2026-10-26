@@ -41,7 +41,7 @@ from typing import Union
 # The canonical sub-directory name each language's artifacts live under inside the shared cache
 # root. Keyed so that a polyglot repository analyzed under more than one language does not have its
 # backends overwrite a single shared ``analysis.json``.
-_CACHE_KEYS = {"java": "java", "python": "python", "typescript": "typescript"}
+_CACHE_KEYS = {"java": "java", "python": "python", "typescript": "typescript", "go": "go"}
 
 
 @dataclass
@@ -118,6 +118,10 @@ class Neo4jConnectionConfig:
 JavaBackend = Union[CodeAnalyzerConfig, Neo4jConnectionConfig]
 PyBackend = Union[PyCodeAnalyzerConfig, Neo4jConnectionConfig]
 TSBackend = Union[TSCodeAnalyzerConfig, CodeAnalyzerConfig, Neo4jConnectionConfig]
+# Go's cango has no backend-only knob today, so it reuses the base CodeAnalyzerConfig rather than a
+# GoCodeAnalyzerConfig subclass -- the same shape as JavaBackend. Add a subclass only if cango later
+# grows a knob.
+GoBackend = Union[CodeAnalyzerConfig, Neo4jConnectionConfig]
 
 
 def cache_subdir(cache_dir: Union[str, Path, None], project_dir: Union[str, Path, None], language: str) -> Path | None:
@@ -127,7 +131,7 @@ def cache_subdir(cache_dir: Union[str, Path, None], project_dir: Union[str, Path
         cache_dir: The cache root from the backend config. When ``None``, defaults to
             ``<project_dir>/.codeanalyzer``.
         project_dir: The project directory, used to derive the default root.
-        language: The canonical language key (``"java"``, ``"python"``, ``"typescript"``).
+        language: The canonical language key (``"java"``, ``"python"``, ``"typescript"``, ``"go"``).
 
     Returns:
         ``<root>/<language>`` as an absolute path, or ``None`` if no root can be determined

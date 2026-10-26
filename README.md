@@ -75,6 +75,7 @@ The three steps below take a Python project from disk to a question about its co
        analysis_level=AnalysisLevel.call_graph,
    )
    # CLDK.java(...) and CLDK.typescript(...) take the same arguments.
+   # CLDK.go(...) too — see the Go Quick Start below.
    ```
 
 2. Find the callable at a line, and read its source.
@@ -140,6 +141,64 @@ analysis = CLDK.python(
 | TypeScript / JavaScript | [`codeanalyzer-typescript`](https://github.com/codellm-devkit/codeanalyzer-typescript) | the TypeScript compiler via ts-morph, Rapid Type Analysis, and a def-use linker | a self-contained binary |
 
 The reference's [Attach](./docs/agent-api-reference.md#attach) section and the per-language sections after it list the graph versions each backend accepts. They also show how to migrate an older graph.
+
+### Go Quick Start
+
+Go is CLDK's first **type-centric, class-less** facade. A Go `type` is a `struct` or an
+`interface` (never a class), and package-level **functions** are kept distinct from receiver
+**methods** — so the Go facade is `get_types` / `get_functions` / `get_methods_of`, not
+`get_classes`. Point the facade at a Go **module** (a directory with a `go.mod`):
+
+```python
+from cldk import CLDK
+from cldk.analysis import AnalysisLevel
+
+analysis = CLDK.go(
+    project_path="/path/to/go/module",
+    analysis_level=AnalysisLevel.call_graph,  # level 1 (symbols) or 2 (+ call graph); Go has no L3/L4
+)
+
+# Walk the types (structs + interfaces) and their receiver methods. Types, methods and fields are
+# addressed by the type's durable `can://` id (a Go type has no unique short name across packages).
+for type_id, go_type in analysis.get_types().items():
+    print(f"{go_type.kind} {type_id}")
+    for sig, method in analysis.get_methods_of(type_id).items():
+        print(f"  method {sig}")
+        print(analysis.get_source(method.id))  # the method's source, sliced from its module
+
+# Package-level functions are separate from methods — no "module-as-class" hack:
+for sig, fn in analysis.get_functions().items():
+    print(f"func {sig}")
+
+# Who calls whom (full edges with provenance and weight), keyed on the callable id:
+call_graph = analysis.get_call_graph()  # a networkx.DiGraph
+for func_id in analysis.get_functions():
+    for edge in analysis.get_callees(func_id):
+        print(f"{edge.src} -> {edge.dst}  ({', '.join(edge.prov)}, weight={edge.weight})")
+```
+
+Query a pre-populated Go graph **read-only** over Neo4j the same way as the other languages — the
+backend is chosen by the config type, and the queries lazily hit the `GO_`-prefixed graph (so it
+scales to large enterprise modules without materializing the whole program):
+
+```python
+from cldk import CLDK
+from cldk.analysis.commons.backend_config import Neo4jConnectionConfig
+
+analysis = CLDK.go(
+    backend=Neo4jConnectionConfig(
+        uri="bolt://localhost:7687",
+        application_name="my-go-app",  # the --app-name the graph was emitted with
+    ),
+)
+types = analysis.get_types()
+```
+
+> **Go analyzer:** Go is analyzed by the `cango` binary (`codeanalyzer-go`). It emits analysis
+> levels 1–2 only; slicing/CFG/CDG/DDG are not produced, so those accessors are absent rather than
+> present-and-erroring. Until the analyzer's first release is published, resolve the binary with
+> `$CODEANALYZER_GO_BIN` pointing at a local build.
+
 
 ## Read Next
 
