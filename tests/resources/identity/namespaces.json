@@ -1,0 +1,139 @@
+{
+  "identity_version": 2,
+  "roots": [
+    {
+      "application_name": "inventory",
+      "namespace": null,
+      "expected_root": "can://inventory/inventory"
+    },
+    {
+      "application_name": "currencyservice",
+      "namespace": "online-boutique",
+      "expected_root": "can://online-boutique/currencyservice"
+    },
+    {
+      "application_name": "a%b",
+      "namespace": "team space",
+      "expected_root": "can://team%20space/a%25b"
+    },
+    {
+      "application_name": "caf\u00e9",
+      "namespace": "\u56e2\u961f",
+      "expected_root": "can://%E5%9B%A2%E9%98%9F/caf%C3%A9"
+    },
+    {
+      "application_name": "Inventory",
+      "namespace": "Team",
+      "expected_root": "can://Team/Inventory"
+    },
+    {
+      "application_name": "inventory",
+      "namespace": "team",
+      "expected_root": "can://team/inventory"
+    },
+    {
+      "application_name": " cafe\u0301 ",
+      "namespace": "team",
+      "expected_root": "can://team/%20cafe%CC%81%20"
+    }
+  ],
+  "invalid": [
+    {
+      "value": "",
+      "reason": "empty"
+    },
+    {
+      "value": " ",
+      "reason": "whitespace-only"
+    },
+    {
+      "value": "a/b",
+      "reason": "slash"
+    },
+    {
+      "value": "a\\b",
+      "reason": "backslash"
+    },
+    {
+      "value": ".",
+      "reason": "dot"
+    },
+    {
+      "value": "..",
+      "reason": "dot-dot"
+    },
+    {
+      "value": "a\u0001b",
+      "reason": "control"
+    },
+    {
+      "value": "\ud800",
+      "reason": "unpaired-high-surrogate"
+    },
+    {
+      "value": "\udc00",
+      "reason": "unpaired-low-surrogate"
+    }
+  ],
+  "modules": [
+    {
+      "application_name": "currencyservice",
+      "namespace": "online-boutique",
+      "language": "javascript",
+      "file_key": "server.js",
+      "expected_uri": "can://online-boutique/currencyservice/javascript/server.js"
+    },
+    {
+      "application_name": "paymentservice",
+      "namespace": "online-boutique",
+      "language": "javascript",
+      "file_key": "server.js",
+      "expected_uri": "can://online-boutique/paymentservice/javascript/server.js"
+    },
+    {
+      "application_name": "inventory",
+      "namespace": null,
+      "language": "python",
+      "file_key": "src/main.py",
+      "expected_uri": "can://inventory/inventory/python/src/main.py"
+    },
+    {
+      "application_name": "inventory",
+      "namespace": null,
+      "language": "typescript",
+      "file_key": "src/main.ts",
+      "expected_uri": "can://inventory/inventory/typescript/src/main.ts"
+    },
+    {
+      "application_name": "inventory",
+      "namespace": null,
+      "language": "java",
+      "file_key": "src/Main.java",
+      "expected_uri": "can://inventory/inventory/java/src/Main.java"
+    },
+    {
+      "application_name": "inventory",
+      "namespace": null,
+      "language": "go",
+      "file_key": "main.go",
+      "expected_uri": "can://inventory/inventory/go/main.go"
+    }
+  ],
+  "duplicate_module_rows": {
+    "rows": [
+      {
+        "module_id": "can://online-boutique/currencyservice/javascript/server.js",
+        "file_key": "server.js"
+      },
+      {
+        "module_id": "can://online-boutique/paymentservice/javascript/server.js",
+        "file_key": "server.js"
+      },
+      {
+        "module_id": "can://online-boutique/currencyservice/javascript/server.js",
+        "file_key": "server.js"
+      }
+    ],
+    "expected_unique_id_count": 2
+  }
+}
