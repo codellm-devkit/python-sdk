@@ -512,12 +512,27 @@ class _Addressing(NamedTuple):
     candidates: List[CallableCandidate]
 
 
-def duplicate_type_name(qualified_name: str) -> str:
-    """The defect message for two declarations that spell one qualified name — which would make a
+def duplicate_type_name(qualified_name: str, paths: List[str]) -> str:
+    """The message for two declarations that spell one qualified name — which makes a
     ``get_call_graph()`` node key and a ``get_class()`` key ambiguous, so it is surfaced rather than
     letting the second silently shadow the first. Both backends raise this text, identically, and
-    it names only the qualified name: a ``can://`` id must not appear in a message (E6)."""
-    return f"type qualified name {qualified_name!r} is declared twice: codeanalyzer-java emitted two declarations that spell one name"
+    it names the qualified name and the files that declare it: a ``can://`` id must not appear in a
+    message (E6).
+
+    <p>It names the files because the reader cannot otherwise act on it. It no longer attributes the
+    duplication to the analyzer: two compilation units genuinely declaring one name is a property of
+    the source tree — the realistic case being services that vendor one shared library — and the
+    analyzer emitted both correctly, with distinct ids.
+
+    <p>Raised at the ambiguous *query*, never while indexing. Refusing at index time made an entire
+    application unloadable over a handful of contested names, when every other name in it answers
+    perfectly well (#420)."""
+    where = ", ".join(sorted(paths))
+    return (
+        f"type qualified name {qualified_name!r} is declared in {len(paths)} files ({where}): "
+        "several declarations spell one name, so a query naming it cannot be answered — "
+        "analyse the copies separately, or deduplicate them in source"
+    )
 
 
 def unhomed_endpoint(node_id: str) -> str:
@@ -547,6 +562,17 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
 
     P: ClassVar[str] = "J"
     N: ClassVar[str] = "J"
+
+    def _refuse_if_contested(self, qualified_class_name: str) -> None:
+        """Refuse a name-addressed query whose name several declarations spell.
+
+        The index keeps every copy reachable by its own ``can://`` id, so nothing is lost and the
+        application always loads; what cannot be answered is a question phrased as a *name*, because
+        the name genuinely denotes more than one declaration. Both backends route their
+        name-addressed lookups through here, so they fail at the same point on the same input."""
+        paths = getattr(self, "_contested", {}).get(qualified_class_name)
+        if paths:
+            raise CodeanalyzerExecutionException(duplicate_type_name(qualified_class_name, paths))
 
     # =====================================================================================
     # The addressing surface (leg 3b, Task 1): locate / resolve / source / describe.

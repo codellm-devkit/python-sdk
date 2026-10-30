@@ -340,6 +340,10 @@ class JCodeanalyzer(JavaAnalysisBackend):
         self._types: Dict[str, JType] = {}
         self._file_of: Dict[str, str] = {}
         self._callables: Dict[str, Tuple[JType, JCallable]] = {}
+        #: qualified name → every file declaring it, for the names more than one file declares.
+        #: Populated while flattening and consulted by name-addressed queries; see
+        #: :meth:`JavaAnalysisBackend._refuse_if_contested`.
+        self._contested: Dict[str, List[str]] = {}
         for path, unit in self.application.symbol_table.items():
             for t in unit.types.values():
                 self._add_type(t, path)
@@ -347,9 +351,13 @@ class JCodeanalyzer(JavaAnalysisBackend):
     def _add_type(self, t: JType, path: str) -> None:
         name = t.qualified_name
         if name in self._types:
-            raise CodeanalyzerExecutionException(duplicate_type_name(name))
-        self._types[name] = t
-        self._file_of[name] = path
+            # Recorded, not raised: the copies stay reachable by their own ids, and only a query
+            # phrased as this name is unanswerable. Refusing here would lose the whole application
+            # over one contested name (#420).
+            self._contested.setdefault(name, [self._file_of[name]]).append(path)
+        else:
+            self._types[name] = t
+            self._file_of[name] = path
         for c in t.callables.values():
             self._callables[c.id] = (t, c)
             for lt in c.types.values():
@@ -823,6 +831,7 @@ class JCodeanalyzer(JavaAnalysisBackend):
         return dict(self._types)
 
     def get_class(self, qualified_class_name: str) -> JType | None:
+        self._refuse_if_contested(qualified_class_name)
         return self._types.get(qualified_class_name)
 
     def get_all_methods_in_application(self) -> Dict[str, Dict[str, JCallable]]:
