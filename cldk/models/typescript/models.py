@@ -41,6 +41,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
+from cldk.models.identity import IdentityVersion
+
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 from typing_extensions import Annotated, Literal
 
@@ -737,7 +739,7 @@ class TSApplication(_Base):
     name: Optional[str] = None
     application_name: str
     identity_namespace: str
-    identity_version: Literal[2]
+    identity_version: IdentityVersion
     id: str
     kind: Literal["application"] = "application"
     symbol_table: Dict[str, TSModule]
@@ -762,7 +764,7 @@ class TSAnalyzer(_Base):
 class TSAnalysis(_Base):
     """The envelope ``analysis.json`` IS."""
 
-    identity_version: Literal[2]
+    identity_version: IdentityVersion
     schema_version: str
     language: str
     max_level: int

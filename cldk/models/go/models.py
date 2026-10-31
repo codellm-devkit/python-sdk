@@ -47,6 +47,8 @@ from __future__ import annotations
 
 from typing import Dict, List, Optional, Tuple
 
+from cldk.models.identity import IdentityVersion
+
 from pydantic import BaseModel, ConfigDict, model_validator
 from typing_extensions import Literal
 
@@ -238,7 +240,7 @@ class GoApplication(_NullSafeBase):
 
     application_name: str
     identity_namespace: str
-    identity_version: Literal[2]
+    identity_version: IdentityVersion
     id: str
     kind: Literal["application"] = "application"
     symbol_table: Dict[str, GoModule]
@@ -253,7 +255,7 @@ class GoAnalyzer(_Base):
 class GoAnalysis(_Base):
     """The envelope ``analysis.json`` IS."""
 
-    identity_version: Literal[2]
+    identity_version: IdentityVersion
     schema_version: str
     language: str
     max_level: int

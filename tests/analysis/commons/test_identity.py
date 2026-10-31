@@ -237,3 +237,53 @@ def test_changed_namespace_regenerates_a_shared_local_cache(tmp_path, monkeypatc
         analyzer = TSCodeanalyzer(tmp_path, output, "symbol_table", False, None, application_name="svc", namespace=namespace)
         assert analyzer.application.identity_namespace == namespace
     assert calls == ["one", "two"]
+
+
+@pytest.mark.parametrize("model_path,model_name", [
+    ("go", "GoAnalysis"), ("go", "GoApplication"),
+    ("typescript", "TSAnalysis"), ("typescript", "TSApplication"),
+    ("java", "JAnalysis"),
+])
+@pytest.mark.parametrize("marker", [2.0, True, "2"])
+def test_fresh_models_reject_noninteger_identity_marker(model_path, model_name, marker):
+    import importlib
+    from pydantic import TypeAdapter, ValidationError
+    model = getattr(importlib.import_module(f"cldk.models.{model_path}.models"), model_name)
+    annotation = model.model_fields["identity_version"].annotation
+    metadata = model.model_fields["identity_version"].metadata
+    from typing import Annotated
+    adapter = TypeAdapter(Annotated[annotation, *metadata] if metadata else annotation)
+    with pytest.raises(ValidationError):
+        adapter.validate_python(marker)
+    assert adapter.validate_python(2) == 2
+
+@pytest.mark.parametrize("language,model_name", [("go", "GoAnalysis"), ("typescript", "TSAnalysis"), ("java", "JAnalysis"), ("python", "Analysis")])
+@pytest.mark.parametrize("location", ["envelope", "application"])
+def test_fresh_model_and_cache_both_reject_float_marker(language, model_name, location, tmp_path):
+    import importlib
+    import json
+    from pydantic import ValidationError
+    if language == "java" and location == "application":
+        pytest.skip("Java stores its marker in the envelope")
+    model = (getattr(importlib.import_module(f"cldk.models.{language}.models"), model_name)
+             if language != "python" else importlib.import_module("codeanalyzer.schema").Analysis)
+    app = dict(identity_version=2, id="can://team/svc", application_name="svc", identity_namespace="team", symbol_table={})
+    payload = dict(identity_version=2, schema_version="2.0.0", language=language, max_level=1,
+                   analyzer=dict(name=language, version="local"), application=app)
+    model.model_validate(payload)
+    if location == "envelope":
+        payload["identity_version"] = 2.0
+    else:
+        payload["application"]["identity_version"] = 2.0
+    with pytest.raises(ValidationError, match="identity_version"):
+        model.model_validate(payload)
+    path = tmp_path / "analysis.json"
+    path.write_text(json.dumps(payload))
+    assert not identity.cache_matches(path, identity.resolve_identity("svc", "team"))
+
+
+def test_python_reexport_rejects_float_before_local_model_normalization():
+    from cldk.models.python import PyApplication
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError, match="identity_version"):
+        PyApplication(symbol_table={}, identity_version=2.0)

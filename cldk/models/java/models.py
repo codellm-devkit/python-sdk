@@ -44,6 +44,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from cldk.models.identity import IdentityVersion
+
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from typing_extensions import Literal
 
@@ -950,7 +952,7 @@ class JAnalyzer(_Base):
 class JAnalysis(_Base):
     """The envelope ``analysis.json`` IS."""
 
-    identity_version: Literal[2]
+    identity_version: IdentityVersion
     schema_version: str
     language: str
     max_level: int

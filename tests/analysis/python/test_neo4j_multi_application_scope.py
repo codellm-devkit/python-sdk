@@ -263,9 +263,6 @@ def _two_app_backend(record: List[str] | None = None) -> PyNeo4jBackend:
     from cldk.analysis.commons.identity import resolve_identity
 
     backend.identity = resolve_identity(APP_A, None)
-    from cldk.analysis.commons.identity import resolve_identity
-
-    backend.identity = resolve_identity(APP_A, None)
     backend.application_name = APP_A
     backend._database = None
     backend._driver = None
