@@ -118,7 +118,7 @@ from typing import Any, Dict, FrozenSet, List, Mapping, Sequence, Set, Tuple
 import networkx as nx
 
 from cldk.analysis.commons.keys import module_scope
-from cldk.analysis.commons.identity import resolve_identity, validate_identity
+from cldk.analysis.commons.identity import index_module_rows, resolve_identity, scoped_module_keys, validate_identity
 from cldk.analysis.commons import artifacts as shared  # the artifact layer every analyzer projects identically
 from cldk.analysis.commons.backend import semver
 from cldk.analysis.commons.bounds import (
@@ -496,7 +496,8 @@ class TSNeo4jBackend(TSAnalysisBackend):
     def _load_module_keys(self) -> Dict[str, str]:
         """``file key -> module id`` for the application's modules (``TSModule.name`` holds the key)."""
         rows = self._run("MATCH (:Application {id: $app_id})-[:TS_HAS_MODULE]->(m:TSModule) RETURN m.name AS k, m.id AS id", app_id=self._app_id)
-        return {r["k"]: r["id"] for r in rows}
+        self._module_index = index_module_rows({"module_id": r["id"], "file_key": r["k"]} for r in rows)
+        return scoped_module_keys(self._module_index, self._app_id, ("typescript", "javascript"))
 
     #: One statement, three carriers OR-ed, asked of **this application's own data** -- exactly as
     #: leg 3 asks Java's SDG whether its ports carry dependence, and never of ``analyzer_version``:

@@ -18,6 +18,7 @@
 
 import json
 import unicodedata
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote
@@ -82,3 +83,32 @@ def cache_matches(path: Path, identity: ApplicationIdentity) -> bool:
         return True
     except (OSError, ValueError, CodeanalyzerExecutionException):
         return False
+
+
+def index_module_rows(rows: Iterable[Mapping[str, str]]) -> dict[str, dict[str, str]]:
+    """Collapse repeated module projections by canonical identity, never by filename."""
+    index: dict[str, dict[str, str]] = {}
+    for row in rows:
+        module_id, file_key = row["module_id"], row["file_key"]
+        if module_id in index and index[module_id]["file_key"] != file_key:
+            raise ValueError(f"Conflicting file keys for canonical module {module_id}: {index[module_id]['file_key']!r} and {file_key!r}")
+        index[module_id] = {"module_id": module_id, "file_key": file_key}
+    return index
+
+
+def scoped_module_keys(index: Mapping[str, Mapping[str, str]], application_id: str, languages: tuple[str, ...]) -> dict[str, str]:
+    """Derive the relative-key API only after validating owner and language.
+
+    Candidate IDs remain in the primary index; an ambiguous relative key cannot silently
+    select whichever module happened to be projected last.
+    """
+    candidates: dict[str, set[str]] = {}
+    prefixes = tuple(f"{application_id}/{language}/" for language in languages)
+    for module_id, row in index.items():
+        if not module_id.startswith(prefixes):
+            raise ValueError(f"Module URI is outside the bound application/language scope: {module_id}")
+        candidates.setdefault(row["file_key"], set()).add(module_id)
+    for key, ids in candidates.items():
+        if len(ids) != 1:
+            raise ValueError(f"Ambiguous module file key {key!r}: {sorted(ids)}")
+    return {key: next(iter(ids)) for key, ids in candidates.items()}

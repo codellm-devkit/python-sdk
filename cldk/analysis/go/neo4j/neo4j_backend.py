@@ -45,7 +45,7 @@ from typing import Any, Dict, List
 
 import networkx as nx
 
-from cldk.analysis.commons.identity import resolve_identity, validate_identity
+from cldk.analysis.commons.identity import index_module_rows, resolve_identity, scoped_module_keys, validate_identity
 from cldk.analysis.go.backend import ARTIFACT_LAYER_UNAVAILABLE, GoAnalysisBackend
 from cldk.analysis.go.neo4j import reconstruct as R
 from cldk.models.go import GoApplication, GoCallable, GoCallGraphEdge, GoField, GoModule, GoParam, GoType
@@ -188,7 +188,11 @@ class GoNeo4jBackend(GoAnalysisBackend):
             "MATCH (:GoApplication {id: $app_id})-[:GO_HAS_MODULE]->(m:GoModule) RETURN properties(m) AS p ORDER BY m.id",
             app_id=self._app_id,
         )
-        for mr in mod_rows:
+        self._module_index = index_module_rows({"module_id": r["p"]["id"], "file_key": self._module_file_key(r["p"]["id"])} for r in mod_rows)
+        scoped_module_keys(self._module_index, self._app_id, ("go",))
+        module_props = {r["p"]["id"]: r["p"] for r in mod_rows}
+        for module_id in self._module_index:
+            mr = {"p": module_props[module_id]}
             mod = R.module(mr["p"])
             # package-level functions
             for fr in self._run(

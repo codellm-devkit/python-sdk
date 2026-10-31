@@ -101,7 +101,7 @@ from codeanalyzer.schema.ids import module_id
 from codeanalyzer.schema.py_schema import PyEntrypointReport
 
 from cldk.analysis.commons.keys import module_scope
-from cldk.analysis.commons.identity import resolve_identity, validate_identity
+from cldk.analysis.commons.identity import index_module_rows, resolve_identity, scoped_module_keys, validate_identity
 from cldk.analysis.commons.backend import semver as _semver
 from cldk.analysis.commons.graphs import path_order, sdg_path_query, sdg_taint_query
 from cldk.analysis.commons.keys import module_key_of
@@ -630,7 +630,8 @@ class PyNeo4jBackend(PythonAnalysisBackend):
             "MATCH (:PyApplication {id: $app_id})-[:PY_HAS_MODULE]->(m:PyModule) RETURN m.file_key AS k, m.id AS id",
             app_id=self._application_id,
         )
-        self._module_ids = {r["k"]: r["id"] for r in rows}
+        self._module_index = index_module_rows({"module_id": r["id"], "file_key": r["k"]} for r in rows)
+        self._module_ids = scoped_module_keys(self._module_index, self._application_id, ("python",))
         return list(self._module_ids)
 
     # =====================================================================================

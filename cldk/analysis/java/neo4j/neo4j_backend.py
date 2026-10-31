@@ -119,7 +119,7 @@ from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Sequence, Tupl
 
 import networkx as nx
 
-from cldk.analysis.commons.identity import resolve_identity, validate_identity
+from cldk.analysis.commons.identity import index_module_rows, resolve_identity, scoped_module_keys, validate_identity
 from cldk.analysis.commons.bounds import DEFAULT_PAGE_SIZE, EdgeOrder, check_page_size, cursor_params, encode_cursor, keyset_where
 from cldk.analysis.commons.graphs import flow_path, sdg_path_query, sdg_taint_query, slice_resolved
 from cldk.analysis.commons.results import Diagnostic, EdgePage, FlowPath, FlowPaths, Slice, SliceNode
@@ -391,7 +391,10 @@ class JNeo4jBackend(JavaAnalysisBackend):
         rows = self._run(
             "MATCH (:JApplication {id: $app_id})-[:J_HAS_MODULE]->(m:JModule) RETURN m.file_key AS k, properties(m) AS p ORDER BY m.file_key", app_id=self._application_id
         )
-        return {r["k"]: r["p"] for r in rows}
+        self._module_index = index_module_rows({"module_id": r["p"]["id"], "file_key": r["k"]} for r in rows)
+        keys = scoped_module_keys(self._module_index, self._application_id, ("java",))
+        props = {r["p"]["id"]: r["p"] for r in rows}
+        return {key: props[mid] for key, mid in keys.items()}
 
     # =====================================================================================
     # Reconstruction: ten statements (eight on a 3.0.x graph), then the canonical JApplication.

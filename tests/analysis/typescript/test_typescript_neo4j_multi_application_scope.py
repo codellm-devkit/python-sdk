@@ -1453,3 +1453,35 @@ def test_seek_labels_follow_the_measured_rule():
         # it pins.
         if _is_scoped(s) and not re.search(r"\{id ?: ?\$\w+\}|\.id (?:=|IN) \$", s):
             assert "CanNode" not in s, f"{name}: a prefix-scoped statement names :CanNode (measured: bare 1.62 ms vs 32.35 ms) -- {s[:120]!r}"
+
+
+@pytest.mark.parametrize("order", [("currency", "payment"), ("payment", "currency")])
+def test_currency_scanner_position_never_attaches_payment_constructor(monkeypatch, order):
+    from cldk.analysis.commons.identity import index_module_rows
+
+    graph = _Graph()
+    rows = []
+    for app, name, start, end in (("currency", "_loadProto", 91, 110), ("payment", "constructor", 24, 34)):
+        aid = graph.node(f"can://shop/{app}", ["Application", "TSApplication"], identity_version=2, application_name=app, identity_namespace="shop", analyzer_version="1.5.2")
+        mid = graph.node(aid + "/javascript/server.js", ["TSModule"], kind="module", name="server.js", start_line=1, end_line=150)
+        graph.edge(aid, "TS_HAS_MODULE", mid)
+        cid = graph.node(mid + "/" + name, ["TSCallable"], kind="function", name=name, signature="server." + name, start_line=start, end_line=end, code="function() {}")
+        graph.edge(mid, "TS_DECLARES", cid)
+        rows.append({"module_id": mid, "file_key": "server.js"})
+    monkeypatch.setattr(__import__(__name__, fromlist=["GRAPH"]), "GRAPH", graph)
+    backends = {app: TSNeo4jBackend._from_driver(FakeDriver(responder=fake_cypher), application_name=app, namespace="shop") for app in order}
+    # Simulate a downstream scanner joining its canonical module ID to SDK modules.
+    # Backend iteration order and duplicate projections must not choose the owner.
+    projected = [row for app in order for row in rows if row["module_id"].startswith(f"can://shop/{app}/")]
+    index = index_module_rows(projected + projected[:1])
+    finding_module = "can://shop/currency/javascript/server.js"
+    matches = [row for mid, row in index.items() if mid == finding_module]
+    assert matches == [{"module_id": finding_module, "file_key": "server.js"}]
+    owners = [backend for backend in backends.values() if finding_module.startswith(backend.identity.application_id + "/")]
+    assert len(owners) == 1
+    result = owners[0].locate(matches[0]["file_key"], 28)
+    assert result.callable is None
+    assert backends["currency"].locate("server.js", 91).callable.name == "_loadProto"
+    assert backends["payment"].locate("server.js", 28).callable.name == "constructor"
+    index = index_module_rows(rows + rows[:1])
+    assert list(mid for mid in index if mid == "can://shop/currency/javascript/server.js") == ["can://shop/currency/javascript/server.js"]
