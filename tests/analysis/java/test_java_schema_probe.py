@@ -156,7 +156,7 @@ def test_attach_does_not_reconstruct_the_application(fake_driver):
     statement rather than two), and the module keys -- the same attach shape the Python and
     TypeScript backends already have."""
     JNeo4jBackend._from_driver(fake_driver, application_name="daytrader8")
-    assert len(fake_driver.statements) == 4, fake_driver.statements
+    assert len(fake_driver.statements) == 5, fake_driver.statements
     assert not any("J_HAS_METHOD" in s for s in fake_driver.statements)
 
 

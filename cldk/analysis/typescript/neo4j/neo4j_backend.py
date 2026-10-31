@@ -117,6 +117,8 @@ from typing import Any, Dict, FrozenSet, List, Mapping, Sequence, Set, Tuple
 
 import networkx as nx
 
+from cldk.analysis.commons.keys import module_scope
+from cldk.analysis.commons.identity import index_module_rows, resolve_identity, scoped_module_keys, validate_identity
 from cldk.analysis.commons import artifacts as shared  # the artifact layer every analyzer projects identically
 from cldk.analysis.commons.backend import semver
 from cldk.analysis.commons.bounds import (
@@ -295,28 +297,46 @@ class TSNeo4jBackend(TSAnalysisBackend):
     _call_graph: nx.DiGraph | None = None
     _module_ids: Dict[str, str] = {}
 
-    def __init__(self, neo4j_uri: str, neo4j_username: str, neo4j_password: str, neo4j_database: str | None = None, application_name: str | None = None) -> None:
+    def __init__(
+        self,
+        neo4j_uri: str,
+        neo4j_username: str,
+        neo4j_password: str,
+        neo4j_database: str | None = None,
+        application_name: str | None = None,
+        namespace: str | None = None,
+        source_root=None,
+    ) -> None:
         try:
             from neo4j import GraphDatabase
         except ModuleNotFoundError as e:  # pragma: no cover - import guard
             raise CodeanalyzerExecutionException("The Neo4j backend requires the 'neo4j' driver. Install it with `pip install neo4j` (or `pip install cldk[neo4j]`).") from e
-        self._init_with_driver(GraphDatabase.driver(neo4j_uri, auth=(neo4j_username, neo4j_password)), application_name=application_name, neo4j_database=neo4j_database)
+        self._init_with_driver(
+            GraphDatabase.driver(neo4j_uri, auth=(neo4j_username, neo4j_password)),
+            application_name=application_name,
+            neo4j_database=neo4j_database,
+            namespace=namespace,
+            source_root=source_root,
+        )
 
     @classmethod
-    def _from_driver(cls, driver: Any, *, application_name: str | None = None, neo4j_database: str | None = None) -> "TSNeo4jBackend":
+    def _from_driver(
+        cls, driver: Any, *, application_name: str | None = None, neo4j_database: str | None = None, namespace: str | None = None, source_root=None
+    ) -> "TSNeo4jBackend":
         """Construct from an already-built driver -- the seam tests inject a fake driver through."""
         self = cls.__new__(cls)
-        self._init_with_driver(driver, application_name=application_name, neo4j_database=neo4j_database)
+        self._init_with_driver(driver, application_name=application_name, neo4j_database=neo4j_database, namespace=namespace, source_root=source_root)
         return self
 
-    def _init_with_driver(self, driver: Any, *, application_name: str | None, neo4j_database: str | None) -> None:
-        if not application_name:
-            raise CodeanalyzerExecutionException("application_name is required to scope queries to an application.")
-        self.application_name = application_name
+    def _init_with_driver(self, driver: Any, *, application_name: str | None, neo4j_database: str | None, namespace: str | None = None, source_root=None) -> None:
+        self.identity = resolve_identity(application_name, namespace)
+        self.application_name = self.identity.application_name
+        self.source_root = source_root
         self._database = neo4j_database
         self._driver = driver
         self._session_obj: Any | None = None
         self._probe_schema()
+        self._probe_identity()
         self._module_ids = self._load_module_keys()
         self._modules: List[str] = list(self._module_ids)
         self._has_resolution_edges = self._probe_resolution_edges()
@@ -325,12 +345,12 @@ class TSNeo4jBackend(TSAnalysisBackend):
     # -----[ scope ]-----
     @property
     def _app_id(self) -> str:
-        """``can://<app>`` -- the ``:Application`` anchor's id, and the root of every id below it."""
-        return f"can://{self.application_name}"
+        """``can://<namespace>/<app>`` -- the ``:Application`` anchor's id, and the root of every id below it."""
+        return self.identity.application_id
 
     @property
     def _scope_prefix(self) -> str:
-        """``can://<app>/`` (TS-3): one prefix covering both language namespaces, the ``@external``
+        """``can://<namespace>/<app>/`` (TS-3): one prefix covering both language namespaces, the ``@external``
         ghosts and the artifacts. The trailing slash keeps ``app`` from matching ``app-b``."""
         return f"{self._app_id}/"
 
@@ -397,6 +417,10 @@ class TSNeo4jBackend(TSAnalysisBackend):
             raise
 
     # -----[ attach ]-----
+    def _probe_identity(self) -> None:
+        rows = self._run("MATCH (a:Application {id: $app_id}) RETURN properties(a) AS identity", app_id=self._app_id)
+        validate_identity(rows[0].get("identity", {}) if rows else {}, self.identity, envelope=False)
+
     def _probe_schema(self) -> None:
         """G5: the relationship-type fingerprint, then the analyzer generation the ``:Application``
         anchor stamps against :attr:`_ANALYZER_FLOOR`. Below the floor, absent, or unreadable is
@@ -472,7 +496,8 @@ class TSNeo4jBackend(TSAnalysisBackend):
     def _load_module_keys(self) -> Dict[str, str]:
         """``file key -> module id`` for the application's modules (``TSModule.name`` holds the key)."""
         rows = self._run("MATCH (:Application {id: $app_id})-[:TS_HAS_MODULE]->(m:TSModule) RETURN m.name AS k, m.id AS id", app_id=self._app_id)
-        return {r["k"]: r["id"] for r in rows}
+        self._module_index = index_module_rows({"module_id": r["id"], "file_key": r["k"]} for r in rows)
+        return scoped_module_keys(self._module_index, self._app_id, ("typescript", "javascript"))
 
     #: One statement, three carriers OR-ed, asked of **this application's own data** -- exactly as
     #: leg 3 asks Java's SDG whether its ports carry dependence, and never of ``analyzer_version``:
@@ -623,6 +648,9 @@ class TSNeo4jBackend(TSAnalysisBackend):
         """
         externals = {e.id: e for e in self.get_external_symbols().values()}
         return TSApplication(
+            application_name=self.identity.application_name,
+            identity_namespace=self.identity.namespace,
+            identity_version=2,
             id=self._app_id,
             symbol_table=self.get_symbol_table(),
             call_graph=[TSCallGraphEdge(src=r["src"], dst=r["dst"], prov=list(r["prov"] or []), weight=r["weight"] or 1) for r in self._call_rows()],
@@ -1397,7 +1425,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
         # Whatever the caller's scanner printed ("./src/app.ts", an absolute path) is normalised to
         # the graph's module key before it becomes a Cypher parameter -- an unnormalised path would
         # match no :TSModule and read back as file_not_in_graph.
-        keys = [resolve_module_key(path, self._module_ids) for path, _ in positions]
+        keys = [resolve_module_key(path, self._module_ids, **module_scope(self)) for path, _ in positions]
         # A key the application does not hold is never sent: its ``module_prefix`` would be the raw
         # path, which is not application-stamped and could seek outside this application. It has no
         # rows either way, and no rows is exactly the ``file_not_in_graph`` outcome.
@@ -1774,9 +1802,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
     #: every node on the walk carries the predicate, once rather than twice.
     _REACHES = (
         "MATCH (a:TSCallable {{signature:$a}}) WHERE " + _scoped("a") + " AND a.kind IN $callable_kinds "
-        "MATCH (a) ((x:TSCallable)-[:TS_CALLS]->(y:TSCallable) WHERE "
-        + _scoped("x")
-        + " AND x.kind IN $callable_kinds){{1,{depth}}} (m:TSCallable) "
+        "MATCH (a) ((x:TSCallable)-[:TS_CALLS]->(y:TSCallable) WHERE " + _scoped("x") + " AND x.kind IN $callable_kinds){{1,{depth}}} (m:TSCallable) "
         "WITH DISTINCT m WHERE " + _scoped("m") + " AND m.kind IN $callable_kinds AND m.signature = $b RETURN count(m) > 0 AS ok"
     )
 
@@ -2003,10 +2029,7 @@ class TSNeo4jBackend(TSAnalysisBackend):
             cap=max_paths + 1,
             **self._scope_params,
         )
-        return [
-            (r["src"], r["dst"], flow_path([self._slice_row(n) for n in r["ns"]], [(e["via"], e["var"], e["prov"]) for e in r["rs"]], via=VIA))
-            for r in rows
-        ], {}
+        return [(r["src"], r["dst"], flow_path([self._slice_row(n) for n in r["ns"]], [(e["via"], e["var"], e["prov"]) for e in r["rs"]], via=VIA)) for r in rows], {}
 
     def _edge_vars_in(self, callable_id: str) -> FrozenSet[str]:
         """The edge variables scoped to this callable (see :meth:`TSAnalysisBackend._edge_vars_in`).

@@ -34,6 +34,8 @@ import networkx as nx
 import pytest
 
 import cldk
+from cldk.analysis.commons.backend_config import cache_subdir
+from cldk.analysis.commons.identity import resolve_identity
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.java.backend import CRUD_UNAVAILABLE
 from cldk.analysis.java.codeanalyzer import JCodeanalyzer
@@ -65,6 +67,7 @@ def _analyzer(payload: str, level=AnalysisLevel.symbol_table, project_dir=".", a
     with patch(_RUN) as run_mock:
         run_mock.side_effect = _write_output(payload)
         analyzer = JCodeanalyzer(
+            application_name=json.loads(payload).get("application", {}).get("application_name", "daytrader8"),
             project_dir=project_dir,
             analysis_json_path=analysis_json_path,
             analysis_level=level,
@@ -77,7 +80,9 @@ def _analyzer(payload: str, level=AnalysisLevel.symbol_table, project_dir=".", a
 # -----[ driving the analyzer ]-----
 
 
-@pytest.mark.parametrize("level, a", [(AnalysisLevel.symbol_table, "1"), (AnalysisLevel.call_graph, "2"), (AnalysisLevel.program_dependency_graph, "3"), (AnalysisLevel.system_dependency_graph, "4")])
+@pytest.mark.parametrize(
+    "level, a", [(AnalysisLevel.symbol_table, "1"), (AnalysisLevel.call_graph, "2"), (AnalysisLevel.program_dependency_graph, "3"), (AnalysisLevel.system_dependency_graph, "4")]
+)
 def test_argv_is_the_analyzer_command_line(test_fixture, analysis_json, tmp_path, level, a):
     """``-a`` carries the requested level (3 and 4 are new to Java); ``-o``/``-c``/``-v`` only with a
     cache dir; ``--app-name`` is the project directory's name, which the analyzer stamps into every
@@ -85,14 +90,30 @@ def test_argv_is_the_analyzer_command_line(test_fixture, analysis_json, tmp_path
     analyzer, run_mock = _analyzer(analysis_json, level=level, project_dir=test_fixture, analysis_json_path=tmp_path, target_files=["a.java", "b.java"])
     argv = run_mock.call_args[0][0]
     assert argv[:3] == codeanalyzer_java.command()
-    assert argv[3:] == ["-i", str(test_fixture), "-a", a, "-o", str(tmp_path), "-c", str(tmp_path / "cache"), "-v", "--app-name", test_fixture.name, "-t", "a.java", "-t", "b.java"]
+    assert argv[3:] == [
+        "-i",
+        str(test_fixture),
+        "-a",
+        a,
+        "-o",
+        str(tmp_path),
+        "-c",
+        str(tmp_path / "cache"),
+        "-v",
+        "--app-name=daytrader8",
+        "--namespace=daytrader8",
+        "-t",
+        "a.java",
+        "-t",
+        "b.java",
+    ]
     assert isinstance(analyzer.application, JApplication)
 
 
 def test_pipe_mode_has_no_output_or_cache_flags(test_fixture, analysis_json):
     _, run_mock = _analyzer(analysis_json, project_dir=test_fixture)
     argv = run_mock.call_args[0][0]
-    assert argv[3:] == ["-i", str(test_fixture), "-a", "1", "--app-name", test_fixture.name]
+    assert argv[3:] == ["-i", str(test_fixture), "-a", "1", "--app-name=daytrader8", "--namespace=daytrader8"]
 
 
 def test_unknown_level_raises_instead_of_defaulting(test_fixture, analysis_json):
@@ -103,10 +124,10 @@ def test_unknown_level_raises_instead_of_defaulting(test_fixture, analysis_json)
 def test_envelope_and_application_are_kept(test_fixture, analysis_json):
     analyzer, _ = _analyzer(analysis_json, project_dir=test_fixture)
     assert analyzer.analysis.schema_version == "2.0.0"
-    assert analyzer.analysis.analyzer.version == "3.1.0"
+    assert analyzer.analysis.analyzer.version == "3.3.4"
     assert analyzer.analysis.max_level == 1
     assert analyzer.application is analyzer.analysis.application
-    assert analyzer.application.id == "can://java/daytrader8"
+    assert analyzer.application.id == "can://daytrader8/daytrader8"
 
 
 def test_cached_analysis_is_reused(test_fixture, analysis_json, tmp_path):
@@ -216,7 +237,9 @@ def test_call_graph_is_empty_below_level_2(analysis_json):
 
 def test_unhomed_call_graph_endpoint_raises_naming_it(analysis_json_a4):
     payload = json.loads(analysis_json_a4)
-    payload["application"]["call_graph"].append({"src": "can://java/daytrader8/nowhere/X.java/X/m()", "dst": payload["application"]["call_graph"][0]["dst"], "prov": ["declared"], "weight": 1})
+    payload["application"]["call_graph"].append(
+        {"src": "can://daytrader8/daytrader8/java/nowhere/X.java/X/m()", "dst": payload["application"]["call_graph"][0]["dst"], "prov": ["declared"], "weight": 1}
+    )
     analyzer, _ = _analyzer(json.dumps(payload), level=AnalysisLevel.call_graph)
     with pytest.raises(CodeanalyzerExecutionException, match=re.escape("call-graph endpoint 'm()' in 'nowhere/X.java'")) as e:
         analyzer.get_call_graph()
@@ -308,14 +331,16 @@ def test_get_all_classes_is_keyed_by_qualified_name_including_nested_and_local(a
     assert all(isinstance(t, JType) for t in classes.values())
     assert TRADE_DIRECT in classes
     assert "com.ibm.websphere.samples.daytrader.impl.ejb3.TradeSLSBBean.quotePriceComparator" in classes
-    assert "com.ibm.websphere.samples.daytrader.web.prims.PingManagedExecutor.doGet(javax.servlet.http.HttpServletRequest, javax.servlet.http.HttpServletResponse).$anon$0" in classes
+    assert (
+        "com.ibm.websphere.samples.daytrader.web.prims.PingManagedExecutor.doGet(javax.servlet.http.HttpServletRequest, javax.servlet.http.HttpServletResponse).$anon$0" in classes
+    )
 
 
 def _local_class_collision_payload() -> dict:
     """Two sibling callables of one type, each declaring an anonymous class the analyzer numbers
     ``$anon$0``. Hand-built, so the shape is catchable with no analyzer and no graph: on ThingsBoard
     it is 97 colliding names shadowing 381 of 5,102 type declarations."""
-    module = "can://java/app/src/main/java/p/Outer.java"
+    module = "can://app/app/java/src/main/java/p/Outer.java"
     span = lambda a, b: {"start": [a, 1], "end": [b, 1], "bytes": [0, 0]}
 
     def method(signature: str) -> dict:
@@ -329,12 +354,15 @@ def _local_class_collision_payload() -> dict:
         }
 
     return {
+        "identity_version": 2,
         "schema_version": "2.0.0",
         "language": "java",
         "max_level": 1,
         "analyzer": {"name": "codeanalyzer-java", "version": "3.0.1"},
         "application": {
-            "id": "can://java/app",
+            "id": "can://app/app",
+            "application_name": "app",
+            "identity_namespace": "app",
             "kind": "application",
             "symbol_table": {
                 "src/main/java/p/Outer.java": {
@@ -368,7 +396,7 @@ def test_a_local_class_is_keyed_by_its_declaring_callable_on_both_backends():
 
     analyzer, _ = _analyzer(json.dumps(payload))
     assert set(analyzer.get_all_classes()) == expected
-    assert analyzer.get_class("p.Outer.one().$anon$0").id == "can://java/app/src/main/java/p/Outer.java/Outer/one()/$anon$0"
+    assert analyzer.get_class("p.Outer.one().$anon$0").id == "can://app/app/java/src/main/java/p/Outer.java/Outer/one()/$anon$0"
     assert analyzer.get_class("p.Outer.one().$anon$0").is_local_class
 
     neo = JNeo4jBackend.__new__(JNeo4jBackend)
@@ -389,7 +417,12 @@ def test_get_method_and_parameters(analysis_json):
     sig = "publishQuotePriceChange(com.ibm.websphere.samples.daytrader.entities.QuoteDataBean, java.math.BigDecimal, java.math.BigDecimal, double)"
     method = analyzer.get_method(TRADE_DIRECT, sig)
     assert isinstance(method, JCallable) and method.signature == sig
-    assert [p.type for p in analyzer.get_method_parameters(TRADE_DIRECT, sig)] == ["com.ibm.websphere.samples.daytrader.entities.QuoteDataBean", "java.math.BigDecimal", "java.math.BigDecimal", "double"]
+    assert [p.type for p in analyzer.get_method_parameters(TRADE_DIRECT, sig)] == [
+        "com.ibm.websphere.samples.daytrader.entities.QuoteDataBean",
+        "java.math.BigDecimal",
+        "java.math.BigDecimal",
+        "double",
+    ]
     assert analyzer.get_method(TRADE_DIRECT, "noSuchMethod()") is None
     assert analyzer.get_method_parameters(TRADE_DIRECT, "noSuchMethod()") == []
 
@@ -443,7 +476,9 @@ def test_get_all_nested_classes(analysis_json):
 
 def test_get_extended_classes_and_implemented_interfaces(analysis_json):
     analyzer, _ = _analyzer(analysis_json)
-    assert analyzer.get_extended_classes("com.ibm.websphere.samples.daytrader.util.TradeRunTimeModeLiteral") == ["javax.enterprise.util.AnnotationLiteral<com.ibm.websphere.samples.daytrader.interfaces.RuntimeMode>"]
+    assert analyzer.get_extended_classes("com.ibm.websphere.samples.daytrader.util.TradeRunTimeModeLiteral") == [
+        "javax.enterprise.util.AnnotationLiteral<com.ibm.websphere.samples.daytrader.interfaces.RuntimeMode>"
+    ]
     assert analyzer.get_extended_classes("com.ibm.websphere.samples.daytrader.entities.HoldingDataBean") == []
     assert set(analyzer.get_implemented_interfaces(TRADE_DIRECT)) == {"com.ibm.websphere.samples.daytrader.interfaces.TradeServices", "java.io.Serializable"}
     assert analyzer.get_implemented_interfaces("com.ibm.websphere.samples.daytrader.util.TradeConfig") == []
@@ -486,7 +521,7 @@ def test_artifact_layer_returns_the_shared_models(analysis_json_a4):
     analyzer, _ = _analyzer(analysis_json_a4)
     artifacts = analyzer.get_artifacts()
     assert len(artifacts) == 235 and all(isinstance(a, PyArtifact) for a in artifacts.values())
-    assert artifacts["pom.xml"].id == "can://artifact/daytrader8/pom.xml" and len(artifacts["pom.xml"].config_keys) == 54
+    assert artifacts["pom.xml"].id == "can://daytrader8/daytrader8/artifact/pom.xml" and len(artifacts["pom.xml"].config_keys) == 54
     keys = analyzer.get_config_keys()
     key = keys["pom.xml@key/project.artifactId"]
     assert isinstance(key, PyConfigKey) and key.value == "io.openliberty.sample.daytrader8" and key.namespace == "xml"
@@ -494,15 +529,15 @@ def test_artifact_layer_returns_the_shared_models(analysis_json_a4):
     # ``--app-name <project directory name>``, so an id key would differ from the same corpus's key
     # in a graph emitted under another name. And a ``can://`` id has no place in a public dict key.
     assert all("can://" not in k for k in keys)
-    assert key.id == "can://artifact/daytrader8/pom.xml@key/project.artifactId"
+    assert key.id == "can://daytrader8/daytrader8/artifact/pom.xml@key/project.artifactId"
     assert set(keys) == {f"{path}@key/{ck.key}" for path, a in analyzer.application.artifacts.items() for ck in a.config_keys}
     deps = analyzer.get_dependencies()
     assert [d.name for d in deps] == ["derby", "javaee-api", "jaxb-api", "standard"]
-    assert all(isinstance(d, PyDependency) and d.ecosystem == "maven" and d.declared_in == "can://artifact/daytrader8/pom.xml" for d in deps)
+    assert all(isinstance(d, PyDependency) and d.ecosystem == "maven" and d.declared_in == "can://daytrader8/daytrader8/artifact/pom.xml" for d in deps)
     assert len(analyzer.get_dependencies(direct_only=True)) == 4
     assert analyzer.get_dependencies(ecosystem="npm") == []
-    assert [d.name for d in analyzer.get_dependencies(declared_in="can://artifact/daytrader8/pom.xml")] == ["derby", "javaee-api", "jaxb-api", "standard"]
-    assert analyzer.get_dependencies(declared_in="can://artifact/daytrader8/nothing") == []
+    assert [d.name for d in analyzer.get_dependencies(declared_in="can://daytrader8/daytrader8/artifact/pom.xml")] == ["derby", "javaee-api", "jaxb-api", "standard"]
+    assert analyzer.get_dependencies(declared_in="can://daytrader8/daytrader8/artifact/nothing") == []
     assert analyzer.get_config_uses() == [] and analyzer.get_config_uses(key="project.artifactId") == []
     assert analyzer.get_unresolved_config_reads() == []
 
@@ -533,8 +568,8 @@ def test_facade_reuses_language_keyed_cache(analysis_json_fixture, tmp_path):
     from cldk import CLDK
     from cldk.analysis.commons.backend_config import CodeAnalyzerConfig
 
-    keyed = tmp_path / "java"
-    keyed.mkdir()
+    keyed = cache_subdir(tmp_path, None, "java", identity=resolve_identity("daytrader8", None))
+    keyed.mkdir(parents=True)
     with gzip.open(Path(analysis_json_fixture) / "analysis.json.gz", "rb") as src, open(keyed / "analysis.json", "wb") as dst:
         shutil.copyfileobj(src, dst)
     with patch(_RUN) as run_mock:
@@ -542,7 +577,7 @@ def test_facade_reuses_language_keyed_cache(analysis_json_fixture, tmp_path):
             project_path=analysis_json_fixture,
             eager=False,
             analysis_level=AnalysisLevel.symbol_table,
-            backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)),
+            backend=CodeAnalyzerConfig(application_name="daytrader8", cache_dir=str(tmp_path)),
         )
     assert not run_mock.called
     assert len(analysis.get_symbol_table()) == 138

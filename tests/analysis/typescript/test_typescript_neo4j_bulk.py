@@ -34,7 +34,7 @@ from cldk.analysis.typescript.neo4j.neo4j_backend import TSNeo4jBackend, _scoped
 from cldk.models.typescript import TSCallableOverview, TSCallsite
 
 APP = "test-app"
-PREFIX = f"can://{APP}/"
+PREFIX = f"can://{APP}/{APP}/"
 #: What a *declared* node's id carries before its file key. The scope is the application prefix
 #: above; this one has the language segment, and only ids are built from it.
 CODE_PREFIX = f"{PREFIX}typescript/"
@@ -45,6 +45,9 @@ OVERVIEW_MATCH = f"MATCH (c:TSCallable) WHERE {_scoped('c')} "
 def _backend(modules=("src/models.ts", "src/util.ts", "src/controllers.ts")) -> TSNeo4jBackend:
     """A TSNeo4jBackend with __init__ (and its real driver connection) bypassed."""
     backend = object.__new__(TSNeo4jBackend)
+    from cldk.analysis.commons.identity import resolve_identity
+
+    backend.identity = resolve_identity(APP, None)
     backend.application_name = APP
     backend._database = None
     backend._module_ids = {m: f"{CODE_PREFIX}{m}" for m in modules}
@@ -282,3 +285,28 @@ def test_callsites_for_query_shape_and_scope():
     assert "coalesce(t.signature, t.module + '.' + t.name) AS callee" in captured["query"]
     assert captured["sigs"] == ["sig-a"]
     assert captured["p"] == PREFIX
+
+
+def test_module_loader_rejects_conflicting_canonical_rows():
+    import pytest
+    backend = _backend()
+    rows = [{"k": "server.js", "id": CODE_PREFIX + "server.js"}, {"k": "other.js", "id": CODE_PREFIX + "server.js"}]
+    with patch.object(TSNeo4jBackend, "_run", return_value=rows):
+        with pytest.raises(ValueError, match="Conflicting file keys"):
+            backend._load_module_keys()
+
+
+def test_duplicate_module_cleanup_preserves_two_call_sites_to_same_target():
+    backend = _backend()
+    mid = CODE_PREFIX + "server.js"
+    owner = "server.main"
+    modules = [{"k": "server.js", "id": mid}] * 2
+    sites = [
+        {"owner": owner, "p": {"id": mid + f"/main@{line}:1", "kind": "call", "start_line": line, "end_line": line}, "callee": "server.target"}
+        for line in (28, 31)
+    ]
+    with patch.object(TSNeo4jBackend, "_run", side_effect=[modules, sites]):
+        assert backend._load_module_keys() == {"server.js": mid}
+        assert len(backend._module_index) == 1
+        result = backend.get_callsites_for([owner])[owner]
+    assert [(site.start_line, site.callee_signature) for site in result] == [(28, "server.target"), (31, "server.target")]

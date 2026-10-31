@@ -66,10 +66,9 @@ relation is exact it is asserted rather than skipped:
 * ``PyModule.imports`` is ``[]``: ``PY_IMPORTS`` aggregates per distribution package, and this
   project's only import is the relative ``from .models import User``, which is not one. The graph
   declares no ``PY_IMPORTS`` relationship at all here, so the empty list is asserted, not skipped.
-* ``id`` is ``""`` on every reconstructed module, class and callable. **This one is recoverable
-  and simply not read**: the nodes do carry ``id`` (the teardown below matches on it), but no
-  ``reconstruct`` function copies it onto the model. Worth closing; not closed here, because this
-  module changes no SDK behaviour.
+* Canonical ``id`` values are copied unchanged onto reconstructed modules, classes and
+  callables. Namespace/application ownership survives graph-to-model reconstruction; focused
+  coverage lives in ``test_neo4j_identity_reconstruction.py``.
 * ``span`` is ``None``: a node carries ``start_line``/``end_line`` and nothing finer, so there are
   no columns and no byte offsets to build a :class:`Span` from. The lines themselves survive and
   are compared — they are inside the dicts these tests assert equal, not tolerated.

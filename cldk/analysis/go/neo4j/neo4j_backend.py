@@ -45,6 +45,7 @@ from typing import Any, Dict, List
 
 import networkx as nx
 
+from cldk.analysis.commons.identity import index_module_rows, resolve_identity, scoped_module_keys, validate_identity
 from cldk.analysis.go.backend import ARTIFACT_LAYER_UNAVAILABLE, GoAnalysisBackend
 from cldk.analysis.go.neo4j import reconstruct as R
 from cldk.models.go import GoApplication, GoCallable, GoCallGraphEdge, GoField, GoModule, GoParam, GoType
@@ -65,50 +66,58 @@ class GoNeo4jBackend(GoAnalysisBackend):
         neo4j_password: str,
         neo4j_database: str | None = None,
         application_name: str | None = None,
+        namespace: str | None = None,
+        source_root=None,
     ) -> None:
         try:
             from neo4j import GraphDatabase
         except ModuleNotFoundError as e:  # pragma: no cover - import guard
-            raise CodeanalyzerExecutionException(
-                "The Neo4j backend requires the 'neo4j' driver. Install it with `pip install neo4j` "
-                "(or `pip install cldk[neo4j]`)."
-            ) from e
+            raise CodeanalyzerExecutionException("The Neo4j backend requires the 'neo4j' driver. Install it with `pip install neo4j` " "(or `pip install cldk[neo4j]`).") from e
         self._init_with_driver(
             GraphDatabase.driver(neo4j_uri, auth=(neo4j_username, neo4j_password)),
             application_name=application_name,
+            namespace=namespace,
+            source_root=source_root,
             neo4j_database=neo4j_database,
         )
 
     @classmethod
-    def _from_driver(cls, driver: Any, *, application_name: str | None = None, neo4j_database: str | None = None) -> "GoNeo4jBackend":
+    def _from_driver(
+        cls, driver: Any, *, application_name: str | None = None, neo4j_database: str | None = None, namespace: str | None = None, source_root=None
+    ) -> "GoNeo4jBackend":
         """Construct from an already-built driver — the seam tests inject a fake/real driver here."""
         self = cls.__new__(cls)
-        self._init_with_driver(driver, application_name=application_name, neo4j_database=neo4j_database)
+        self._init_with_driver(driver, application_name=application_name, neo4j_database=neo4j_database, namespace=namespace, source_root=source_root)
         return self
 
-    def _init_with_driver(self, driver: Any, *, application_name: str | None, neo4j_database: str | None) -> None:
-        if not application_name:
-            raise CodeanalyzerExecutionException("application_name is required to scope queries to an application.")
-        self.application_name = application_name
+    def _init_with_driver(self, driver: Any, *, application_name: str | None, neo4j_database: str | None, namespace: str | None = None, source_root=None) -> None:
+        self.identity = resolve_identity(application_name, namespace)
+        self.application_name = self.identity.application_name
+        self.source_root = source_root
         self._database = neo4j_database
         self._driver = driver
         self._session_obj: Any | None = None
         self._call_graph: nx.DiGraph | None = None
         self._probe_schema()
+        self._probe_identity()
 
     # -----[ scope + execution ]-----
     @property
     def _app_id(self) -> str:
-        """``can://<app>`` — the ``:GoApplication`` anchor id and the root of every id below it."""
-        return f"can://{self.application_name}"
+        """``can://<namespace>/<app>`` — the ``:GoApplication`` anchor id and the root of every id below it."""
+        return self.identity.application_id
 
     @property
     def _scope_prefix(self) -> str:
-        """``can://<app>/`` — the trailing slash keeps ``app`` from matching ``app-b``."""
+        """``can://<namespace>/<app>/`` — the trailing slash keeps ``app`` from matching ``app-b``."""
         return f"{self._app_id}/"
 
     def _run(self, query: str, **params: Any) -> List[Dict[str, Any]]:
         """Run one read statement over a reused session; drop the session on failure."""
+        for name in ("id", "mid", "tid"):
+            value = params.get(name)
+            if isinstance(value, str) and value.startswith("can:") and not value.startswith(self._scope_prefix + "go/"):
+                raise ValueError("Node URI is outside the bound Go application scope")
         if self._session_obj is None:
             self._session_obj = self._driver.session(database=self._database)
         try:
@@ -128,19 +137,19 @@ class GoNeo4jBackend(GoAnalysisBackend):
     def __exit__(self, *exc: Any) -> None:
         self.close()
 
+    def _probe_identity(self) -> None:
+        rows = self._run("MATCH (a:GoApplication {id: $app_id}) RETURN properties(a) AS identity", app_id=self._app_id)
+        validate_identity(rows[0].get("identity", {}) if rows else {}, self.identity, envelope=False)
+
     def _probe_schema(self) -> None:
         """Refuse a graph that is not a codeanalyzer-go projection or holds no node for this app."""
         found = {r["relationshipType"] for r in self._run("CALL db.relationshipTypes()")}
         missing = _REQUIRED_RELS - found
         if missing:
-            raise CodeanalyzerExecutionException(
-                f"the graph is not a codeanalyzer-go projection: missing relationship types {sorted(missing)}"
-            )
+            raise CodeanalyzerExecutionException(f"the graph is not a codeanalyzer-go projection: missing relationship types {sorted(missing)}")
         rows = self._run("OPTIONAL MATCH (a:GoApplication {id: $app_id}) RETURN count(a) AS n", app_id=self._app_id)
         if not (rows and rows[0].get("n")):
-            raise CodeanalyzerExecutionException(
-                f"the graph holds no :GoApplication node for {self.application_name!r} (id {self._app_id!r})"
-            )
+            raise CodeanalyzerExecutionException(f"the graph holds no :GoApplication node for {self.application_name!r} (id {self._app_id!r})")
 
     # -----[ application / whole-program ]-----
     def get_application_view(self) -> GoApplication:
@@ -151,14 +160,24 @@ class GoNeo4jBackend(GoAnalysisBackend):
 
     @cached_property
     def _application(self) -> GoApplication:
-        return GoApplication(id=self._app_id, symbol_table=self._build_symbol_table(), call_graph=self._call_edges())
+        return GoApplication(
+            identity_version=2,
+            application_name=self.identity.application_name,
+            identity_namespace=self.identity.namespace,
+            id=self._app_id,
+            symbol_table=self._build_symbol_table(),
+            call_graph=self._call_edges(),
+        )
 
     def get_symbol_table(self) -> Dict[str, GoModule]:
         return self.get_application_view().symbol_table
 
     def _module_file_key(self, module_id: str) -> str:
         """``can://<app>/<file>`` → ``<file>`` (the symbol-table key the local backend uses)."""
-        return module_id[len(self._scope_prefix):]
+        prefix = self._scope_prefix + "go/"
+        if not module_id.startswith(prefix):
+            raise ValueError("Module URI is outside the bound Go application scope")
+        return module_id[len(prefix) :]
 
     def _build_symbol_table(self) -> Dict[str, GoModule]:
         """Rebuild every module with its types, functions, methods and fields from the containment
@@ -169,7 +188,11 @@ class GoNeo4jBackend(GoAnalysisBackend):
             "MATCH (:GoApplication {id: $app_id})-[:GO_HAS_MODULE]->(m:GoModule) RETURN properties(m) AS p ORDER BY m.id",
             app_id=self._app_id,
         )
-        for mr in mod_rows:
+        self._module_index = index_module_rows({"module_id": r["p"]["id"], "file_key": self._module_file_key(r["p"]["id"])} for r in mod_rows)
+        scoped_module_keys(self._module_index, self._app_id, ("go",))
+        module_props = {r["p"]["id"]: r["p"] for r in mod_rows}
+        for module_id in self._module_index:
+            mr = {"p": module_props[module_id]}
             mod = R.module(mr["p"])
             # package-level functions
             for fr in self._run(
@@ -204,14 +227,10 @@ class GoNeo4jBackend(GoAnalysisBackend):
     # -----[ call graph ]-----
     def _call_edges(self) -> List[GoCallGraphEdge]:
         rows = self._run(
-            "MATCH (a:GoCallable)-[r:GO_CALLS]->(b) WHERE a.id STARTS WITH $pre "
-            "RETURN a.id AS src, b.id AS dst, properties(r) AS p ORDER BY a.id, b.id",
+            "MATCH (a:GoCallable)-[r:GO_CALLS]->(b) WHERE a.id STARTS WITH $pre " "RETURN a.id AS src, b.id AS dst, properties(r) AS p ORDER BY a.id, b.id",
             pre=self._scope_prefix,
         )
-        return [
-            GoCallGraphEdge(src=r["src"], dst=r["dst"], prov=list(r["p"].get("prov") or []), weight=r["p"].get("weight", 1))
-            for r in rows
-        ]
+        return [GoCallGraphEdge(src=r["src"], dst=r["dst"], prov=list(r["p"].get("prov") or []), weight=r["p"].get("weight", 1)) for r in rows]
 
     def get_call_graph(self) -> nx.DiGraph:
         if self._call_graph is not None:
@@ -290,8 +309,7 @@ class GoNeo4jBackend(GoAnalysisBackend):
         """Every package-level function (``:GoModule``-[:GO_DECLARES]->(:GoCallable)``), keyed by
         signature."""
         rows = self._run(
-            "MATCH (m:GoModule)-[:GO_DECLARES]->(c:GoCallable) WHERE m.id STARTS WITH $pre "
-            "RETURN properties(c) AS p ORDER BY c.signature",
+            "MATCH (m:GoModule)-[:GO_DECLARES]->(c:GoCallable) WHERE m.id STARTS WITH $pre " "RETURN properties(c) AS p ORDER BY c.signature",
             pre=self._scope_prefix,
         )
         return {r["p"]["signature"]: R.callable_(r["p"]) for r in rows}
@@ -305,9 +323,7 @@ class GoNeo4jBackend(GoAnalysisBackend):
             id=node_id,
         )
         if not node_rows:
-            raise CodeanalyzerExecutionException(
-                f"no node {node_id!r} in the graph for application {self.application_name!r}"
-            )
+            raise CodeanalyzerExecutionException(f"no node {node_id!r} in the graph for application {self.application_name!r}")
         span_json = node_rows[0]["span"]
         if not span_json:
             raise CodeanalyzerExecutionException(f"node {node_id!r} carries no span, so it has no source text")
@@ -328,9 +344,7 @@ class GoNeo4jBackend(GoAnalysisBackend):
     def get_artifacts(self) -> Dict[str, PyArtifact]:
         raise CodeanalyzerExecutionException(ARTIFACT_LAYER_UNAVAILABLE.format(app=self.application_name))
 
-    def get_dependencies(
-        self, *, direct_only: bool = False, ecosystem: str | None = None, declared_in: str | None = None
-    ) -> List[PyDependency]:
+    def get_dependencies(self, *, direct_only: bool = False, ecosystem: str | None = None, declared_in: str | None = None) -> List[PyDependency]:
         raise CodeanalyzerExecutionException(ARTIFACT_LAYER_UNAVAILABLE.format(app=self.application_name))
 
     def get_config_keys(self) -> Dict[str, PyConfigKey]:

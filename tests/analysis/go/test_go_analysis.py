@@ -2,7 +2,7 @@
 
 One corpus, driven through the mocked subprocess (which writes the payload into the cache dir exactly
 as cango would at ``-o``): ``tests/resources/go/analysis.json``, the committed real
-``can://go/litestream`` corpus (55 modules, 959 edges).
+``can://litestream/litestream/go`` corpus (55 modules, 3082 edges).
 
 * The deterministic level/cache/capture regression tests mutate its ``max_level`` and call graph to
   simulate L1-vs-L2 generations.
@@ -27,11 +27,11 @@ from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 GO_ANALYSIS = Path(__file__).resolve().parents[2] / "resources" / "go" / "analysis.json"
 
 # real, stable ids from the litestream corpus (abs/replica_client.go)
-LS_TYPE_ID = "can://go/litestream/abs/replica_client.go/github.com/benbjohnson/litestream/abs.ReplicaClient"
+LS_TYPE_ID = "can://litestream/litestream/go/abs/replica_client.go/github.com/benbjohnson/litestream/abs.ReplicaClient"
 LS_METHOD_ID = f"{LS_TYPE_ID}/github.com/benbjohnson/litestream/abs.ReplicaClient.DeleteAll"
-LS_FUNC_ID = "can://go/litestream/abs/replica_client.go/github.com/benbjohnson/litestream/abs.NewReplicaClient"
+LS_FUNC_ID = "can://litestream/litestream/go/abs/replica_client.go/github.com/benbjohnson/litestream/abs.NewReplicaClient"
 LS_FUNC_SIG = "github.com/benbjohnson/litestream/abs.NewReplicaClient"
-LS_FUNC_CALLER_ID = "can://go/litestream/abs/replica_client.go/github.com/benbjohnson/litestream/abs.NewReplicaClientFromURL"
+LS_FUNC_CALLER_ID = "can://litestream/litestream/go/abs/replica_client.go/github.com/benbjohnson/litestream/abs.NewReplicaClientFromURL"
 
 
 def _fake_run_writing_output(payload: str):
@@ -41,6 +41,7 @@ def _fake_run_writing_output(payload: str):
             out.mkdir(parents=True, exist_ok=True)
             (out / "analysis.json").write_text(payload, encoding="utf-8")
         return MagicMock(stdout=payload, returncode=0)
+
     return _run
 
 
@@ -53,7 +54,7 @@ def go_analysis(tmp_path, monkeypatch):
         project_path=str(tmp_path),
         analysis_level=AnalysisLevel.call_graph,
         eager=True,
-        backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)),
+        backend=CodeAnalyzerConfig(application_name="litestream", cache_dir=str(tmp_path)),
     )
 
 
@@ -88,11 +89,11 @@ def test_shallow_cache_is_not_reused_for_a_deeper_request(tmp_path, monkeypatch)
     monkeypatch.setattr("subprocess.run", _level_aware_run(calls))
 
     # First: a level-1 run writes a level-1 cache.
-    CLDK.go(project_path=str(tmp_path), analysis_level=AnalysisLevel.symbol_table, backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)))
+    CLDK.go(project_path=str(tmp_path), analysis_level=AnalysisLevel.symbol_table, backend=CodeAnalyzerConfig(application_name="litestream", cache_dir=str(tmp_path)))
     assert len(calls) == 1
 
     # Then: a level-2 request over that level-1 cache must re-run (not reuse).
-    a2 = CLDK.go(project_path=str(tmp_path), analysis_level=AnalysisLevel.call_graph, backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)))
+    a2 = CLDK.go(project_path=str(tmp_path), analysis_level=AnalysisLevel.call_graph, backend=CodeAnalyzerConfig(application_name="litestream", cache_dir=str(tmp_path)))
     assert len(calls) == 2, "level-2 request should have re-run cango over the stale level-1 cache"
     assert a2.backend.analysis.max_level == 2
 
@@ -104,9 +105,9 @@ def test_deeper_cache_is_reused_for_a_shallower_request(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEANALYZER_GO_BIN", "cango")
     monkeypatch.setattr("subprocess.run", _level_aware_run(calls))
 
-    CLDK.go(project_path=str(tmp_path), analysis_level=AnalysisLevel.call_graph, backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)))
+    CLDK.go(project_path=str(tmp_path), analysis_level=AnalysisLevel.call_graph, backend=CodeAnalyzerConfig(application_name="litestream", cache_dir=str(tmp_path)))
     assert len(calls) == 1
-    CLDK.go(project_path=str(tmp_path), analysis_level=AnalysisLevel.symbol_table, backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)))
+    CLDK.go(project_path=str(tmp_path), analysis_level=AnalysisLevel.symbol_table, backend=CodeAnalyzerConfig(application_name="litestream", cache_dir=str(tmp_path)))
     assert len(calls) == 1, "level-1 request should reuse the deeper level-2 cache, not re-run"
 
 
@@ -132,7 +133,7 @@ def test_requested_level_is_passed_to_cango(level, expected_a, tmp_path, monkeyp
 
     monkeypatch.setenv("CODEANALYZER_GO_BIN", "cango")
     monkeypatch.setattr("subprocess.run", _capture)
-    CLDK.go(project_path=str(tmp_path), analysis_level=level, eager=True, backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)))
+    CLDK.go(project_path=str(tmp_path), analysis_level=level, eager=True, backend=CodeAnalyzerConfig(application_name="litestream", cache_dir=str(tmp_path)))
     assert captured.get("a") == expected_a
 
 
@@ -211,26 +212,24 @@ def test_artifact_six_raise_on_local(go_analysis):
 @pytest.fixture(scope="module")
 def litestream_facade(tmp_path_factory):
     """The facade over the committed real corpus, through the same mocked subprocess as
-    ``go_analysis`` — no binary, but 55 modules and 959 edges instead of a one-edge toy."""
+    ``go_analysis`` — no binary, but 55 modules and 3082 edges instead of a one-edge toy."""
     import subprocess
     from unittest.mock import patch
 
     payload = GO_ANALYSIS.read_text(encoding="utf-8")
     proj = tmp_path_factory.mktemp("litestream-facade")
-    with patch.dict("os.environ", {"CODEANALYZER_GO_BIN": "cango"}), patch.object(
-        subprocess, "run", _fake_run_writing_output(payload)
-    ):
+    with patch.dict("os.environ", {"CODEANALYZER_GO_BIN": "cango"}), patch.object(subprocess, "run", _fake_run_writing_output(payload)):
         yield CLDK.go(
             project_path=str(proj),
             analysis_level=AnalysisLevel.call_graph,
             eager=True,
-            backend=CodeAnalyzerConfig(cache_dir=str(proj)),
+            backend=CodeAnalyzerConfig(application_name="litestream", cache_dir=str(proj)),
         )
 
 
 def test_real_corpus_scale(litestream_facade):
     assert len(litestream_facade.get_symbol_table()) == 55
-    assert len(litestream_facade.get_application_view().call_graph) == 959
+    assert len(litestream_facade.get_application_view().call_graph) == 3082
 
 
 def test_real_corpus_function_accessor(litestream_facade):
@@ -248,9 +247,9 @@ def test_real_corpus_type_and_method(litestream_facade):
 
 
 def test_real_corpus_callees_of_delete_all(litestream_facade):
-    """DeleteAll calls exactly two callees in this corpus and is called by none (measured)."""
+    """DeleteAll calls exactly four callees in this corpus and is called by none (measured)."""
     callees = litestream_facade.get_callees(LS_METHOD_ID)
-    assert len(callees) == 2
+    assert len(callees) == 4
     assert all(e.src == LS_METHOD_ID for e in callees)
     assert litestream_facade.get_callers(LS_METHOD_ID) == []
 
@@ -266,8 +265,8 @@ def test_real_corpus_source_slices_the_method(litestream_facade):
 
 
 def test_real_corpus_call_graph_dangling_free(litestream_facade):
-    """Every one of the 959 edges lands on a node that carries its id (no dangling endpoints)."""
+    """Every one of the 3082 edges lands on a node that carries its id (no dangling endpoints)."""
     g = litestream_facade.get_call_graph()
-    assert g.number_of_edges() == 959
+    assert g.number_of_edges() == 3082
     for src, dst in g.edges():
         assert "id" in g.nodes[src] and "id" in g.nodes[dst]

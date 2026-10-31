@@ -1,3 +1,22 @@
+## Identity-v2 snapshots (2026-10-30)
+
+These positive fixtures were regenerated from the tracked `tests/resources/typescript/application/` source tree, using reviewed local
+`codeanalyzer-typescript` source commit `9658f895e3e75d683a0c00c87069934ddf2966fa` (reported version `1.6.4`).
+These are local verification builds; the dependency release pins are unchanged.
+Every envelope carries required `identity_version: 2` and raw application ownership metadata.
+The resulting application is `can://slim/slim`; five modules at each of levels 1–4.
+
+Reproduce from the SDK root with the reviewed producer artifacts configured:
+
+```sh
+.venv/bin/python tests/resources/regenerate_identity_fixtures.py typescript
+```
+
+The checked-in generator records the exact CLI arguments and source pruning. It uses the
+existing TS/Go binary environment overrides and the installed Java wheel. Java regeneration requires Maven and a JDK; its gzip artifacts use `mtime=0`.
+No persisted IDs were translated.
+The historical notes below describe earlier fixture generations and are superseded by this section.
+
 Generated from `tests/resources/typescript/application` by the released **codeanalyzer-typescript 1.6.0** wheel:
 
     cants -i tests/resources/typescript/application --app-name slim -a <1|2|3|4> -o a<N> --cache-dir <scratch> -j 1 --no-build

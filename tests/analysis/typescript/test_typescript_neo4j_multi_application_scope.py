@@ -84,13 +84,16 @@ def _build() -> _Graph:
     g = _Graph()
     for app, lang_mod, fn_name in ((APP_A, "a", "alpha"), (APP_B, "b", "beta")):
         app_id = g.node(
-            f"can://{app}",
+            f"can://{app}/{app}",
             ["Application", "TSApplication"],
-            analyzer_version="1.2.0",
+            analyzer_version="1.5.2",
+            identity_version=2,
+            application_name=app,
+            identity_namespace=app,
             entrypoint_frameworks=[f"{fn_name}-framework"],
             entrypoint_report_json=json.dumps({"frameworks_detected": [f"{fn_name}-framework"], "rulesets": ["shipped"], "unresolved": {f"{fn_name}.miss": 2}, "errors": []}),
         )
-        mod = g.node(f"can://{app}/typescript/{lang_mod}/mod.ts", ["TSModule"], kind="module", name=f"{lang_mod}/mod.ts", start_line=1, end_line=20)
+        mod = g.node(f"can://{app}/{app}/typescript/{lang_mod}/mod.ts", ["TSModule"], kind="module", name=f"{lang_mod}/mod.ts", start_line=1, end_line=20)
         g.edge(app_id, "TS_HAS_MODULE", mod)
         cls = g.node(
             f"{mod}/Widget",
@@ -118,12 +121,10 @@ def _build() -> _Graph:
         g.edge(method, "TS_HAS_BODY_NODE", call)
         g.edge(call, "TS_RESOLVES_TO", inner)
         g.edge(method, "TS_CALLS", inner, weight=1, prov=["tsc"])
-        ext = g.node(
-            f"can://{app}/@external/os/{'path' if app == APP_A else 'join'}", ["TSExternal"], kind="external", name="path" if app == APP_A else "join", module="os"
-        )
+        ext = g.node(f"can://{app}/{app}/@external/os/{'path' if app == APP_A else 'join'}", ["TSExternal"], kind="external", name="path" if app == APP_A else "join", module="os")
         g.edge(method, "TS_CALLS", ext, weight=1, prov=["import"])
         # The module-key collision: both applications declare src/index.ts.
-        shared = g.node(f"can://{app}/typescript/{SHARED_MODULE}", ["TSModule"], kind="module", name=SHARED_MODULE, start_line=1, end_line=9)
+        shared = g.node(f"can://{app}/{app}/typescript/{SHARED_MODULE}", ["TSModule"], kind="module", name=SHARED_MODULE, start_line=1, end_line=9)
         g.edge(app_id, "TS_HAS_MODULE", shared)
         fn = g.node(f"{shared}/{fn_name}_fn", ["TSCallable"], kind="function", signature=f"src/index.{fn_name}_fn", name=f"{fn_name}_fn", start_line=1, end_line=3, code="fn")
         g.edge(shared, "TS_DECLARES", fn)
@@ -134,14 +135,14 @@ def _build() -> _Graph:
         var = g.node(f"{shared}/{fn_name}_var", ["TSField"], kind="field", name=f"{fn_name}_var", start_line=8, end_line=8)
         g.edge(shared, "TS_HAS_FIELD", var)
     # One JavaScript module in application A only: the second prefix must be honoured (TS-3).
-    js = g.node(f"can://{APP_A}/javascript/a/legacy.js", ["TSModule"], kind="module", name="a/legacy.js", start_line=1, end_line=3)
-    g.edge(f"can://{APP_A}", "TS_HAS_MODULE", js)
+    js = g.node(f"can://{APP_A}/{APP_A}/javascript/a/legacy.js", ["TSModule"], kind="module", name="a/legacy.js", start_line=1, end_line=3)
+    g.edge(f"can://{APP_A}/{APP_A}", "TS_HAS_MODULE", js)
     legacy = g.node(f"{js}/legacy_fn", ["TSCallable"], kind="function", signature="a/legacy.legacy_fn", name="legacy_fn", start_line=1, end_line=2, code="legacy")
     g.edge(js, "TS_DECLARES", legacy)
     # Declaration-merged nodes (one id for two declarations, both labels, the last writer's kind):
     # a `const Option = () => …` + `interface Option {…}` whose interface fields hang off an arrow,
     # and a `type Gran = …` + a field `Gran` -- only in application A.
-    mod_a = f"can://{APP_A}/typescript/a/mod.ts"
+    mod_a = f"can://{APP_A}/{APP_A}/typescript/a/mod.ts"
     merged = g.node(f"{mod_a}/Option", ["TSCallable", "TSInterface"], kind="arrow", signature="a/mod.Option", name="Option", start_line=11, end_line=12, code="() => 1")
     g.edge(mod_a, "TS_DECLARES", merged)
     g.edge(mod_a, "TS_DECLARES", merged)  # the emitter writes one edge per facet; MERGE keeps one
@@ -432,7 +433,7 @@ def fake_cypher(query: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
     raise AssertionError(f"statement has no RETURN: {query!r}")
 
 
-_A_PREFIXES = (f"can://{APP_A}/",)
+_A_PREFIXES = (f"can://{APP_A}/{APP_A}/",)
 
 
 def _responder(query: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -458,7 +459,7 @@ def test_the_fake_graph_carries_no_module_property():
     language was outermost) now over-asserts: a language-neutral ``@external`` ghost carries no
     language segment at all, and it is still one of application A's nodes."""
     assert GRAPH.nodes and not any("_module" in props for _, props in GRAPH.nodes.values())
-    prefixes = (f"can://{APP_A}/", f"can://{APP_B}/")
+    prefixes = (f"can://{APP_A}/{APP_A}/", f"can://{APP_B}/{APP_B}/")
     assert all(nid.startswith(prefixes) for nid, (labels, _) in GRAPH.nodes.items() if "CanNode" in labels and "TSModule" not in labels or nid.count("/") > 3)
 
 
@@ -467,8 +468,8 @@ def test_the_scope_is_one_prefix():
     that used to be here are still told apart in exactly one place -- ``_module_key``, which has
     to strip the language segment to reach the file key -- and nothing is scoped on them."""
     backend = _backend()
-    assert backend._scope_prefix == f"can://{APP_A}/"
-    assert backend._language_prefixes == [f"can://{APP_A}/typescript/", f"can://{APP_A}/javascript/"]
+    assert backend._scope_prefix == f"can://{APP_A}/{APP_A}/"
+    assert backend._language_prefixes == [f"can://{APP_A}/{APP_A}/typescript/", f"can://{APP_A}/{APP_A}/javascript/"]
     assert set(backend._modules) == {"a/mod.ts", SHARED_MODULE, "a/legacy.js"}
 
 
@@ -549,10 +550,10 @@ def test_call_graph_and_externals_are_application_scoped():
     assert set(graph.edges) == {(METHOD_SIG, "alpha.inner_fn"), (METHOD_SIG, "os.path")}
     assert graph.nodes["os.path"]["kind"] == "external"
     assert list(backend.get_external_symbols()) == ["os.path"], "application B's external (os.join) leaked"
-    assert backend.get_external_symbols()["os.path"].id == f"can://{APP_A}/@external/os/path"
+    assert backend.get_external_symbols()["os.path"].id == f"can://{APP_A}/{APP_A}/@external/os/path"
     assert backend.get_calling_lines("alpha.inner_fn") == [5]
     assert backend.get_calling_lines("beta.inner_fn") == []
-    assert set(backend.get_synthesized_callables()) == {f"can://{APP_A}/typescript/{SHARED_MODULE}/alpha_fn/<anon@2:2>"}
+    assert set(backend.get_synthesized_callables()) == {f"can://{APP_A}/{APP_A}/typescript/{SHARED_MODULE}/alpha_fn/<anon@2:2>"}
 
 
 def test_a_declaration_merged_node_is_the_facet_its_edge_and_labels_name_and_nothing_else():
@@ -572,7 +573,7 @@ def test_a_merged_node_whose_labels_name_no_single_facet_is_raised_as_a_defect()
     from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 
     backend = _backend()
-    parent = "can://app_a/typescript/x/y.ts"
+    parent = "can://app_a/app_a/typescript/x/y.ts"
     undecidable = {"id": f"{parent}/Z", "kind": "field", "name": "Z", "_labels": ["CanNode", "TSClass", "TSInterface"]}
     with pytest.raises(CodeanalyzerExecutionException, match=r"'Z' \(labels \['CanNode', 'TSClass', 'TSInterface'\], kind 'field'\).*one id for two declarations") as e:
         backend._declared(parent, {parent: [("TS_DECLARES", undecidable, {})]})
@@ -606,11 +607,11 @@ def test_locate_finds_the_innermost_callable_and_its_body_node():
     r = _backend().locate("a/mod.ts", 5)
     assert r.callable.signature == METHOD_SIG and r.type is not None and r.type.signature == CLASS_SIG
     assert r.body is not None and r.body.kind == "call"
-    assert r.body.id == f"can://{APP_A}/typescript/a/mod.ts/Widget/render@5:3"
+    assert r.body.id == f"can://{APP_A}/{APP_A}/typescript/a/mod.ts/Widget/render@5:3"
     assert r.node_id == r.body.id
     # ``callee`` is a property on a TypeScript body node, so this backend fills it in -- unlike the
     # Python Neo4j backend, where callee resolution is a separate edge and the field stays None.
-    assert r.body.callee == f"can://{APP_A}/typescript/a/mod.ts/Widget/render@5:3".replace("@5:3", "/inner_fn")
+    assert r.body.callee == f"can://{APP_A}/{APP_A}/typescript/a/mod.ts/Widget/render@5:3".replace("@5:3", "/inner_fn")
     # Line-only span: the projection carries no columns and no offsets.
     assert r.body.span.start == (5, 0) and r.body.span.bytes == (0, 0)
 
@@ -634,12 +635,12 @@ def test_locate_many_answers_in_input_order_including_the_misses():
 def test_resolve_callable_honours_the_javascript_prefix():
     n = _backend().resolve_callable("legacy_fn")
     assert n.callable == "a/legacy.legacy_fn" and n.file == "a/legacy.js"
-    assert n.ref == f"can://{APP_A}/javascript/a/legacy.js/legacy_fn"
+    assert n.ref == f"can://{APP_A}/{APP_A}/javascript/a/legacy.js/legacy_fn"
 
 
 def test_resolve_callable_does_not_see_another_applications_colliding_signature():
     n = _backend().resolve_callable("Widget.render")
-    assert n.name == "alpha_method" and n.ref.startswith(f"can://{APP_A}/typescript/")
+    assert n.name == "alpha_method" and n.ref.startswith(f"can://{APP_A}/{APP_A}/typescript/")
 
 
 def test_resolve_callable_takes_the_dotted_module_form():
@@ -668,16 +669,16 @@ def test_a_declaration_merged_node_resolves_only_to_the_facet_its_kind_names():
 def test_get_source_answers_for_a_callable_and_refuses_below_it():
     backend = _backend()
     assert backend.get_source(METHOD_SIG) == "alpha code"
-    assert backend.get_source(f"can://{APP_A}/typescript/a/mod.ts/Widget/render") == "alpha code"
+    assert backend.get_source(f"can://{APP_A}/{APP_A}/typescript/a/mod.ts/Widget/render") == "alpha code"
     with pytest.raises(NotImplementedError):
-        backend.get_source(f"can://{APP_A}/typescript/a/mod.ts/Widget/render@5:3")
+        backend.get_source(f"can://{APP_A}/{APP_A}/typescript/a/mod.ts/Widget/render@5:3")
     with pytest.raises(KeyError):
         backend.get_source("no.such.thing")
 
 
 def test_get_source_does_not_answer_with_another_applications_text():
     with pytest.raises(KeyError):
-        _backend().get_source(f"can://{APP_B}/typescript/b/mod.ts/Widget/render")
+        _backend().get_source(f"can://{APP_B}/{APP_B}/typescript/b/mod.ts/Widget/render")
 
 
 def test_describe_hydrates_a_callable_and_leaves_a_body_node_textless():
@@ -866,7 +867,6 @@ def _match_clauses(statement: str) -> List[str]:
     """
     out = [re.sub(r"^(?:OPTIONAL )?MATCH ", "", c) for c in _clauses(statement) if re.match(r"(?:OPTIONAL )?MATCH ", c)]
     return out + [m.group(1) for m in _PATTERN_COMPREHENSION.finditer(statement)]
-
 
 
 def _paths_with_scoped_interiors(rendered: str) -> Set[str]:
@@ -1453,3 +1453,35 @@ def test_seek_labels_follow_the_measured_rule():
         # it pins.
         if _is_scoped(s) and not re.search(r"\{id ?: ?\$\w+\}|\.id (?:=|IN) \$", s):
             assert "CanNode" not in s, f"{name}: a prefix-scoped statement names :CanNode (measured: bare 1.62 ms vs 32.35 ms) -- {s[:120]!r}"
+
+
+@pytest.mark.parametrize("order", [("currency", "payment"), ("payment", "currency")])
+def test_currency_scanner_position_never_attaches_payment_constructor(monkeypatch, order):
+    from cldk.analysis.commons.identity import index_module_rows
+
+    graph = _Graph()
+    rows = []
+    for app, name, start, end in (("currency", "_loadProto", 91, 110), ("payment", "constructor", 24, 34)):
+        aid = graph.node(f"can://shop/{app}", ["Application", "TSApplication"], identity_version=2, application_name=app, identity_namespace="shop", analyzer_version="1.5.2")
+        mid = graph.node(aid + "/javascript/server.js", ["TSModule"], kind="module", name="server.js", start_line=1, end_line=150)
+        graph.edge(aid, "TS_HAS_MODULE", mid)
+        cid = graph.node(mid + "/" + name, ["TSCallable"], kind="function", name=name, signature="server." + name, start_line=start, end_line=end, code="function() {}")
+        graph.edge(mid, "TS_DECLARES", cid)
+        rows.append({"module_id": mid, "file_key": "server.js"})
+    monkeypatch.setattr(__import__(__name__, fromlist=["GRAPH"]), "GRAPH", graph)
+    backends = {app: TSNeo4jBackend._from_driver(FakeDriver(responder=fake_cypher), application_name=app, namespace="shop") for app in order}
+    # Simulate a downstream scanner joining its canonical module ID to SDK modules.
+    # Backend iteration order and duplicate projections must not choose the owner.
+    projected = [row for app in order for row in rows if row["module_id"].startswith(f"can://shop/{app}/")]
+    index = index_module_rows(projected + projected[:1])
+    finding_module = "can://shop/currency/javascript/server.js"
+    matches = [row for mid, row in index.items() if mid == finding_module]
+    assert matches == [{"module_id": finding_module, "file_key": "server.js"}]
+    owners = [backend for backend in backends.values() if finding_module.startswith(backend.identity.application_id + "/")]
+    assert len(owners) == 1
+    result = owners[0].locate(matches[0]["file_key"], 28)
+    assert result.callable is None
+    assert backends["currency"].locate("server.js", 91).callable.name == "_loadProto"
+    assert backends["payment"].locate("server.js", 28).callable.name == "constructor"
+    index = index_module_rows(rows + rows[:1])
+    assert list(mid for mid in index if mid == "can://shop/currency/javascript/server.js") == ["can://shop/currency/javascript/server.js"]

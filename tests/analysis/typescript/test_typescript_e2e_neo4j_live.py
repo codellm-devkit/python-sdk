@@ -46,6 +46,7 @@ import pytest
 
 from cldk import CLDK
 from cldk.analysis.commons.backend_config import Neo4jConnectionConfig
+from cldk.analysis.commons.identity import resolve_identity
 from cldk.analysis.typescript.backend import CALL_GRAPH_NODE_KINDS
 from cldk.analysis.typescript.neo4j.neo4j_backend import TSNeo4jBackend
 from cldk.models.typescript import TSCallable, TSClass, TSEnum, TSInterface, TSTypeAlias
@@ -58,9 +59,9 @@ NEO4J_URI = os.environ.get("CLDK_TEST_NEO4J_URI")
 NEO4J_USER = os.environ.get("CLDK_TEST_NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.environ.get("CLDK_TEST_NEO4J_PASSWORD", "neo4j")
 APP_NAME = os.environ.get("CLDK_TEST_NEO4J_APP", "superset-frontend")
-APP_ID = f"can://{APP_NAME}"
-#: The application scope, spelled here independently of the backend's helper on purpose.
-SCOPE = {"p": f"can://{APP_NAME}/"}
+APP_ID = resolve_identity(APP_NAME, None).application_id
+#: The canonical anchor and descendant scope use the same raw-name encoding contract.
+SCOPE = {"p": f"{APP_ID}/"}
 SCOPED = "(x.id STARTS WITH $p)"
 REQUIRED_RELATIONSHIP_TYPES = {"TS_HAS_MODULE", "TS_HAS_METHOD", "TS_HAS_BODY_NODE", "TS_CALLS"}
 
@@ -165,7 +166,10 @@ def test_symbol_table_keys_are_the_graphs_module_names_on_both_prefixes(analysis
     expected = {r["k"] for r in cypher("MATCH (:Application {id: $id})-[:TS_HAS_MODULE]->(m:TSModule) RETURN m.name AS k", id=APP_ID)}
     table = analysis.get_symbol_table()
     assert set(table) == expected and expected
-    js = {r["k"] for r in cypher("MATCH (:Application {id: $id})-[:TS_HAS_MODULE]->(m:TSModule) WHERE m.id STARTS WITH $js RETURN m.name AS k", id=APP_ID, js=f"{SCOPE['p']}javascript/")}
+    js = {
+        r["k"]
+        for r in cypher("MATCH (:Application {id: $id})-[:TS_HAS_MODULE]->(m:TSModule) WHERE m.id STARTS WITH $js RETURN m.name AS k", id=APP_ID, js=f"{SCOPE['p']}javascript/")
+    }
     assert js and js <= set(table), "JavaScript modules are in scope (TS-3)"
     assert all(k.endswith((".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".d.ts")) for k in table)
 
@@ -246,9 +250,12 @@ def test_declaration_merging_mints_one_id_per_facet_and_every_facet_is_served(an
     Two assertions, in order: no node is left carrying two declaration labels, and every facet of
     every shared signature is served. Both read off the graph, so the day a corpus stops merging
     the second fails loudly rather than passing vacuously."""
-    assert cypher(f"MATCH (m:CanNode) WHERE {SCOPED.replace('x.', 'm.')} AND size([l IN labels(m) WHERE l IN $decl]) > 1 RETURN count(m) AS n", decl=DECLARATION_LABELS, **SCOPE)[0][
-        "n"
-    ] == 0, "a node still carries two declaration labels; cants#177 has regressed"
+    assert (
+        cypher(f"MATCH (m:CanNode) WHERE {SCOPED.replace('x.', 'm.')} AND size([l IN labels(m) WHERE l IN $decl]) > 1 RETURN count(m) AS n", decl=DECLARATION_LABELS, **SCOPE)[0][
+            "n"
+        ]
+        == 0
+    ), "a node still carries two declaration labels; cants#177 has regressed"
     assert merged, "this corpus carries no declaration shared by two facets; retire this test"
     by_kind = {"class": analysis.get_classes(), "interface": analysis.get_interfaces(), "enum": analysis.get_enums(), "type_alias": analysis.get_type_aliases()}
     functions = analysis.get_functions()

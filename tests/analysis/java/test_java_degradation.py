@@ -44,6 +44,7 @@ needs_analyzer = pytest.mark.skipif(bool(os.environ.get("CLDK_SKIP_JAVA_E2E")), 
 
 LOGGER = "cldk.analysis.java.codeanalyzer.codeanalyzer"
 
+
 #: A ``PATH`` with no build tool on it, so the analyzer's auto-build cannot run. Set with
 #: ``monkeypatch`` for the duration of one test, so only the analyzer subprocess that test starts
 #: inherits it.
@@ -99,11 +100,11 @@ def test_l4_without_compiled_classes_reports_the_analyzers_own_words(test_fixtur
 
     # The verdict lives beside analysis.json in the SDK's cache, not inside the analyzer's payload,
     # and is bound to that payload by its sha256 so it cannot be read against a different one.
-    verdict_file = cache / "java" / VERDICT_FILE
+    verdict_file = analysis.backend.analysis_json_path / VERDICT_FILE
     recorded = json.loads(verdict_file.read_text(encoding="utf-8"))
     assert recorded["diagnostics"] == [d.model_dump() for d in diagnostics]
-    assert recorded["payload_sha256"] == hashlib.sha256((cache / "java" / "analysis.json").read_bytes()).hexdigest()
-    assert "analyzer_diagnostics" not in (cache / "java" / "analysis.json").read_text(encoding="utf-8")
+    assert recorded["payload_sha256"] == hashlib.sha256((analysis.backend.analysis_json_path / "analysis.json").read_bytes()).hexdigest()
+    assert "analyzer_diagnostics" not in (analysis.backend.analysis_json_path / "analysis.json").read_text(encoding="utf-8")
 
     # And a cache hit — no analyzer run, so no log to read — still knows.
     cached = CLDK.java(
@@ -136,7 +137,7 @@ def test_l4_with_compiled_classes_is_silent(test_fixture, tmp_path, caplog):
     assert (project / "target" / "classes").is_dir(), "the analyzer's auto-build did not produce classes"
     assert analysis.backend.analyzer_diagnostics == []
     assert _warnings(caplog) == []
-    assert json.loads((cache / "java" / VERDICT_FILE).read_text(encoding="utf-8"))["diagnostics"] == []
+    assert json.loads((analysis.backend.analysis_json_path / VERDICT_FILE).read_text(encoding="utf-8"))["diagnostics"] == []
     assert any("rta" in edge.prov for edge in analysis.backend.application.call_graph)
 
 
@@ -149,6 +150,7 @@ def test_an_analysis_json_with_no_recorded_verdict_reads_as_unknown(test_fixture
 
     with caplog.at_level(logging.WARNING, logger=LOGGER):
         backend = JCodeanalyzer(
+            application_name="daytrader8",
             project_dir=test_fixture,
             analysis_json_path=tmp_path,
             analysis_level=AnalysisLevel.system_dependency_graph,
@@ -172,6 +174,7 @@ def test_symbol_table_does_not_warn_about_a_missing_verdict(test_fixture, analys
 
     with caplog.at_level(logging.WARNING, logger=LOGGER):
         backend = JCodeanalyzer(
+            application_name="daytrader8",
             project_dir=test_fixture,
             analysis_json_path=tmp_path,
             analysis_level=AnalysisLevel.symbol_table,
@@ -192,6 +195,7 @@ def _cache_with_verdict(tmp_path: Path, analysis_json: str, verdict: object) -> 
 
 def _backend(test_fixture, cache: Path) -> JCodeanalyzer:
     return JCodeanalyzer(
+        application_name="daytrader8",
         project_dir=test_fixture,
         analysis_json_path=cache,
         analysis_level=AnalysisLevel.system_dependency_graph,

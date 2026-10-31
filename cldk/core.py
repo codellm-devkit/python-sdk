@@ -144,6 +144,7 @@ class CLDK:
             eager: Force regeneration of cached analysis.
             backend: Backend configuration. Defaults to :class:`CodeAnalyzerConfig`; pass a
                 :class:`Neo4jConnectionConfig` to use the read-only Neo4j backend.
+                Both configurations accept raw ``namespace`` and ``application_name`` selections.
 
         Raises:
             CldkInitializationException: If ``project_path`` is missing and the backend is not
@@ -181,6 +182,7 @@ class CLDK:
             eager: Force regeneration of cached analysis.
             backend: Backend configuration. Defaults to :class:`PyCodeAnalyzerConfig`;
                 pass a :class:`Neo4jConnectionConfig` to use the read-only Neo4j backend.
+                Set raw ``namespace`` and ``application_name`` on that configuration to select ownership.
         """
         return PythonAnalysis(
             project_dir=_normalize_project_path(project_path),

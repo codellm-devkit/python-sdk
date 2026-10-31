@@ -67,6 +67,7 @@ import pytest
 
 from cldk import CLDK
 from cldk.analysis import AnalysisLevel
+from cldk.analysis.commons.identity import resolve_identity
 from cldk.analysis.typescript.neo4j import Neo4jConnectionConfig
 
 logging.getLogger("neo4j").setLevel(logging.ERROR)
@@ -79,8 +80,8 @@ APP_NAME = "application"
 #: exactly that, plus the application anchor, and nothing else on the server. It was two prefixes
 #: (one per language namespace) while the language was the outermost segment; the application
 #: prefix now covers both, and also the ``@external`` ghosts and artifacts the pair never reached.
-APP_PREFIXES = (f"can://{APP_NAME}/",)
-APP_ID = f"can://{APP_NAME}"
+APP_ID = resolve_identity(APP_NAME, None).application_id
+APP_PREFIXES = (f"{APP_ID}/",)
 
 
 def _neo4j_reachable() -> bool:
@@ -110,7 +111,7 @@ pytestmark = pytest.mark.skipif(
 
 
 def _teardown_application() -> None:
-    """Delete the application's own subgraph: every node under its two id prefixes and the
+    """Delete the application's own subgraph: every node under its application prefix and the
     ``:Application`` anchor. The unprefixed nodes the emitter also MERGEs (``Artifact``, ``Package``,
     ``ConfigKey``, ``TSDecorator``) are shared with any other application on the server and are
     left in place."""

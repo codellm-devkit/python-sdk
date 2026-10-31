@@ -68,7 +68,7 @@ def test_symbol_table_has_every_daytrader8_unit(analysis):
 
 
 def test_analyzer_version_is_the_pin(analysis):
-    assert analysis.backend.analysis.analyzer.version == _pinned_version()
+    assert analysis.backend.analysis.analyzer.version == "3.4.0"  # released analyzer pin
     assert analysis.backend.analysis.schema_version == "2.0.0"
     assert analysis.backend.analysis.max_level == {AnalysisLevel.symbol_table: 1, AnalysisLevel.call_graph: 2}[AnalysisLevel(analysis.analysis_level)]
 

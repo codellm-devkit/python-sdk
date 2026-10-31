@@ -75,7 +75,7 @@ def ts(typescript_application, typescript_analysis_json, tmp_path, monkeypatch):
             project_path=typescript_application,
             eager=True,
             analysis_level=AnalysisLevel.system_dependency_graph,
-            backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)),
+            backend=CodeAnalyzerConfig(application_name="slim", cache_dir=str(tmp_path)),
         )
 
 
@@ -145,7 +145,7 @@ def test_the_facade_reaches_the_artifacts(ts):
 
 def test_the_facade_reaches_the_dependencies_and_its_filters(ts):
     assert ts.get_dependencies() == []
-    assert ts.get_dependencies(direct_only=True) == ts.get_dependencies(ecosystem="npm") == ts.get_dependencies(declared_in="can://slim/artifact/package.json") == []
+    assert ts.get_dependencies(direct_only=True) == ts.get_dependencies(ecosystem="npm") == ts.get_dependencies(declared_in="can://slim/slim/artifact/package.json") == []
 
 
 def test_the_facade_reaches_the_config_keys(ts):

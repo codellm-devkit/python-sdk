@@ -34,9 +34,12 @@ The per-language ``*Backend`` unions below are the discriminated unions the faca
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+import hashlib
 from pathlib import Path
 from typing import Union
+
+from cldk.analysis.commons.identity import ApplicationIdentity
 
 # The canonical sub-directory name each language's artifacts live under inside the shared cache
 # root. Keyed so that a polyglot repository analyzed under more than one language does not have its
@@ -54,10 +57,14 @@ class CodeAnalyzerConfig:
     Attributes:
         cache_dir: Root directory for analysis artifacts. When ``None`` the facade defaults it to
             ``<project>/.codeanalyzer``. Each backend writes under a language-keyed subdirectory of
-            this root (see :func:`cache_subdir`), so the same root can be shared across languages.
+            this root (see :func:`cache_subdir`), with a separate digest for each application identity.
+        namespace: Raw namespace; defaults to the resolved application name.
+        application_name: Raw application name; defaults to the normalized project-root basename.
     """
 
     cache_dir: Union[str, Path, None] = None
+    namespace: str | None = field(default=None, kw_only=True)
+    application_name: str | None = field(default=None, kw_only=True)
 
 
 @dataclass
@@ -112,6 +119,7 @@ class Neo4jConnectionConfig:
     password: str = "neo4j"
     database: str | None = None
     application_name: str | None = None
+    namespace: str | None = field(default=None, kw_only=True)
 
 
 # Per-language discriminated unions the facades match on.
@@ -124,17 +132,19 @@ TSBackend = Union[TSCodeAnalyzerConfig, CodeAnalyzerConfig, Neo4jConnectionConfi
 GoBackend = Union[CodeAnalyzerConfig, Neo4jConnectionConfig]
 
 
-def cache_subdir(cache_dir: Union[str, Path, None], project_dir: Union[str, Path, None], language: str) -> Path | None:
+def cache_subdir(cache_dir: Union[str, Path, None], project_dir: Union[str, Path, None], language: str, *, identity: ApplicationIdentity | None = None) -> Path | None:
     """Resolve the language-keyed cache directory for a backend.
 
     Args:
         cache_dir: The cache root from the backend config. When ``None``, defaults to
             ``<project_dir>/.codeanalyzer``.
         project_dir: The project directory, used to derive the default root.
+        identity: Bound application identity; when supplied its digest isolates cached outputs.
         language: The canonical language key (``"java"``, ``"python"``, ``"typescript"``, ``"go"``).
 
     Returns:
-        ``<root>/<language>`` as an absolute path, or ``None`` if no root can be determined
+        ``<root>/<language>/<identity digest>`` (or the language directory when unbound)
+        as an absolute path, or ``None`` if no root can be determined
         (no ``cache_dir`` and no ``project_dir``).
     """
     key = _CACHE_KEYS.get(language, language)
@@ -144,4 +154,6 @@ def cache_subdir(cache_dir: Union[str, Path, None], project_dir: Union[str, Path
         root = Path(project_dir).expanduser().resolve() / ".codeanalyzer"
     else:
         return None
+    if identity is not None:
+        return root / key / hashlib.sha256(identity.application_id.encode()).hexdigest()
     return root / key

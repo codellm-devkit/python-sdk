@@ -59,7 +59,7 @@ def ts_analysis(typescript_application, typescript_analysis_json, tmp_path, monk
             project_path=typescript_application,
             eager=True,
             analysis_level=AnalysisLevel.call_graph,
-            backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)),
+            backend=CodeAnalyzerConfig(application_name="slim", cache_dir=str(tmp_path)),
         )
 
 

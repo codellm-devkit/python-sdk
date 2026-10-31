@@ -21,7 +21,7 @@ import pytest
 
 from cldk.analysis.python.neo4j.reconstruct import module_key_of
 
-APP = "can://app/python/"
+APP = "can://app/app/python/"
 
 
 def test_module_key_is_the_id_segment_up_to_the_first_py_boundary():
@@ -32,17 +32,17 @@ def test_module_key_is_the_id_segment_up_to_the_first_py_boundary():
 
 def test_a_directory_named_like_a_module_cannot_mis_key():
     known = {"pkg/x.py/real.py"}
-    assert module_key_of("can://app/python/pkg/x.py/real.py/f()", APP, known) == "pkg/x.py/real.py"
+    assert module_key_of("can://app/app/python/pkg/x.py/real.py/f()", APP, known) == "pkg/x.py/real.py"
 
 
 def test_a_key_outside_the_application_raises_rather_than_guesses():
     with pytest.raises(KeyError):
-        module_key_of("can://app/python/gone.py/f()", APP, {"kept.py"})
+        module_key_of("can://app/app/python/gone.py/f()", APP, {"kept.py"})
 
 
 def test_a_ghost_id_has_no_module_key():
     with pytest.raises(KeyError):
-        module_key_of("can://app/@external/os/path", APP, {"a.py"})
+        module_key_of("can://app/app/@external/os/path", APP, {"a.py"})
 
 
 def test_a_body_node_id_keys_to_its_callables_module():
@@ -50,11 +50,11 @@ def test_a_body_node_id_keys_to_its_callables_module():
     ``/`` (``@15:2/actual_in:0``); the module key is still the verified prefix, so a slice row can
     derive its file from the body node's own ``ref``."""
     known = {"pkg/a.py", "pkg"}
-    assert module_key_of("can://app/python/pkg/a.py/f(x)@15:2/actual_in:0", APP, known) == "pkg/a.py"
+    assert module_key_of("can://app/app/python/pkg/a.py/f(x)@15:2/actual_in:0", APP, known) == "pkg/a.py"
 
 
 def test_the_module_id_itself_keys_to_its_own_key():
-    assert module_key_of("can://app/python/pkg/a.py", APP, {"pkg/a.py"}) == "pkg/a.py"
+    assert module_key_of("can://app/app/python/pkg/a.py", APP, {"pkg/a.py"}) == "pkg/a.py"
 
 
 def test_an_id_under_another_application_raises():
@@ -77,11 +77,11 @@ def test_a_module_added_since_attach_is_found_after_one_reload_and_a_foreign_id_
     """A re-emit can add a module after attach; its callables must not take down a whole-application
     answer. One miss reloads the key set once and retries. A second miss is a real defect, raised
     as an SDK exception that names the key count and never the ``can://`` id (E6)."""
-    graph = {"modules": ["a.py"], "callables": ["can://app/python/a.py/f"]}
+    graph = {"modules": ["a.py"], "callables": ["can://app/app/python/a.py/f"]}
 
     def responder(query, params):
         if "RETURN m.file_key AS k" in query:
-            return [{"k": k} for k in graph["modules"]]
+            return [{"k": k, "id": f"can://app/app/python/{k}"} for k in graph["modules"]]
         if "OPTIONAL MATCH (owner:PyClass)-[:PY_HAS_METHOD]->(c)" in query:
             return [_overview_row(i) for i in graph["callables"]]
         return []
@@ -92,14 +92,13 @@ def test_a_module_added_since_attach_is_found_after_one_reload_and_a_foreign_id_
     assert loads() == 1
 
     graph["modules"].append("b.py")  # the graph moved under us
-    graph["callables"].append("can://app/python/b.py/g")
+    graph["callables"].append("can://app/app/python/b.py/g")
     assert {o.path for o in backend.get_callables_overview()} == {"a.py", "b.py"}
     assert loads() == 2, "one reload, on the first miss"
 
-    graph["callables"].append("can://app/python/zzz.py/h")  # no such module, before or after reload
+    graph["callables"].append("can://app/app/python/zzz.py/h")  # no such module, before or after reload
     with pytest.raises(CodeanalyzerExecutionException) as e:
         backend.get_callables_overview()
     assert loads() == 3
     assert "changed since attach" in str(e.value) and "2 module keys" in str(e.value)
     assert "can://" not in str(e.value) and "zzz" not in str(e.value)
-

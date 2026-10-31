@@ -119,6 +119,7 @@ from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Sequence, Tupl
 
 import networkx as nx
 
+from cldk.analysis.commons.identity import index_module_rows, resolve_identity, scoped_module_keys, validate_identity
 from cldk.analysis.commons.bounds import DEFAULT_PAGE_SIZE, EdgeOrder, check_page_size, cursor_params, encode_cursor, keyset_where
 from cldk.analysis.commons.graphs import flow_path, sdg_path_query, sdg_taint_query, slice_resolved
 from cldk.analysis.commons.results import Diagnostic, EdgePage, FlowPath, FlowPaths, Slice, SliceNode
@@ -244,28 +245,39 @@ class JNeo4jBackend(JavaAnalysisBackend):
         neo4j_password: str,
         neo4j_database: str | None = None,
         application_name: str | None = None,
+        namespace: str | None = None,
+        source_root=None,
     ) -> None:
         try:
             from neo4j import GraphDatabase
         except ModuleNotFoundError as e:  # pragma: no cover - import guard
             raise CodeanalyzerExecutionException("The Neo4j backend requires the 'neo4j' driver. Install it with `pip install neo4j` (or `pip install cldk[neo4j]`).") from e
-        self._init_with_driver(GraphDatabase.driver(neo4j_uri, auth=(neo4j_username, neo4j_password)), application_name=application_name, neo4j_database=neo4j_database)
+        self._init_with_driver(
+            GraphDatabase.driver(neo4j_uri, auth=(neo4j_username, neo4j_password)),
+            application_name=application_name,
+            neo4j_database=neo4j_database,
+            namespace=namespace,
+            source_root=source_root,
+        )
 
     @classmethod
-    def _from_driver(cls, driver: Any, *, application_name: str | None = None, neo4j_database: str | None = None) -> "JNeo4jBackend":
+    def _from_driver(
+        cls, driver: Any, *, application_name: str | None = None, neo4j_database: str | None = None, namespace: str | None = None, source_root=None
+    ) -> "JNeo4jBackend":
         """Construct from an already-built driver — the seam tests inject a fake driver through."""
         self = cls.__new__(cls)
-        self._init_with_driver(driver, application_name=application_name, neo4j_database=neo4j_database)
+        self._init_with_driver(driver, application_name=application_name, neo4j_database=neo4j_database, namespace=namespace, source_root=source_root)
         return self
 
-    def _init_with_driver(self, driver: Any, *, application_name: str | None, neo4j_database: str | None) -> None:
-        if not application_name:
-            raise CodeanalyzerExecutionException("application_name is required to scope queries to an application.")
-        self.application_name = application_name
+    def _init_with_driver(self, driver: Any, *, application_name: str | None, neo4j_database: str | None, namespace: str | None = None, source_root=None) -> None:
+        self.identity = resolve_identity(application_name, namespace)
+        self.application_name = self.identity.application_name
+        self.source_root = source_root
         self._database = neo4j_database
         self._driver = driver
         self._session_obj: Any | None = None
         self._probe_schema()
+        self._probe_identity()
         self._has_resolution_edges = self._probe_resolution_edges()
         self._module_props: Dict[str, Dict[str, Any]] = self._load_modules()
         self._modules: List[str] = list(self._module_props)
@@ -274,12 +286,12 @@ class JNeo4jBackend(JavaAnalysisBackend):
     # -----[ scope ]-----
     @property
     def _application_id(self) -> str:
-        """``can://<app>`` — the ``:JApplication`` root's own merge key since 3.1.1."""
-        return f"can://{self.application_name}"
+        """``can://<namespace>/<app>`` — the ``:JApplication`` root's own merge key since 3.1.1."""
+        return self.identity.application_id
 
     @property
     def _scope_prefix(self) -> str:
-        """``can://<app>/`` — the trailing slash keeps ``app`` from matching ``app-b``.
+        """``can://<namespace>/<app>/`` — the trailing slash keeps ``app`` from matching ``app-b``.
 
         The *application* prefix, not the narrower ``can://<app>/java/`` code one: an ``@external``
         ghost and an artifact both sit inside the application and outside the language segment (see
@@ -315,6 +327,10 @@ class JNeo4jBackend(JavaAnalysisBackend):
             raise
 
     # -----[ attach ]-----
+    def _probe_identity(self) -> None:
+        rows = self._run("MATCH (a:JApplication {id: $app_id}) RETURN properties(a) AS identity", app_id=self._application_id)
+        validate_identity(rows[0].get("identity", {}) if rows else {}, self.identity, envelope=False)
+
     def _probe_schema(self) -> None:
         """J-9: the relationship-type fingerprint, then the analyzer generation the
         ``:JApplication`` anchor stamps, against :attr:`_ANALYZER_FLOOR`.
@@ -375,7 +391,10 @@ class JNeo4jBackend(JavaAnalysisBackend):
         rows = self._run(
             "MATCH (:JApplication {id: $app_id})-[:J_HAS_MODULE]->(m:JModule) RETURN m.file_key AS k, properties(m) AS p ORDER BY m.file_key", app_id=self._application_id
         )
-        return {r["k"]: r["p"] for r in rows}
+        self._module_index = index_module_rows({"module_id": r["p"]["id"], "file_key": r["k"]} for r in rows)
+        keys = scoped_module_keys(self._module_index, self._application_id, ("java",))
+        props = {r["p"]["id"]: r["p"] for r in rows}
+        return {key: props[mid] for key, mid in keys.items()}
 
     # =====================================================================================
     # Reconstruction: ten statements (eight on a 3.0.x graph), then the canonical JApplication.
@@ -575,6 +594,8 @@ class JNeo4jBackend(JavaAnalysisBackend):
                 types[self._child_key(module_id, p)] = self._type(p, children, sites)
             symbol_table[key] = R.compilation_unit(props, import_declarations=[i for e in imports.get(key, []) for i in R.imports(e)], types=types)
         return JApplication(
+            application_name=self.identity.application_name,
+            identity_namespace=self.identity.namespace,
             id=self._application_id,
             symbol_table=symbol_table,
             call_graph=[JCallGraphEdge(src=r["src"], dst=r["dst"], prov=list(r["prov"] or []), weight=r["weight"] or 1) for r in self._call_edge_rows()],

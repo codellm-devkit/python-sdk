@@ -44,6 +44,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from cldk.models.identity import IdentityVersion
+
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 from typing_extensions import Literal
 
@@ -911,6 +913,8 @@ class JApplication(_Base):
     does). An empty pair there is this backend's silence, not the analyzer's.
     """
 
+    application_name: str
+    identity_namespace: str
     id: str
     kind: Literal["application"] = "application"
     symbol_table: Dict[str, JCompilationUnit]
@@ -948,6 +952,7 @@ class JAnalyzer(_Base):
 class JAnalysis(_Base):
     """The envelope ``analysis.json`` IS."""
 
+    identity_version: IdentityVersion
     schema_version: str
     language: str
     max_level: int

@@ -152,7 +152,7 @@ _CLASSES: List[Dict[str, Any]] = [
 _SOURCE_NODES: Dict[str, List[Dict[str, Any]]] = {
     "PyCallable": list(_CHILDREN["class_methods"][1].values()),
     "PyBodyNode": list(_CHILDREN["callable_callsites"][1].values()),
-    "PyExternal": [{"id": f"can://{app}/@external/os/path", "name": "path", "module": "os"} for app in (APP_A, APP_B)],
+    "PyExternal": [{"id": f"can://{app}/{app}/@external/os/path", "name": "path", "module": "os"} for app in (APP_A, APP_B)],
 }
 
 #: The four spellings of the application scope a statement may carry: the whole application
@@ -260,11 +260,15 @@ def _two_app_backend(record: List[str] | None = None) -> PyNeo4jBackend:
         return _fake_two_app_cypher(query, **params)
 
     backend = object.__new__(PyNeo4jBackend)
+    from cldk.analysis.commons.identity import resolve_identity
+
+    backend.identity = resolve_identity(APP_A, None)
     backend.application_name = APP_A
     backend._database = None
     backend._driver = None
     backend._session_obj = None
     backend._modules = [APP_A_MODULE, SHARED_MODULE]
+    backend._module_ids = {key: backend.identity.application_id + "/python/" + key for key in backend._modules}
     backend._call_graph = None
     backend._run = run
     return backend
@@ -276,7 +280,7 @@ def test_the_fake_graph_carries_no_module_property():
     returning nothing on a real graph."""
     nodes = [c for _, by_module in _CHILDREN.values() for c in by_module.values()] + _CLASSES + list(_SHARED_FUNCTIONS.values())
     assert nodes and not any("_module" in n for n in nodes)
-    assert all(n["id"].startswith(("can://app_a/python/", "can://app_b/python/")) for n in nodes)
+    assert all(n["id"].startswith(("can://app_a/app_a/python/", "can://app_b/app_b/python/")) for n in nodes)
 
 
 def test_per_parent_path_does_not_leak_another_applications_children():
@@ -376,11 +380,7 @@ def _class_level_statements() -> Dict[str, str]:
     """Every class attribute that starts a Cypher clause -- not only ``MATCH``: filtering on that
     alone silently skipped ``_OVERVIEW_PROJECTION`` (``OPTIONAL MATCH``) and ``_LOCATE_QUERY``
     (``UNWIND``), and an audit that cannot see a statement cannot protect it."""
-    return {
-        name: value
-        for name, value in vars(PyNeo4jBackend).items()
-        if isinstance(value, str) and re.match(r"(MATCH|OPTIONAL MATCH|UNWIND|CALL)\b", value.lstrip())
-    }
+    return {name: value for name, value in vars(PyNeo4jBackend).items() if isinstance(value, str) and re.match(r"(MATCH|OPTIONAL MATCH|UNWIND|CALL)\b", value.lstrip())}
 
 
 def _inline_statements() -> Dict[str, str]:
@@ -427,7 +427,14 @@ def _inline_statements() -> Dict[str, str]:
             return "{…}"
 
         for call in ast.walk(fn):
-            if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute) and call.func.attr == "_run" and isinstance(call.func.value, ast.Name) and call.func.value.id == "self" and call.args:
+            if (
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and call.func.attr == "_run"
+                and isinstance(call.func.value, ast.Name)
+                and call.func.value.id == "self"
+                and call.args
+            ):
                 out.setdefault(f"{fn.name}@{call.lineno}", text(call.args[0]))
     return out
 
@@ -460,7 +467,23 @@ def _every_statement() -> Dict[str, str]:
 
 def test_the_audit_sees_the_dataflow_statements_too():
     names = set(_class_level_statements())
-    for expected in ("_REACHES", "_CONE", "_PATHS", "_CALL_PATHS", "_TAINT", "_EDGE_VARS", "_VALUE_REACHES", "_CALLEE_VALUES", "_SOURCES", "_SLICE", "_CALLERS", "_CALLEES", "_OWN_EDGES", "_LOCATE_QUERY", "_OVERVIEW_PROJECTION"):
+    for expected in (
+        "_REACHES",
+        "_CONE",
+        "_PATHS",
+        "_CALL_PATHS",
+        "_TAINT",
+        "_EDGE_VARS",
+        "_VALUE_REACHES",
+        "_CALLEE_VALUES",
+        "_SOURCES",
+        "_SLICE",
+        "_CALLERS",
+        "_CALLEES",
+        "_OWN_EDGES",
+        "_LOCATE_QUERY",
+        "_OVERVIEW_PROJECTION",
+    ):
         assert expected in names, f"{expected} is not a class-level statement any more; move it back or extend the audit"
 
 
@@ -473,7 +496,25 @@ def test_the_audit_sees_every_inline_statement_too():
     indirect = sorted(name.split("@")[0] for name, s in inline.items() if s == "{…}")
     assert indirect == ["_children", "_collect", "_paths"], f"unjudged statements passed through a variable: {indirect}"
     assert all(re.match(r"(MATCH|OPTIONAL MATCH|UNWIND|CALL)\b", s.lstrip()) for s in inline.values() if s != "{…}"), "an inline statement does not start with a Cypher clause"
-    for expected in ("get_source", "get_class", "get_python_file", "get_method_bodies", "resolve_value", "_call_rows", "_bounded_call_rows", "_get_module_functions", "get_callsites_for", "get_config_uses", "get_config_readers", "get_decorated_callables", "get_entrypoints", "get_entrypoint_classes", "_probe_resolution_edges", "_own_edges", "get_dependencies"):
+    for expected in (
+        "get_source",
+        "get_class",
+        "get_python_file",
+        "get_method_bodies",
+        "resolve_value",
+        "_call_rows",
+        "_bounded_call_rows",
+        "_get_module_functions",
+        "get_callsites_for",
+        "get_config_uses",
+        "get_config_readers",
+        "get_decorated_callables",
+        "get_entrypoints",
+        "get_entrypoint_classes",
+        "_probe_resolution_edges",
+        "_own_edges",
+        "get_dependencies",
+    ):
         assert any(name.startswith(expected + "@") for name in inline), f"{expected}'s statement is not harvested"
 
 
@@ -532,6 +573,5 @@ def test_the_reachability_walk_scopes_all_three_of_its_positions():
     for position in ("a", "x", "m"):
         assert f"{position}.id STARTS WITH $prefix" in statement, f"_REACHES leaves {position!r} unscoped"
     assert "y.id STARTS WITH $prefix" not in statement, (
-        "predicating both hop endpoints checks every interior node twice; measured 623.9s against "
-        "3.2s on a 5,000-node cyclic graph for the same answer"
+        "predicating both hop endpoints checks every interior node twice; measured 623.9s against " "3.2s on a 5,000-node cyclic graph for the same answer"
     )

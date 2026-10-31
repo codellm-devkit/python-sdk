@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.1.0] - 2026-10-31
+
+- Add namespace/application bindings to Python, Java, JavaScript/TypeScript and Go backends.
+- Preserve canonical IDs through URI resolution, module indexes and Neo4j reconstruction.
+- Isolate caches and reject foreign or incompatible identity metadata before lookup.
+- Pin namespace-ready analyzers: Python/TypeScript 1.7.0, Java 3.4.0 and Go 0.3.0.
+
+Application roots are now `can://<namespace>/<application>`, including the repeated default
+`can://inventory/inventory`. Regenerate existing analyses and graphs from source. SDK reads
+remain read-only; legacy IDs are not rewritten or aliased.
+
 ## [v2.0.0] - 2026-10-15
 
 CLDK 2.0 gives Python, Java and TypeScript one agent-facing query surface — addressing, per-callable

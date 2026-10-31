@@ -60,7 +60,7 @@ from cldk.models.typescript import (
 #
 # call_graph: baz -> Foo.bar, NS.qux -> baz   (so both functions participate in a call edge)
 
-MOD = "can://t/typescript/src/mod.ts"
+MOD = "can://t/t/typescript/src/mod.ts"
 SPAN = TSSpan(start=(1, 1), end=(1, 1), bytes=(0, 0))
 
 
@@ -94,7 +94,10 @@ def _build_application() -> TSApplication:
         functions={"baz": _baz()},
     )
     return TSApplication(
-        id="can://t",
+        id="can://t/t",
+        identity_version=2,
+        application_name="t",
+        identity_namespace="t",
         symbol_table={"src/mod.ts": module},
         call_graph=[
             TSCallEdge(src=f"{MOD}/baz", dst=f"{MOD}/Foo/bar", prov=["tsc"]),
@@ -105,6 +108,7 @@ def _build_application() -> TSApplication:
 
 def _build_analysis_json(application: TSApplication | None = None) -> str:
     return TSAnalysis(
+        identity_version=2,
         schema_version="2.0.0",
         language="typescript",
         max_level=2,
@@ -140,7 +144,7 @@ def ts_analysis(typescript_application, tmp_path, monkeypatch):
             project_path=typescript_application,
             eager=True,
             analysis_level=AnalysisLevel.call_graph,
-            backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)),
+            backend=CodeAnalyzerConfig(application_name="t", cache_dir=str(tmp_path)),
         )
 
 
@@ -199,7 +203,7 @@ def _analysis_over(application: TSApplication, typescript_application, tmp_path,
             project_path=typescript_application,
             eager=True,
             analysis_level=AnalysisLevel.call_graph,
-            backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)),
+            backend=CodeAnalyzerConfig(application_name="t", cache_dir=str(tmp_path)),
         )
 
 
@@ -238,7 +242,7 @@ def test_synthesized_entry_pointing_at_a_tree_callable_keys_on_its_signature(typ
 
 def test_named_residual_synthesized_node_keys_on_its_name(typescript_application, tmp_path, monkeypatch):
     app = _build_application()
-    residual = "can://t/typescript/@synthetic/cb"
+    residual = "can://t/t/typescript/@synthetic/cb"
     app.synthesized_callables = {residual: TSSynthesizedNode(id=residual, name="cb", path="src/mod.ts")}
     app.call_graph.append(TSCallEdge(src=f"{MOD}/Foo/bar", dst=residual, prov=["defuse"]))
     graph = _analysis_over(app, typescript_application, tmp_path, monkeypatch).get_call_graph()
@@ -248,7 +252,7 @@ def test_named_residual_synthesized_node_keys_on_its_name(typescript_application
 @pytest.mark.parametrize(
     "entry",
     [
-        pytest.param({"can://t/typescript/@synthetic/cb": TSSynthesizedNode(id="can://t/typescript/@synthetic/cb")}, id="residual-without-name"),
+        pytest.param({"can://t/t/typescript/@synthetic/cb": TSSynthesizedNode(id="can://t/t/typescript/@synthetic/cb")}, id="residual-without-name"),
         pytest.param({f"{MOD}/baz@9:9": TSSynthesizedNode(id=f"{MOD}/nowhere/<anon@9:9>")}, id="non-residual-unindexed-id"),
     ],
 )
@@ -272,6 +276,9 @@ def _neo4j_backend_with_stubbed_run(rows_by_call: dict) -> TSNeo4jBackend:
     to return canned rows keyed by (query, frozenset(params.items())); anything else (the subtree
     statement ``_fetch`` issues after a root is found) returns no rows."""
     backend = object.__new__(TSNeo4jBackend)
+    from cldk.analysis.commons.identity import resolve_identity
+
+    backend.identity = resolve_identity("t", None)
     backend.application_name = "t"
     backend._database = None
     backend._module_ids = {"src/mod.ts": MOD}
@@ -302,7 +309,7 @@ def _callable_props(c: TSCallable, *, bindings: bool = False) -> dict:
     return props
 
 
-SCOPE = (("p", "can://t/"),)
+SCOPE = (("p", "can://t/t/"),)
 
 
 def _stub_rows(*, bindings: bool):

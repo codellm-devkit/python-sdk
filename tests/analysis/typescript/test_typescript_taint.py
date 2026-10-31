@@ -46,7 +46,7 @@ from .conftest import FakeDriver
 
 def _value(name: str, within: str) -> SliceNode:
     """A resolved value, addressed as this surface addresses one: a name plus the callable it enters."""
-    return SliceNode(file="app.ts", line=1, callable=within, kind="parameter", name=name, ref=f"can://app/typescript/app.ts/{within}#{name}")
+    return SliceNode(file="app.ts", line=1, callable=within, kind="parameter", name=name, ref=f"can://app/app/typescript/app.ts/{within}#{name}")
 
 
 def _witness(frm: SliceNode, to: SliceNode) -> FlowPath:
@@ -73,7 +73,7 @@ class _Recording(TSAnalysisBackend):
         return _value(name, within)
 
     def resolve_callable(self, name, *, in_class=None, in_module=None):
-        return SliceNode(file="app.ts", line=1, callable=name, kind="callable", name=None, ref=f"can://app/typescript/app.ts/{name}")
+        return SliceNode(file="app.ts", line=1, callable=name, kind="callable", name=None, ref=f"can://app/app/typescript/app.ts/{name}")
 
     def _edge_vars_in(self, callable_id):
         return self._edge_vars
@@ -211,8 +211,8 @@ def test_the_sanitizer_selectors_are_resolved_through_the_edge_vars_hook():
     which addresses only parameters."""
     backend = _Recording()
     backend.taint([("x", "f")], [("y", "g")], sanitizers=[("answer", "f"), "scrub"])
-    assert backend.walks[0]["cuts"] == [{"var": "answer", "prefix": "can://app/typescript/app.ts/f"}]
-    assert backend.walks[0]["cut_callables"] == ["can://app/typescript/app.ts/scrub"]
+    assert backend.walks[0]["cuts"] == [{"var": "answer", "prefix": "can://app/app/typescript/app.ts/f"}]
+    assert backend.walks[0]["cut_callables"] == ["can://app/app/typescript/app.ts/scrub"]
 
 
 def test_a_sanitizer_that_does_not_resolve_raises_before_the_walk():
@@ -285,8 +285,8 @@ def test_the_two_walk_hooks_are_abstract_methods():
 #: way it is against a real graph's -- a body-node id embeds the module key and the graph stores no
 #: path to project instead.
 _MODULE = "app.ts"
-_HANDLE = f"can://app/typescript/{_MODULE}/handle"
-_SINK = f"can://app/typescript/{_MODULE}/query"
+_HANDLE = f"can://app/app/typescript/{_MODULE}/handle"
+_SINK = f"can://app/app/typescript/{_MODULE}/query"
 
 
 def _row(src: str, dst: str, *, var: str = "answer") -> dict:
@@ -313,7 +313,7 @@ def _graph(rows=(), edge_vars=(), record=None):
         if record is not None:
             record.append((query, dict(params)))
         if "TS_HAS_MODULE" in query:
-            return [{"k": _MODULE, "id": f"can://app/typescript/{_MODULE}"}]
+            return [{"k": _MODULE, "id": f"can://app/app/typescript/{_MODULE}"}]
         if "AS ok" in query:
             return [{"ok": True}]
         if "collect(DISTINCT r.var) AS vars" in query:
@@ -342,7 +342,7 @@ def test_the_graph_walk_issues_the_generated_statement_and_binds_the_cap_one_pas
         "cuts": [{"var": "answer", "prefix": _HANDLE}],
         "cut_callables": [_SINK],
         "cap": 4,
-        "p": "can://app/",
+        "p": "can://app/app/",
     }
 
 
@@ -364,9 +364,7 @@ def test_the_graph_walk_returns_every_row_untrimmed_and_keyed_by_the_pair_the_se
     The pairing comes from the statement's own ``a.id AS src`` / ``b.id AS dst`` and never from the
     order the rows arrive in: the m*n batching is only useful if the grouping survives it."""
     src, dst = _value("raw", "handle"), _value("cleaned", "query")
-    rows, blocked = _graph(rows=[_row(src.ref, dst.ref), _row(src.ref, dst.ref, var="second")])._taint_walk(
-        [src], [dst], cuts=[], cut_callables=[], depth=None, max_paths=1
-    )
+    rows, blocked = _graph(rows=[_row(src.ref, dst.ref), _row(src.ref, dst.ref, var="second")])._taint_walk([src], [dst], cuts=[], cut_callables=[], depth=None, max_paths=1)
     assert [(r[0], r[1]) for r in rows] == [(src.ref, dst.ref)] * 2, "two rows for a cap of one: the extra row is what reports truncation"
     assert [r[2].hops[0].var for r in rows] == ["answer", "second"]
     assert blocked == {}, "Ruling I: an empty ledger is a refusal to file, argued in the walk's docstring"

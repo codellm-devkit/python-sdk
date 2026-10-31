@@ -46,8 +46,8 @@ def test_envelope_at_both_levels(a1: JAnalysis, a4: JAnalysis):
         assert a.max_level == level
         assert a.k_limit is None  # never emitted by 3.0.x
         assert a.analyzer.name == "codeanalyzer-java"
-        assert a.analyzer.version == "3.1.0"
-        assert a.application.id == "can://java/daytrader8"
+        assert a.analyzer.version == "3.3.4"
+        assert a.application.id == "can://daytrader8/daytrader8"
         assert a.application.kind == "application"
 
 

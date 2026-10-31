@@ -68,9 +68,15 @@ class FakeSession:
         if "RETURN count(a) AS n, a.analyzer_version AS v" in query:
             v = self._driver.analyzer_version
             named = self._driver.application_name
-            if v is None or (named is not None and params.get("app_id") != f"can://{named}"):
+            if v is None or (named is not None and params.get("app_id") != f"can://{named}/{named}"):
                 return [_FakeRecord({"n": 0, "v": None})]
             return [_FakeRecord({"n": 1, "v": v})]
+        if "AS identity" in query:
+            from urllib.parse import unquote
+
+            app_id = params["app_id"]
+            namespace, name = app_id.removeprefix("can://").split("/")
+            return [_FakeRecord({"identity": dict(id=app_id, identity_version=2, application_name=unquote(name), identity_namespace=unquote(namespace))})]
         if self._driver.responder is not None:
             return [_FakeRecord(d) for d in self._driver.responder(query, params)]
         return []

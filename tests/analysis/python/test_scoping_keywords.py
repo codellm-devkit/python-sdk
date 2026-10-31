@@ -39,6 +39,7 @@ from cldk.analysis.python.codeanalyzer.codeanalyzer import PyCodeanalyzer
 from cldk.analysis.python.neo4j import PyNeo4jBackend
 from cldk.utils.exceptions import CodeanalyzerExecutionException, SelectorNotInGraph
 
+
 # ----------------------------------------------------------------------------------------------
 # call_graph_scope — the semantics both backends share
 # ----------------------------------------------------------------------------------------------
@@ -124,8 +125,8 @@ def test_the_error_offers_no_near_miss_suggestions():
     assert "pkg/a.py" not in str(excinfo.value)
 
 
-def test_a_lenient_match_is_not_a_miss():
-    assert scope_paths(["/abs/prefix/pkg/a.py"], ["pkg/a.py"]) == ["pkg/a.py"]
+def test_a_lenient_match_is_not_a_miss(tmp_path):
+    assert scope_paths([str(tmp_path / "pkg/a.py")], ["pkg/a.py"], source_root=tmp_path) == ["pkg/a.py"]
 
 
 # ----------------------------------------------------------------------------------------------
@@ -148,11 +149,11 @@ def test_a_bare_string_selector_is_rejected_rather_than_iterated(call):
 
 
 # ---- Fix 7: resolution is many-to-one ----------------------------------------------------------
-def test_two_spellings_of_one_module_resolve_to_one_key_once():
+def test_two_spellings_of_one_module_resolve_to_one_key_once(tmp_path):
     """Leniency is the point of :func:`resolve_module_key`, so two spellings of the same file are
     not a caller error — but the resolved list must not name that module twice and ask both
     backends to fetch it twice."""
-    assert scope_paths(["pkg/a.py", "/abs/pkg/a.py"], ["pkg/a.py", "pkg/b.py"]) == ["pkg/a.py"]
+    assert scope_paths(["pkg/a.py", str(tmp_path / "pkg/a.py")], ["pkg/a.py", "pkg/b.py"], source_root=tmp_path) == ["pkg/a.py"]
 
 
 def _diamond() -> nx.DiGraph:
@@ -260,6 +261,9 @@ def _local_backend() -> PyCodeanalyzer:
         )
 
     backend = object.__new__(PyCodeanalyzer)
+    from cldk.analysis.commons.identity import resolve_identity
+
+    backend.identity = resolve_identity("app", None)
     backend.application = PyApplication(
         symbol_table={
             "pkg/a.py": module("pkg/a.py", "pkg.a", "pkg.a.Alpha"),
@@ -279,8 +283,10 @@ def test_local_symbol_table_scoped_to_paths():
     assert set(_local_backend().get_symbol_table(paths=["pkg/b.py"])) == {"pkg/b.py"}
 
 
-def test_local_symbol_table_resolves_a_path_leniently():
-    assert set(_local_backend().get_symbol_table(paths=["/abs/prefix/pkg/b.py"])) == {"pkg/b.py"}
+def test_local_symbol_table_resolves_a_path_leniently(tmp_path):
+    backend = _local_backend()
+    backend.project_dir = tmp_path
+    assert set(backend.get_symbol_table(paths=[str(tmp_path / "pkg/b.py")])) == {"pkg/b.py"}
 
 
 def test_local_symbol_table_unknown_path_raises():
@@ -349,20 +355,25 @@ def _recording_backend(modules: List[str]) -> tuple[PyNeo4jBackend, List[Dict[st
         return []
 
     backend = object.__new__(PyNeo4jBackend)
+    from cldk.analysis.commons.identity import resolve_identity
+
+    backend.identity = resolve_identity("app", None)
     backend.application_name = "app"
     backend._database = None
     backend._driver = None
     backend._session_obj = None
     backend._modules = list(modules)
+    backend._module_ids = {key: backend.identity.application_id + "/python/" + key for key in backend._modules}
     backend._call_graph = None
     backend._server_version = None  # unknown: _bounded_call_rows must not gate on a version it never read
     backend._run = run
     return backend, seen
 
 
-def test_neo4j_symbol_table_passes_the_resolved_paths_to_cypher():
+def test_neo4j_symbol_table_passes_the_resolved_paths_to_cypher(tmp_path):
     backend, seen = _recording_backend(["pkg/a.py", "pkg/b.py"])
-    backend.get_symbol_table(paths=["/abs/pkg/b.py"])
+    backend.source_root = tmp_path
+    backend.get_symbol_table(paths=[str(tmp_path / "pkg/b.py")])
     assert seen[0]["paths"] == ["pkg/b.py"], "the path was not resolved, or not pushed into the query"
     assert "m.file_key IN $paths" in seen[0]["query"]
 
@@ -384,7 +395,7 @@ def test_neo4j_scoped_prefetch_does_not_fetch_the_whole_application():
     with backend._bulk(["pkg/b.py"]):
         backend._children("class_methods", "sig", "unused")
     assert [s["mods"] for s in seen] == [["pkg/b.py"]]
-    assert [s["prefixes"] for s in seen] == [["can://app/python/pkg/b.py/"]], "the signature-keyed buckets narrow on per-module id prefixes"
+    assert [s["prefixes"] for s in seen] == [["can://app/app/python/pkg/b.py/"]], "the signature-keyed buckets narrow on per-module id prefixes"
 
 
 def test_neo4j_bulk_scope_is_the_application_by_default():
@@ -392,7 +403,7 @@ def test_neo4j_bulk_scope_is_the_application_by_default():
     with backend._bulk():
         backend._children("class_methods", "sig", "unused")
     assert seen[0]["mods"] == ["pkg/a.py", "pkg/b.py"]
-    assert seen[0]["prefixes"] == ["can://app/"], "the whole application is one prefix, not one per module"
+    assert seen[0]["prefixes"] == ["can://app/app/"], "the whole application is one prefix, not one per module"
 
 
 def test_neo4j_nested_bulk_keeps_the_outer_scope():
@@ -403,7 +414,7 @@ def test_neo4j_nested_bulk_keeps_the_outer_scope():
         with backend._bulk(["pkg/b.py"]):
             backend._children("class_methods", "sig", "unused")
     assert seen[0]["mods"] == ["pkg/a.py", "pkg/b.py"]
-    assert seen[0]["prefixes"] == ["can://app/"]
+    assert seen[0]["prefixes"] == ["can://app/app/"]
 
 
 def _rows_backend(rows: List[Dict[str, Any]], modules: List[str]) -> tuple[PyNeo4jBackend, List[Dict[str, Any]]]:

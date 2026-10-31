@@ -34,6 +34,7 @@ from typing import Dict, List, Union
 
 import networkx as nx
 
+from cldk.analysis.commons.identity import resolve_identity, validate_identity, cache_matches
 from cldk.analysis.commons.backend_config import cache_subdir
 from cldk.analysis.commons.levels import analyzer_level
 from cldk.analysis.go.backend import ARTIFACT_LAYER_UNAVAILABLE, GoAnalysisBackend
@@ -49,6 +50,7 @@ from cldk.models.go import (
 )
 from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
 from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
+
 
 class GoCodeanalyzer(GoAnalysisBackend):
     """Run ``cango`` and answer queries over the parsed ``analysis.json``.
@@ -70,7 +72,12 @@ class GoCodeanalyzer(GoAnalysisBackend):
         analysis_level: str,
         eager_analysis: bool,
         target_files: List[str] | None,
+        *,
+        application_name: str | None = None,
+        namespace: str | None = None,
     ) -> None:
+        self.identity = resolve_identity(application_name, namespace, project_root=Path(project_dir) if project_dir is not None else None)
+
         self.project_dir = project_dir
         self.cache_dir = cache_dir
         self.analysis_level = analysis_level
@@ -80,8 +87,9 @@ class GoCodeanalyzer(GoAnalysisBackend):
         # unknown level rather than silently defaulting to 1 (the bug a hand-rolled dict caused).
         # cango has no L3/L4, so _argv caps the result at 2.
         self.analysis: GoAnalysis = self._init_codeanalyzer(analyzer_level(analysis_level))
+        validate_identity(self.analysis, self.identity)
         self.application: GoApplication = self.analysis.application
-        self.application_name: str = self.application.id.removeprefix("can://")
+        self.application_name: str = self.identity.application_name
         self._call_graph: nx.DiGraph | None = None
         self._index()
 
@@ -117,8 +125,8 @@ class GoCodeanalyzer(GoAnalysisBackend):
         args = self._get_codeanalyzer_exec() + [
             "-i",
             str(project),
-            "--app-name",
-            project.name,
+            f"--app-name={self.identity.application_name}",
+            f"--namespace={self.identity.namespace}",
             "-a",
             str(min(analysis_level, 2)),
         ]
@@ -151,7 +159,7 @@ class GoCodeanalyzer(GoAnalysisBackend):
         at or above the requested level is reused as-is: the schema is additive (``L1 ⊆ L2``), so a
         deeper cache already contains everything a shallower request needs.
         """
-        output_dir = cache_subdir(self.cache_dir, self.project_dir, "go")
+        output_dir = cache_subdir(self.cache_dir, self.project_dir, "go", identity=self.identity)
         if output_dir is None:
             args = self._argv(analysis_level, None)
             try:
@@ -166,7 +174,7 @@ class GoCodeanalyzer(GoAnalysisBackend):
         # level it cannot produce). Compare the requested level, capped, against the cached level.
         requested = min(analysis_level, 2)
         cached_level = self._cached_level(analysis_json_file) if analysis_json_file.exists() else None
-        stale = cached_level is None or cached_level < requested
+        stale = cached_level is None or cached_level < requested or not cache_matches(analysis_json_file, self.identity)
         needs_run = self.eager_analysis or bool(self.target_files) or stale
         if needs_run:
             args = self._argv(analysis_level, output_dir)
@@ -291,10 +299,7 @@ class GoCodeanalyzer(GoAnalysisBackend):
         """
         entry = self._source_of.get(node_id)
         if entry is None:
-            raise CodeanalyzerExecutionException(
-                f"no source for {node_id!r}: not a type, callable or field of application "
-                f"{self.application_name!r}"
-            )
+            raise CodeanalyzerExecutionException(f"no source for {node_id!r}: not a type, callable or field of application " f"{self.application_name!r}")
         mod, node = entry
         if node.span is None:
             raise CodeanalyzerExecutionException(f"node {node_id!r} carries no span, so it has no source text")
@@ -311,9 +316,7 @@ class GoCodeanalyzer(GoAnalysisBackend):
     def get_artifacts(self) -> Dict[str, PyArtifact]:
         raise CodeanalyzerExecutionException(ARTIFACT_LAYER_UNAVAILABLE.format(app=self.application_name))
 
-    def get_dependencies(
-        self, *, direct_only: bool = False, ecosystem: str | None = None, declared_in: str | None = None
-    ) -> List[PyDependency]:
+    def get_dependencies(self, *, direct_only: bool = False, ecosystem: str | None = None, declared_in: str | None = None) -> List[PyDependency]:
         raise CodeanalyzerExecutionException(ARTIFACT_LAYER_UNAVAILABLE.format(app=self.application_name))
 
     def get_config_keys(self) -> Dict[str, PyConfigKey]:

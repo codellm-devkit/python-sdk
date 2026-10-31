@@ -90,7 +90,7 @@ def test_no_config_keys_cache_dir_by_language(tmp_path):
         )
 
         _, kwargs = backend_cls.call_args
-        assert kwargs["cache_dir"] == (tmp_path / "cache" / "python")
+        assert kwargs["cache_dir"].parent == (tmp_path / "cache" / "python")
 
 
 def test_missing_project_dir_without_config_raises():

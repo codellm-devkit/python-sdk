@@ -283,15 +283,21 @@ def test_locate_and_resolve_seek_the_pysymbol_index(py, fake_driver):
 
 def test_locate_scope_is_actually_honoured(py):
     """Not just present in the text: attach as another application and no callable matches."""
-    py.application_name = "some_other_application"
+    from cldk.analysis.commons.identity import resolve_identity
+
+    py.identity = resolve_identity("some_other_application", None)
+    py.application_name = py.identity.application_name
+    py._module_ids = {key: py.identity.application_id + "/python/" + key for key in py._modules}
     r = py.locate("src/app.py", 21)
     assert r.callable is None
     assert "module_scope" in [d.code for d in r.diagnostics]
 
 
-def test_locate_normalises_the_path(py_either):
+def test_locate_normalises_the_path(py_either, tmp_path):
     """A scanner prints ``./src/app.py`` or an absolute path; neither is the symbol-table key."""
-    for path in ("./src/app.py", "src/./app.py", "/home/ci/checkout/src/app.py"):
+    py_either.source_root = tmp_path
+    py_either.project_dir = tmp_path
+    for path in ("./src/app.py", "src/./app.py", str(tmp_path / "src/app.py")):
         r = py_either.locate(path, 21)
         assert r.callable is not None, path
         assert r.callable.signature == "src.app.Store.key"

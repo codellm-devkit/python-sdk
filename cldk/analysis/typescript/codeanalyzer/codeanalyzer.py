@@ -39,6 +39,8 @@ from typing import Dict, FrozenSet, Iterator, List, Mapping, Sequence, Set, Tupl
 
 import networkx as nx
 
+from cldk.analysis.commons.keys import module_scope
+from cldk.analysis.commons.identity import resolve_identity, validate_identity, cache_matches
 from cldk.analysis.commons.bounds import (
     DEFAULT_DEPTH,
     DEFAULT_MAX_NODES,
@@ -149,7 +151,12 @@ class TSCodeanalyzer(TSAnalysisBackend):
         eager_analysis: bool,
         target_files: List[str] | None,
         tsc_only: bool = False,
+        *,
+        application_name: str | None = None,
+        namespace: str | None = None,
     ) -> None:
+        self.identity = resolve_identity(application_name, namespace, project_root=Path(project_dir) if project_dir is not None else None)
+
         self.project_dir = project_dir
         self.analysis_json_path = analysis_json_path
         self.analysis_level = analysis_level
@@ -162,16 +169,10 @@ class TSCodeanalyzer(TSAnalysisBackend):
                 stacklevel=4,  # warn at the CLDK.typescript(...) call, through the facade
             )
         self.analysis: TSAnalysis = self._init_codeanalyzer(analysis_level=analyzer_level(analysis_level))
+        validate_identity(self.analysis, self.identity)
         self.application: TSApplication = self.analysis.application
-        #: The ``--app-name`` the analyzer stamped into every id, read back off the application's
-        #: own ``can://<app>`` id. Spelled the same as :attr:`TSNeo4jBackend.application_name`
-        #: so a message naming the application reads identically whichever backend raised it -- and
-        #: so no message has to embed a ``can://`` id to name it (E6).
-        #:
-        #: The scheme is *stripped*, never split off: the root id is exactly ``can://<app>`` since
-        #: 1.5.1 put the application outermost, and an application legitimately named ``typescript``
-        #: makes any positional reading of the segments a coin flip.
-        self.application_name: str = self.application.id.removeprefix("can://")
+        # Preserve the raw selected name; canonical root segments may contain percent escapes.
+        self.application_name: str = self.identity.application_name
         self._call_graph: nx.DiGraph | None = None
         self._index()
 
@@ -204,7 +205,14 @@ class TSCodeanalyzer(TSAnalysisBackend):
         --cache-dir <dir>] --skip-tests [--eager] [-t <file>]...``. The application name is what
         the analyzer stamps into every ``can://<app>/<lang>/...`` id."""
         project = Path(self.project_dir)
-        args = self._get_codeanalyzer_exec() + ["-i", str(project), "--app-name", project.name, "-a", str(analysis_level)]
+        args = self._get_codeanalyzer_exec() + [
+            "-i",
+            str(project),
+            f"--app-name={self.identity.application_name}",
+            f"--namespace={self.identity.namespace}",
+            "-a",
+            str(analysis_level),
+        ]
         if output_dir is not None:
             args += ["-o", str(output_dir), "--cache-dir", str(output_dir)]
         args += ["--skip-tests"]
@@ -229,7 +237,7 @@ class TSCodeanalyzer(TSAnalysisBackend):
         # Persist to an output directory and read analysis.json back.
         output_dir = Path(self.analysis_json_path)
         analysis_json_file = output_dir / "analysis.json"
-        needs_run = self.eager_analysis or not analysis_json_file.exists() or bool(self.target_files)
+        needs_run = self.eager_analysis or not analysis_json_file.exists() or not cache_matches(analysis_json_file, self.identity) or bool(self.target_files)
         if needs_run:
             args = self._argv(analysis_level, output_dir)
             try:
@@ -884,7 +892,7 @@ class TSCodeanalyzer(TSAnalysisBackend):
     def _locate_one(self, path: str, line: int) -> LocateResult:
         # Whatever the caller's scanner printed ("./src/app.ts", an absolute path) is normalised to
         # the symbol-table key first; an unnormalised path would otherwise read as file_not_in_graph.
-        key = resolve_module_key(str(path), self.application.symbol_table.keys())
+        key = resolve_module_key(str(path), self.application.symbol_table.keys(), **module_scope(self))
         module = self.application.symbol_table.get(key)
         if module is None:
             return self._not_analysed(key, line)

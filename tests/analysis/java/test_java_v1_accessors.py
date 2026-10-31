@@ -47,6 +47,8 @@ from unittest.mock import MagicMock, patch
 import networkx as nx
 import pytest
 
+from cldk.analysis.commons.backend_config import cache_subdir
+from cldk.analysis.commons.identity import resolve_identity
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.backend_config import CodeAnalyzerConfig
 from cldk.analysis.java.java_analysis import JavaAnalysis
@@ -250,14 +252,14 @@ def test_the_two_backends_agree_on_all_six(analysis_json, analysis_json_a4):
 def _facade(test_fixture, analysis_json, tmp_path) -> JavaAnalysis:
     with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
         run_mock.return_value = MagicMock(stdout=analysis_json, returncode=0)
-        (tmp_path / "java").mkdir()
-        (tmp_path / "java" / "analysis.json").write_text(analysis_json, encoding="utf-8")
+        (cache_subdir(tmp_path, None, "java", identity=resolve_identity("daytrader8", None))).mkdir(parents=True)
+        (cache_subdir(tmp_path, None, "java", identity=resolve_identity("daytrader8", None)) / "analysis.json").write_text(analysis_json, encoding="utf-8")
         return JavaAnalysis(
             project_dir=test_fixture,
             analysis_level=AnalysisLevel.symbol_table,
             target_files=None,
             eager_analysis=False,
-            backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)),
+            backend=CodeAnalyzerConfig(application_name="daytrader8", cache_dir=str(tmp_path)),
         )
 
 

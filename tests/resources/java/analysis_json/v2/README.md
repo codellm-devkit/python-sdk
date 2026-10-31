@@ -1,3 +1,24 @@
+## Identity-v2 snapshots (2026-10-30)
+
+These positive fixtures were regenerated from `tests/resources/java/application/daytrader8-1.2.zip`, SHA-256 `0624ad6b46ab2f1f23df936a55663edae8c2704b866005e013150a93f52c03b7`, using reviewed local
+`codeanalyzer-java` source commit `cbfbd01dd9ed3f5bfca51237487d0273f4eff4ec` (reported version `3.3.4`).
+These are local verification builds; the dependency release pins are unchanged.
+Every envelope carries required `identity_version: 2` and raw application ownership metadata.
+The resulting application is `can://daytrader8/daytrader8`; L1 has 138 modules; pruned L4 has four modules, 247 call edges, 258 param-in and 97 param-out edges, and 320 WALA points-to edges.
+
+Reproduce from the SDK root with the reviewed producer artifacts configured:
+
+```sh
+.venv/bin/python tests/resources/regenerate_identity_fixtures.py java
+```
+
+The checked-in generator records the exact CLI arguments and source pruning. It uses the
+existing TS/Go binary environment overrides and the installed Java wheel. Java requires Maven
+and a JDK; a complete strict L4 run builds the full source before the four-file snapshot is
+emitted with `--no-build --strict`. The WALA log verified 118 visited callables and 320 added
+points-to edges. Java gzip artifacts use `mtime=0`. No persisted IDs were translated.
+The historical notes below describe earlier fixture generations and are superseded by this section.
+
 Generated from `tests/resources/java/application/daytrader8-1.2.zip` (unzipped to `<daytrader8>` =
 `sample.daytrader8-1.2/`) by **codeanalyzer-java 3.1.0** — the pinned `codeanalyzer-java` wheel (the
 `cldk[java]` extra), run as `codeanalyzer_java.command()`: the wheel's own jar on the JVM it bundles

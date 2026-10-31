@@ -36,7 +36,7 @@ from cldk.utils.exceptions.exceptions import SelectorNotInGraph
 
 def _value(name: str, within: str) -> SliceNode:
     """A resolved value, addressed as this surface addresses one: a name plus the callable it enters."""
-    return SliceNode(file="app.py", line=1, callable=within, kind="parameter", name=name, ref=f"can://app/python/app.py/{within}#{name}")
+    return SliceNode(file="app.py", line=1, callable=within, kind="parameter", name=name, ref=f"can://app/app/python/app.py/{within}#{name}")
 
 
 def _witness(frm: SliceNode, to: SliceNode) -> FlowPath:
@@ -63,7 +63,7 @@ class _Recording(PythonAnalysisBackend):
         return _value(name, within)
 
     def resolve_callable(self, name, *, in_class=None, in_module=None):
-        return SliceNode(file="app.py", line=1, callable=name, kind="callable", name=None, ref=f"can://app/python/app.py/{name}")
+        return SliceNode(file="app.py", line=1, callable=name, kind="callable", name=None, ref=f"can://app/app/python/app.py/{name}")
 
     def _edge_vars_in(self, callable_id):
         return self._edge_vars
@@ -201,8 +201,8 @@ def test_the_sanitizer_selectors_are_resolved_through_the_edge_vars_hook():
     which addresses only parameters."""
     backend = _Recording()
     backend.taint([("x", "f")], [("y", "g")], sanitizers=[("answer", "f"), "scrub"])
-    assert backend.walks[0]["cuts"] == [{"var": "answer", "prefix": "can://app/python/app.py/f"}]
-    assert backend.walks[0]["cut_callables"] == ["can://app/python/app.py/scrub"]
+    assert backend.walks[0]["cuts"] == [{"var": "answer", "prefix": "can://app/app/python/app.py/f"}]
+    assert backend.walks[0]["cut_callables"] == ["can://app/app/python/app.py/scrub"]
 
 
 def test_a_sanitizer_that_does_not_resolve_raises_before_the_walk():

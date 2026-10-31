@@ -93,8 +93,8 @@ def test_every_level_validates(level: int):
     assert a.language == "typescript"
     assert a.max_level == level
     assert a.analyzer.name == "codeanalyzer-typescript"
-    assert a.analyzer.version == _pinned_version()
-    assert a.application.id == "can://slim"
+    assert a.analyzer.version == "1.6.4"  # reviewed local producer fixture
+    assert a.application.id == "can://slim/slim"
     assert a.application.kind == "application"
     assert (a.k_limit is not None) == (level >= 3)
 
@@ -109,7 +109,7 @@ def test_module_carries_source_and_content_hash():
     app = _load(1).application
     m = next(iter(app.symbol_table.values()))
     assert m.kind == "module"
-    assert m.id.startswith("can://slim/typescript/")
+    assert m.id.startswith("can://slim/slim/typescript/")
     assert m.content_hash
     assert m.source and m.span.bytes[1] == len(m.source)
 
@@ -187,7 +187,7 @@ def test_l4_formal_vertices_and_param_edges():
     assert c.body["@formal_in:0"].kind == "formal_in"
     assert c.body["@formal_out"].kind == "formal_out"
     assert app.param_in and app.param_out
-    assert app.param_in[0].src.startswith("can://slim/typescript/")
+    assert app.param_in[0].src.startswith("can://slim/slim/typescript/")
     assert any(c.summary for c, _ in _all_callables(app))
 
 
@@ -197,7 +197,7 @@ def test_call_graph_edge_shape_and_externals():
     assert isinstance(e, TSCallGraphEdge)
     assert set(TSCallGraphEdge.model_fields) == {"src", "dst", "prov", "weight"}
     assert e.src.startswith("can://") and e.dst.startswith("can://")
-    assert all(k.startswith("can://slim/@external/") for k in app.external_symbols)
+    assert all(k.startswith("can://slim/slim/@external/") for k in app.external_symbols)
     ext = next(iter(app.external_symbols.values()))
     assert ext.kind == "external" and ext.id in app.external_symbols
     assert app.synthesized_callables
@@ -207,7 +207,7 @@ def test_call_graph_edge_shape_and_externals():
 def test_artifact_layer():
     app = _load(1).application
     art = next(iter(app.artifacts.values()))
-    assert art.kind == "artifact" and art.id.startswith("can://slim/artifact/")
+    assert art.kind == "artifact" and art.id.startswith("can://slim/slim/artifact/")
     assert art.sha256 and art.source
     assert any(ck.value is not None for a in app.artifacts.values() for ck in a.config_keys)
     assert app.dependencies == [] and app.unresolved_imports == []

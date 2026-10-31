@@ -38,6 +38,7 @@ from typing import Any, Dict, FrozenSet, Iterable, List, Mapping, Sequence, Tupl
 import networkx as nx
 from pydantic import ValidationError
 
+from cldk.analysis.commons.identity import resolve_identity, validate_identity, cache_matches
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.bounds import DEFAULT_PAGE_SIZE, check_page_size, edge_page
 from cldk.analysis.commons.graphs import flow_path, shortest_walks, slice_resolved, under_callable
@@ -206,7 +207,14 @@ class JCodeanalyzer(JavaAnalysisBackend):
         analysis_level: str,
         eager_analysis: bool,
         target_files: List[str] | None,
+        *,
+        application_name: str | None = None,
+        namespace: str | None = None,
     ) -> None:
+        if project_dir is None:
+            raise CodeanalyzerExecutionException("Cannot run codeanalyzer-java: no project directory.")
+        self.identity = resolve_identity(application_name, namespace, project_root=Path(project_dir))
+
         self.project_dir = project_dir
         self.analysis_json_path = analysis_json_path
         self.analysis_level = analysis_level
@@ -215,6 +223,7 @@ class JCodeanalyzer(JavaAnalysisBackend):
         self.analyzer_diagnostics: List[Diagnostic] | None = None
         self.analysis: JAnalysis = self._init_codeanalyzer(analysis_level=analyzer_level(analysis_level))
         self._report_analyzer_diagnostics(analyzer_level(analysis_level))
+        validate_identity(self.analysis, self.identity)
         self.application: JApplication = self.analysis.application
         self._call_graph: nx.DiGraph | None = None
         self._sdg_cache: Any = None
@@ -254,7 +263,7 @@ class JCodeanalyzer(JavaAnalysisBackend):
         args += ["-i", str(project), "-a", str(analysis_level)]
         if output_dir is not None:
             args += ["-o", str(output_dir), "-c", str(output_dir / "cache"), "-v"]
-        args += ["--app-name", project.name]
+        args += [f"--app-name={self.identity.application_name}", f"--namespace={self.identity.namespace}"]
         for tf in self.target_files or []:
             args += ["-t", str(tf).strip()]
         return args
@@ -294,7 +303,12 @@ class JCodeanalyzer(JavaAnalysisBackend):
         output_dir = Path(self.analysis_json_path)
         analysis_json_file = output_dir / "analysis.json"
         verdict_file = output_dir / VERDICT_FILE
-        needs_run = self.eager_analysis or bool(self.target_files) or not self.check_exisiting_analysis_file_level(analysis_json_file, analysis_level)
+        needs_run = (
+            self.eager_analysis
+            or bool(self.target_files)
+            or not self.check_exisiting_analysis_file_level(analysis_json_file, analysis_level)
+            or not cache_matches(analysis_json_file, self.identity)
+        )
         if needs_run:
             args = self._argv(analysis_level, output_dir)
             try:
@@ -900,7 +914,10 @@ class JCodeanalyzer(JavaAnalysisBackend):
         """Every non-code artifact (see :meth:`AnalysisBackend.get_artifacts`), keyed by repo-relative
         path as the wire keys them. ``JArtifact.text_truncated`` has no home on the shared model and
         is not carried; read it off ``JApplication.artifacts`` when it matters."""
-        return {path: PyArtifact(**a.model_dump(exclude={"config_keys", "text_truncated"}), config_keys=[PyConfigKey(**ck.model_dump()) for ck in a.config_keys]) for path, a in self.application.artifacts.items()}
+        return {
+            path: PyArtifact(**a.model_dump(exclude={"config_keys", "text_truncated"}), config_keys=[PyConfigKey(**ck.model_dump()) for ck in a.config_keys])
+            for path, a in self.application.artifacts.items()
+        }
 
     def get_dependencies(self, *, direct_only: bool = False, ecosystem: str | None = None, declared_in: str | None = None) -> List[PyDependency]:
         """Every declared dependency, optionally filtered (see :meth:`AnalysisBackend.get_dependencies`).

@@ -33,9 +33,9 @@ def test_real_corpus_envelope(litestream):
     assert litestream.schema_version == "2.0.0"
     assert litestream.language == "go"
     assert litestream.max_level == 2
-    assert litestream.application.id == "can://go/litestream"
+    assert litestream.application.id == "can://litestream/litestream"
     assert len(litestream.application.symbol_table) == 55
-    assert len(litestream.application.call_graph) == 959
+    assert len(litestream.application.call_graph) == 3082
 
 
 def test_real_corpus_struct_round_trips(litestream):
@@ -52,7 +52,7 @@ def test_real_corpus_struct_round_trips(litestream):
 
 def test_real_corpus_call_edges_are_well_formed(litestream):
     """Every edge names a src and dst id under the application; prov/weight parse."""
-    pre = "can://go/litestream/"
+    pre = "can://litestream/litestream/"
     for e in litestream.application.call_graph:
         assert e.src.startswith(pre) and e.dst.startswith(pre)
         assert isinstance(e.prov, list) and isinstance(e.weight, int)

@@ -74,6 +74,9 @@ def _local(payload: str) -> JCodeanalyzer:
     backend.analysis_level = "system_dependency_graph"
     backend.analyzer_diagnostics = []
     backend.application = backend.analysis.application
+    from cldk.analysis.commons.identity import resolve_identity
+
+    backend.identity = resolve_identity(backend.application.application_name, backend.application.identity_namespace)
     backend._call_graph = None
     backend._index()
     return backend
@@ -173,6 +176,9 @@ def _graph(payload: str) -> JNeo4jBackend:
 
     application = JAnalysis.model_validate_json(payload).application
     backend = JNeo4jBackend.__new__(JNeo4jBackend)
+    from cldk.analysis.commons.identity import resolve_identity
+
+    backend.identity = resolve_identity("daytrader8", None)
     backend.application_name = "daytrader8"
     backend._database = None
     backend._session_obj = None
@@ -236,9 +242,11 @@ def test_locate_in_an_unanalysed_file_says_so(both):
     assert found.module.path == "src/main/java/com/example/NoSuchFile.java"
 
 
-def test_locate_normalises_the_path_a_scanner_prints(both):
+def test_locate_normalises_the_path_a_scanner_prints(both, tmp_path):
+    both.project_dir = tmp_path
+    both.source_root = tmp_path
     assert both.locate("./" + TRADE_DIRECT_FILE, 650).callable is not None
-    assert both.locate("/checkout/" + TRADE_DIRECT_FILE, 650).callable is not None
+    assert both.locate(str(tmp_path / TRADE_DIRECT_FILE), 650).callable is not None
 
 
 def test_locate_finds_the_body_node_and_it_round_trips(both):
@@ -246,7 +254,7 @@ def test_locate_finds_the_body_node_and_it_round_trips(both):
     ``<callable id>@<body key>`` id, and ``node_id`` is ``body.id``."""
     found = next(r for line in range(600, 700) if (r := both.locate(TRADE_DIRECT_FILE, line)).body is not None)
     assert found.node_id == found.body.id
-    assert found.body.id.startswith("can://java/daytrader8/")
+    assert found.body.id.startswith("can://daytrader8/daytrader8/java/")
     assert "@" in found.body.id
 
 
@@ -267,7 +275,7 @@ def test_a_call_sites_resolution_is_the_same_on_both_backends(analysis_json_a4):
     mine = {node_id: n.callee for nodes in local._body_nodes(ids).values() for node_id, n in nodes.items() if n.callee}
     theirs = {node_id: n.callee for nodes in graph._body_nodes(ids).values() for node_id, n in nodes.items() if n.callee}
     assert len(mine) == 226, "the level-4 fixture resolves 226 of its 975 call sites"
-    assert all(c.startswith("can://java/daytrader8/") for c in mine.values())
+    assert all(c.startswith("can://daytrader8/daytrader8/java/") for c in mine.values())
     assert {k: theirs.get(k) for k in mine} == mine, "the graph must agree wherever the payload resolved"
 
 
@@ -276,7 +284,7 @@ def test_a_located_call_site_reports_what_it_calls(both_l4):
     positions = [(path, line) for path, unit in both_l4.get_symbol_table().items() for line in range(1, 400)]
     resolved = [r for r in both_l4.locate_many(positions) if r.body is not None and r.body.kind == "call" and r.body.callee]
     assert resolved, "no located call site resolved anything; the assertion proved nothing"
-    assert all(r.body.callee.startswith("can://java/daytrader8/") for r in resolved)
+    assert all(r.body.callee.startswith("can://daytrader8/daytrader8/java/") for r in resolved)
 
 
 def test_locate_many_answers_in_input_order(both):
@@ -303,7 +311,7 @@ def test_resolve_callable_returns_the_j1_key(both):
     assert node.kind == "callable"
     assert node.name == "cancelOrder"
     assert node.file == TRADE_DIRECT_FILE
-    assert node.ref.startswith("can://java/daytrader8/")
+    assert node.ref.startswith("can://daytrader8/daytrader8/java/")
     assert "can://" not in node.callable
 
 
