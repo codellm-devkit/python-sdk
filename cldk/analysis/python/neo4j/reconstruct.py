@@ -292,6 +292,7 @@ def callable_(
     unaffected by the model shape).
     """
     return PyCallable(
+        id=props.get("id", ""),
         name=props.get("name", ""),
         path=props.get("path", ""),
         signature=props.get("signature", ""),
@@ -324,6 +325,7 @@ def class_(
     (superseded by ``span`` + ``PyModule.source``, unused on this read-only reconstruction path).
     """
     return PyClass(
+        id=props.get("id", ""),
         name=props.get("name", ""),
         signature=props.get("signature", ""),
         comments=comments(props),
@@ -351,6 +353,7 @@ def module(
     symbol-table key). Module-level comments are not projected, so ``comments`` is always empty.
     """
     return PyModule(
+        id=props.get("id", ""),
         file_path=file_key,
         module_name=props.get("module_name", ""),
         imports=imports or [],
