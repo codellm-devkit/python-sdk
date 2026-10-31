@@ -134,6 +134,33 @@ analysis = CLDK.python(
 )
 ```
 
+### Namespace binding
+
+Set the same raw identity pair on local analysis and graph attachment:
+
+```python
+from cldk import CLDK
+from cldk.analysis.commons.backend_config import CodeAnalyzerConfig
+
+analysis = CLDK.typescript(
+    project_path="online-boutique/src/currencyservice",
+    backend=CodeAnalyzerConfig(
+        namespace="online-boutique", application_name="currencyservice",
+    ),
+)
+```
+
+For `Neo4jConnectionConfig`, pass the same `namespace` and `application_name`.
+Omitted application names use the selected input directory basename; omitted namespaces
+use that resolved application name. A default inventory application therefore has root
+`can://inventory/inventory`. Raw names are case sensitive and URI encoded once. Module
+URIs from another application, namespace or language are rejected before path lookup.
+Identity version 2 is required; regenerate legacy outputs and caches from source.
+
+This branch requires coordinated namespace-ready producer artifacts. The currently
+published dependency pins are retained and do not establish release compatibility;
+use reviewed local producer builds until compatible releases are available.
+
 | Language | Analyzer | Built on | Runs as |
 | --- | --- | --- | --- |
 | Java | [`codeanalyzer-java`](https://github.com/codellm-devkit/codeanalyzer-java) | JavaParser and WALA | a subprocess on the bundled JVM |
