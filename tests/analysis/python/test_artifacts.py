@@ -57,7 +57,7 @@ from cldk.models.python import (
 
 # -----[ shared identifiers -- both renderings below are built from these, not re-typed ]-----
 _APP = "app"
-_ART1_ID = f"can://{_APP}/artifact/pyproject.toml"
+_ART1_ID = f"can://{_APP}/{_APP}/artifact/pyproject.toml"
 _ART1_PATH = "pyproject.toml"
 _ART1_FORMAT = "toml"
 _ART1_ROLES = ["dependency-manifest"]
@@ -65,7 +65,7 @@ _ART1_SIZE = 128
 _ART1_SHA = "aaa111"
 _ART1_SOURCE = '[project]\nname = "app"\ndependencies = ["flask>=2.0,<3"]\n'
 
-_ART2_ID = f"can://{_APP}/artifact/.env"
+_ART2_ID = f"can://{_APP}/{_APP}/artifact/.env"
 _ART2_PATH = ".env"
 _ART2_FORMAT = "properties"
 _ART2_ROLES = ["config"]
@@ -192,7 +192,7 @@ _CONNECT_OVERVIEW_ROW = {
     "signature": "src.db.connect",
     "name": "connect",
     "decorators": [],
-    "id": f"can://{_APP}/python/{_MODULE_PATH}/connect",  # what get_config_readers projects; path is derived
+    "id": f"can://{_APP}/{_APP}/python/{_MODULE_PATH}/connect",  # what get_config_readers projects; path is derived
     "start_line": 5,
     "end_line": 11,
     "class_signature": None,
@@ -210,7 +210,7 @@ def _artifacts_responder(query: str, params: dict) -> list[dict[str, Any]]:
     """Answers the four Cypher statements ``PyNeo4jBackend`` sends for this layer, plus
     ``_load_module_keys`` (construction always calls it)."""
     if "RETURN m.file_key AS k" in query:
-        return [{"k": _MODULE_PATH}]
+        return [{"k": _MODULE_PATH, "id": f"can://app/app/python/{_MODULE_PATH}"}]
     if "collect(properties(ck))" in query:  # get_artifacts
         return [
             {"p": _ART1_PROPS, "cks": []},
@@ -284,7 +284,7 @@ def test_dependency_ecosystem_is_read_off_the_package_node(fake_driver):
 
     def responder(query: str, params: dict) -> list[dict[str, Any]]:
         if "RETURN m.file_key AS k" in query:
-            return [{"k": _MODULE_PATH}]
+            return [{"k": _MODULE_PATH, "id": f"can://app/app/python/{_MODULE_PATH}"}]
         if "DECLARES_DEPENDENCY" in query:
             return [{"rel": _DEP_REL_PROPS, "name": _DEP_NAME, "ecosystem": "conda-forge", "declared_in": _ART1_ID}]
         return []
@@ -301,8 +301,13 @@ def test_dependencies_direct_only_filters_out_transitive_pins(fake_driver):
     filter."""
     transitive = PyDependency(name="click", ecosystem="pypi", declared_in=_ART1_ID, direct=False)
     direct = PyDependency(
-        name=_DEP_NAME, ecosystem=_DEP_ECOSYSTEM, spec=_DEP_SPEC, kind=_DEP_KIND, declared_in=_ART1_ID,
-        direct=True, prov=list(_DEP_PROV),
+        name=_DEP_NAME,
+        ecosystem=_DEP_ECOSYSTEM,
+        spec=_DEP_SPEC,
+        kind=_DEP_KIND,
+        declared_in=_ART1_ID,
+        direct=True,
+        prov=list(_DEP_PROV),
     )
     local = object.__new__(PyCodeanalyzer)
     local.application = PyApplication(symbol_table={}, dependencies=[direct, transitive])
@@ -311,7 +316,7 @@ def test_dependencies_direct_only_filters_out_transitive_pins(fake_driver):
 
     def responder(query: str, params: dict) -> list[dict[str, Any]]:
         if "RETURN m.file_key AS k" in query:
-            return [{"k": _MODULE_PATH}]
+            return [{"k": _MODULE_PATH, "id": f"can://app/app/python/{_MODULE_PATH}"}]
         if "DECLARES_DEPENDENCY" in query:
             assert "r.direct = true" in query  # the filter must run in Cypher, not in Python
             return [{"rel": _DEP_REL_PROPS, "name": _DEP_NAME, "ecosystem": _DEP_ECOSYSTEM, "declared_in": _ART1_ID}]
@@ -335,7 +340,7 @@ def test_dependencies_ecosystem_filter(py):
 
 def test_dependencies_declared_in_filter(py):
     assert [d.name for d in py.get_dependencies(declared_in=_ART1_ID)] == [_DEP_NAME]
-    assert py.get_dependencies(declared_in="can://app/artifact/nonexistent.toml") == []
+    assert py.get_dependencies(declared_in="can://app/app/artifact/nonexistent.toml") == []
 
 
 # =====================================================================================
@@ -412,7 +417,7 @@ def test_unresolved_config_reads_over_neo4j_carries_key_and_reason_but_not_site(
 def test_no_unresolved_config_reads_is_an_empty_list_not_none(fake_driver):
     def responder(query: str, params: dict) -> list[dict[str, Any]]:
         if "RETURN m.file_key AS k" in query:
-            return [{"k": _MODULE_PATH}]
+            return [{"k": _MODULE_PATH, "id": f"can://app/app/python/{_MODULE_PATH}"}]
         return []
 
     fake_driver.responder = responder
@@ -435,9 +440,11 @@ def test_artifacts_layer_parity_between_backends(py_local, py_neo4j):
     assert py_local.get_config_uses(key=_CONFIG_KEY_KEY) == py_neo4j.get_config_uses(key=_CONFIG_KEY_KEY)
     # Path included: this projection also returns PyCallableOverview, so it has to speak the same
     # repo-relative path vocabulary as every other overview accessor -- on both backends.
-    assert [(r.signature, r.path) for r in py_local.get_config_readers(_CONFIG_KEY_KEY)] == [
-        (r.signature, r.path) for r in py_neo4j.get_config_readers(_CONFIG_KEY_KEY)
-    ] == [("src.db.connect", _MODULE_PATH)]
+    assert (
+        [(r.signature, r.path) for r in py_local.get_config_readers(_CONFIG_KEY_KEY)]
+        == [(r.signature, r.path) for r in py_neo4j.get_config_readers(_CONFIG_KEY_KEY)]
+        == [("src.db.connect", _MODULE_PATH)]
+    )
     # Deliberately not full equality: the Neo4j reconstruction always has site="" (see
     # reconstruct.unresolved_config_read's docstring) while the local backend has a real one --
     # documented projection loss, not a bug. key/reason/callee/prov still agree exactly.

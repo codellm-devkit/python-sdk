@@ -123,15 +123,25 @@ def _build() -> _Graph:
     g.node("Named", ["JAnnotation"], name="Named")
     g.node("java.util", ["JPackage"], name="java.util")
     for app, tag in ((APP_A, "alpha"), (APP_B, "beta")):
-        app_id = g.node(f"can://{app}", ["JApplication"], name=app, schema_version="2.0.0", analyzer_name="codeanalyzer-java", analyzer_version="3.2.0")
+        app_id = g.node(
+            f"can://{app}/{app}",
+            ["JApplication"],
+            name=app,
+            schema_version="2.0.0",
+            analyzer_name="codeanalyzer-java",
+            analyzer_version="3.3.4",
+            identity_version=2,
+            application_name=app,
+            identity_namespace=app,
+        )
         widget_src, helper_src = _WIDGET_SOURCE % {"tag": tag}, _HELPER_SOURCE % {"tag": tag}
         # Both applications declare the same two repo-relative paths -- the key collision. The two
         # ``source`` blobs are what every slice below is taken out of, so a leak reads as the other
         # application's identifier inside the text, not merely as a wrong count.
-        mod = g.node(f"can://{app}/java/{SHARED_MODULE}", ["JModule"], file_key=SHARED_MODULE, package="shared", content_hash=f"{tag}hash", source=widget_src)
+        mod = g.node(f"can://{app}/{app}/java/{SHARED_MODULE}", ["JModule"], file_key=SHARED_MODULE, package="shared", content_hash=f"{tag}hash", source=widget_src)
         g.edge(app_id, "J_HAS_MODULE", mod)
         g.edge(mod, "J_IMPORTS", "java.util", spellings=[f"java.util.{tag.title()}List"], is_static=None)
-        helper_mod = g.node(f"can://{app}/java/{OTHER_MODULE}", ["JModule"], file_key=OTHER_MODULE, package="shared", content_hash=f"{tag}helper", source=helper_src)
+        helper_mod = g.node(f"can://{app}/{app}/java/{OTHER_MODULE}", ["JModule"], file_key=OTHER_MODULE, package="shared", content_hash=f"{tag}helper", source=helper_src)
         g.edge(app_id, "J_HAS_MODULE", helper_mod)
 
         # shared.Widget in both applications, same qualified name, different members.
@@ -182,10 +192,22 @@ def _build() -> _Graph:
         ctor = g.node(f"{cls}/<init>()", ["JSymbol", "JCallable"], name="<init>", signature="<init>()", kind="constructor", is_implicit=True)
         g.edge(cls, "J_HAS_METHOD", ctor)
         field_bytes = _bytes(widget_src, f"private int {tag}_attr;")
-        field = g.node(f"{cls}#field#{tag}_attr", ["JField"], name=f"{tag}_attr", type="int", modifiers=["private"], start_line=4, end_line=4, start_byte=field_bytes[0], end_byte=field_bytes[1])
+        field = g.node(
+            f"{cls}#field#{tag}_attr",
+            ["JField"],
+            name=f"{tag}_attr",
+            type="int",
+            modifiers=["private"],
+            start_line=4,
+            end_line=4,
+            start_byte=field_bytes[0],
+            end_byte=field_bytes[1],
+        )
         g.edge(cls, "J_HAS_FIELD", field)
         nested_bytes = _bytes(widget_src, "static class Inner {", "\n    }")
-        nested = g.node(f"{cls}/Inner", ["JSymbol", "JType"], name="Inner", kind="class", modifiers=["static"], start_line=10, end_line=13, start_byte=nested_bytes[0], end_byte=nested_bytes[1])
+        nested = g.node(
+            f"{cls}/Inner", ["JSymbol", "JType"], name="Inner", kind="class", modifiers=["static"], start_line=10, end_line=13, start_byte=nested_bytes[0], end_byte=nested_bytes[1]
+        )
         g.edge(cls, "J_DECLARES", nested)
         ping_bytes = _bytes(widget_src, "void ping() {", "\n        }")
         nested_m = g.node(
@@ -209,12 +231,16 @@ def _build() -> _Graph:
         ctor_local = g.node(f"{ctor}/$anon$0", ["JSymbol", "JType"], name="$anon$0", kind="class", start_line=5, end_line=5)
         g.edge(ctor, "J_DECLARES", ctor_local)
         var_bytes = _bytes(widget_src, f"int {tag}_var = 1;")
-        var = g.node(f"{method}#{tag}_var@7", ["JVariable"], name=f"{tag}_var", type="int", initializer="1", start_line=7, end_line=7, start_byte=var_bytes[0], end_byte=var_bytes[1])
+        var = g.node(
+            f"{method}#{tag}_var@7", ["JVariable"], name=f"{tag}_var", type="int", initializer="1", start_line=7, end_line=7, start_byte=var_bytes[0], end_byte=var_bytes[1]
+        )
         g.edge(method, "J_DECLARES_VAR", var)
 
         # A helper the method calls, in the other module, plus one external target.
         helper_cls_bytes = _bytes(helper_src, "class Helper {", "\n}")
-        helper_cls = g.node(f"{helper_mod}/Helper", ["JSymbol", "JType"], name="Helper", kind="class", start_line=3, end_line=7, start_byte=helper_cls_bytes[0], end_byte=helper_cls_bytes[1])
+        helper_cls = g.node(
+            f"{helper_mod}/Helper", ["JSymbol", "JType"], name="Helper", kind="class", start_line=3, end_line=7, start_byte=helper_cls_bytes[0], end_byte=helper_cls_bytes[1]
+        )
         g.edge(helper_mod, "J_DECLARES", helper_cls)
         help_bytes = _bytes(helper_src, "static String help()", "\n    }")
         helper = g.node(
@@ -255,7 +281,7 @@ def _build() -> _Graph:
         g.edge(method, "J_HAS_BODY_NODE", entry)
         g.edge(method, "J_CALLS", helper, weight=1, prov=["declared", "rta"])
         ext = g.node(
-            f"can://{app}/@external/java.io.PrintStream/println{'A' if app == APP_A else 'B'}(java.lang.String)",
+            f"can://{app}/{app}/@external/java.io.PrintStream/println{'A' if app == APP_A else 'B'}(java.lang.String)",
             ["JSymbol", "JExternal"],
             kind="method",
             signature=f"println{'A' if app == APP_A else 'B'}(java.lang.String)",
@@ -265,7 +291,7 @@ def _build() -> _Graph:
 
         # The artifact layer: unprefixed labels, reached only through the application anchor.
         art = g.node(
-            f"can://{app}/artifact/pom.xml",
+            f"can://{app}/{app}/artifact/pom.xml",
             ["Artifact"],
             path="pom.xml",
             format="xml",
@@ -509,11 +535,11 @@ def _responder(query: str, params: Dict[str, Any]) -> List[Dict[str, Any]]:
     """:func:`fake_cypher`, after asserting every prefix parameter bound at run time is application
     A's -- the audit below judges spellings; this judges the values."""
     if "prefix" in params:
-        assert params["prefix"].startswith(f"can://{APP_A}/"), f"$prefix bound to {params['prefix']!r}, outside application A's scope"
+        assert params["prefix"].startswith(f"can://{APP_A}/{APP_A}/"), f"$prefix bound to {params['prefix']!r}, outside application A's scope"
     for value in params.get("prefixes") or ():
-        assert value.startswith(f"can://{APP_A}/"), f"$prefixes carries {value!r}, outside application A's scope"
+        assert value.startswith(f"can://{APP_A}/{APP_A}/"), f"$prefixes carries {value!r}, outside application A's scope"
     if "app_id" in params:
-        assert params["app_id"] == f"can://{APP_A}", f"$app_id bound to {params['app_id']!r}"
+        assert params["app_id"] == f"can://{APP_A}/{APP_A}", f"$app_id bound to {params['app_id']!r}"
     return fake_cypher(query, params)
 
 
@@ -528,7 +554,7 @@ def _backend() -> JNeo4jBackend:
 def test_the_fake_graph_carries_no_module_property_and_no_v1_vocabulary():
     assert GRAPH.nodes and not any("_module" in props for _, props in GRAPH.nodes.values())
     assert not any(rel in {"J_HAS_UNIT", "J_HAS_CALLABLE", "J_HAS_PARAMETER", "J_HAS_CALLSITE", "J_HAS_COMMENT"} for _, rel, _, _ in GRAPH.edges)
-    prefixes = tuple(f"can://{app}/" for app in (APP_A, APP_B))
+    prefixes = tuple(f"can://{app}/{app}/" for app in (APP_A, APP_B))
     assert all(nid.startswith(prefixes) for nid, (labels, _) in GRAPH.nodes.items() if "JCanNode" in labels)
 
 
@@ -537,8 +563,8 @@ def test_the_scope_is_one_prefix_and_the_application_id():
     ghosts sit outside the language segment since 3.1.1, and scoping on the code prefix would
     return none of them."""
     backend = _backend()
-    assert backend._scope_prefix == f"can://{APP_A}/"
-    assert backend._application_id == f"can://{APP_A}"
+    assert backend._scope_prefix == f"can://{APP_A}/{APP_A}/"
+    assert backend._application_id == f"can://{APP_A}/{APP_A}"
     assert backend.application_name == APP_A
     assert sorted(backend._modules) == [OTHER_MODULE, SHARED_MODULE]
 
@@ -638,15 +664,15 @@ def test_the_addressing_surface_answers_from_this_application_only():
     assert found.callable is not None and found.callable.signature == METHOD_SIG
     assert found.module.module_name == "shared"
     assert found.body is not None and found.body.kind == "call"
-    assert found.body.id == f"can://{APP_A}/java/{SHARED_MODULE}/Widget/{METHOD_SIG}@7:12"
+    assert found.body.id == f"can://{APP_A}/{APP_A}/java/{SHARED_MODULE}/Widget/{METHOD_SIG}@7:12"
     # What the call resolves to is read through ``J_RESOLVES_TO``, whose target is a node like any
     # other and carries the prefix predicate for the same reason every other endpoint does.
-    assert found.body.callee == f"can://{APP_A}/java/{OTHER_MODULE}/Helper/help()", "the callee came from application B"
+    assert found.body.callee == f"can://{APP_A}/{APP_A}/java/{OTHER_MODULE}/Helper/help()", "the callee came from application B"
     assert "alpha" in found.source and "beta" not in found.source
 
     node = backend.resolve_callable("render")
     assert node.callable == f"{CLASS_FQN}.{METHOD_SIG}"
-    assert node.ref.startswith(f"can://{APP_A}/")
+    assert node.ref.startswith(f"can://{APP_A}/{APP_A}/")
     assert "alpha" in backend.get_source(node.callable)
     assert backend.resolve_value("alpha", within="Widget.render").ref == f"{node.ref}@formal_in:0"
     # Text reaches below callable granularity since 3.2.0: the body node carries its own offsets, so
@@ -685,7 +711,7 @@ def test_external_symbols_are_this_applications_ghosts_only():
     backend = _backend()
     external = backend.get_external_symbols()
     assert [s.signature for s in external.values()] == ["printlnA(java.lang.String)"], "application B's external target leaked"
-    assert all(nid.startswith(f"can://{APP_A}/@external/") for nid in external)
+    assert all(nid.startswith(f"can://{APP_A}/{APP_A}/@external/") for nid in external)
 
 
 def test_a_graph_that_homed_no_external_answers_an_empty_map(monkeypatch):
@@ -727,7 +753,9 @@ def test_a_module_row_that_is_not_a_type_is_refused_by_the_model():
     from cldk.analysis.java.neo4j import reconstruct as R
 
     with pytest.raises(ValidationError) as e:
-        R.type_({"id": "can://app_a/java/x/Y.java/Y", "name": "Y", "kind": "widget"}, decorators=[], fields={}, callables={}, types={}, enum_constants=[], record_components=[])
+        R.type_(
+            {"id": "can://app_a/app_a/java/x/Y.java/Y", "name": "Y", "kind": "widget"}, decorators=[], fields={}, callables={}, types={}, enum_constants=[], record_components=[]
+        )
     assert "kind" in str(e.value) and "can://" not in str(e.value)
 
 
@@ -1015,7 +1043,17 @@ def test_the_audit_sees_every_inline_statement_too():
     inline = _inline_statements()
     assert len(inline) == source.count("self._run("), "a statement site the harvester did not see"
     assert [name for name, s in inline.items() if "{…}" in s] == [], "a statement the harvester could not reassemble"
-    for expected in ("_probe_schema", "_load_modules", "_subtree_rows", "_call_site_rows", "_import_rows", "_call_edge_rows", "_external_rows", "_artifact_rows", "_dependency_rows"):
+    for expected in (
+        "_probe_schema",
+        "_load_modules",
+        "_subtree_rows",
+        "_call_site_rows",
+        "_import_rows",
+        "_call_edge_rows",
+        "_external_rows",
+        "_artifact_rows",
+        "_dependency_rows",
+    ):
         assert any(name.startswith(expected + "@") for name in inline), f"{expected}'s statement is not harvested"
 
 

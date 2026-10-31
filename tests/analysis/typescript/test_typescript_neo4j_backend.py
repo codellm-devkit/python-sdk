@@ -79,7 +79,7 @@ APP_NAME = "application"
 #: exactly that, plus the application anchor, and nothing else on the server. It was two prefixes
 #: (one per language namespace) while the language was the outermost segment; the application
 #: prefix now covers both, and also the ``@external`` ghosts and artifacts the pair never reached.
-APP_PREFIXES = (f"can://{APP_NAME}/",)
+APP_PREFIXES = (f"can://{APP_NAME}/{APP_NAME}/",)
 APP_ID = f"can://{APP_NAME}"
 
 

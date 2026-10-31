@@ -734,6 +734,10 @@ class TSConfigRead(_Base):
 class TSApplication(_Base):
     """The application root: the containment tree plus the app-scope overlays."""
 
+    name: Optional[str] = None
+    application_name: str
+    identity_namespace: str
+    identity_version: Literal[2]
     id: str
     kind: Literal["application"] = "application"
     symbol_table: Dict[str, TSModule]
@@ -758,6 +762,7 @@ class TSAnalyzer(_Base):
 class TSAnalysis(_Base):
     """The envelope ``analysis.json`` IS."""
 
+    identity_version: Literal[2]
     schema_version: str
     language: str
     max_level: int

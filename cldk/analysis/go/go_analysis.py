@@ -36,6 +36,7 @@ from typing import Dict, List
 
 import networkx as nx
 
+from cldk.analysis.commons.identity import resolve_identity
 from cldk.analysis.commons.backend_config import CodeAnalyzerConfig, GoBackend, Neo4jConnectionConfig
 from cldk.analysis.go.backend import GoAnalysisBackend
 from cldk.analysis.go.codeanalyzer import GoCodeanalyzer
@@ -71,19 +72,24 @@ class GoAnalysis:
         # The backend is selected by the *type* of the config: Neo4jConnectionConfig picks the
         # read-only Cypher backend, CodeAnalyzerConfig (the default) the in-process cango.
         self.backend_config: GoBackend = backend if backend is not None else CodeAnalyzerConfig()
+        self.identity = resolve_identity(self.backend_config.application_name, self.backend_config.namespace, project_root=Path(project_dir) if project_dir is not None else None)
         self.backend: GoAnalysisBackend
         if isinstance(self.backend_config, Neo4jConnectionConfig):
             cfg = self.backend_config
-            application_name = cfg.application_name or (Path(project_dir).name if project_dir else None)
+            application_name = self.identity.application_name
             self.backend = GoNeo4jBackend(
                 neo4j_uri=cfg.uri,
                 neo4j_username=cfg.username,
                 neo4j_password=cfg.password,
                 neo4j_database=cfg.database,
                 application_name=application_name,
+                namespace=self.identity.namespace,
+                source_root=project_dir,
             )
         else:
             self.backend = GoCodeanalyzer(
+                application_name=self.identity.application_name,
+                namespace=self.identity.namespace,
                 project_dir=project_dir,
                 cache_dir=self.backend_config.cache_dir,
                 analysis_level=analysis_level,

@@ -24,7 +24,7 @@ from cldk.analysis.typescript.neo4j import reconstruct as R
 from cldk.analysis.typescript.neo4j.neo4j_backend import TSNeo4jBackend
 from cldk.models.typescript import TSExternalNode, TSExternalSymbol
 
-APP_ID = "can://app"
+APP_ID = "can://app/app"
 
 
 def test_external_reconstructs_from_full_graph_props():
@@ -52,7 +52,7 @@ def test_get_external_symbols_keys_module_dot_name_and_scopes_by_the_application
     rows = [
         {"p": {"id": f"{APP_ID}/@external/commander/parse", "name": "parse", "module": "commander", "kind": "external"}},
         {"p": {"id": f"{APP_ID}/@external/fs/readFileSync", "name": "readFileSync", "module": "fs", "kind": "external"}},
-        {"p": {"id": "can://app/@external/lodash/merge", "name": "merge", "module": "lodash", "kind": "external"}},
+        {"p": {"id": "can://app/app/@external/lodash/merge", "name": "merge", "module": "lodash", "kind": "external"}},
     ]
     captured = {}
 
@@ -62,6 +62,9 @@ def test_get_external_symbols_keys_module_dot_name_and_scopes_by_the_application
         return rows
 
     backend = TSNeo4jBackend.__new__(TSNeo4jBackend)
+    from cldk.analysis.commons.identity import resolve_identity
+
+    backend.identity = resolve_identity("app", None)
     backend.application_name = "app"
     with patch.object(TSNeo4jBackend, "_run", side_effect=_run):
         out = backend.get_external_symbols()

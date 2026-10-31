@@ -38,6 +38,9 @@ _LOG_TRACE_METHOD = "trace(java.lang.String)"
 @pytest.fixture
 def backend(analysis_json) -> JNeo4jBackend:
     backend = JNeo4jBackend.__new__(JNeo4jBackend)
+    from cldk.analysis.commons.identity import resolve_identity
+
+    backend.identity = resolve_identity("daytrader8", None)
     backend.application_name = "daytrader8"
     backend.__dict__["_application"] = JAnalysis.model_validate_json(analysis_json).application
     return backend

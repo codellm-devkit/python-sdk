@@ -52,7 +52,7 @@ from __future__ import annotations
 import logging
 from functools import partial
 from pathlib import Path
-from typing import Dict, FrozenSet, Iterator, List, Mapping, Sequence, Tuple, Union
+from typing import Dict, FrozenSet, Iterable, Iterator, List, Mapping, Sequence, Tuple, Union
 
 import networkx as nx
 
@@ -60,6 +60,9 @@ from codeanalyzer.core import Codeanalyzer
 from codeanalyzer.options import AnalysisOptions, EmitTarget
 from codeanalyzer.schema import Analysis, model_dump_json
 
+from dataclasses import replace
+from cldk.analysis.commons.keys import module_scope
+from cldk.analysis.commons.identity import resolve_identity, validate_identity
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.graphs import call_reaches, under_callable
 from cldk.analysis.commons.levels import ANALYZER_LEVELS, LEVEL_NAMES, analyzer_level
@@ -298,7 +301,7 @@ def _resolve_callee(
         resolved = reverse_externals.get(cs.callee_signature, cs.callee_signature)
     else:
         resolved = cs.callee_signature
-    return cs if resolved == cs.callee_signature else cs.model_copy(update={"callee_signature": resolved})
+    return cs if resolved == cs.callee_signature else replace(cs, callee_signature=resolved)
 
 
 def _decorator_covers(c: PyCallable, line: int) -> bool:
@@ -441,6 +444,9 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         cache_dir: Union[str, Path, None] = None,
         target_files: List[str] | None = None,
         use_ray: bool = False,
+        *,
+        application_name: str | None = None,
+        namespace: str | None = None,
     ) -> None:
         """Initialize the Python code analyzer and run analysis.
 
@@ -482,6 +488,8 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             Analysis is performed synchronously during initialization.
             For large projects, this may take significant time.
         """
+
+        self.identity = resolve_identity(application_name, namespace, project_root=Path(project_dir) if project_dir is not None else None)
         if project_dir is None:
             raise ValueError("project_dir is required for Python analysis.")
         # Expand ~ and resolve to absolute path for robustness
@@ -506,6 +514,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         # max_level are facts a later, interprocedural-aware facade needs to tell "no result"
         # apart from "unanswerable at this analysis level".
         self.analysis: Analysis = self._run_analyzer()
+        validate_identity(self.analysis, self.identity)
         self.application: PyApplication = self.analysis.application
         # Class-signature → file path lookup, built once.
         # Built on first use by ``_sdg()``: the whole application's SDG adjacency, which every
@@ -550,6 +559,8 @@ class PyCodeanalyzer(PythonAnalysisBackend):
 
         options = AnalysisOptions(
             input=self.project_dir,
+            app_name=self.identity.application_name,
+            namespace=self.identity.namespace,
             output=self.analysis_json_path,
             emit=EmitTarget.JSON,
             # Without this the analyzer ran at its own default (1) whatever the caller
@@ -667,7 +678,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
                 (see :func:`~cldk.analysis.python.backend.scope_paths`).
         """
         table = self.application.symbol_table
-        keys = scope_paths(paths, table.keys())
+        keys = scope_paths(paths, table.keys(), **module_scope(self))
         return table if keys is None else {k: table[k] for k in keys}
 
     def get_modules(self) -> List[PyModule]:
@@ -766,7 +777,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
                 but reports itself as ``module``, so the error names the keyword the caller wrote.
         """
         table = self.application.symbol_table
-        keys = scope_paths(None if module is None else [module], table.keys(), kind="module")
+        keys = scope_paths(None if module is None else [module], table.keys(), kind="module", **module_scope(self))
         result: Dict[str, PyClass] = {}
         for mod in table.values() if keys is None else (table[k] for k in keys):
             result.update(mod.types)
@@ -1292,7 +1303,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
                 backward.setdefault(dst, {}).setdefault(src, []).append(label)
 
             for c, _, _, path, _ in self._iter_callables():
-                for key in (c.body or {}):
+                for key in c.body or {}:
                     nodes[body_node_id(c.id, key)] = (c, key, path)
                 # The relationship name each list is projected as, so a hop reports the same
                 # ``via`` here as it does over the graph -- ``cldk.analysis.python.backend.VIA``
@@ -1684,10 +1695,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         wanted = set(signatures)
         id_to_sig = self._id_to_signature()
         declared_sigs = set(id_to_sig.values())
-        reverse_externals = {
-            (f"{ext.module}.{ext.name}" if ext.module else ext.name): ext.id
-            for ext in self.application.external_symbols.values()
-        }
+        reverse_externals = {(f"{ext.module}.{ext.name}" if ext.module else ext.name): ext.id for ext in self.application.external_symbols.values()}
         return {
             c.signature: [_resolve_callee(cs, c.body, id_to_sig, declared_sigs, reverse_externals) for cs in c.call_sites]
             for c, _, _, _, _ in self._iter_callables()
@@ -1708,9 +1716,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         ``project.py`` iterates it the same way), so this is a direct passthrough."""
         return dict(self.application.artifacts)
 
-    def get_dependencies(
-        self, *, direct_only: bool = False, ecosystem: str | None = None, declared_in: str | None = None
-    ) -> List[PyDependency]:
+    def get_dependencies(self, *, direct_only: bool = False, ecosystem: str | None = None, declared_in: str | None = None) -> List[PyDependency]:
         """Return every declared dependency, optionally filtered (see
         :meth:`AnalysisBackend.get_dependencies`)."""
         deps = self.application.dependencies
@@ -1782,7 +1788,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
     def _locate_one(self, path: str, line: int) -> LocateResult:
         # Whatever the caller's scanner printed ("./src/app.py", an absolute path) is normalised to
         # the symbol-table key first; an unnormalised path would otherwise read as file_not_in_graph.
-        key = resolve_module_key(str(path), self.application.symbol_table.keys())
+        key = resolve_module_key(str(path), self.application.symbol_table.keys(), **module_scope(self))
         module = self.application.symbol_table.get(key)
         if module is None:
             return self._not_analysed(key, line)
@@ -1871,10 +1877,7 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         method = self.get_method(target_class_name, target_method_declaration)
         if method is None or method.signature not in graph:
             return {"caller_details": []}
-        callers = [
-            {"caller_signature": src, "edge": graph.get_edge_data(src, method.signature)}
-            for src in graph.predecessors(method.signature)
-        ]
+        callers = [{"caller_signature": src, "edge": graph.get_edge_data(src, method.signature)} for src in graph.predecessors(method.signature)]
         return {"target_method": method.signature, "caller_details": callers}
 
     def get_all_callees(self, source_class_name: str, source_method_declaration: str) -> Dict:
@@ -1910,15 +1913,10 @@ class PyCodeanalyzer(PythonAnalysisBackend):
         method = self.get_method(source_class_name, source_method_declaration)
         if method is None or method.signature not in graph:
             return {"callee_details": []}
-        callees = [
-            {"callee_signature": tgt, "edge": graph.get_edge_data(method.signature, tgt)}
-            for tgt in graph.successors(method.signature)
-        ]
+        callees = [{"callee_signature": tgt, "edge": graph.get_edge_data(method.signature, tgt)} for tgt in graph.successors(method.signature)]
         return {"source_method": method.signature, "callee_details": callees}
 
-    def get_class_call_graph(
-        self, qualified_class_name: str, method_signature: str | None = None
-    ) -> List[Tuple[str, str]]:
+    def get_class_call_graph(self, qualified_class_name: str, method_signature: str | None = None) -> List[Tuple[str, str]]:
         """Return call graph edges reachable from a class or method.
 
         Performs a depth-first traversal of the call graph starting from
@@ -2012,7 +2010,4 @@ class PyCodeanalyzer(PythonAnalysisBackend):
             :class:`~cldk.models.python.PyComment` objects where
             ``is_docstring`` is ``True``.
         """
-        return {
-            fp: [c for c in module.comments if c.is_docstring]
-            for fp, module in self.application.symbol_table.items()
-        }
+        return {fp: [c for c in module.comments if c.is_docstring] for fp, module in self.application.symbol_table.items()}

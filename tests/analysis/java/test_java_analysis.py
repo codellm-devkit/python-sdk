@@ -36,8 +36,8 @@ import tempfile as _tempfile
 from cldk.analysis.commons.backend_config import CodeAnalyzerConfig
 
 _CACHE_DIR = _tempfile.mkdtemp()
-_BK = CodeAnalyzerConfig(cache_dir=_CACHE_DIR)
-_BK4 = CodeAnalyzerConfig(cache_dir=_tempfile.mkdtemp())  # the -a 4 fixture (call graph)
+_BK = CodeAnalyzerConfig(application_name="daytrader8", cache_dir=_CACHE_DIR)
+_BK4 = CodeAnalyzerConfig(application_name="daytrader8", cache_dir=_tempfile.mkdtemp())  # the -a 4 fixture (call graph)
 TRADE_DIRECT = "com.ibm.websphere.samples.daytrader.impl.direct.TradeDirect"
 
 
@@ -63,13 +63,14 @@ def test_get_symbol_table_is_not_null(test_fixture, analysis_json):
 
         # Initialize the CLDK object with the project directory, language, and analysis_backend
         cldk = CLDK(language="java")
-        analysis = cldk.analysis(
+        analysis = CLDK.java(
             project_path=test_fixture,
-            cache_dir=_CACHE_DIR,
+            backend=_BK,
             eager=True,
             analysis_level=AnalysisLevel.call_graph,
         )
         assert analysis.get_symbol_table() is not None
+
 
 def test_get_imports(test_fixture, analysis_json):
     """The distinct, sorted import targets of the project (#366); the per-accessor policy and both
@@ -171,7 +172,6 @@ def test_get_application_view(test_fixture, analysis_json):
         assert isinstance(app.symbol_table, Dict)
         for _, compilation_unit in app.symbol_table.items():
             assert isinstance(compilation_unit, JCompilationUnit)
-
 
 
 def test_get_symbol_table(test_fixture, analysis_json):

@@ -911,6 +911,8 @@ class JApplication(_Base):
     does). An empty pair there is this backend's silence, not the analyzer's.
     """
 
+    application_name: str
+    identity_namespace: str
     id: str
     kind: Literal["application"] = "application"
     symbol_table: Dict[str, JCompilationUnit]
@@ -948,6 +950,7 @@ class JAnalyzer(_Base):
 class JAnalysis(_Base):
     """The envelope ``analysis.json`` IS."""
 
+    identity_version: Literal[2]
     schema_version: str
     language: str
     max_level: int

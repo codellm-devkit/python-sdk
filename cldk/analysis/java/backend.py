@@ -54,6 +54,7 @@ from typing import ClassVar, Collection, Dict, Iterable, List, Mapping, NamedTup
 
 import networkx as nx
 
+from cldk.analysis.commons.keys import module_scope
 from cldk.analysis.commons.backend import AnalysisBackend
 from cldk.analysis.commons.bounds import (
     DEFAULT_DEPTH,
@@ -67,7 +68,19 @@ from cldk.analysis.commons.bounds import (
     check_max_paths,
     reject_bare_string,
 )
-from cldk.analysis.commons.graphs import as_slice_node, call_reaches, cone_sinks, edge_sort_key, flow_path, sdg_rel_pattern, sdg_rels, shortest_walks, slice_resolved, taint_verdict, via_table
+from cldk.analysis.commons.graphs import (
+    as_slice_node,
+    call_reaches,
+    cone_sinks,
+    edge_sort_key,
+    flow_path,
+    sdg_rel_pattern,
+    sdg_rels,
+    shortest_walks,
+    slice_resolved,
+    taint_verdict,
+    via_table,
+)
 from cldk.analysis.commons.keys import body_key_column, resolve_module_key
 from cldk.analysis.commons.resolve import CallableCandidate, resolve_callable_signature, resolve_sanitizers, resolve_value_name, resolve_within
 from cldk.analysis.commons.results import (
@@ -526,7 +539,7 @@ def unhomed_endpoint(node_id: str) -> str:
     module key its id *spells* rather than by the id itself (E6)."""
     module, sep, rest = node_id.partition(".java/")
     signature = (rest or node_id).rpartition("/")[2]
-    where = f"{module.split('/', 4)[4]}.java" if sep and module.count("/") >= 4 else "no module of this application"
+    where = f"{module.partition('/java/')[2]}.java" if sep and "/java/" in module else "no module of this application"
     return f"call-graph endpoint {signature!r} in {where!r} is not one of its callables: codeanalyzer-java emitted an unhomed endpoint"
 
 
@@ -655,7 +668,7 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         constructor (99 of daytrader8's 1,216) — is contained by nothing, which is right: it has no
         position in the file to be found at.
         """
-        key = resolve_module_key(str(path), self.get_application_view().symbol_table.keys())
+        key = resolve_module_key(str(path), self.get_application_view().symbol_table.keys(), **module_scope(self))
         rows = [r for r in self._addressing.by_path.get(key, ()) if r.callable.span is not None and r.callable.start_line <= line <= r.callable.end_line]
         if not rows:
             return key, None
@@ -1648,7 +1661,7 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         Read off the application's own id rather than stored, so the in-memory backend (which has
         no ``application_name``) and the graph backend give one answer. Only the *name* segment
         leaves this method: a ``can://`` id must not appear in a message (E6)."""
-        return self.get_application_view().id.rpartition("/")[2]
+        return self.get_application_view().application_name
 
     # -----[ the per-callable graphs ]-----
     @abstractmethod

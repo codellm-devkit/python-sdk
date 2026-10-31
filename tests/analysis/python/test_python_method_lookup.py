@@ -121,11 +121,15 @@ def _neo4j_backend():
     call_edges = [(ENTRY_SIG, HELPER_SIG)]
 
     backend = object.__new__(PyNeo4jBackend)
+    from cldk.analysis.commons.identity import resolve_identity
+
+    backend.identity = resolve_identity("test_app", None)
     backend.application_name = "test_app"
     backend._database = None
     backend._driver = None
     backend._session_obj = None
     backend._modules = ["pkg/mod.py"]
+    backend._module_ids = {key: backend.identity.application_id + "/python/" + key for key in backend._modules}
     backend._call_graph = None
     backend._run = _fake_cypher(classes={}, methods={}, modules=modules, call_edges=call_edges)
     return backend
@@ -209,11 +213,15 @@ def test_get_all_callees_external_target_survives_as_external_keyed_node_neo4j()
     call_edges = [(ENTRY_SIG, None, external_id)]
 
     backend = object.__new__(PyNeo4jBackend)
+    from cldk.analysis.commons.identity import resolve_identity
+
+    backend.identity = resolve_identity("test_app", None)
     backend.application_name = "test_app"
     backend._database = None
     backend._driver = None
     backend._session_obj = None
     backend._modules = ["pkg/mod.py"]
+    backend._module_ids = {key: backend.identity.application_id + "/python/" + key for key in backend._modules}
     backend._call_graph = None
     backend._run = _fake_cypher(classes={}, methods={}, modules=modules, call_edges=call_edges)
 
@@ -260,11 +268,15 @@ def test_get_method_still_resolves_class_methods_neo4j():
     greet_props = {"name": "greet", "signature": "pkg.models.Entity.greet", "path": "pkg/models.py"}
 
     backend = object.__new__(PyNeo4jBackend)
+    from cldk.analysis.commons.identity import resolve_identity
+
+    backend.identity = resolve_identity("test_app", None)
     backend.application_name = "test_app"
     backend._database = None
     backend._driver = None
     backend._session_obj = None
     backend._modules = ["pkg/models.py"]
+    backend._module_ids = {key: backend.identity.application_id + "/python/" + key for key in backend._modules}
     backend._call_graph = None
     backend._run = _fake_cypher(
         classes={"pkg.models.Entity": entity_props},

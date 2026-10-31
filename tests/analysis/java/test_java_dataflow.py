@@ -623,7 +623,7 @@ def test_a_parameter_reaches_a_callees_parameter_three_frames_down(ref):
         if hop.via == "data":
             assert hop.var and hop.prov == ["ssa"]
         else:
-            assert hop.to.kind == "parameter" and hop.var is None and hop.prov == []
+            assert hop.to.kind == "parameter" and hop.var == ("sql" if hop.to.callable == GET_STATEMENT else "conn") and hop.prov == []
     assert shortest.weakest.prov == ["ssa"]
     assert ref.flows_to_call("orderID", GET_STATEMENT, within=CANCEL)
     assert ref.flows_to_argument("orderID", GET_STATEMENT, "sql", within=CANCEL)
@@ -727,7 +727,7 @@ def param_vars(analysis_json_a4):
     return _local(_with_param_vars(analysis_json_a4))
 
 
-def test_a_java_param_edge_carries_the_variable_the_analyzer_put_on_it(ref, param_vars):
+def test_a_java_param_edge_carries_the_variable_the_analyzer_put_on_it(ref, param_vars, analysis_json_a4):
     """``J_PARAM_IN``/``J_PARAM_OUT`` must reach the adjacency with whatever ``var`` the payload put
     on them. This backend hardcoded ``None``, which was true until codeanalyzer-java 3.1.2
     (codeanalyzer-java#250) added the property, and became a lie that cost two things:
@@ -750,9 +750,15 @@ def test_a_java_param_edge_carries_the_variable_the_analyzer_put_on_it(ref, para
     payload, which is why the fix is witnessed on a4 plus :func:`_with_param_vars` rather than on a
     second application.
     """
-    old_labels = [(rel, var) for outs in ref._sdg()[0]["forward"].values() for labels in outs.values() for rel, var, _prov in labels if rel.startswith("J_PARAM")]
+    # Keep optional-var coverage explicit; current source-generated fixtures carry names.
+    absent_doc = json.loads(analysis_json_a4)
+    for field in ("param_in", "param_out"):
+        for edge in absent_doc["application"][field]:
+            edge.pop("var", None)
+    absent = _local(json.dumps(absent_doc))
+    old_labels = [(rel, var) for outs in absent._sdg()[0]["forward"].values() for labels in outs.values() for rel, var, _prov in labels if rel.startswith("J_PARAM")]
     assert len(old_labels) == 355, "a4 was emitted by 3.1.0: 258 param_in + 97 param_out, none carrying a var"
-    assert all(var is None for _rel, var in old_labels), "this fixture's param edges carry no var; what follows is asserted on the 3.1.2 shape"
+    assert all(var is None for _rel, var in old_labels), "the authored optional-var fixture omits crossing names"
 
     new_labels = [(rel, var) for outs in param_vars._sdg()[0]["forward"].values() for labels in outs.values() for rel, var, _prov in labels if rel.startswith("J_PARAM")]
     assert Counter(new_labels) == {
@@ -765,7 +771,7 @@ def test_a_java_param_edge_carries_the_variable_the_analyzer_put_on_it(ref, para
     }, "every param edge reaches the adjacency under its own formal's name"
 
     scope = ref.resolve_callable(SELL).ref
-    assert param_vars._edge_vars_in(scope) - ref._edge_vars_in(scope) == {"p0", "p1"}, "sell's 12 crossings bind two distinct formals, and a sanitizer can now name either"
+    assert param_vars._edge_vars_in(scope) - absent._edge_vars_in(scope) == {"p0", "p1"}, "sell's 12 crossings bind two distinct formals, and a sanitizer can now name either"
 
 
 def test_a_java_variable_cut_severs_a_call_boundary_and_only_the_scope_that_named_it(ref, param_vars):
@@ -823,7 +829,7 @@ def test_the_local_java_cap_keeps_a_prefix_of_one_total_order(ref):
     ``orderProcessingMode`` then ``arg0`` then the parameter crossing; they differ further in."""
     one, many = ref.taint(*TAINT_PAIR, max_paths=1), ref.taint(*TAINT_PAIR, max_paths=5)
     assert one.paths == many.paths[:1], "the local taint cap is not a prefix of one total order"
-    assert [h.var for h in one.paths[0].hops] == ["orderProcessingMode", "arg0", None]
+    assert [h.var for h in one.paths[0].hops] == ["orderProcessingMode", "arg0", "inGlobalTxn"]
 
 
 def test_the_local_java_walk_runs_once_per_distinct_pair_not_once_per_selector(ref):
@@ -883,3 +889,9 @@ def test_a_local_java_variable_sanitizer_that_names_nothing_still_raises(ref):
     direction, but a caller who believes it cut something is the over-cut direction one step later."""
     with pytest.raises(SelectorNotInGraph):
         ref.taint(TAINT_SOURCES, TAINT_SINKS, sanitizers=[("nosuchvar", BUY)])
+
+
+def test_current_producer_param_edges_retain_their_variables(ref):
+    labels = [var for outs in ref._sdg()[0]["forward"].values() for edges in outs.values() for rel, var, _ in edges if rel.startswith("J_PARAM")]
+    assert len(labels) == 355
+    assert all(isinstance(var, str) and var for var in labels)

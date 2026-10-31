@@ -76,7 +76,7 @@ def test_no_config_uses_in_memory_backend(typescript_application):
         assert isinstance(analysis.backend_config, CodeAnalyzerConfig)
         # The in-process backend caches under a language-keyed <cache_dir>/typescript subdir.
         _, kwargs = backend_cls.call_args
-        assert str(kwargs["analysis_json_path"]).endswith("/.codeanalyzer/typescript")
+        assert str(kwargs["analysis_json_path"].parent).endswith("/.codeanalyzer/typescript")
 
 
 def test_missing_neo4j_driver_raises_helpful_error():

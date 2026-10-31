@@ -52,6 +52,7 @@ from typing import Dict, List, Sequence, Tuple
 import networkx as nx
 from tree_sitter import Tree
 
+from cldk.analysis.commons.identity import resolve_identity
 from cldk.analysis.commons.backend_config import Neo4jConnectionConfig, PyBackend, PyCodeAnalyzerConfig, cache_subdir
 from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, FlowPaths, LocateResult, Slice, SliceNode, TaintResult
 from cldk.analysis.commons.treesitter import TreesitterPython
@@ -173,24 +174,29 @@ class PythonAnalysis:
         self.eager_analysis = eager_analysis
         self.target_files = target_files
         self.treesitter_python: TreesitterPython = TreesitterPython()
+        self.identity = resolve_identity(self.backend_config.application_name, self.backend_config.namespace, project_root=Path(project_dir) if project_dir is not None else None)
         self.backend: PythonAnalysisBackend
         if isinstance(self.backend_config, Neo4jConnectionConfig):
             # Read-only: the graph is populated out of band; the SDK only polls it.
             cfg = self.backend_config
-            application_name = cfg.application_name or (Path(project_dir).name if project_dir else None)
+            application_name = self.identity.application_name
             self.backend = PyNeo4jBackend(
                 neo4j_uri=cfg.uri,
                 neo4j_username=cfg.username,
                 neo4j_password=cfg.password,
                 neo4j_database=cfg.database,
                 application_name=application_name,
+                namespace=self.identity.namespace,
+                source_root=project_dir,
             )
         else:
             cfg = self.backend_config
-            cache_path = cache_subdir(cfg.cache_dir, project_dir, "python")
+            cache_path = cache_subdir(cfg.cache_dir, project_dir, "python", identity=self.identity)
             if cache_path is not None:
                 cache_path.mkdir(parents=True, exist_ok=True)
             self.backend = PyCodeanalyzer(
+                application_name=self.identity.application_name,
+                namespace=self.identity.namespace,
                 project_dir=project_dir,
                 analysis_level=analysis_level,
                 analysis_json_path=None,
@@ -384,9 +390,7 @@ class PythonAnalysis:
         See Also:
             :meth:`get_python_module`: For detailed module information.
         """
-        return {
-            fp: list(m.imports) for fp, m in self.backend.get_symbol_table().items()
-        }
+        return {fp: list(m.imports) for fp, m in self.backend.get_symbol_table().items()}
 
     # -----[ call graph ]-----
     def get_call_graph(self, *, roots: Sequence[str] | None = None, depth: int | None = None) -> nx.DiGraph:
@@ -449,9 +453,7 @@ class PythonAnalysis:
         """
         return self.backend.get_call_graph_json()
 
-    def get_callers(
-        self, target_class_name: str, target_method_declaration: str
-    ) -> Dict:
+    def get_callers(self, target_class_name: str, target_method_declaration: str) -> Dict:
         """Return all methods that call the specified target method.
 
         Finds and returns information about all callables (functions and
@@ -475,13 +477,9 @@ class PythonAnalysis:
             :meth:`get_callees`: For the reverse direction (what a method calls).
             :meth:`get_call_graph`: For the complete call relationship graph.
         """
-        return self.backend.get_all_callers(
-            target_class_name, target_method_declaration
-        )
+        return self.backend.get_all_callers(target_class_name, target_method_declaration)
 
-    def get_callees(
-        self, source_class_name: str, source_method_declaration: str
-    ) -> Dict:
+    def get_callees(self, source_class_name: str, source_method_declaration: str) -> Dict:
         """Return all methods called by the specified source method.
 
         Finds and returns information about all callables (functions and
@@ -506,13 +504,9 @@ class PythonAnalysis:
             :meth:`get_callers`: For the reverse direction (who calls a method).
             :meth:`get_call_graph`: For the complete call relationship graph.
         """
-        return self.backend.get_all_callees(
-            source_class_name, source_method_declaration
-        )
+        return self.backend.get_all_callees(source_class_name, source_method_declaration)
 
-    def get_class_call_graph(
-        self, qualified_class_name: str, method_signature: str | None = None
-    ) -> List[Tuple[str, str]]:
+    def get_class_call_graph(self, qualified_class_name: str, method_signature: str | None = None) -> List[Tuple[str, str]]:
         """Return call graph edges reachable from a class or method.
 
         Extracts a subset of the call graph containing only edges reachable
@@ -754,9 +748,7 @@ class PythonAnalysis:
         """
         return self.backend.get_all_methods_in_class(qualified_class_name)
 
-    def get_method(
-        self, qualified_class_name: str, qualified_method_name: str
-    ) -> PyCallable | None:
+    def get_method(self, qualified_class_name: str, qualified_method_name: str) -> PyCallable | None:
         """Return a specific method or module-level function by scope and name.
 
         Retrieves detailed information about a single method, including
@@ -792,9 +784,7 @@ class PythonAnalysis:
         """
         return self.backend.get_method(qualified_class_name, qualified_method_name)
 
-    def get_method_parameters(
-        self, qualified_class_name: str, qualified_method_name: str
-    ) -> List[str]:
+    def get_method_parameters(self, qualified_class_name: str, qualified_method_name: str) -> List[str]:
         """Return the parameter names for a specific method.
 
         Retrieves the list of parameter names (excluding ``self`` for
@@ -817,9 +807,7 @@ class PythonAnalysis:
         See Also:
             :meth:`get_method`: For complete method information.
         """
-        return self.backend.get_method_parameters(
-            qualified_class_name, qualified_method_name
-        )
+        return self.backend.get_method_parameters(qualified_class_name, qualified_method_name)
 
     def get_constructors(self, qualified_class_name: str) -> Dict[str, PyCallable]:
         """Return the constructor(s) of a specific class.
@@ -1515,9 +1503,7 @@ class PythonAnalysis:
         """
         return self.backend.get_artifacts()
 
-    def get_dependencies(
-        self, *, direct_only: bool = False, ecosystem: str | None = None, declared_in: str | None = None
-    ) -> List[PyDependency]:
+    def get_dependencies(self, *, direct_only: bool = False, ecosystem: str | None = None, declared_in: str | None = None) -> List[PyDependency]:
         """Return every declared third-party dependency, one entry per declaring manifest,
         optionally filtered.
 
@@ -1643,9 +1629,7 @@ class PythonAnalysis:
         """
         return self.backend.get_class(qualified_class_name)
 
-    def get_classes_by_criteria(
-        self, inclusions: List[str] | None = None, exclusions: List[str] | None = None
-    ) -> Dict[str, PyClass]:
+    def get_classes_by_criteria(self, inclusions: List[str] | None = None, exclusions: List[str] | None = None) -> Dict[str, PyClass]:
         """Return classes matching inclusion/exclusion filter criteria.
 
         Filters the project's classes based on substring matching against

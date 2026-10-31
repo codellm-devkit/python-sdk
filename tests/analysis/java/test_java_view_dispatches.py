@@ -57,19 +57,26 @@ def _with_layer(payload: str) -> str:
     doc = json.loads(payload)
     app = doc["application"]
     doc["analyzer"]["version"] = "3.3.3"
+    doc["application"].pop("view_dispatches", None)
+    doc["application"].pop("view_dispatches_unresolved", None)
     art = {p: a["id"] for p, a in app["artifacts"].items()}
     app["view_dispatches"] = sorted(
         [
             {"src": _site(app, "PingServlet2Jsp", "PingServlet2Jsp", "forward"), "dst": art["src/main/webapp/PingServlet2Jsp.jsp"], "via": "forward", "prov": ["literal"]},
             {"src": _site(app, "PingJDBCRead2JSP", "PingJDBCRead2JSP", "include"), "dst": art["src/main/webapp/quoteDataPrimitive.jsp"], "via": "include", "prov": ["literal"]},
-            {"src": _site(app, "PingServlet2Session2Entity2JSP", "PingServlet2Session2Entity2JSP", "include"), "dst": art["src/main/webapp/quoteDataPrimitive.jsp"], "via": "include", "prov": ["literal"]},
+            {
+                "src": _site(app, "PingServlet2Session2Entity2JSP", "PingServlet2Session2Entity2JSP", "include"),
+                "dst": art["src/main/webapp/quoteDataPrimitive.jsp"],
+                "via": "include",
+                "prov": ["literal"],
+            },
         ],
         key=lambda d: (d["src"], d["dst"]),
     )
     app["view_dispatches_unresolved"] = [
         {
             "site": _site(app, "PingServlet2Servlet", "PingServlet2Servlet", "forward"),
-            "callee": "can://java/daytrader8/@external/javax.servlet.RequestDispatcher/forward(javax.servlet.ServletRequest, javax.servlet.ServletResponse)",
+            "callee": "can://daytrader8/daytrader8/@external/javax.servlet.RequestDispatcher/forward(javax.servlet.ServletRequest, javax.servlet.ServletResponse)",
             "target": "/servlet/PingServlet2ServletRcv",
             "via": "forward",
             "reason": "no-such-artifact",
@@ -94,7 +101,11 @@ def both(request, analysis_json):
 @pytest.fixture(scope="module", params=["local", "graph"])
 def both_before(request, analysis_json):
     """a1 as committed: codeanalyzer-java 3.1.0, no view-dispatch pass."""
-    backend = (_local if request.param == "local" else _graph)(analysis_json)
+    doc = json.loads(analysis_json)
+    doc["analyzer"]["version"] = "3.1.0"
+    doc["application"].pop("view_dispatches", None)
+    doc["application"].pop("view_dispatches_unresolved", None)
+    backend = (_local if request.param == "local" else _graph)(json.dumps(doc))
     if request.param == "graph":
         backend._analyzer_version = (3, 1, 0)
     return backend
@@ -103,7 +114,9 @@ def both_before(request, analysis_json):
 def test_get_view_dispatches_carries_the_edges_and_their_mechanism(both):
     edges = both.get_view_dispatches()
     assert len(edges) == 3 and all(isinstance(e, JViewDispatch) for e in edges)
-    assert [(e.via, tuple(e.prov)) for e in edges] == [("include", ("literal",)), ("include", ("literal",)), ("forward", ("literal",))] or sorted((e.via, tuple(e.prov)) for e in edges) == [("forward", ("literal",)), ("include", ("literal",)), ("include", ("literal",))]
+    assert [(e.via, tuple(e.prov)) for e in edges] == [("include", ("literal",)), ("include", ("literal",)), ("forward", ("literal",))] or sorted(
+        (e.via, tuple(e.prov)) for e in edges
+    ) == [("forward", ("literal",)), ("include", ("literal",)), ("include", ("literal",))]
     assert all(e.src.startswith(e.src.rpartition("@")[0] + "@") for e in edges), "src is a body-node id"
     assert {e.dst.rsplit("/", 1)[1] for e in edges} == {"PingServlet2Jsp.jsp", "quoteDataPrimitive.jsp"}
     assert [(e.src, e.dst) for e in edges] == sorted((e.src, e.dst) for e in edges), "sorted by (src, dst)"
@@ -151,6 +164,8 @@ def test_a_payload_without_the_pass_refuses_rather_than_answering_empty(both_bef
 def test_a_newer_payload_with_no_dispatches_answers_empty(analysis_json):
     doc = json.loads(analysis_json)
     doc["analyzer"]["version"] = "3.3.3"
+    doc["application"].pop("view_dispatches", None)
+    doc["application"].pop("view_dispatches_unresolved", None)
     local = _local(json.dumps(doc))
     assert local.get_view_dispatches() == [] and local.get_unresolved_view_dispatches() == []
     assert local.get_view_dispatchers("x.jsp") == []

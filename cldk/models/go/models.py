@@ -200,7 +200,7 @@ class GoType(_NullSafeBase):
     embedded types; ``fields`` are the struct's data fields (empty for an interface)."""
 
     id: str
-    kind: Literal["struct", "interface"]
+    kind: Literal["struct", "interface", "defined"]
     span: Optional[GoSpan] = None
     base_types: List[str] = []
     callables: Dict[str, GoCallable] = {}
@@ -236,6 +236,9 @@ class GoApplication(_NullSafeBase):
     """The application root: the containment tree (``symbol_table``) plus the one app-scope overlay
     the analyzer emits at L2 (``call_graph``)."""
 
+    application_name: str
+    identity_namespace: str
+    identity_version: Literal[2]
     id: str
     kind: Literal["application"] = "application"
     symbol_table: Dict[str, GoModule]
@@ -250,6 +253,7 @@ class GoAnalyzer(_Base):
 class GoAnalysis(_Base):
     """The envelope ``analysis.json`` IS."""
 
+    identity_version: Literal[2]
     schema_version: str
     language: str
     max_level: int

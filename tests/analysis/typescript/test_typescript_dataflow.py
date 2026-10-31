@@ -70,7 +70,7 @@ def _fake_run_writing_output(payload: str):
 
 def _analysis(app_path, payload, cache, level):
     with patch("cldk.analysis.typescript.codeanalyzer.codeanalyzer.subprocess.run", side_effect=_fake_run_writing_output(payload)):
-        return CLDK.typescript(project_path=app_path, eager=True, analysis_level=level, backend=CodeAnalyzerConfig(cache_dir=str(cache)))
+        return CLDK.typescript(project_path=app_path, eager=True, analysis_level=level, backend=CodeAnalyzerConfig(application_name="slim", cache_dir=str(cache)))
 
 
 @pytest.fixture
@@ -96,7 +96,7 @@ def test_get_cfg_returns_the_callables_own_edges_with_global_endpoints(ts):
     assert page.total == 5 and len(page.edges) == 5
     assert page.complete and page.next_cursor is None
     for e in page.edges:
-        assert e.src.startswith("can://slim/typescript/") and e.dst.startswith("can://slim/typescript/")
+        assert e.src.startswith("can://slim/slim/typescript/") and e.dst.startswith("can://slim/slim/typescript/")
         assert e.kind in {"fallthrough", "true", "false", "switch_case", "loop_back", "exception", "return", "break", "continue", "yield", "await_resume"}
     assert page.edges == sorted(page.edges, key=lambda e: (e.src, e.dst, e.kind or ""))
 

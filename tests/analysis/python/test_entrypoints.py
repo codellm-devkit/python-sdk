@@ -92,7 +92,7 @@ def test_entrypoints_are_a_subset_of_callables_locally():
 
 
 def test_no_entrypoints_is_an_empty_list_not_none():
-    """"This project has no entrypoints" must be a real, distinguishable empty -- not a null."""
+    """ "This project has no entrypoints" must be a real, distinguishable empty -- not a null."""
     result = _local_backend(any_entrypoints=False).get_entrypoints()
     assert result == []
 
@@ -101,9 +101,13 @@ def test_no_entrypoints_is_an_empty_list_not_none():
 def _neo4j_backend(modules=("svc/app.py",)) -> PyNeo4jBackend:
     """A ``PyNeo4jBackend`` with ``__init__`` (and its real driver connection) bypassed."""
     backend = object.__new__(PyNeo4jBackend)
+    from cldk.analysis.commons.identity import resolve_identity
+
+    backend.identity = resolve_identity("app", None)
     backend.application_name = "app"
     backend._database = None
     backend._modules = list(modules)
+    backend._module_ids = {key: backend.identity.application_id + "/python/" + key for key in backend._modules}
     return backend
 
 
@@ -122,7 +126,7 @@ def test_entrypoints_query_filters_on_is_entrypoint_property():
         "signature": "svc.app.handler",
         "name": "handler",
         "decorators": [],
-        "id": "can://app/python/svc/app.py/handler",
+        "id": "can://app/app/python/svc/app.py/handler",
         "start_line": 1,
         "end_line": 2,
         "class_signature": None,
@@ -148,8 +152,8 @@ def test_entrypoints_parity_between_backends():
     local_sigs = {o.signature for o in _local_backend().get_entrypoints()}
 
     common = {"decorators": [], "start_line": 1, "end_line": 2}
-    row_handler = {"signature": "svc.app.handler", "name": "handler", "id": "can://app/python/svc/app.py/handler", "class_signature": None, **common}
-    row_run = {"signature": "svc.app.Service.run", "name": "run", "id": "can://app/python/svc/app.py/Service/run", "class_signature": "svc.app.Service", **common}
+    row_handler = {"signature": "svc.app.handler", "name": "handler", "id": "can://app/app/python/svc/app.py/handler", "class_signature": None, **common}
+    row_run = {"signature": "svc.app.Service.run", "name": "run", "id": "can://app/app/python/svc/app.py/Service/run", "class_signature": "svc.app.Service", **common}
     backend = _neo4j_backend()
     with patch.object(PyNeo4jBackend, "_run", side_effect=_run_keyed({"c.is_entrypoint = true": [row_handler, row_run]})):
         neo4j_sigs = {o.signature for o in backend.get_entrypoints()}
@@ -163,12 +167,8 @@ def test_entrypoints_parity_between_backends():
 def _local_backend_with_class_entrypoint() -> PyCodeanalyzer:
     """A class-based view marked ``is_entrypoint`` at the class itself, with only an *unmarked*
     method -- exactly the case ``get_entrypoints()`` (callables-only) is blind to."""
-    dispatch = PyCallable(
-        name="dispatch", path="svc/views.py", signature="svc.views.AdminView.dispatch", is_entrypoint=False
-    )
-    admin_view = PyClass(
-        name="AdminView", signature="svc.views.AdminView", callables={"dispatch": dispatch}, is_entrypoint=True
-    )
+    dispatch = PyCallable(name="dispatch", path="svc/views.py", signature="svc.views.AdminView.dispatch", is_entrypoint=False)
+    admin_view = PyClass(name="AdminView", signature="svc.views.AdminView", callables={"dispatch": dispatch}, is_entrypoint=True)
     module = PyModule(file_path="svc/views.py", module_name="svc.views", types={"svc.views.AdminView": admin_view})
     backend = object.__new__(PyCodeanalyzer)
     backend.application = PyApplication(symbol_table={"svc/views.py": module})
@@ -202,7 +202,7 @@ def test_entrypoint_classes_query_filters_on_is_entrypoint_property():
         "signature": "svc.views.AdminView",
         "name": "AdminView",
         "decorators": [],
-        "id": "can://app/python/svc/views.py/AdminView",
+        "id": "can://app/app/python/svc/views.py/AdminView",
         "start_line": 1,
         "end_line": 10,
     }
@@ -229,7 +229,7 @@ def test_entrypoint_classes_parity_between_backends():
         "signature": "svc.views.AdminView",
         "name": "AdminView",
         "decorators": [],
-        "id": "can://app/python/svc/views.py/AdminView",
+        "id": "can://app/app/python/svc/views.py/AdminView",
         "start_line": 1,
         "end_line": 10,
     }

@@ -52,6 +52,7 @@ import networkx as nx
 
 from tree_sitter import Tree
 
+from cldk.analysis.commons.identity import resolve_identity
 from cldk.analysis.commons.backend_config import CodeAnalyzerConfig, JavaBackend, Neo4jConnectionConfig, cache_subdir
 from cldk.analysis.commons.bounds import DEFAULT_DEPTH, DEFAULT_MAX_NODES, DEFAULT_MAX_PATHS, DEFAULT_PAGE_SIZE
 from cldk.analysis.commons.results import EdgePage, EntrypointCoverage, FlowPaths, LocateResult, Slice, SliceNode, TaintResult
@@ -164,24 +165,29 @@ class JavaAnalysis:
         self.target_files = target_files
         self.backend_config: JavaBackend = backend if backend is not None else CodeAnalyzerConfig()
         self.treesitter_java: TreesitterJava = TreesitterJava()
+        self.identity = resolve_identity(self.backend_config.application_name, self.backend_config.namespace, project_root=Path(project_dir) if project_dir is not None else None)
         self.backend: JavaAnalysisBackend
         if isinstance(self.backend_config, Neo4jConnectionConfig):
             # Read-only: the graph is populated out of band; the SDK only polls it.
             cfg = self.backend_config
-            application_name = cfg.application_name or (Path(project_dir).name if project_dir else None)
+            application_name = self.identity.application_name
             self.backend = JNeo4jBackend(
                 neo4j_uri=cfg.uri,
                 neo4j_username=cfg.username,
                 neo4j_password=cfg.password,
                 neo4j_database=cfg.database,
                 application_name=application_name,
+                namespace=self.identity.namespace,
+                source_root=project_dir,
             )
         else:
             # The config only carries the cache root. analysis.json is cached under <cache_dir>/java.
-            cache_path = cache_subdir(self.backend_config.cache_dir, project_dir, "java")
+            cache_path = cache_subdir(self.backend_config.cache_dir, project_dir, "java", identity=self.identity)
             if cache_path is not None:
                 cache_path.mkdir(parents=True, exist_ok=True)
             self.backend = JCodeanalyzer(
+                application_name=self.identity.application_name,
+                namespace=self.identity.namespace,
                 project_dir=self.project_dir,
                 eager_analysis=self.eager_analysis,
                 analysis_level=self.analysis_level,
@@ -552,9 +558,7 @@ class JavaAnalysis:
         """
         return self.backend.get_all_classes()
 
-    def get_classes_by_criteria(
-        self, inclusions: List[str] | None = None, exclusions: List[str] | None = None
-    ) -> Dict[str, JType]:
+    def get_classes_by_criteria(self, inclusions: List[str] | None = None, exclusions: List[str] | None = None) -> Dict[str, JType]:
         """Return classes matching inclusion/exclusion filter criteria.
 
         Filters the project's classes based on substring matching against
@@ -860,9 +864,7 @@ class JavaAnalysis:
         """
         return self.backend.get_implemented_interfaces(qualified_class_name)
 
-    def __get_class_call_graph_using_symbol_table(
-        self, qualified_class_name: str, method_signature: str | None = None
-    ) -> List[Tuple[JMethodDetail, JMethodDetail]]:
+    def __get_class_call_graph_using_symbol_table(self, qualified_class_name: str, method_signature: str | None = None) -> List[Tuple[JMethodDetail, JMethodDetail]]:
         """Return class-level call graph using the symbol table.
 
         Internal method that uses symbol table-based resolution for building
@@ -881,12 +883,7 @@ class JavaAnalysis:
         """
         return self.backend.get_class_call_graph_using_symbol_table(qualified_class_name, method_signature)
 
-    def get_class_call_graph(
-        self,
-        qualified_class_name: str,
-        method_signature: str | None = None,
-        using_symbol_table: bool = False
-    ) -> List[Tuple[JMethodDetail, JMethodDetail]]:
+    def get_class_call_graph(self, qualified_class_name: str, method_signature: str | None = None, using_symbol_table: bool = False) -> List[Tuple[JMethodDetail, JMethodDetail]]:
         """Return call graph edges reachable from a class or method.
 
         Extracts a subset of the call graph containing only edges reachable

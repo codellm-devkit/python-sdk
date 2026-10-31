@@ -126,6 +126,12 @@ class FakeSession:
             return [_FakeRecord({"relationshipType": rt}) for rt in self._driver.rel_types]
         if "RETURN a.analyzer_version AS v" in query:
             return [] if self._driver.analyzer_version is None else [_FakeRecord({"v": self._driver.analyzer_version})]
+        if "AS identity" in query:
+            from urllib.parse import unquote
+
+            app_id = params["app_id"]
+            namespace, name = app_id.removeprefix("can://").split("/")
+            return [_FakeRecord({"identity": dict(id=app_id, identity_version=2, application_name=unquote(name), identity_namespace=unquote(namespace))})]
         if self._driver.responder is not None:
             return [_FakeRecord(d) for d in self._driver.responder(query, params)]
         return []
@@ -444,7 +450,7 @@ def _locate_callable_id(signature: str) -> str:
     """A stand-in for the analyzer's ``can://`` id. Only its shape matters here: a body node's graph
     ``id`` is ``<callable id>@<body key>``, which is what the Neo4j backend's innermost-node tie
     break splits on."""
-    return f"can://app/python/{_LOCATE_MODULE_PATH}/{signature}"
+    return f"can://app/app/python/{_LOCATE_MODULE_PATH}/{signature}"
 
 
 # -----[ the local backend's view: a real in-memory PyApplication ]-----
@@ -582,7 +588,7 @@ def _locate_responder(query: str, params: dict) -> list[dict]:
     """
     in_scope = "prefix" in params and _locate_callable_id("").startswith(params["prefix"])  # get_method_bodies / get_source
     if "RETURN m.file_key AS k" in query:
-        return [{"k": _LOCATE_MODULE_PATH}]
+        return [{"k": _LOCATE_MODULE_PATH, "id": f"can://app/app/python/{_LOCATE_MODULE_PATH}"}]
     if "c.code IS NOT NULL" in query:
         # get_method_bodies (bulk, "c.signature IN $sigs") and get_source (single, "c.signature =
         # $sig") both gate on $prefix and on a real code property -- a bodyless callable (has_span
@@ -638,6 +644,9 @@ def py_local(tmp_path) -> PyCodeanalyzer:
     backend knows and the Neo4j backend cannot.
     """
     backend = object.__new__(PyCodeanalyzer)
+    from cldk.analysis.commons.identity import resolve_identity
+
+    backend.identity = resolve_identity("app", None)
     backend.application = _locate_application()
     backend.project_dir = tmp_path
     return backend

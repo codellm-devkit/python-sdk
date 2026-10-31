@@ -34,7 +34,7 @@ from cldk.analysis.typescript.neo4j.neo4j_backend import TSNeo4jBackend, _scoped
 from cldk.models.typescript import TSCallableOverview, TSCallsite
 
 APP = "test-app"
-PREFIX = f"can://{APP}/"
+PREFIX = f"can://{APP}/{APP}/"
 #: What a *declared* node's id carries before its file key. The scope is the application prefix
 #: above; this one has the language segment, and only ids are built from it.
 CODE_PREFIX = f"{PREFIX}typescript/"
@@ -45,6 +45,9 @@ OVERVIEW_MATCH = f"MATCH (c:TSCallable) WHERE {_scoped('c')} "
 def _backend(modules=("src/models.ts", "src/util.ts", "src/controllers.ts")) -> TSNeo4jBackend:
     """A TSNeo4jBackend with __init__ (and its real driver connection) bypassed."""
     backend = object.__new__(TSNeo4jBackend)
+    from cldk.analysis.commons.identity import resolve_identity
+
+    backend.identity = resolve_identity(APP, None)
     backend.application_name = APP
     backend._database = None
     backend._module_ids = {m: f"{CODE_PREFIX}{m}" for m in modules}

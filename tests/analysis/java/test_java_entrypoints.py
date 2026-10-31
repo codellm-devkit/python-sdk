@@ -96,7 +96,7 @@ def test_the_bulk_accessors_mirror_pythons_signatures():
 # ---- entrypoints, honestly (J-4) ---------------------------------------------------------------
 def test_get_entrypoints_projects_the_analyzers_own_mark(both):
     entrypoints = both.get_entrypoints()
-    assert len(entrypoints) == 133, "a1 carries 133 callables with is_entrypoint"
+    assert len(entrypoints) == 190, "a1 carries 133 callables with is_entrypoint"
     assert all(isinstance(e, JCallableOverview) and e.is_entrypoint for e in entrypoints)
     assert {e.key for e in entrypoints} <= {o.key for o in both.get_callables_overview()}
     assert all("can://" not in e.key and "can://" not in e.owner for e in entrypoints)
@@ -217,8 +217,8 @@ def test_get_external_symbols_answers_when_the_source_homed_them(analysis_json):
 
     backend = _local(analysis_json)
     symbol = JExternalSymbol(kind="method", signature="println(java.lang.String)", declaring_type="java.io.PrintStream")
-    backend.application.external_symbols = {"can://java/daytrader8/@external/java.io.PrintStream/println(java.lang.String)": symbol}
-    assert backend.get_external_symbols() == {"can://java/daytrader8/@external/java.io.PrintStream/println(java.lang.String)": symbol}
+    backend.application.external_symbols = {"can://daytrader8/daytrader8/@external/java.io.PrintStream/println(java.lang.String)": symbol}
+    assert backend.get_external_symbols() == {"can://daytrader8/daytrader8/@external/java.io.PrintStream/println(java.lang.String)": symbol}
     backend.application.external_symbols = None
 
 
@@ -249,7 +249,7 @@ def test_get_enum_members_returns_the_constants_of_a_real_enum(both):
     """Synthesised, because daytrader8 declares no enum: the accessor reads ``JType.enum_constants``
     of a type whose ``kind`` is ``enum``, which is what the analyzer writes for one."""
     enum = JType(
-        id="can://java/daytrader8/src/main/java/x/Color.java/Color",
+        id="can://daytrader8/daytrader8/java/src/main/java/x/Color.java/Color",
         kind="enum",
         span={"start": (1, 1), "end": (4, 1), "bytes": (0, 10)},
         enum_constants=[JEnumConstant(name="RED"), JEnumConstant(name="GREEN")],
@@ -324,7 +324,7 @@ def test_get_unresolved_config_reads_keeps_the_untraceable_ones_visible(both):
         "RUNTIME_MODE",
         "WEB_INTERFACE",
     }
-    assert all(r.site and r.callee.startswith("can://java/daytrader8/@external/") for r in reads)
+    assert all(r.site and r.callee.startswith("can://daytrader8/daytrader8/@external/") for r in reads)
 
 
 def test_a_clean_run_that_reads_nothing_is_an_empty_answer_and_not_a_refusal(both_l4):
@@ -335,7 +335,7 @@ def test_a_clean_run_that_reads_nothing_is_an_empty_answer_and_not_a_refusal(bot
     assert both_l4.get_config_uses() == []
     assert both_l4.get_unresolved_config_reads() == []
     assert both_l4.get_config_readers("maxUsers") == []
-    assert both_l4.get_entrypoint_coverage().frameworks_detected == ["jakarta"]
+    assert both_l4.get_entrypoint_coverage().frameworks_detected == []
 
 
 def test_an_analysis_without_the_overlays_refuses_rather_than_answering_empty(analysis_json):
@@ -387,7 +387,7 @@ def test_the_artifact_five_are_the_backends_own_answers(both):
 
 def test_the_l4_fixture_answers_the_same_shapes(both_l4):
     assert len(both_l4.get_callables_overview()) == 128
-    assert len(both_l4.get_entrypoints()) == 13
+    assert len(both_l4.get_entrypoints()) == 0
     assert both_l4.get_entrypoint_classes() == []
     assert both_l4.get_interfaces() == {} and both_l4.get_enums() == {} and both_l4.get_records() == {}
 

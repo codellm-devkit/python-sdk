@@ -29,6 +29,7 @@ from typing import Dict, List, Sequence, Set, Tuple
 
 import networkx as nx
 
+from cldk.analysis.commons.identity import resolve_identity
 from cldk.analysis.commons.backend_config import CodeAnalyzerConfig, Neo4jConnectionConfig, TSBackend, cache_subdir
 from cldk.models.python import PyArtifact, PyConfigKey, PyConfigRead, PyConfigUseEdge, PyDependency
 from cldk.analysis.commons.bounds import DEFAULT_DEPTH, DEFAULT_MAX_NODES, DEFAULT_MAX_PATHS, DEFAULT_PAGE_SIZE
@@ -89,23 +90,28 @@ class TypeScriptAnalysis:
         # The backend is selected by the *type* of the config: Neo4jConnectionConfig picks the
         # read-only Cypher backend, CodeAnalyzerConfig (the default) the in-process analyzer.
         self.backend_config: TSBackend = backend if backend is not None else CodeAnalyzerConfig()
+        self.identity = resolve_identity(self.backend_config.application_name, self.backend_config.namespace, project_root=Path(project_dir) if project_dir is not None else None)
         self.backend: TSAnalysisBackend
         if isinstance(self.backend_config, Neo4jConnectionConfig):
             # Read-only: the graph is populated out of band; the SDK only polls it.
             cfg = self.backend_config
-            application_name = cfg.application_name or (Path(project_dir).name if project_dir else None)
+            application_name = self.identity.application_name
             self.backend = TSNeo4jBackend(
                 neo4j_uri=cfg.uri,
                 neo4j_username=cfg.username,
                 neo4j_password=cfg.password,
                 neo4j_database=cfg.database,
                 application_name=application_name,
+                namespace=self.identity.namespace,
+                source_root=project_dir,
             )
         else:
-            cache_path = cache_subdir(self.backend_config.cache_dir, project_dir, "typescript")
+            cache_path = cache_subdir(self.backend_config.cache_dir, project_dir, "typescript", identity=self.identity)
             if cache_path is not None:
                 cache_path.mkdir(parents=True, exist_ok=True)
             self.backend = TSCodeanalyzer(
+                application_name=self.identity.application_name,
+                namespace=self.identity.namespace,
                 project_dir=project_dir,
                 analysis_json_path=cache_path,
                 analysis_level=analysis_level,

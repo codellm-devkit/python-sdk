@@ -73,8 +73,8 @@ def test_cache_dir_keyed_by_language_through_facade(monkeypatch, tmp_path):
 
     cache = tmp_path / "mycache"
     CLDK(language="python").analysis(project_path=tmp_path, cache_dir=cache)
-    assert captured["cache_dir"].name == "python"
-    assert captured["cache_dir"].parent.name == "mycache"
+    assert captured["cache_dir"].parent.name == "python"
+    assert captured["cache_dir"].parent.parent.name == "mycache"
     assert "analysis_backend_path" not in captured
 
 

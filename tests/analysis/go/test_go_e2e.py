@@ -118,7 +118,7 @@ def litestream_analysis(litestream_project, tmp_path_factory):
 
 def test_litestream_app_analyzes(litestream_analysis):
     """The real binary on the real app: a non-trivial symbol table and call graph, app id intact."""
-    assert litestream_analysis.get_application_view().id == "can://go/litestream"
+    assert litestream_analysis.get_application_view().id == "can://litestream/litestream"
     assert len(litestream_analysis.get_symbol_table()) > 1
     g = litestream_analysis.get_call_graph()
     assert g.number_of_edges() > 0

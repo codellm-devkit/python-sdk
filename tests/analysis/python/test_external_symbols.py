@@ -175,9 +175,13 @@ def _neo4j_backend(modules=("src/app.py",)) -> PyNeo4jBackend:
     """A ``PyNeo4jBackend`` with ``__init__`` (and its real driver connection) bypassed -- same
     construction ``test_entrypoints.py`` uses."""
     backend = object.__new__(PyNeo4jBackend)
+    from cldk.analysis.commons.identity import resolve_identity
+
+    backend.identity = resolve_identity("app", None)
     backend.application_name = "app"
     backend._database = None
     backend._modules = list(modules)
+    backend._module_ids = {key: backend.identity.application_id + "/python/" + key for key in backend._modules}
     return backend
 
 
@@ -239,7 +243,7 @@ def test_neo4j_get_external_symbols_filters_by_id_prefix():
     assert ext[VALUEERROR_ID].module == "builtins.ValueError"
     query, params = run.call_args.args[0], run.call_args.kwargs
     assert "e.id STARTS WITH $prefix" in query
-    assert params["prefix"] == "can://app/@external/"
+    assert params["prefix"] == "can://app/app/@external/"
     assert "SET" not in query and "CREATE" not in query and "MERGE" not in query and "DELETE" not in query
 
 
@@ -267,11 +271,15 @@ def test_callsites_for_parity_between_backends():
         neo4j = backend.get_callsites_for(["src.app.Store.key", "src.app.Store.helper", "src.app.Store.dyn"])
     neo4j_sigs = {sig: [s.callee_signature for s in sites] for sig, sites in neo4j.items()}
 
-    assert local_sigs == neo4j_sigs == {
-        "src.app.Store.key": [VALUEERROR_ID],
-        "src.app.Store.helper": ["src.app.Store.key"],
-        "src.app.Store.dyn": [None],
-    }
+    assert (
+        local_sigs
+        == neo4j_sigs
+        == {
+            "src.app.Store.key": [VALUEERROR_ID],
+            "src.app.Store.helper": ["src.app.Store.key"],
+            "src.app.Store.dyn": [None],
+        }
+    )
 
 
 def test_get_external_symbols_parity_between_backends():

@@ -97,14 +97,29 @@ from typing import Any, Callable, Dict, FrozenSet, List, Mapping, Sequence, Tupl
 
 import networkx as nx
 from codeanalyzer.schema import model_dump_json
-from codeanalyzer.schema.ids import application_id, module_id
+from codeanalyzer.schema.ids import module_id
 from codeanalyzer.schema.py_schema import PyEntrypointReport
 
+from cldk.analysis.commons.keys import module_scope
+from cldk.analysis.commons.identity import resolve_identity, validate_identity
 from cldk.analysis.commons.backend import semver as _semver
 from cldk.analysis.commons.graphs import path_order, sdg_path_query, sdg_taint_query
 from cldk.analysis.commons.keys import module_key_of
 from cldk.analysis.commons.resolve import CallableCandidate, body_node_kind, resolve_callable_signature, resolve_value_name, resolve_within, value_candidate
-from cldk.analysis.commons.results import BodyRef, CallableRef, Diagnostic, EdgePage, EntrypointCoverage, FlowPath, FlowPaths, LocateResult, ModuleRef, PathHop, Slice, SliceNode, TypeRef
+from cldk.analysis.commons.results import (
+    BodyRef,
+    CallableRef,
+    Diagnostic,
+    EdgePage,
+    EntrypointCoverage,
+    FlowPath,
+    FlowPaths,
+    LocateResult,
+    ModuleRef,
+    Slice,
+    SliceNode,
+    TypeRef,
+)
 from cldk.analysis.python.backend import (
     CDG_ORDER,
     CFG_ORDER,
@@ -160,7 +175,6 @@ from cldk.models.python import (
 from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException, GraphSchemaMismatch
 
 logger = logging.getLogger(__name__)
-
 
 
 # One statement per parent->child collection, each fetching that whole collection for the *entire*
@@ -301,28 +315,29 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         neo4j_password: str | None = None,
         neo4j_database: str | None = None,
         application_name: str | None = None,
+        namespace: str | None = None,
+        source_root=None,
     ) -> None:
         try:
             from neo4j import GraphDatabase
         except ModuleNotFoundError as e:  # pragma: no cover - import guard
-            raise CodeanalyzerExecutionException(
-                "The Neo4j backend requires the 'neo4j' driver. Install it with "
-                "`pip install neo4j` (or `pip install cldk[neo4j]`)."
-            ) from e
+            raise CodeanalyzerExecutionException("The Neo4j backend requires the 'neo4j' driver. Install it with " "`pip install neo4j` (or `pip install cldk[neo4j]`).") from e
         driver = GraphDatabase.driver(neo4j_uri, auth=(neo4j_username, neo4j_password))
-        self._init_with_driver(driver, application_name=application_name, neo4j_database=neo4j_database)
+        self._init_with_driver(driver, application_name=application_name, neo4j_database=neo4j_database, namespace=namespace, source_root=source_root)
 
     @classmethod
-    def _from_driver(cls, driver: Any, *, application_name: str | None = None, neo4j_database: str | None = None) -> "PyNeo4jBackend":
+    def _from_driver(
+        cls, driver: Any, *, application_name: str | None = None, neo4j_database: str | None = None, namespace: str | None = None, source_root=None
+    ) -> "PyNeo4jBackend":
         """Construct directly from an already-built driver — exists for tests injecting a fake driver."""
         self = cls.__new__(cls)
-        self._init_with_driver(driver, application_name=application_name, neo4j_database=neo4j_database)
+        self._init_with_driver(driver, application_name=application_name, neo4j_database=neo4j_database, namespace=namespace, source_root=source_root)
         return self
 
-    def _init_with_driver(self, driver: Any, *, application_name: str | None = None, neo4j_database: str | None = None) -> None:
-        if not application_name:
-            raise CodeanalyzerExecutionException("application_name is required to scope queries to an application.")
-        self.application_name = application_name
+    def _init_with_driver(self, driver: Any, *, application_name: str | None = None, neo4j_database: str | None = None, namespace: str | None = None, source_root=None) -> None:
+        self.identity = resolve_identity(application_name, namespace)
+        self.application_name = self.identity.application_name
+        self.source_root = source_root
         self._database = neo4j_database
         self._driver = driver
         # One long-lived read session reused across queries (see _run). Reconstruction is an N+1
@@ -336,6 +351,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         # Fail fast if the attached graph doesn't speak this backend's vocabulary — one round
         # trip, run once per connection, before any query can silently come back empty.
         self._probe_schema()
+        self._probe_identity()
 
         # The application's module file_keys, used to scope every query to this app.
         self._modules: List[str] = self._load_module_keys()
@@ -359,6 +375,10 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     #: it attaches cleanly and then answers every scoped statement with zero rows. Refusing it by
     #: version is the only thing between a caller and that silent empty.
     _ANALYZER_FLOOR = (1, 5, 0)
+
+    def _probe_identity(self) -> None:
+        rows = self._run("MATCH (a:PyApplication {id: $app_id}) RETURN properties(a) AS identity", app_id=self._application_id)
+        validate_identity(rows[0].get("identity", {}) if rows else {}, self.identity, envelope=False)
 
     def _probe_schema(self) -> None:
         """Verify the connected graph's vocabulary once, at connection time, and record the
@@ -391,7 +411,11 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         version = _semver(raw)
         floor = ".".join(map(str, self._ANALYZER_FLOOR))
         if version is None or version < self._ANALYZER_FLOOR:
-            what = f"was emitted by codeanalyzer-python {raw}" if version else (f"reports analyzer_version {raw!r}" if raw else "carries no analyzer_version (no :PyApplication with that id, or one emitted before the property existed)")
+            what = (
+                f"was emitted by codeanalyzer-python {raw}"
+                if version
+                else (f"reports analyzer_version {raw!r}" if raw else "carries no analyzer_version (no :PyApplication with that id, or one emitted before the property existed)")
+            )
             raise GraphSchemaMismatch(
                 expected=set(self._REQUIRED_RELATIONSHIP_TYPES),
                 found=found,
@@ -477,9 +501,9 @@ class PyNeo4jBackend(PythonAnalysisBackend):
 
     @property
     def _application_id(self) -> str:
-        """``can://<app>`` -- the ``:PyApplication`` root's own merge key since 1.5.0 (it used to
+        """``can://<namespace>/<app>`` -- the ``:PyApplication`` root's own merge key since 1.5.0 (it used to
         merge on ``name``, which carries no uniqueness constraint any more)."""
-        return application_id(self.application_name)
+        return self.identity.application_id
 
     @property
     def _scope_prefix(self) -> str:
@@ -510,7 +534,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         and every row would raise. Built from the analyzer's own :func:`module_id` (with an empty
         file key) so the segment is never spelled twice.
         """
-        return module_id(self.application_name, "")
+        return module_id(self.application_name, "", self.identity.namespace)
 
     #: The codeanalyzer-python generation that emitted this application, set by
     #: :meth:`_probe_schema` (which refuses anything below :attr:`_ANALYZER_FLOOR`). The class-level
@@ -561,7 +585,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         application", narrowing "which of its modules" -- a single application prefix cannot
         express the second, and a list of 1,626 module prefixes is a measurably slower way to
         express the first."""
-        return [self._scope_prefix] if keys is None else [module_id(self.application_name, k) + "/" for k in keys]
+        return [self._scope_prefix] if keys is None else [self._module_ids[k] + "/" for k in keys]
 
     def close(self) -> None:
         """Close the reused session (if any) and the underlying Neo4j driver."""
@@ -603,10 +627,11 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     def _load_module_keys(self) -> List[str]:
         """The application's module ``file_key``s — the scope key for every other query."""
         rows = self._run(
-            "MATCH (:PyApplication {id: $app_id})-[:PY_HAS_MODULE]->(m:PyModule) RETURN m.file_key AS k",
+            "MATCH (:PyApplication {id: $app_id})-[:PY_HAS_MODULE]->(m:PyModule) RETURN m.file_key AS k, m.id AS id",
             app_id=self._application_id,
         )
-        return [r["k"] for r in rows]
+        self._module_ids = {r["k"]: r["id"] for r in rows}
+        return list(self._module_ids)
 
     # =====================================================================================
     # Reconstruction helpers — fetch a node's children over Cypher, then assemble via R.
@@ -949,7 +974,14 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     # PythonAnalysisBackend — application / whole-program
     # =====================================================================================
     def get_application_view(self) -> PyApplication:
-        return PyApplication(symbol_table=self.get_symbol_table(), call_graph=self._call_edges())
+        return PyApplication(
+            id=self.identity.application_id,
+            identity_version=2,
+            application_name=self.identity.application_name,
+            identity_namespace=self.identity.namespace,
+            symbol_table=self.get_symbol_table(),
+            call_graph=self._call_edges(),
+        )
 
     def get_symbol_table(self, *, paths: Sequence[str] | None = None) -> Dict[str, PyModule]:
         # ``paths`` narrows in Cypher (the WHERE below) *and* narrows the prefetch scope, which is
@@ -959,8 +991,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         result: Dict[str, PyModule] = {}
         with self._bulk(keys):  # every module's children in eleven queries, not 45 per module
             for r in self._run(
-                "MATCH (:PyApplication {id: $app_id})-[:PY_HAS_MODULE]->(m:PyModule) "
-                "WHERE $paths IS NULL OR m.file_key IN $paths RETURN properties(m) AS p",
+                "MATCH (:PyApplication {id: $app_id})-[:PY_HAS_MODULE]->(m:PyModule) " "WHERE $paths IS NULL OR m.file_key IN $paths RETURN properties(m) AS p",
                 app_id=self._application_id,
                 paths=keys,
             ):
@@ -977,7 +1008,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         :class:`~cldk.utils.exceptions.SelectorNotInGraph` rather than quietly selecting no rows)
         are the same on both.
         """
-        return scope_paths(paths, self._modules, kind)
+        return scope_paths(paths, self._modules, kind, **module_scope(self))
 
     def get_modules(self) -> List[PyModule]:
         return list(self.get_symbol_table().values())
@@ -1167,8 +1198,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         as cheap as the class path instead of paying the whole-symbol-table fan-out.
         """
         rows = self._run(
-            "MATCH (m:PyModule {module_name: $name})-[:PY_DECLARES]->(f:PyCallable) "
-            "WHERE m.file_key IN $mods AND m.id STARTS WITH $prefix RETURN properties(f) AS p",
+            "MATCH (m:PyModule {module_name: $name})-[:PY_DECLARES]->(f:PyCallable) " "WHERE m.file_key IN $mods AND m.id STARTS WITH $prefix RETURN properties(f) AS p",
             name=module_name,
             mods=self._modules,
             prefix=self._scope_prefix,
@@ -1241,8 +1271,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
 
     def get_method_bodies(self, signatures: List[str]) -> Dict[str, str]:
         rows = self._run(
-            "MATCH (c:PyCallable) WHERE c.id STARTS WITH $prefix AND c.signature IN $sigs AND c.code IS NOT NULL "
-            "RETURN c.signature AS signature, c.code AS code",
+            "MATCH (c:PyCallable) WHERE c.id STARTS WITH $prefix AND c.signature IN $sigs AND c.code IS NOT NULL " "RETURN c.signature AS signature, c.code AS code",
             prefix=self._scope_prefix,
             sigs=list(signatures),
         )
@@ -1270,8 +1299,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
                 "for a statement or call site."
             )
         rows = self._run(
-            "MATCH (c:PyCallable) WHERE c.id STARTS WITH $prefix AND (c.signature = $sig OR c.id = $sig) AND c.code IS NOT NULL "
-            "RETURN c.code AS code",
+            "MATCH (c:PyCallable) WHERE c.id STARTS WITH $prefix AND (c.signature = $sig OR c.id = $sig) AND c.code IS NOT NULL " "RETURN c.code AS code",
             prefix=self._scope_prefix,
             sig=sig,
         )
@@ -1565,7 +1593,9 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         self._require_quantified_paths("backward_cone")
         roots = cone_sinks(self.resolve_callable, sinks)
         row = self._run(self._CONE.format(depth="" if depth is None else depth), sigs=[r.callable for r in roots], cap=max_nodes, prefix=self._scope_prefix)[0]
-        nodes = [SliceNode(file=self._module_key(n["ref"]), line=n["line"], callable=n["callable"], kind="callable", name=n["name"], source=None, ref=n["ref"]) for n in row["page"]]
+        nodes = [
+            SliceNode(file=self._module_key(n["ref"]), line=n["line"], callable=n["callable"], kind="callable", name=n["name"], source=None, ref=n["ref"]) for n in row["page"]
+        ]
         return Slice(nodes=nodes, roots=roots, resolved=slice_resolved(roots), total=row["total"])
 
     #: ``t`` may be a ``:PyExternal`` ghost, which carries ``module``/``name``/``id`` and no
@@ -1824,8 +1854,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
 
     def get_decorated_callables(self, markers: List[str]) -> List[PyCallableOverview]:
         rows = self._run(
-            "MATCH (c:PyCallable) WHERE c.id STARTS WITH $prefix "
-            "AND any(d IN c.decorators WHERE d IN $markers) " + self._OVERVIEW_PROJECTION,
+            "MATCH (c:PyCallable) WHERE c.id STARTS WITH $prefix " "AND any(d IN c.decorators WHERE d IN $markers) " + self._OVERVIEW_PROJECTION,
             prefix=self._scope_prefix,
             markers=list(markers),
         )
@@ -1918,7 +1947,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         # application's own can:// id by construction (`<app-id>/@external/<module>/<name>`), and
         # that prefix is the whole scope -- a second application in the same database mints a
         # disjoint one. (This was the one prefix-scoped statement before leg 1.6 made it the rule.)
-        prefix = f"{application_id(self.application_name)}/@external/"
+        prefix = f"{self.identity.application_id}/@external/"
         rows = self._run(
             "MATCH (e:PyExternal) WHERE e.id STARTS WITH $prefix RETURN properties(e) AS p",
             prefix=prefix,
@@ -1963,8 +1992,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
     def get_config_keys(self) -> Dict[str, PyConfigKey]:
         result: Dict[str, PyConfigKey] = {}
         for r in self._run(
-            "MATCH (:PyApplication {id: $app_id})-[:HAS_ARTIFACT]->(:Artifact)-[:DEFINES_CONFIG]->(ck:ConfigKey) "
-            "RETURN properties(ck) AS p",
+            "MATCH (:PyApplication {id: $app_id})-[:HAS_ARTIFACT]->(:Artifact)-[:DEFINES_CONFIG]->(ck:ConfigKey) " "RETURN properties(ck) AS p",
             app_id=self._application_id,
         ):
             ck = R.config_key(r["p"])
@@ -2002,8 +2030,7 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         #     reads," never a false negative -- unlike finding 1's entrypoint_report, which the
         #     graph doesn't carry at all.
         rows = self._run(
-            "MATCH (:PyApplication {id: $app_id})-[u:PY_READS_CONFIG_UNRESOLVED]->(ghost:PyExternal) "
-            "RETURN properties(u) AS p, ghost.id AS callee",
+            "MATCH (:PyApplication {id: $app_id})-[u:PY_READS_CONFIG_UNRESOLVED]->(ghost:PyExternal) " "RETURN properties(u) AS p, ghost.id AS callee",
             app_id=self._application_id,
         )
         return [R.unresolved_config_read(r["p"], callee=r["callee"]) for r in rows]
@@ -2225,15 +2252,16 @@ class PyNeo4jBackend(PythonAnalysisBackend):
         # Whatever the caller's scanner printed ("./src/app.py", an absolute path) is normalised to
         # the graph's file_key before it becomes a Cypher parameter — an unnormalised path would
         # match no :PyModule and read back as file_not_in_graph.
-        keys = [resolve_module_key(path, self._modules) for path, _ in positions]
+        keys = [resolve_module_key(path, self._modules, **module_scope(self)) for path, _ in positions]
         # ``module_prefix`` is the exact inverse of ``_module_key``: ``module_id(app, key) + "/"``
         # selects the module's own callables and nothing under a longer key sharing the spelling.
         rows = self._run(
             self._LOCATE_QUERY,
             app_id=self._application_id,
             positions=[
-                {"idx": i, "path": key, "module_prefix": module_id(self.application_name, key) + "/", "line": line}
+                {"idx": i, "path": key, "module_prefix": self._module_ids[key] + "/", "line": line}
                 for i, (key, (_, line)) in enumerate(zip(keys, positions))
+                if key in self._module_ids
             ],
         )
         by_idx: Dict[int, List[Dict[str, Any]]] = defaultdict(list)

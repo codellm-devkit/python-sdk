@@ -26,7 +26,8 @@ import toml
 
 from cldk import CLDK
 from cldk.analysis import AnalysisLevel
-from cldk.analysis.commons.backend_config import CodeAnalyzerConfig, TSCodeAnalyzerConfig
+from cldk.analysis.commons.backend_config import CodeAnalyzerConfig, TSCodeAnalyzerConfig, cache_subdir
+from cldk.analysis.commons.identity import resolve_identity
 from cldk.utils.exceptions import CldkInitializationException
 
 
@@ -61,7 +62,7 @@ def ts_analysis(typescript_application, typescript_analysis_json, tmp_path, monk
             project_path=typescript_application,
             eager=True,
             analysis_level=AnalysisLevel.call_graph,
-            backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)),
+            backend=CodeAnalyzerConfig(application_name="slim", cache_dir=str(tmp_path)),
         )
 
 
@@ -92,14 +93,14 @@ def test_phantom_external_nodes(ts_analysis):
     assert "(builtin).log" in ext
     assert ext["(builtin).log"].module == "(builtin)"
     assert ext["(builtin).log"].name == "log"
-    assert ext["(builtin).log"].id == "can://slim/@external/(builtin)/log"
+    assert ext["(builtin).log"].id == "can://slim/slim/@external/(builtin)/log"
 
     graph = ts_analysis.get_call_graph()
     assert graph.has_edge("src/index.main", "(builtin).log")
     data = graph.get_edge_data("src/index.main", "(builtin).log")
     assert data["type"] == "CALL_DEP"
     assert data["provenance"] == ("import",)
-    assert graph.nodes["(builtin).log"] == {"id": "can://slim/@external/(builtin)/log", "kind": "external"}
+    assert graph.nodes["(builtin).log"] == {"id": "can://slim/slim/@external/(builtin)/log", "kind": "external"}
     assert graph.nodes["src/index.main"]["kind"] == "callable"
     # internal callers can be found via callees
     callees = ts_analysis.get_callees("src/index.main")
@@ -111,7 +112,7 @@ def test_call_graph_keeps_module_callers_and_tags_kinds(ts_analysis):
     dropped by Python's rule; a one-line filter recovers Python's shape."""
     graph = ts_analysis.get_call_graph()
     assert graph.has_edge("src/index.ts", "src/index.main")
-    assert graph.nodes["src/index.ts"] == {"id": "can://slim/typescript/src/index.ts", "kind": "module"}
+    assert graph.nodes["src/index.ts"] == {"id": "can://slim/slim/typescript/src/index.ts", "kind": "module"}
     kinds = {attrs["kind"] for _, attrs in graph.nodes(data=True)}
     assert kinds == {"module", "callable", "external"}
     callable_only = graph.subgraph(n for n, a in graph.nodes(data=True) if a["kind"] == "callable")
@@ -227,7 +228,7 @@ def test_exports_and_variables_are_parsed(typescript_application, typescript_ana
     models = data["application"]["symbol_table"]["src/models.ts"]
     models["exports"].append({"name": "User", "module": None, "alias": None, "is_type_only": False, "export_kind": "named"})
     models["fields"]["DEFAULT_ROLE"] = {
-        "id": "can://slim/typescript/src/models.ts/DEFAULT_ROLE",
+        "id": "can://slim/slim/typescript/src/models.ts/DEFAULT_ROLE",
         "kind": "field",
         "name": "DEFAULT_ROLE",
         "type": "Role",
@@ -246,7 +247,7 @@ def test_exports_and_variables_are_parsed(typescript_application, typescript_ana
             project_path=typescript_application,
             eager=True,
             analysis_level=AnalysisLevel.call_graph,
-            backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)),
+            backend=CodeAnalyzerConfig(application_name="slim", cache_dir=str(tmp_path)),
         )
 
     exported = analysis.get_exports()["src/models.ts"]
@@ -308,11 +309,11 @@ def test_cache_dir_now_accepted(typescript_application, typescript_analysis_json
             project_path=typescript_application,
             eager=True,
             analysis_level=AnalysisLevel.symbol_table,
-            backend=CodeAnalyzerConfig(cache_dir=str(tmp_path / "cache")),
+            backend=CodeAnalyzerConfig(application_name="slim", cache_dir=str(tmp_path / "cache")),
         )
 
     args = run_mock.call_args.args[0]
-    assert args[args.index("-o") + 1] == str(tmp_path / "cache" / "typescript")
+    assert args[args.index("-o") + 1] == str(cache_subdir(tmp_path / "cache", None, "typescript", identity=resolve_identity("slim", None)))
 
 
 # -----[ facade -> backend wiring / subprocess invocation ]-----
@@ -329,7 +330,7 @@ def test_subprocess_args_default_keyed_output_dir(typescript_application, typesc
             eager=True,
             analysis_level=AnalysisLevel.call_graph,
             target_files=["src/models.ts", "src/services.ts"],
-            backend=CodeAnalyzerConfig(cache_dir=str(tmp_path)),
+            backend=CodeAnalyzerConfig(application_name="slim", cache_dir=str(tmp_path)),
         )
 
     args = run_mock.call_args.args[0]
@@ -340,7 +341,7 @@ def test_subprocess_args_default_keyed_output_dir(typescript_application, typesc
     assert args.count("-t") == 2
     assert "src/models.ts" in args and "src/services.ts" in args
     # caching on by default: output written to the language-keyed cache dir
-    assert args[args.index("-o") + 1] == str(tmp_path / "typescript")
+    assert args[args.index("-o") + 1] == str(cache_subdir(tmp_path, None, "typescript", identity=resolve_identity("slim", None)))
 
 
 def test_subprocess_args_output_dir(typescript_application, typescript_analysis_json, tmp_path, monkeypatch):
@@ -357,12 +358,12 @@ def test_subprocess_args_output_dir(typescript_application, typescript_analysis_
             project_path=typescript_application,
             eager=True,
             analysis_level=AnalysisLevel.symbol_table,
-            backend=CodeAnalyzerConfig(cache_dir=str(cache)),
+            backend=CodeAnalyzerConfig(application_name="slim", cache_dir=str(cache)),
         )
 
     args = run_mock.call_args.args[0]
     assert args[args.index("-a") + 1] == "1"  # symbol_table -> level 1
-    assert args[args.index("-o") + 1] == str(cache / "typescript")
+    assert args[args.index("-o") + 1] == str(cache_subdir(cache, None, "typescript", identity=resolve_identity("slim", None)))
     # the disk read-back path produced a usable application
     assert len(analysis.get_symbol_table()) == 5
 
@@ -371,7 +372,7 @@ def test_cached_analysis_json_skips_subprocess(typescript_application, typescrip
     """When a cached analysis.json already exists (in the language-keyed dir) and eager is False,
     the backend must reuse it and not invoke the analyzer subprocess."""
     monkeypatch.setenv("CODEANALYZER_TS_BIN", "codeanalyzer-typescript")
-    keyed = tmp_path / "out" / "typescript"
+    keyed = cache_subdir(tmp_path / "out", None, "typescript", identity=resolve_identity("slim", None))
     keyed.mkdir(parents=True)
     (keyed / "analysis.json").write_text(typescript_analysis_json, encoding="utf-8")
 
@@ -380,7 +381,7 @@ def test_cached_analysis_json_skips_subprocess(typescript_application, typescrip
             project_path=typescript_application,
             eager=False,
             analysis_level=AnalysisLevel.call_graph,
-            backend=CodeAnalyzerConfig(cache_dir=str(tmp_path / "out")),
+            backend=CodeAnalyzerConfig(application_name="slim", cache_dir=str(tmp_path / "out")),
         )
 
     run_mock.assert_not_called()
@@ -400,7 +401,13 @@ def _captured_argv(typescript_application, typescript_analysis_json, tmp_path, m
         return inner(cmd, *args, **kwargs)
 
     with patch("cldk.analysis.typescript.codeanalyzer.codeanalyzer.subprocess.run", side_effect=_run):
-        CLDK.typescript(project_path=typescript_application, analysis_level=level, eager=True, backend=kw.pop("backend", CodeAnalyzerConfig(cache_dir=str(tmp_path))), **kw)
+        CLDK.typescript(
+            project_path=typescript_application,
+            analysis_level=level,
+            eager=True,
+            backend=kw.pop("backend", CodeAnalyzerConfig(application_name="slim", cache_dir=str(tmp_path))),
+            **kw,
+        )
     assert len(seen) == 1
     return seen[0]
 
@@ -410,7 +417,8 @@ def test_argv_maps_every_level_to_an_integer_and_drops_tsc_only(typescript_appli
     cmd = _captured_argv(typescript_application, typescript_analysis_json, tmp_path, monkeypatch, level)
     assert cmd[0] == "codeanalyzer-typescript"
     assert cmd[cmd.index("-a") + 1] == str(expected)
-    assert cmd[cmd.index("--app-name") + 1] == Path(typescript_application).name
+    assert "--app-name=slim" in cmd
+    assert "--namespace=slim" in cmd
     assert cmd[cmd.index("-i") + 1] == str(typescript_application)
     out = cmd[cmd.index("-o") + 1]
     assert cmd[cmd.index("--cache-dir") + 1] == out and out.startswith(str(tmp_path))
@@ -431,7 +439,7 @@ def test_tsc_only_is_a_deprecated_no_op(typescript_application, typescript_analy
             tmp_path,
             monkeypatch,
             AnalysisLevel.call_graph,
-            backend=TSCodeAnalyzerConfig(cache_dir=str(tmp_path), tsc_only=True),
+            backend=TSCodeAnalyzerConfig(application_name="slim", cache_dir=str(tmp_path), tsc_only=True),
         )
     assert "--tsc-only" not in cmd
 
@@ -442,6 +450,6 @@ def test_backend_keeps_the_envelope(ts_analysis):
     # is regenerated with the pinned wheel, so a literal here is one more place a bump has to be
     # remembered -- and #368 found this one stale.
     pin = toml.load(Path(__file__).resolve().parents[3] / "pyproject.toml")["tool"]["backend-versions"]["codeanalyzer-typescript"]
-    assert analysis.analyzer.version == pin
+    assert analysis.analyzer.version == "1.6.4"  # reviewed local producer fixture; no unpublished dependency pin
     assert analysis.max_level == 4
     assert analysis.application is ts_analysis.get_application_view()

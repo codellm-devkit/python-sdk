@@ -26,38 +26,44 @@ from __future__ import annotations
 
 import os
 import posixpath
-from typing import Collection, Iterable, List, Sequence
+from typing import Collection, Iterable, List, Sequence, Mapping
+from pathlib import Path
 
 from cldk.analysis.commons.bounds import check_depth, check_selector, reject_bare_string
 
 
-def resolve_module_key(path: str, keys: Iterable[str]) -> str:
-    """The symbol-table / graph ``file_key`` naming ``path``, or ``path`` unchanged if none does.
-
-    A caller of :meth:`PythonAnalysisBackend.locate` hands over whatever its scanner printed —
-    ``./src/app.py``, ``src/../src/app.py``, or an absolute path from the machine the scan ran on —
-    while both backends are keyed by the project-relative path the analyzer saw. Exact key first,
-    then the normalised form, then the longest known key the normalised path *ends on a segment
-    boundary* of (which is what an absolute path is). Returning ``path`` unchanged when nothing
-    matches is deliberate: the caller then gets ``file_not_in_graph`` naming the path it asked
-    about, not a silently substituted neighbour.
-    """
-    keys = list(keys)
-    if path in keys:
+def resolve_module_key(
+    path: str, keys: Iterable[str], *, application_id: str | None = None, module_ids: Mapping[str, str] | None = None, source_root: str | Path | None = None
+) -> str:
+    """Resolve only within the bound application's verified module IDs and source root."""
+    path = str(path)
+    known = list(keys)
+    if path.startswith("can:") or "://" in path:
+        if application_id is None or not path.startswith(application_id + "/") or module_ids is None:
+            raise ValueError("Module URI is outside the bound application scope")
+        matches = [key for key, value in module_ids.items() if value == path and key in known]
+        if len(matches) != 1:
+            raise ValueError("Module URI is not a module in the selected language view")
+        return matches[0]
+    if Path(path).is_absolute():
+        if source_root is None or not Path(source_root).is_dir():
+            raise ValueError("Absolute module paths require a bound source root")
+        try:
+            path = Path(path).resolve().relative_to(Path(source_root).resolve()).as_posix()
+        except ValueError as exc:
+            raise ValueError("Absolute module path is outside the bound source root") from exc
+    if path in known:
         return path
-    norm = posixpath.normpath(str(path).replace(os.sep, "/"))
-    if norm in keys:
-        return norm
-    suffix_matches = [k for k in keys if norm.endswith("/" + k)]
-    return max(suffix_matches, key=len) if suffix_matches else path
+    norm = posixpath.normpath(path.replace(os.sep, "/"))
+    return norm if norm in known else path
 
 
-def scope_paths(paths: Sequence[str] | None, keys: Iterable[str], kind: str = "paths") -> List[str] | None:
+def scope_paths(paths: Sequence[str] | None, keys: Iterable[str], kind: str = "paths", **scope) -> List[str] | None:
     """Resolve requested module paths to symbol-table keys, or ``None`` for "the whole application".
 
     Both backends route their ``paths=`` / ``module=`` keywords through here, so the lenient
-    resolution (:func:`resolve_module_key` — an absolute path or one with native separators finds
-    its module) and the strictness (:func:`check_selector` — a path naming no module raises) cannot
+    resolution (:func:`resolve_module_key` — relative keys, verified module URIs, or absolute
+    paths under the existing bound source root) and the strictness (:func:`check_selector` — a path naming no module raises) cannot
     drift apart between them.
 
     Args:
@@ -68,8 +74,8 @@ def scope_paths(paths: Sequence[str] | None, keys: Iterable[str], kind: str = "p
             single-valued keyword routes through here as a one-element sequence.
 
     **Resolution is many-to-one, and the result is de-duplicated.** Leniency is the whole point of
-    :func:`resolve_module_key` — ``"pkg/a.py"`` and ``"/abs/pkg/a.py"`` are two spellings a scanner
-    may plausibly hand over for the *same* module — so two requested paths legitimately collapse to
+    :func:`resolve_module_key` — a relative key and an absolute path under the bound root may
+    name the *same* module — so two requested paths legitimately collapse to
     one key and the caller gets one entry back. Raising on the collapse would punish the very
     caller the leniency exists for; de-duplicating explicitly is what keeps the returned list from
     naming the same module twice and asking both backends to fetch it twice.
@@ -83,7 +89,7 @@ def scope_paths(paths: Sequence[str] | None, keys: Iterable[str], kind: str = "p
     if paths is None:
         return None
     known = list(keys)
-    resolved = [resolve_module_key(p, known) for p in paths]
+    resolved = [resolve_module_key(p, known, **scope) for p in paths]
     check_selector(kind, list(paths), [p for p, r in zip(paths, resolved) if r not in known])
     return list(dict.fromkeys(resolved))
 
@@ -182,3 +188,15 @@ def body_key_column(key: str) -> int:
     """
     _, _, col = key.split("/", 1)[0].partition(":")
     return int(col) if col.isdigit() else -1
+
+
+def module_scope(backend) -> dict:
+    """Carry the backend's selected owner and existing source root into path resolution."""
+    identity = backend.identity
+    if hasattr(backend, "_module_ids"):
+        ids = backend._module_ids
+    elif hasattr(backend, "_module_props"):
+        ids = {key: props["id"] for key, props in backend._module_props.items()}
+    else:
+        ids = {key: value.id for key, value in backend.get_application_view().symbol_table.items()}
+    return dict(application_id=identity.application_id, module_ids=ids, source_root=getattr(backend, "source_root", getattr(backend, "project_dir", None)))
