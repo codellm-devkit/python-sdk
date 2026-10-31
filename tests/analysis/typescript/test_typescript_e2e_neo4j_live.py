@@ -46,6 +46,7 @@ import pytest
 
 from cldk import CLDK
 from cldk.analysis.commons.backend_config import Neo4jConnectionConfig
+from cldk.analysis.commons.identity import resolve_identity
 from cldk.analysis.typescript.backend import CALL_GRAPH_NODE_KINDS
 from cldk.analysis.typescript.neo4j.neo4j_backend import TSNeo4jBackend
 from cldk.models.typescript import TSCallable, TSClass, TSEnum, TSInterface, TSTypeAlias
@@ -58,9 +59,9 @@ NEO4J_URI = os.environ.get("CLDK_TEST_NEO4J_URI")
 NEO4J_USER = os.environ.get("CLDK_TEST_NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.environ.get("CLDK_TEST_NEO4J_PASSWORD", "neo4j")
 APP_NAME = os.environ.get("CLDK_TEST_NEO4J_APP", "superset-frontend")
-APP_ID = f"can://{APP_NAME}"
-#: The application scope, spelled here independently of the backend's helper on purpose.
-SCOPE = {"p": f"can://{APP_NAME}/{APP_NAME}/"}
+APP_ID = resolve_identity(APP_NAME, None).application_id
+#: The canonical anchor and descendant scope use the same raw-name encoding contract.
+SCOPE = {"p": f"{APP_ID}/"}
 SCOPED = "(x.id STARTS WITH $p)"
 REQUIRED_RELATIONSHIP_TYPES = {"TS_HAS_MODULE", "TS_HAS_METHOD", "TS_HAS_BODY_NODE", "TS_CALLS"}
 
