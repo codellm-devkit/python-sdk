@@ -94,7 +94,7 @@ def test_call_graph_nodes_are_accessor_keys_and_kind_tagged(analysis):
 
 
 def test_analyzer_version_is_the_pin(analysis):
-    assert analysis.backend.analysis.analyzer.version == "1.6.4"  # reviewed local producer artifact
+    assert analysis.backend.analysis.analyzer.version == "1.7.0"  # released analyzer pin
     assert (
         analysis.backend.analysis.max_level
         == {
