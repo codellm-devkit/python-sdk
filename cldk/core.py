@@ -242,8 +242,10 @@ class CLDK:
             project_path: Path to the Go module directory (needs a ``go.mod``). Optional only when
                 ``backend`` is a :class:`Neo4jConnectionConfig` (the graph is populated out of band
                 over Bolt). When provided, the path is validated — it must exist and be a directory.
-            analysis_level: Analysis depth (see :class:`~cldk.analysis.AnalysisLevel`); ``cango``
-                produces levels 1 (symbol table) and 2 (+ resolver call graph) only.
+            analysis_level: Analysis depth (see :class:`~cldk.analysis.AnalysisLevel`). ``cango``
+                produces all four: 1 (symbol table), 2 (+ resolver call graph), 3 (+ the
+                per-callable ``cfg``/``cdg``/``ddg``) and 4 (+ the interprocedural SDG the
+                dataflow and ``taint`` accessors need).
             target_files: Restrict analysis to these files.
             eager: Force regeneration of cached analysis.
             backend: Backend configuration. Defaults to :class:`CodeAnalyzerConfig` (runs ``cango``);

@@ -184,6 +184,18 @@ def callable_match_names(signature: str) -> Tuple[str, ...]:
     return tuple(dict.fromkeys(names))
 
 
+def external_signature(module: str, signature: str, name: str) -> str:
+    """The reported signature of a library stand-in: ``<import path>.<Type>.<Method>``.
+
+    Assembled from the stand-in's own ``module`` and ``signature`` properties rather than parsed
+    back out of its ``can://…/@external/…`` id, so it reads in the same vocabulary a project
+    callable's signature does: ``database/sql`` + ``DB.Query`` → ``database/sql.DB.Query``, which
+    is the spelling spec §7 requires :meth:`resolve_callable` to accept. ``signature`` is absent on
+    an older emission, in which case the bare ``name`` stands in.
+    """
+    return f"{module}.{signature or name}"
+
+
 def value_display(var: str) -> Tuple[str, str, "str | None"]:
     """``(kind, leaf, defined_in)`` for a ``formal_in`` vertex's ``var``, in the caller's vocabulary.
 
