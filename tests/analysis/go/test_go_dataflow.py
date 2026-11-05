@@ -586,6 +586,68 @@ def test_the_port_gate_refuses_when_no_port_carries_dependence(tmp_path, monkeyp
         portless.taint(sources=[("id", "sqlRepo.Find")], sinks=[(SINK_ARG, SINK)])
 
 
+# ======================================================================================
+# A Go signature is not always a unique address. Several files in one package may each
+# declare their own init(), so one signature names several DIFFERENT callables with
+# different bodies. Both bugs below were found by review against a live graph.
+# ======================================================================================
+
+
+def test_a_signature_declared_in_several_files_is_an_ambiguity_not_a_pick():
+    """Go permits a per-file ``init()``, so one signature can name two callables.
+
+    The local backend keyed its candidate list by *signature*, which collapsed the two into one
+    entry and hid the ambiguity from the shared policy — so it raised a bare ``ValueError`` where
+    the Neo4j backend (whose rows are per declaration) raised ``AmbiguousName``, and ``in_module=``
+    could not narrow it on either. One candidate per declaration is what makes both backends hand
+    the policy the same domain.
+
+    Asserted on :func:`~cldk.analysis.go.ids.pick_declaration` directly: the committed fixtures are
+    single-file, and the condition was measured end to end on the analyzer's ``testdata/dataflow``
+    corpus (3 colliding signatures there, `initclosure.init` / `initclosure.init.closure_1` /
+    `inits.init`), where both backends now answer identically.
+    """
+    from cldk.analysis.go.ids import pick_declaration
+
+    decls = [("initclosure/a.go", None), ("initclosure/b.go", None)]
+    # One declaration needs no narrowing.
+    assert pick_declaration("x.init", [("initclosure/a.go", None)], in_class=None, in_module=None) == "initclosure/a.go"
+    # Two do, and the error names the paths -- passing one is the way out, so "it is ambiguous"
+    # alone would be advice a caller cannot act on.
+    with pytest.raises(ValueError, match="declared in 2 files") as e:
+        pick_declaration("x.init", decls, in_class=None, in_module=None)
+    assert "initclosure/a.go" in str(e.value) and "initclosure/b.go" in str(e.value)
+    # The keyword that narrowed the candidates narrows the declaration too -- by bare file name or
+    # by the fuller path, since `in_module=` matches segment-wise on `/`.
+    assert pick_declaration("x.init", decls, in_class=None, in_module="a.go") == "initclosure/a.go"
+    assert pick_declaration("x.init", decls, in_class=None, in_module="initclosure/b.go") == "initclosure/b.go"
+    # A keyword that cannot split them leaves the ambiguity rather than picking.
+    with pytest.raises(ValueError, match="declared in 2 files"):
+        pick_declaration("x.init", decls, in_class=None, in_module="initclosure")
+
+
+def test_the_three_graphs_answer_empty_for_a_library_standin(httpsql):
+    """A stand-in resolves (it is spec §7's own example) and has no statements — the analyzer
+    synthesizes only its ``formal_in``/``formal_out`` ports — so all three graphs are legitimately
+    empty there.
+
+    The local backend read ``.cfg`` off the model blindly and raised ``AttributeError``, since
+    :class:`~cldk.models.go.GoExternalSymbol` has no such field, while the Neo4j backend returned a
+    clean empty page. An empty page is the honest answer, and it is **not** the D7 case the level
+    gate guards: there, empty would be indistinguishable from "no dependence" because the pass never
+    ran; here the pass ran and the absence is a fact about what a stand-in is.
+    """
+    standin = httpsql.resolve_callable("DB.Query")
+    assert standin.kind == "external"
+    for getter in ("get_cfg", "get_cdg", "get_ddg"):
+        page = getattr(httpsql, getter)("DB.Query")
+        assert page.edges == [] and page.total == 0 and page.complete is True, getter
+        assert page.next_cursor is None, getter
+    # Its ports are still real vertices, so the flow surface DOES cross it -- which is the whole
+    # reason an empty page here must not read as "nothing to see".
+    assert httpsql.flows_to_argument("id", "DB.Query", "query", within="sqlRepo.Find") is True
+
+
 def test_match_names_widen_resolution_without_multiplying_ambiguity(backend):
     """``callable_match_names`` adds the package-qualified and pointer-receiver spellings. A
     candidate matched by *any* of its names counts once, so these widen what resolves rather than

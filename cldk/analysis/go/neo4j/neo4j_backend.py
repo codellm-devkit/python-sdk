@@ -74,7 +74,7 @@ from cldk.analysis.go.backend import (
     VIA,
     GoAnalysisBackend,
 )
-from cldk.analysis.go.ids import callable_match_names, external_signature, go_value_names
+from cldk.analysis.go.ids import callable_match_names, external_signature, go_value_names, pick_declaration
 from cldk.analysis.go.neo4j import reconstruct as R
 from cldk.models.go import (
     GoApplication,
@@ -600,30 +600,37 @@ class GoNeo4jBackend(GoAnalysisBackend):
         The shared policy runs over the same unfiltered domain the local backend hands it, which is
         the strongest form of "both backends resolve over the same set"; the Go receiver spellings
         come from the shared :func:`~cldk.analysis.go.ids.callable_match_names`.
+
+        A signature that names several declarations (same-package multi-file ``init()``) is
+        narrowed by :func:`~cldk.analysis.go.ids.pick_declaration`, the same function and the same
+        keywords the local backend applies. Re-looking-up on the bare signature and refusing on
+        ``len(rows) > 1`` — what this did before — threw away the narrowing the policy had just
+        done, so ``in_module=`` could not disambiguate even when it had matched.
         """
         sig = resolve_callable_signature(name, self._callable_candidates, in_class=in_class, in_module=in_module, by_full_name="more of the import path")
         if sig in self._external_signatures:
             ref = self._external_signatures[sig]
             return SliceNode(file="", line=0, callable=sig, kind="external", name=sig.rpartition(".")[2], source=None, ref=ref)
         rows = self._run(
-            "MATCH (c:GoCallable {signature:$sig}) WHERE c.id STARTS WITH $pre RETURN c.id AS ref, c.span_json AS span",
+            "MATCH (c:GoCallable {signature:$sig}) WHERE c.id STARTS WITH $pre "
+            "OPTIONAL MATCH (t:GoType)-[:GO_HAS_METHOD]->(c) "
+            "RETURN c.id AS ref, c.span_json AS span, t.id AS type_id ORDER BY c.id",
             sig=sig,
             pre=self._scope_prefix,
         )
         if not rows:
             raise KeyError(f"{sig!r} resolved but no :GoCallable node carries it in application {self.application_name!r}")
-        if len(rows) > 1:
-            raise ValueError(f"{sig!r} is carried by more than one analysed callable; neither can be addressed unambiguously")
-        ref = rows[0]["ref"]
-        span = json.loads(rows[0]["span"]) if rows[0]["span"] else None
+        chosen = pick_declaration(sig, [(self._path_of(r["ref"]), r["type_id"]) for r in rows], in_class=in_class, in_module=in_module)
+        row = next(r for r in rows if self._path_of(r["ref"]) == chosen)
+        span = json.loads(row["span"]) if row["span"] else None
         return SliceNode(
-            file=self._path_of(ref),
+            file=chosen,
             line=span["start"][0] if span else 0,
             callable=sig,
             kind="callable",
             name=sig.rpartition(".")[2],
             source=None,
-            ref=ref,
+            ref=row["ref"],
         )
 
     def resolve_value(self, name: str, *, within: str) -> SliceNode:

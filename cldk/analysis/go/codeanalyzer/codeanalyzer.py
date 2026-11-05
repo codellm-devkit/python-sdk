@@ -68,7 +68,7 @@ from cldk.analysis.go.backend import (
     VIA,
     GoAnalysisBackend,
 )
-from cldk.analysis.go.ids import body_node_id, callable_match_names, external_signature, go_value_names
+from cldk.analysis.go.ids import body_node_id, callable_match_names, external_signature, go_value_names, pick_declaration
 from cldk.models.go import (
     GoAnalysis,
     GoApplication,
@@ -526,7 +526,7 @@ class GoCodeanalyzer(GoAnalysisBackend):
 
     # -----[ addressing ]-----
     @cached_property
-    def _candidates(self) -> Tuple[List[CallableCandidate], Dict[str, Tuple[object, str | None, str]], FrozenSet[str]]:
+    def _candidates(self) -> Tuple[List[CallableCandidate], Dict[str, List[Tuple[object, str | None, str]]]]:
         """``(candidates, {signature: owner}, colliding signatures)`` for :meth:`resolve_callable`.
 
         **The library stand-ins are in the domain**, and they have to be: spec §7's own worked
@@ -542,28 +542,33 @@ class GoCodeanalyzer(GoAnalysisBackend):
         than matching one through a path derivation that would be meaningless here (the same
         distinction Java's J-2 records).
 
-        Two callables sharing a signature collapse into one entry, and the resolver would then hand
-        back whichever won with no signal — so the collisions are recorded and a name resolving onto
-        one raises. Checked on the *answer* rather than eagerly, so a duplicate elsewhere does not
-        break every unrelated resolution.
+        **One candidate per declaration, not per signature.** A Go signature is not a unique
+        address: several files in one package may each declare their own ``init()``, so
+        ``example.com/x/initclosure.init`` names two different callables with different bodies (3
+        such collisions on the analyzer's own corpus). Keying the candidate list by signature
+        collapsed those into one entry, which hid the ambiguity from the shared policy — so it
+        could neither report it (the Neo4j backend, whose rows are per declaration, raised
+        ``AmbiguousName`` where this raised a bare ``ValueError``) nor let ``in_module=`` narrow it.
+        Emitting one candidate per declaration is what makes the two backends hand the policy the
+        same domain, which is the only way they can agree on both the answer and the failure.
+
+        ``declarations`` therefore maps a signature to *every* callable carrying it, and
+        :func:`~cldk.analysis.go.ids.pick_declaration` re-applies the caller's keywords to choose
+        among them once the policy has resolved the signature.
         """
-        found: Dict[str, Tuple[object, str | None, str]] = {}
-        collisions: set = set()
+        declarations: Dict[str, List[Tuple[object, str | None, str]]] = {}
         for c, tid, path in self._iter_callables():
-            if c.signature in found:
-                collisions.add(c.signature)
-            found[c.signature] = (c, tid, path)
+            declarations.setdefault(c.signature, []).append((c, tid, path))
         cands = [
             CallableCandidate(sig, tid, path, match_names=callable_match_names(sig), module_names=(pkg,) if (pkg := self._package_of(path)) else ())
-            for sig, (_c, tid, path) in found.items()
+            for sig, entries in declarations.items()
+            for _c, tid, path in entries
         ]
         for sym in self.application.external_symbols.values():
             sig = external_signature(sym.module, sym.signature, sym.name)
-            if sig in found:
-                collisions.add(sig)
-            found[sig] = (sym, None, "")
+            declarations.setdefault(sig, []).append((sym, None, ""))
             cands.append(CallableCandidate(sig, None, "", match_names=callable_match_names(sig), module_names=()))
-        return cands, found, frozenset(collisions)
+        return cands, declarations
 
     def _package_of(self, path: str) -> str | None:
         """The ``package`` clause of the module at ``path`` — what ``in_module=`` matches a Go
@@ -585,11 +590,14 @@ class GoCodeanalyzer(GoAnalysisBackend):
         "both backends resolve over the same set". The Go receiver spellings come from
         :func:`~cldk.analysis.go.ids.callable_match_names`, which is shared with the Neo4j backend.
         """
-        cands, found, collisions = self._candidates
+        cands, declarations = self._candidates
         sig = resolve_callable_signature(name, cands, in_class=in_class, in_module=in_module, by_full_name="more of the import path")
-        if sig in collisions:
-            raise ValueError(f"{sig!r} is carried by more than one analysed callable; neither can be addressed unambiguously")
-        c, _tid, path = found[sig]
+        entries = declarations[sig]
+        # A signature can name several declarations (same-package multi-file ``init()``), so the
+        # keywords are re-applied to choose among them -- see ``pick_declaration`` for why the
+        # policy's own answer is one step short of an address here.
+        chosen = pick_declaration(sig, [(path, tid) for _c, tid, path in entries], in_class=in_class, in_module=in_module)
+        c, _tid, path = next((obj, tid, p) for obj, tid, p in entries if p == chosen)
         if not c.id:
             raise KeyError(f"{sig!r} carries no usable address (id={c.id!r})")
         # A stand-in has no file and no span, so it is described as an external rather than given a
@@ -629,17 +637,31 @@ class GoCodeanalyzer(GoAnalysisBackend):
         return SliceNode(file=owner.file, line=owner.line, callable=owner.callable, kind=kind, name=leaf, defined_in=defined_in, source=None, ref=body_node_id(c.id, key))
 
     # -----[ per-callable graphs ]-----
-    def _graphs_of(self, name: str, in_class: str | None, page_size: int) -> GoCallable:
-        """The callable ``name`` resolves to, once this backend is deep enough to have dataflow.
+    def _graphs_of(self, name: str, in_class: str | None, page_size: int) -> Tuple[str, GoCallable | None]:
+        """``(signature, callable)`` for ``name``, once this backend is deep enough to have dataflow.
 
         ``page_size`` is validated **first**, before the level guard and before resolution, so a
         malformed argument is a ``ValueError`` before anything else — the order the Neo4j backend
         applies too, so the two cannot answer the same bad call with different exceptions.
+
+        **The callable is ``None`` for a library stand-in**, which is a real resolution target here
+        (spec §7's own example, ``database/sql.DB.Query``, is one) and has no intraprocedural flow
+        to report: the analyzer synthesizes only ``formal_in``/``formal_out`` ports for it, so
+        :class:`~cldk.models.go.GoExternalSymbol` carries no ``cfg``/``cdg``/``ddg`` field at all.
+        Returning ``None`` is what lets the three accessors answer with an **empty page**, which is
+        both the honest answer — the pass ran and a stand-in has no statements — and the answer the
+        Neo4j backend already gives, since its Cypher simply matches no rows on an external node.
+        Reading the field blindly raised ``AttributeError`` instead, which was neither.
+
+        This is **not** the D7 case the level gate guards: there, empty would be indistinguishable
+        from "no dependence" because the pass never ran. Here the pass ran and the absence is a
+        fact about what a stand-in *is*.
         """
         check_page_size(page_size)
         self._require_dataflow()
         node = self.resolve_callable(name, in_class=in_class)
-        return self._dataflow_owners[node.ref][0]
+        owner = self._dataflow_owners[node.ref][0]
+        return node.callable, owner if isinstance(owner, GoCallable) else None
 
     def get_cfg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[GoCfgEdge]:
         """One page of control flow within one callable (see :meth:`GoAnalysisBackend.get_cfg`).
@@ -650,21 +672,21 @@ class GoCodeanalyzer(GoAnalysisBackend):
         the one the Neo4j backend would return. The join happens *before* the sort, because the
         order is over the ids a caller sees, not over the local keys.
         """
-        c = self._graphs_of(callable, in_class, page_size)
-        edges = [GoCfgEdge(src=body_node_id(c.id, e.src), dst=body_node_id(c.id, e.dst), kind=e.kind) for e in c.cfg or []]
-        return edge_page(GoCfgEdge, c.signature, edges, CFG_ORDER, page_size, cursor)
+        sig, c = self._graphs_of(callable, in_class, page_size)
+        edges = [] if c is None else [GoCfgEdge(src=body_node_id(c.id, e.src), dst=body_node_id(c.id, e.dst), kind=e.kind) for e in c.cfg or []]
+        return edge_page(GoCfgEdge, sig, edges, CFG_ORDER, page_size, cursor)
 
     def get_cdg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[GoCdgEdge]:
         """One page of control dependence within one callable (see :meth:`GoAnalysisBackend.get_cdg`)."""
-        c = self._graphs_of(callable, in_class, page_size)
-        edges = [GoCdgEdge(src=body_node_id(c.id, e.src), dst=body_node_id(c.id, e.dst)) for e in c.cdg or []]
-        return edge_page(GoCdgEdge, c.signature, edges, CDG_ORDER, page_size, cursor)
+        sig, c = self._graphs_of(callable, in_class, page_size)
+        edges = [] if c is None else [GoCdgEdge(src=body_node_id(c.id, e.src), dst=body_node_id(c.id, e.dst)) for e in c.cdg or []]
+        return edge_page(GoCdgEdge, sig, edges, CDG_ORDER, page_size, cursor)
 
     def get_ddg(self, callable: str, *, in_class: str | None = None, page_size: int = DEFAULT_PAGE_SIZE, cursor: str | None = None) -> EdgePage[GoDdgEdge]:
         """One page of data dependence within one callable (see :meth:`GoAnalysisBackend.get_ddg`)."""
-        c = self._graphs_of(callable, in_class, page_size)
-        edges = [GoDdgEdge(src=body_node_id(c.id, e.src), dst=body_node_id(c.id, e.dst), var=e.var, prov=list(e.prov or [])) for e in c.ddg or []]
-        return edge_page(GoDdgEdge, c.signature, edges, DDG_ORDER, page_size, cursor)
+        sig, c = self._graphs_of(callable, in_class, page_size)
+        edges = [] if c is None else [GoDdgEdge(src=body_node_id(c.id, e.src), dst=body_node_id(c.id, e.dst), var=e.var, prov=list(e.prov or [])) for e in c.ddg or []]
+        return edge_page(GoDdgEdge, sig, edges, DDG_ORDER, page_size, cursor)
 
     # -----[ slicing and reachability ]-----
     def _reach(self, ref: str, direction: str, depth: int | None) -> set:

@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from typing import Iterable, List, Sequence, Tuple
 
-from cldk.analysis.commons.resolve import value_candidate
+from cldk.analysis.commons.resolve import segment_match, value_candidate
 
 #: The marker the analyzer puts in a library stand-in's **callable** id, before any vertex ``@``:
 #: ``can://<ns>/<app>/@external/bytes/Buffer.Read``. Its leading ``@`` is why
@@ -194,6 +194,53 @@ def external_signature(module: str, signature: str, name: str) -> str:
     an older emission, in which case the bare ``name`` stands in.
     """
     return f"{module}.{signature or name}"
+
+
+def pick_declaration(sig: str, declarations: Sequence[Tuple[str, "str | None"]], *, in_class: "str | None", in_module: "str | None") -> str:
+    """The one declaration path of ``sig``, re-narrowed by the keywords that resolved it.
+
+    **Why this exists.** Go lets several files in one package each declare their own ``init()``, so
+    one signature can name several *different* callables with different bodies and different
+    dataflow — ``example.com/x/initclosure.init`` is declared in both ``a.go`` and ``b.go`` on the
+    analyzer's own corpus (3 such collisions there). A signature is therefore not a unique address
+    in Go the way it is in Python, and both backends have to agree on that.
+
+    :func:`~cldk.analysis.commons.resolve.resolve_callable_signature` returns a *signature string*,
+    which is one step short of an address when the signature collides: the keyword that narrowed the
+    candidate set is not re-applied to the declarations behind it, so a caller who wrote
+    ``in_module="a.go"`` and got past the policy would still face two declarations. This re-applies
+    exactly the policy's own predicates — :func:`segment_match` on the owning type for ``in_class``,
+    and on the repo-relative path with ``/`` for ``in_module`` — so a keyword that disambiguated the
+    candidates disambiguates the declaration too.
+
+    Args:
+        sig: The signature the policy resolved to.
+        declarations: ``(path, owning type id)`` for every callable carrying ``sig``.
+        in_class / in_module: The keywords as the caller passed them.
+
+    Returns:
+        The single matching declaration's path.
+
+    Raises:
+        ValueError: ``sig`` is carried by more than one declaration and the keywords given do not
+            single one out. The message names the paths, because the way out is to pass one of
+            them — a caller cannot act on "it is ambiguous" alone.
+    """
+    if len(declarations) == 1:
+        return declarations[0][0]
+    kept = list(declarations)
+    if in_class is not None:
+        kept = [(path, tid) for path, tid in kept if tid and segment_match(in_class, tid)]
+    if in_module is not None:
+        kept = [(path, tid) for path, tid in kept if segment_match(in_module, path, sep="/")]
+    if len(kept) == 1:
+        return kept[0][0]
+    paths = sorted(path for path, _tid in (kept or declarations))
+    raise ValueError(
+        f"{sig!r} is declared in {len(paths)} files ({', '.join(paths)}) — Go allows several files in one "
+        f"package to declare the same signature, so it is not a unique address here. Narrow it with "
+        f"in_module= naming one of those paths."
+    )
 
 
 def value_display(var: str) -> Tuple[str, str, "str | None"]:

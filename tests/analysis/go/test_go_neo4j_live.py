@@ -345,6 +345,53 @@ def test_edge_vars_domain_matches(dataflow_pair):
     assert sorted(local._edge_vars_in(ref)) == sorted(graph._edge_vars_in(ref))
 
 
+def test_a_colliding_signature_fails_and_narrows_identically(dataflow_pair):
+    """Go permits a per-file ``init()``, so one signature can name two callables with different
+    bodies. Both backends must refuse it the same way *and* accept the same narrowing.
+
+    This diverged: the local backend collapsed the declarations into one candidate and raised a bare
+    ``ValueError`` where the graph raised ``AmbiguousName``, and ``in_module=`` naming a file worked
+    on neither. Found by review against this graph; invisible from either backend alone.
+    """
+    local, graph = dataflow_pair
+    by_sig = {}
+    for c, _tid, path in local._iter_callables():
+        by_sig.setdefault(c.signature, []).append(path)
+    collisions = {sig: paths for sig, paths in by_sig.items() if len(paths) > 1}
+    if not collisions:
+        pytest.skip("this application declares no signature in more than one file")
+    sig, paths = sorted(collisions.items())[0]
+
+    # Refused the same way, by type -- a bare name cannot pick between two real callables.
+    with pytest.raises(Exception) as lo:
+        local.resolve_callable(sig)
+    with pytest.raises(Exception) as ne:
+        graph.resolve_callable(sig)
+    assert type(lo.value) is type(ne.value), (type(lo.value), type(ne.value))
+
+    # And narrowed the same way, to the same node, by the file the caller names.
+    target = sorted(paths)[0]
+    lo_node = local.resolve_callable(sig, in_module=target)
+    ne_node = graph.resolve_callable(sig, in_module=target)
+    assert (lo_node.ref, lo_node.file, lo_node.callable) == (ne_node.ref, ne_node.file, ne_node.callable)
+    assert lo_node.file == target
+
+
+def test_the_three_graphs_agree_on_a_standin(dataflow_pair):
+    """A stand-in has no statements, so all three graphs are empty — and both backends must *say*
+    so rather than one crashing. The local backend read a field ``GoExternalSymbol`` does not have.
+    """
+    local, graph = dataflow_pair
+    standins = [s for s in local.get_external_symbols().values() if s.signature]
+    if not standins:
+        pytest.skip("this application calls nothing outside itself")
+    sig = f"{standins[0].module}.{standins[0].signature}"
+    for getter in ("get_cfg", "get_cdg", "get_ddg"):
+        lo, ne = getattr(local, getter)(sig), getattr(graph, getter)(sig)
+        assert (lo.total, list(lo.edges), lo.complete) == (ne.total, list(ne.edges), ne.complete), getter
+        assert lo.total == 0, f"{getter} on a stand-in returned edges; is it still body-less?"
+
+
 def test_miss_paths_match(dataflow_pair):
     """Both backends must *fail* the same way, not merely succeed the same way: an ambiguous name
     and an absent one are part of the contract, and a backend that raised a different type there

@@ -235,9 +235,19 @@ class GoAnalysisBackend(AnalysisBackend[GoApplication, GoModule, GoType, GoCalla
             in_module: Disambiguate by module — the repo-relative ``.go`` path, or the package's
                 dotted name.
 
+        **A Go signature is not always a unique address.** Several files in one package may each
+        declare their own ``init()``, so one signature can name several *different* callables with
+        different bodies and different dataflow (3 such collisions on the analyzer's own corpus).
+        Both backends hand the shared policy one candidate **per declaration**, so the ambiguity is
+        reported rather than silently resolved to whichever won, and ``in_module=`` naming one of
+        the declaring paths is what picks one.
+
         Raises:
             AmbiguousName: More than one callable matched; the candidates are carried.
             SelectorNotInGraph: Nothing matched, or a keyword excluded every match.
+            ValueError: The resolved signature is declared in several files and the keywords given
+                do not single one out. The message names the paths, because passing one of them is
+                the way out.
         """
 
     @abstractmethod
@@ -292,11 +302,20 @@ class GoAnalysisBackend(AnalysisBackend[GoApplication, GoModule, GoType, GoCalla
             Endpoints are the body nodes' own ``can://`` ids, the spelling :meth:`get_source`
             accepts.
 
+            **An empty page for a library stand-in is an answer, not a gap.** ``callable`` may
+            resolve to one (``database/sql.DB.Query``), and a stand-in has no statements — the
+            analyzer synthesizes only its ``formal_in``/``formal_out`` ports — so all three graphs
+            are legitimately empty there. That is distinct from the level gate below, where empty
+            *would* be indistinguishable from "no dependence" because the pass never ran; here the
+            pass ran and the absence is a fact about what a stand-in is. Its ports are still real
+            vertices, so the slices and :meth:`taint` do cross it.
+
         Raises:
             AmbiguousName: ``callable`` named more than one callable.
             SelectorNotInGraph: Nothing matched.
-            ValueError: ``page_size`` below 1, or ``cursor`` not from a previous page of this
-                accessor and this callable.
+            ValueError: ``page_size`` below 1, ``cursor`` not from a previous page of this accessor
+                and this callable, or the signature is declared in several files (see
+                :meth:`resolve_callable`).
             CodeanalyzerUsageException: (local backend) built below ``-a 3``.
         """
 
