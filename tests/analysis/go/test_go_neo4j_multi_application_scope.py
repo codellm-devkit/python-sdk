@@ -82,3 +82,40 @@ def test_point_lookup_rejects_foreign_owner_or_language_before_query(uri):
     with pytest.raises(ValueError, match="scope"):
         backend.get_class(uri)
     assert len(driver.statements) == before
+
+
+# python-sdk#436 widened the guard to admit `<app>/@external/` alongside `<app>/go/`, because a
+# library stand-in is this application's node: the projector mints it under this prefix and it
+# carries this application's L4 ports. The admitted set is the subject of these two tests -- the
+# widening must not have opened an owner or language axis, and the cases below are the three axes
+# plus the look-alike segments a prefix test could confuse.
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "can://one/svc/go/server.go/T",  # own project node
+        "can://one/svc/@external/database/sql/DB.Query",  # own stand-in -- the widening
+        "can://one/svc/@external/database/sql/DB.Query@formal_in:1",  # own stand-in's vertex
+    ],
+)
+def test_this_applications_own_nodes_are_admitted(uri):
+    backend = GoNeo4jBackend._from_driver(Driver(), application_name="svc", namespace="one")
+    assert backend._in_scope(uri) is True
+
+
+@pytest.mark.parametrize(
+    "uri,why",
+    [
+        ("can://two/svc/@external/bytes/Buffer.Read", "foreign namespace"),
+        ("can://one/svc-extra/@external/bytes/Buffer.Read", "foreign application, separator-extended"),
+        ("can://one/svcX/@external/bytes/Buffer.Read", "foreign application, no separator"),
+        ("can://one/svc/java/Foo.java/T", "sibling language"),
+        ("can://one/svc/typescript/a.ts/T", "sibling language"),
+        ("can://one/svc/gopher/server.go/T", "'go' as the prefix of a different segment"),
+        ("can://one/svc/@externalish/x", "'@external' as the prefix of a different segment"),
+        ("can://one/svc/@external", "the bare segment, no trailing separator"),
+        ("can://one/svc/go", "the bare language segment, no trailing separator"),
+    ],
+)
+def test_the_widened_guard_still_refuses_every_foreign_axis(uri, why):
+    backend = GoNeo4jBackend._from_driver(Driver(), application_name="svc", namespace="one")
+    assert backend._in_scope(uri) is False, why
