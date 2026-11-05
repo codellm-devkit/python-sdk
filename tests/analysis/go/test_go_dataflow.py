@@ -204,6 +204,28 @@ def test_trap4_a_degraded_analysis_cannot_certify_an_absence(backend, monkeypatc
     assert found.paths and found.exhausted == []
 
 
+def test_the_degradation_notice_is_stated_once_per_batch_not_once_per_pair(backend, monkeypatch):
+    """The condition is a property of the whole analysis — the approximation is somewhere in the
+    SDG and nothing can say which pairs ran through it — so it is one diagnostic, filed under a key
+    no pair claims, which is ``taint_verdict``'s own mechanism for a diagnostic it cannot attribute.
+
+    The verdict is identical either way; filing per pair would say the same thing m×n times (400
+    copies on a 40×10 batch), which buries the ledger a caller is meant to read.
+    """
+    from cldk.models.go import GoDegraded
+
+    monkeypatch.setattr(type(backend), "get_degraded", lambda self: [GoDegraded(code="no_vta")])
+    batch = backend.taint(
+        sources=[("id", "sqlRepo.Find"), ("id", "sqlRepo.SanitizedFind"), ("user", "sqlRepo.Count")],
+        sinks=[(SINK_ARG, SINK), ("db", SINK)],
+    )
+    assert len(batch.unresolved) == 1, "one batch-wide condition produced more than one diagnostic"
+    assert batch.unresolved[0].code == "analysis_degraded"
+    # The verdict is what matters, and it is the strict one: nothing certified, batch not complete.
+    assert batch.exhausted == [] and batch.complete is False
+    assert batch.paths, "the witnesses are still reported -- a degraded graph is not a refusal"
+
+
 # ======================================================================================
 # Addressing: the spellings spec §7 requires, and the ambiguities that must raise.
 # ======================================================================================

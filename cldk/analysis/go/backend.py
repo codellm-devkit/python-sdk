@@ -551,10 +551,18 @@ class GoAnalysisBackend(AnalysisBackend[GoApplication, GoModule, GoType, GoCalla
         dsts = [self.resolve_value(name, within=within) for name, within in sinks]
         cuts, cut_callables = resolve_sanitizers(sanitizers, resolve_callable=self.resolve_callable, edge_vars_in=self._edge_vars_in)
         rows, blocked = self._taint_walk(srcs, dsts, cuts=cuts, cut_callables=cut_callables, depth=depth, max_paths=max_paths)
-        # A degraded analysis cannot certify an absence (trap 4). The diagnostic is filed under
-        # *every* requested pair, not under one key of this method's devising: ``taint_verdict``
-        # reads the keys to decide ``exhausted``, and a key no requested pair claims would cost
-        # every pair its certification for want of anything able to attribute it.
+        # A degraded analysis cannot certify an absence (trap 4), and the condition is a property of
+        # the **whole analysis** rather than of any one pair: the approximation is somewhere in the
+        # SDG, and nothing here can say which pairs' routes ran through it.
+        #
+        # So it is filed under one key that **no requested pair claims**, which is exactly the
+        # mechanism :func:`~cldk.analysis.commons.graphs.taint_verdict` already has for a diagnostic
+        # it cannot attribute: an unclaimed key lands in ``unresolved`` and empties ``exhausted``
+        # for the batch. That is the intended outcome here, not a side effect — a batch-wide
+        # approximation must cost every pair its certification.
+        #
+        # Filing it per pair instead gives the identical verdict and m*n copies of one message (400
+        # of them on a 40x10 batch, measured), so the single key is the same answer said once.
         degraded = self.get_degraded()
         if degraded:
             codes = sorted({d.code for d in degraded})
@@ -563,11 +571,12 @@ class GoAnalysisBackend(AnalysisBackend[GoApplication, GoModule, GoType, GoCalla
                 message=(
                     f"this analysis carries {len(degraded)} degradation marker(s) ({', '.join(codes)}), so part of the "
                     "SDG is approximated: a path returned here is a real may-flow, but the absence of one is not a "
-                    "proof. See get_degraded() for the affected packages and callables."
+                    "proof, and no pair in this batch is certified. See get_degraded() for the affected packages "
+                    "and callables."
                 ),
             )
-            per_pair = {(a.ref, b.ref): [note] for a in srcs for b in dsts}
-            blocked = {k: list(blocked.get(k, [])) + v for k, v in per_pair.items()} | {k: v for k, v in blocked.items() if k not in per_pair}
+            blocked = dict(blocked)
+            blocked[("", "")] = [note]
         return taint_verdict(sources, sinks, srcs, dsts, rows=rows, blocked=blocked, depth=depth, max_paths=max_paths)
 
     @abstractmethod
