@@ -493,6 +493,84 @@ names its upstream issue where there is one:
 
 ---
 
+## Go — what attaches today
+
+Everything outside this section is the **Python** surface. Go's type-centric navigation
+(`get_types` / `get_type` / `get_functions` / `get_methods_of` / `get_method` / `get_fields`,
+`get_callers` / `get_callees`, `get_source`) landed with the language; python-sdk#436 added the
+dataflow surface below.
+
+```python
+from cldk import CLDK
+from cldk.analysis.commons.backend_config import CodeAnalyzerConfig, Neo4jConnectionConfig
+
+# In-process, over cango's analysis.json. Levels 1-4; 4 for anything on this page.
+go = CLDK.go(project_path="/path/to/module", analysis_level="system_dependency_graph",
+             backend=CodeAnalyzerConfig())
+
+# Against a deployed graph (read-only), keyed by the --app-name/--namespace it was emitted with
+go = CLDK.go(backend=Neo4jConnectionConfig(uri="bolt://localhost:7687", username="neo4j",
+             password="…", application_name="my-app"))
+```
+
+`cango` comes from the `codeanalyzer-go` 0.3.0 wheel, or from `$CODEANALYZER_GO_BIN`. `--emit neo4j`
+takes no `-a` and is always full depth, so **only a local analysis can be too shallow** — below
+`-a 3` the per-callable graphs raise naming the level, and below `-a 4` a `resolve_value` finds no
+port to address, because the port vertices do not exist there at all.
+
+**Landed for Go: the dataflow surface** — `get_cfg` / `get_cdg` / `get_ddg`, `resolve_callable` /
+`resolve_value`, `slice_backward` / `slice_forward` / `backward_cone`, `reaches` / `paths_between`,
+`flows_to_call` / `flows_to_argument`, `taint`, `get_external_symbols`, `get_degraded` and
+`describe`. Python's signatures, keyword-for-keyword and default-for-default, with Go's edge models
+(`GoCfgEdge` / `GoCdgEdge` / `GoDdgEdge`); the same bounds rule (slices bounded by default,
+predicates and path queries unbounded, because a bounded predicate returns a *wrong* answer rather
+than a small one) and the same `complete` protocol. Both backends answer identically including the
+miss paths.
+
+Five Go-specific facts, each one a thing that will mislead you if you don't know it:
+
+- **A library stand-in is addressable, and is where most sinks live.** At `-a 4` the analyzer
+  synthesizes a body for a library callable, so `database/sql.DB.Query` is a resolvable callable
+  with real `formal_in` ports and a flow passes *through* it rather than stopping at the project
+  boundary. `resolve_callable("DB.Query")` works; so do `sql.DB.Query` and `database/sql.DB.Query`.
+  A stand-in resolves with `kind="external"` and `file=""` — it has no source file, and the SDK
+  reports that rather than inventing a path. `get_external_symbols()` is where their properties
+  live; it is **not** a dependency list.
+- **A method's receiver is `formal_in:0`, and is not in `parameters[]`.** So the receiver is an
+  addressable value (`resolve_value("s", within="sqlRepo.Find")`) and the first declared parameter
+  is `formal_in:1`. Do not pair `formal_in:N` with `parameters[N]`: measured on the analyzer's
+  dataflow corpus, `formal_in:0.of` equals `parameters[0].name` on only 174 of 276 callables. An
+  interface method's receiver is spelled `_recv`; a concrete method's is the receiver variable's own
+  name. A closure's captures are `formal_in` vertices too, with no parameter at all.
+- **A package-level global is addressed by the spelling you write.** `resolve_value("libflow.Last",
+  within=…)` resolves, as does the full import-path form `example.com/x/libflow.Last`; a bare
+  `lastQuery` that two packages both export raises `AmbiguousName` rather than picking, and the
+  package-qualified form is what splits them.
+- **A bare method name shared with its interface is ambiguous, and that is correct.** `Find` names
+  both `Repo.Find` (the interface declaration — formal vertices, no body) and `sqlRepo.Find` (the
+  implementation). They have different dataflow, so the receiver is how you say which.
+- **`get_degraded()` is the honesty signal — read it before trusting an absence.** Non-empty means
+  some L4 step fell back to a coarser result (`range_func`, `unmapped_ssa`, `no_vta`, …). A path
+  that *is* returned stays a real may-flow, so this does not refuse; what it does is void every
+  `exhausted` certification in a `taint` result and file an `analysis_degraded` diagnostic saying
+  why. `complete` goes `False` with it.
+
+**The port-connectivity gate.** `slice_*`, `paths_between`, `flows_to_*` and `taint` refuse — naming
+the gap rather than returning a false empty — when no `formal_in` vertex in the attached analysis has
+an outgoing dependence edge. Same rule as Java's, and the probe reads the *data*, never a version
+string, so a payload or graph whose ports connect answers instead.
+
+**Known gap (codellm-devkit/codeanalyzer-go#30):** global → global `summary` edges are omitted.
+Reachability is unchanged, but a depth-bounded walk may stop short where the shortcut is gone — one
+more reason the predicates default to `depth=None`.
+
+**Scale caveat.** A local `-a 4` payload reaches 1.78 GB on Kubernetes and the local backend loads it
+whole and builds the adjacency in memory. For an application that size, attach the Neo4j backend,
+which pushes the same traversal into Cypher; `--emit neo4j` itself peaks at 21–25 GB on the largest
+corpora (codellm-devkit/codeanalyzer-go#38).
+
+---
+
 ## The four moves
 
 Most questions decompose into these. Start here, then use the tables below.
