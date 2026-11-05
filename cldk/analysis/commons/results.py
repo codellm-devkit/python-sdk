@@ -64,8 +64,9 @@ class Diagnostic(BaseModel):
             resolver, not in the error path", so nothing in the SDK constructs a ``Diagnostic``
             with suggestions or with ``code="did_you_mean"``; the codes actually emitted are
             ``file_not_in_graph``, ``module_scope``, ``module_source_unavailable``,
-            ``entrypoint_report_unavailable``, and — since ``taint()`` — ``unresolved_dispatch``
-            and ``degenerate_pair``. The field and the code stay because both are part
+            ``entrypoint_report_unavailable``, ``unresolved_dispatch`` and ``degenerate_pair``
+            (since ``taint()``), and ``analysis_degraded`` (since Go's L3/L4 train,
+            python-sdk#436). The field and the ``did_you_mean`` code stay because both are part
             of a published model contract (``docs/agent-api-reference.md``) that a caller may
             already destructure; removing either is a separate, breaking change.
     """
@@ -84,6 +85,13 @@ class Diagnostic(BaseModel):
         "graph_schema_mismatch",
         "entrypoint_report_unavailable",
         "degenerate_pair",
+        # Part of the analysis was approximated, so an *absence* of flow is not a proof over it
+        # (python-sdk#436). Emitted by Go's ``taint()`` when ``get_degraded()`` is non-empty, and
+        # filed under every requested pair, which is what voids their ``exhausted`` certification.
+        # A language-neutral code rather than a Go-specific one: the condition it names — "the
+        # analyzer told us it fell back" — is not Go's alone, and a sibling that gains a
+        # degradation channel should report it under this name rather than minting a second.
+        "analysis_degraded",
     ]
     message: str
     suggestions: list[str] = []
