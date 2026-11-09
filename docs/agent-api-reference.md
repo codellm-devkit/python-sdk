@@ -555,6 +555,21 @@ Five Go-specific facts, each one a thing that will mislead you if you don't know
   `exhausted` certification in a `taint` result and file an `analysis_degraded` diagnostic saying
   why. `complete` goes `False` with it.
 
+**Reading text back off a position.** `get_source(node_id)` takes a durable id (type, callable,
+field) **or a body-node id** — `"<callable can:// id>@<body key>"`, which is what every edge
+endpoint and every `SliceNode.ref` carries. So an id read off a `get_ddg` page or a slice can be
+turned into source directly:
+
+```python
+page = go.get_ddg("sqlRepo.Find")
+go.get_source(page.edges[0].src)          # 'return s.db.Query("SELECT …")'
+```
+
+A parameter-passing vertex has no span — it is a dataflow position, not a region of the file — so
+it raises rather than returning `""`, on both backends. `describe(nodes)` is the batch form: it
+takes the `SliceNode`s a slice or path handed you, and also accepts bare ids, returning `source=None`
+for a position that has no text rather than raising.
+
 **The port-connectivity gate.** `slice_*`, `paths_between`, `flows_to_*` and `taint` refuse — naming
 the gap rather than returning a false empty — when no `formal_in` vertex in the attached analysis has
 an outgoing dependence edge. Same rule as Java's, and the probe reads the *data*, never a version

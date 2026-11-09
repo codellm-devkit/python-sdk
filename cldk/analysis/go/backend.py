@@ -169,7 +169,19 @@ class GoAnalysisBackend(AnalysisBackend[GoApplication, GoModule, GoType, GoCalla
     # -----[ source + whole-program ]-----
     @abstractmethod
     def get_source(self, node_id: str) -> str:
-        """The source text of the node ``node_id`` — ``module.source[node.span.bytes]``."""
+        """The source text of the node ``node_id`` — ``module.source[node.span.bytes]``.
+
+        ``node_id`` is a durable id (type, callable, field) **or a body-node id** —
+        ``"<callable can:// id>@<body key>"``, the analyzer's own, round-tripped and never composed
+        by the caller. The body-node form is what every edge endpoint and every
+        :class:`~cldk.analysis.commons.results.SliceNode` carries, so accepting it is what lets a
+        caller read an id off a ``get_ddg`` page or a slice and then read its text.
+
+        Raises:
+            CodeanalyzerExecutionException: nothing in this application owns that id, or the node
+                exists and carries no span — a parameter-passing vertex is a dataflow position,
+                not a region of the file, and has no text on either backend.
+        """
 
     @abstractmethod
     def get_call_graph_json(self) -> str:
@@ -463,7 +475,7 @@ class GoAnalysisBackend(AnalysisBackend[GoApplication, GoModule, GoType, GoCalla
         **Read this before trusting an absence.** A non-empty list means some L4 step fell back to
         a coarser result (``range_func``, ``unmapped_ssa``, ``no_vta``, …), so a path that *is*
         returned is still a real may-flow, but "no path" is not a proof over the affected packages
-        and callables. :meth:`taint` reports this on its own ledger rather than making the judgement
+        and callables. :meth:`taint` reports this on its own ledger rather than making the judgment
         for the caller; this accessor is how a caller inspects it directly.
         """
 
@@ -509,7 +521,7 @@ class GoAnalysisBackend(AnalysisBackend[GoApplication, GoModule, GoType, GoCalla
         ``unresolved``.
 
         **Sources, sinks and sanitizers are the caller's to supply.** This SDK ships no Go framework
-        catalogue and derives no default set: a per-language vocabulary of taint sources is policy
+        catalog and derives no default set: a per-language vocabulary of taint sources is policy
         that rots, and this accessor is the mechanism.
 
         **A sanitizer is two mechanisms wearing one word**, told apart by shape. A bare ``str`` cuts

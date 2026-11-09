@@ -102,7 +102,7 @@ def _slice_node(row: Dict[str, Any], module_key: Callable[[str], str]) -> SliceN
 
     The local twin is ``GoCodeanalyzer._slice_node``; the two share
     :func:`~cldk.analysis.commons.resolve.body_node_kind`, so a vertex a caller addressed through
-    ``resolve_value`` as a ``global`` comes back from a slice labelled a ``global`` on either
+    ``resolve_value`` as a ``global`` comes back from a slice labeled a ``global`` on either
     backend, and they differ only in where the fields are read from.
 
     ``row["var"]`` is the graph's name for the JSON's ``of`` (see
@@ -480,7 +480,7 @@ class GoNeo4jBackend(GoAnalysisBackend):
     # the value a vertex stands for arrives under the name the shared helpers expect.
     #
     # A STAND-IN IS A FIRST-CLASS VERTEX. ``:GoExternal`` nodes carry ``GO_HAS_BODY_NODE`` body
-    # nodes at L4, so the traversals must not be labelled ``:GoCallable``-only on the interior or
+    # nodes at L4, so the traversals must not be labeled ``:GoCallable``-only on the interior or
     # a flow *through* ``database/sql.DB.Query`` would be invisible — which is the very flow the
     # httpsql fixture gates. ``:GoCallable|GoExternal`` is therefore deliberate everywhere below.
     # =====================================================================================
@@ -1051,19 +1051,40 @@ class GoNeo4jBackend(GoAnalysisBackend):
     def describe(self, nodes: Sequence[object]) -> List[SliceNode]:
         """Fill in ``source`` for these positions (see :meth:`GoAnalysisBackend.describe`).
 
-        One query for the batch rather than one per node. A vertex with no span gets ``None``: it is
-        a dataflow position, not a region of the file, and there is nothing to read on either
-        backend.
+        A vertex with no span gets ``None``: it is a dataflow position, not a region of the file,
+        and there is nothing to read on either backend.
+
+        **A bare ``can://`` id is accepted as well as a resolved node**, because the local backend
+        accepts one and silently *dropping* it here was the worse half of that divergence: a caller
+        passing ids got a short list back with no signal, where the local backend answered. The
+        documented argument is a :class:`~cldk.analysis.commons.results.SliceNode`; an id is
+        resolved to one first rather than refused, so neither backend is the lenient outlier.
         """
         out: List[SliceNode] = []
         for n in nodes:
             if not isinstance(n, SliceNode):
-                continue
+                n = self._describe_id(str(n))
+                if n is None:
+                    continue
             try:
                 out.append(n.model_copy(update={"source": self.get_source(n.ref)}))
             except CodeanalyzerExecutionException:
                 out.append(n.model_copy(update={"source": None}))
         return out
+
+    def _describe_id(self, node_id: str) -> "SliceNode | None":
+        """One body-node id as a :class:`SliceNode`, or ``None`` if this graph holds no such node.
+
+        The local twin is ``GoCodeanalyzer._slice_node``; both route the node's ``kind``/``var``
+        through :func:`~cldk.analysis.commons.resolve.body_node_kind`, so an id described here and
+        one described in process carry the same caller-facing vocabulary.
+        """
+        rows = self._run(
+            f"MATCH (b:GoBodyNode {{id:$id}}) OPTIONAL MATCH (c:{self._OWNER})-[:GO_HAS_BODY_NODE]->(b) "
+            "RETURN b.id AS ref, b.kind AS kind, b.var AS var, b.span_json AS span, c.signature AS callable, c.span_json AS c_span",
+            id=node_id,
+        )
+        return _slice_node(self._span_lines(rows[0]), self._module_key) if rows else None
 
     # -----[ artifact / dependency / config layer — reserved-but-unemitted on this projection ]-----
     def get_artifacts(self) -> Dict[str, PyArtifact]:

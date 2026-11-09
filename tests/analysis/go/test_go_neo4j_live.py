@@ -32,6 +32,7 @@ from cldk.analysis.commons.backend_config import cache_subdir
 from cldk.analysis.commons.identity import resolve_identity
 from cldk.analysis.go.codeanalyzer import GoCodeanalyzer
 from cldk.analysis.go.neo4j import GoNeo4jBackend
+from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
 
 URI = os.environ.get("CLDK_TEST_GO_NEO4J_URI")
 USER = os.environ.get("CLDK_TEST_GO_NEO4J_USER", "neo4j")
@@ -149,6 +150,70 @@ def _one_method_and_its_param(local):
             if node.kind == "formal_in" and node.of and not node.of.startswith(("<global>:", "<capture>:")):
                 return c.signature, node.of
     return None, None
+
+
+#: Most positions a sweep will visit. The relation sweeps below are O(positions) or O(positions ×
+#: sinks), and the point of a sweep is to stop depending on *which* position was hand-picked — not
+#: to visit every one of a 15,000-callable application. A cap keeps the suite usable on a large
+#: corpus while still covering two orders of magnitude more ground than a single point. Positions
+#: are taken in id order, so the sample is deterministic and a failure reproduces.
+SWEEP_CAP = 60
+
+
+def _value_positions(local, *, cap=SWEEP_CAP, calling=None):
+    """``[(callable signature, formal_in name)]`` for plain parameters in the application.
+
+    "Plain" excludes the ``<global>:``/``<capture>:`` markers, not because those are uninteresting
+    but because they are already addressed by name elsewhere and would make the sweeps' failure
+    messages about the marker grammar rather than about the relation under test.
+
+    **Enumerated from the local backend always, and swept on both.** The traversal needs the
+    symbol table, which only the in-process backend walks cheaply; the *positions* it yields are
+    plain ``(signature, name)`` strings that either backend resolves, so this is a property of the
+    application rather than of a backend. Enumerating per backend would also let the two sweep
+    different samples, which would quietly weaken every comparison below.
+
+    ``calling``, when given, keeps only callables with a call edge to a signature in it. Without
+    that filter a cap takes the alphabetically-first positions, which on the analyzer's own corpus
+    are the ``asm``/``flow`` arithmetic fixtures — none of which call a library, so an
+    interprocedural relation samples 144 pairs that cannot possibly flow and never exercises
+    itself. Measured: the unfiltered sample yielded zero witnesses.
+
+    Sorted, then capped — deterministic, so a violation reproduces on a re-run.
+    """
+    wanted = None
+    if calling is not None:
+        targets = {t for t in calling}
+        wanted = {e.src for e in local.get_application_view().call_graph if e.dst in targets}
+    out = []
+    for c, _tid, _path in local._iter_callables():
+        sig = getattr(c, "signature", None)
+        if not sig or (wanted is not None and c.id not in wanted):
+            continue
+        for node in (c.body or {}).values():
+            if node.kind == "formal_in" and node.of and not node.of.startswith("<"):
+                out.append((sig, node.of))
+    return sorted(set(out))[:cap]
+
+
+def _sink_arguments(local, *, cap=SWEEP_CAP):
+    """``([(stand-in signature, plain formal_in name)], {stand-in can:// id})``.
+
+    Library stand-ins specifically: they are where real sinks live (``database/sql.DB.Query``), and
+    their ports are the ones an interprocedural relation has to cross a call boundary to reach. The
+    id set is returned alongside so :func:`_value_positions` can keep the callers that actually
+    reach them.
+    """
+    out, ids = [], set()
+    for sym in local.get_external_symbols().values():
+        if not sym.signature:
+            continue
+        sig = f"{sym.module}.{sym.signature}"
+        ports = [n.of for n in (sym.body or {}).values() if n.kind == "formal_in" and n.of and not n.of.startswith("<")]
+        if ports:
+            ids.add(sym.id)
+        out.extend((sig, of) for of in ports)
+    return sorted(set(out))[:cap], ids
 
 
 # -----[ standalone: the graph answers at all ]-----
@@ -377,6 +442,42 @@ def test_a_colliding_signature_fails_and_narrows_identically(dataflow_pair):
     assert lo_node.file == target
 
 
+def test_source_and_describe_accept_a_body_node_id_on_both(dataflow_pair):
+    """``get_source`` and ``describe`` must take the ids the rest of the surface hands out.
+
+    Every edge endpoint and every ``SliceNode.ref`` is a body-node id, so an accessor that cannot
+    read one leaves the caller holding an address it cannot use. Both diverged here and in opposite
+    directions, which is why this pins both: the local ``get_source`` indexed only types, callables
+    and fields and *raised* on a statement the graph read fine, while the graph's ``describe``
+    silently *dropped* a bare id the local one accepted — a short list with no signal.
+    """
+    local, graph = dataflow_pair
+    sig, _param = _one_method_and_its_param(local)
+    if sig is None:
+        pytest.skip("no callable with a ddg")
+    page = local.get_ddg(sig)
+    if not page.edges:
+        pytest.skip("that callable has no ddg edges")
+    # A statement endpoint -- one that has a span, so there is text to compare.
+    with_text = None
+    for e in page.edges:
+        for ref in (e.src, e.dst):
+            try:
+                if local.get_source(ref):
+                    with_text = ref
+                    break
+            except CodeanalyzerExecutionException:
+                continue
+        if with_text:
+            break
+    if with_text is None:
+        pytest.skip("no spanned endpoint on that callable's ddg")
+    assert local.get_source(with_text) == graph.get_source(with_text)
+    lo, ne = local.describe([with_text]), graph.describe([with_text])
+    assert len(lo) == len(ne) == 1, "a bare id is accepted on one backend and dropped on the other"
+    assert (lo[0].ref, lo[0].kind, lo[0].source) == (ne[0].ref, ne[0].kind, ne[0].source)
+
+
 def test_the_three_graphs_agree_on_a_standin(dataflow_pair):
     """A stand-in has no statements, so all three graphs are empty — and both backends must *say*
     so rather than one crashing. The local backend read a field ``GoExternalSymbol`` does not have.
@@ -410,3 +511,201 @@ def test_miss_paths_match(dataflow_pair):
     with pytest.raises(Exception) as ne:
         graph.resolve_value("definitely_not_a_value", within=sig)
     assert type(lo.value) is type(ne.value)
+
+
+# ======================================================================================
+# RELATION SWEEPS (python-sdk#436 follow-up).
+#
+# The tests above pin each property at one hand-picked position. The relations are the
+# same; what these add is the SAMPLING — each one sweeps every addressable position in
+# the application instead of the one its author happened to choose. That is the only
+# part of the analyzer's metamorphic design that transfers: the analyzer varies the
+# INPUT PROGRAM and holds the analyzer fixed, which the SDK cannot do because it
+# produces no analysis; so the SDK's dual is to vary the QUERY and hold the analysis
+# fixed, and compare two of its own answers.
+#
+# Both backends are swept, not just the local one. These are single-backend invariants
+# — nothing here compares local against graph — but an invariant that holds in process
+# and not over Cypher is a bug in the Cypher, which is exactly the class of bug the
+# parity tests above were written after finding four of.
+#
+# They are deliberately NOT generative. A property-based library over this space found
+# nothing a sweep did not (measured on the 45-position httpsql fixture), so the cost of
+# a new dependency buys sampling breadth that `_value_positions` already gives.
+#
+# A sweep reports the FIRST violating position, with the position in the message: a
+# count tells you a relation broke, and the position tells you where to look.
+# ======================================================================================
+
+
+@pytest.fixture(params=["local", "neo4j"])
+def swept(request, dataflow_pair):
+    """``(name, backend under test, backend to enumerate positions from)``.
+
+    Each relation runs once per backend, named in the test id. Positions always come from the
+    *local* backend (see :func:`_value_positions`) so both sweeps visit the same sample.
+    """
+    local, graph = dataflow_pair
+    return request.param, (local if request.param == "local" else graph), local
+
+
+def test_a_forward_slice_is_monotone_in_depth(swept):
+    """R1. A deeper slice can only reach more, never less.
+
+    The relation that would break if ``depth`` were applied after the walk rather than inside it,
+    or if the hop budget were counted per branch rather than per level — in which case a deeper
+    budget could *lose* a node by exhausting itself on another path first.
+    """
+    name, b, src = swept
+    positions = _value_positions(src, cap=20)
+    if not positions:
+        pytest.skip("no plain value positions in this application")
+    checked = 0
+    for sig, val in positions:
+        try:
+            near = {n.ref for n in b.slice_forward(val, within=sig, depth=1, max_nodes=100000).nodes}
+            far = {n.ref for n in b.slice_forward(val, within=sig, depth=None, max_nodes=100000).nodes}
+        except Exception:
+            continue  # a position this backend cannot address is other tests' business
+        checked += 1
+        assert near <= far, f"[{name}] {sig}/{val}: the depth=1 slice is not contained in the unbounded one"
+    assert checked, f"[{name}] every position raised; the sweep measured nothing"
+
+
+def test_a_capped_slice_is_a_prefix_of_the_uncapped_one(swept):
+    """R2. ``max_nodes`` takes a *prefix* of one total order, not an arbitrary subset.
+
+    Stronger than "is a subset", and the stronger form is the one a caller depends on: paging or
+    re-running with a larger cap must extend the previous answer rather than reshuffle it. A cap
+    applied before the sort — or a sort that is not total — satisfies "subset" and fails this.
+    """
+    name, b, src = swept
+    positions = _value_positions(src, cap=20)
+    if not positions:
+        pytest.skip("no plain value positions in this application")
+    checked = 0
+    for sig, val in positions:
+        try:
+            full = [n.ref for n in b.slice_forward(val, within=sig, depth=None, max_nodes=100000).nodes]
+            capped = b.slice_forward(val, within=sig, depth=None, max_nodes=2)
+        except Exception:
+            continue
+        checked += 1
+        refs = [n.ref for n in capped.nodes]
+        assert refs == full[: len(refs)], f"[{name}] {sig}/{val}: the capped slice is not a prefix of the uncapped one"
+        assert capped.total == len(full), f"[{name}] {sig}/{val}: a capped slice misreports the whole size"
+    assert checked, f"[{name}] every position raised; the sweep measured nothing"
+
+
+def test_flows_to_argument_implies_flows_to_call_everywhere(swept):
+    """R3. ``flows_to_argument`` is ``flows_to_call`` narrowed to one port, so the narrow answer
+    can never be ``True`` where the broad one is ``False``.
+
+    A fact about their *targets* — one asks about a single ``formal_in``, the other about all of
+    them — so a violation means the two accessors disagree about what "entering this callable"
+    means, not that one of them has a bug in isolation.
+    """
+    name, b, src = swept
+    sinks, sink_ids = _sink_arguments(src, cap=12)
+    positions = _value_positions(src, cap=12, calling=sink_ids)
+    if not positions or not sinks:
+        pytest.skip("this application has no value positions or calls nothing outside itself")
+    checked = 0
+    for sig, val in positions:
+        for csig, arg in sinks:
+            try:
+                narrow = b.flows_to_argument(val, csig, arg, within=sig)
+                broad = b.flows_to_call(val, csig, within=sig)
+            except Exception:
+                continue
+            checked += 1
+            assert not narrow or broad, f"[{name}] {sig}/{val} -> {csig}/{arg}: reaches the argument but not the call"
+    assert checked, f"[{name}] every triple raised; the sweep measured nothing"
+
+
+def test_a_returned_path_implies_the_predicate(swept):
+    """R4. A witness implies the boolean: if ``paths_between`` returns a route from a value to a
+    callee's port, ``flows_to_argument`` must agree there is one.
+
+    The direction matters. The converse is *not* asserted — a predicate may hold where no path is
+    returned, because the two need not agree on bounds — but a returned path that the predicate
+    denies would mean the SDK had produced a witness for something it says cannot happen, which is
+    the contradiction no caller could work around.
+    """
+    name, b, src = swept
+    sinks, sink_ids = _sink_arguments(src, cap=12)
+    positions = _value_positions(src, cap=12, calling=sink_ids)
+    if not positions or not sinks:
+        pytest.skip("this application has no value positions or calls nothing outside itself")
+    checked, witnessed = 0, 0
+    for sig, val in positions:
+        for csig, arg in sinks:
+            try:
+                paths = b.paths_between(val, arg, src_within=sig, dst_within=csig, depth=None).paths
+                pred = b.flows_to_argument(val, csig, arg, within=sig)
+            except Exception:
+                continue
+            checked += 1
+            witnessed += bool(paths)
+            assert not paths or pred, f"[{name}] {sig}/{val} -> {csig}/{arg}: a path was returned but the predicate denies it"
+    assert checked, f"[{name}] every triple raised; the sweep measured nothing"
+    assert witnessed, f"[{name}] no pair in the sweep had a path, so the implication was never exercised"
+
+
+def test_every_edge_endpoint_is_an_addressable_node(swept):
+    """R7. Every endpoint of every edge the three graphs return names a node the SDK can describe.
+
+    The relation that closes the loop between the *page* accessors and the *position* accessors: an
+    endpoint the node index does not hold is an id a caller can read off an edge and then not use,
+    and ``describe``/``get_source`` would fail on it. This is the shape an id-joining or id-parsing
+    bug produces — both of which this branch had — at whichever callable the author did not pick.
+    """
+    name, b, src = swept
+    sigs = sorted({sig for sig, _ in _value_positions(src, cap=25)})
+    if not sigs:
+        pytest.skip("no addressable callables in this application")
+    # ``{signature: {the analyzer's own body-node ids}}`` — read off ``GoBodyNode.id``, which the
+    # emitter wrote and the SDK only mirrors, so it is an oracle the SDK's own id arithmetic
+    # cannot move. Callables whose nodes carry no ``id`` (below -a 3) contribute nothing.
+    truth = {}
+    for c, _tid, _path in src._iter_callables():
+        ids = {n.id for n in (c.body or {}).values() if n.id}
+        if ids:
+            truth.setdefault(c.signature, set()).update(ids)
+    checked = 0
+    for sig in sigs:
+        for getter in ("get_cfg", "get_cdg", "get_ddg"):
+            try:
+                page = getattr(b, getter)(sig)
+            except Exception:
+                continue
+            refs = sorted({ref for e in page.edges for ref in (e.src, e.dst)})
+            if not refs:
+                continue
+            checked += len(refs)
+            # ANCHORED ON THE PAYLOAD'S OWN ``id``, not on whatever the SDK composed. The id that
+            # an edge endpoint carries and the id ``get_source`` looks up are built by the *same*
+            # join, so asking only "can get_source read this back" is self-consistent: corrupt the
+            # join and both sides move together, which is a mutation this sweep missed before the
+            # anchor was added. ``GoBodyNode.id`` is the analyzer's own string, independent of the
+            # SDK, so comparing against it is what makes a join bug visible.
+            owned = truth.get(sig, {})
+            if owned:
+                unknown = [r for r in refs if r not in owned]
+                assert not unknown, (
+                    f"[{name}] {sig} {getter}: {len(unknown)} endpoint(s) are not ids the analyzer emitted "
+                    f"for this callable, e.g. {unknown[0]} — the id join disagrees with the payload"
+                )
+            # And the id must round-trip through the accessor whose contract names that form.
+            for ref in refs:
+                try:
+                    text = b.get_source(ref)
+                except KeyError:
+                    raise AssertionError(f"[{name}] {sig} {getter}: endpoint {ref} is an id the SDK cannot read source for")
+                except CodeanalyzerExecutionException as e:
+                    # A vertex legitimately has no span and so no text; that is an answer, not a
+                    # gap. An id the index does not hold at all is the failure this sweep is for.
+                    assert "no span" in str(e), f"[{name}] {sig} {getter}: endpoint {ref} is not addressable — {e}"
+                    continue
+                assert isinstance(text, str), f"[{name}] {sig} {getter}: {ref} returned {type(text).__name__}, not source text"
+    assert checked, f"[{name}] no edges in the sweep; the relation measured nothing"

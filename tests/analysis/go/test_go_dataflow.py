@@ -5,7 +5,7 @@ and why): ``httpsql_l4.json`` is the analyzer's own HTTP→SQL fixture at ``-a 4
 gated analyzer-side by ``TestGateL4_HTTPToSQLPath``; ``four_type_kinds.json`` is one declaration of
 each ``GoType.kind`` at ``-a 1``.
 
-**What is asserted and what is not.** These tests pin *behaviour a caller depends on* — that the
+**What is asserted and what is not.** These tests pin *behavior a caller depends on* — that the
 gated flow is found, that the four Go id/name traps are handled, that a refutation is only made
 where one is warranted. They deliberately do not pin edge counts: those move with every analyzer
 release and a test that fails on an improvement teaches nothing. Where a count appears it is
@@ -329,7 +329,7 @@ def test_paging_is_a_prefix_of_one_total_order(httpsql):
 
 def test_a_shallow_analysis_refuses_rather_than_answering_empty(tmp_path, monkeypatch):
     """At a level below the dataflow pass the three lists are absent, and an empty page there would
-    mean "not analysed" while looking exactly like "no dependence" (D7). So it raises, naming the
+    mean "not analyzed" while looking exactly like "no dependence" (D7). So it raises, naming the
     level to rebuild at."""
     shallow = _facade(tmp_path, monkeypatch, FOUR_KINDS, app="kinds", level=AnalysisLevel.symbol_table)
     with pytest.raises(CodeanalyzerUsageException, match="level 3"):

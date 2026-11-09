@@ -257,7 +257,7 @@ class GoAnalysis:
         m sources against n sinks in one traversal, reporting per pair: the witnesses in ``paths``,
         the pairs an absence claim can be built on in ``exhausted``, and everything else in
         ``unresolved``. The source/sink/sanitizer vocabulary is the caller's — no Go framework
-        catalogue ships. A non-empty :meth:`get_degraded` voids every ``exhausted`` certification,
+        catalog ships. A non-empty :meth:`get_degraded` voids every ``exhausted`` certification,
         because absence of a path is not a proof over an approximated graph.
         """
         return self.backend.taint(sources, sinks, sanitizers, depth=depth, max_paths=max_paths)

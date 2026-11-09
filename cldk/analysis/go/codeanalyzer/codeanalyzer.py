@@ -68,7 +68,7 @@ from cldk.analysis.go.backend import (
     VIA,
     GoAnalysisBackend,
 )
-from cldk.analysis.go.ids import body_node_id, callable_match_names, external_signature, go_value_names, pick_declaration
+from cldk.analysis.go.ids import body_node_id, callable_match_names, external_signature, go_value_names, pick_declaration, split_body_node_id
 from cldk.models.go import (
     GoAnalysis,
     GoApplication,
@@ -339,17 +339,27 @@ class GoCodeanalyzer(GoAnalysisBackend):
         return self._functions
 
     def get_source(self, node_id: str) -> str:
-        """The source text of ``node_id`` — ``module.source`` sliced by ``node.span.bytes`` — for a
-        durable-id node (type, callable, field).
+        """The source text of ``node_id`` — ``module.source`` sliced by ``node.span.bytes``.
+
+        ``node_id`` is a durable-id node (type, callable, field) **or a body-node id**: a statement,
+        a call site or a vertex, named by the analyzer's own
+        ``"<callable can:// id>@<body key>"``. The body-node form is what every edge endpoint and
+        every :class:`~cldk.analysis.commons.results.SliceNode` carries, so without it a caller
+        could read an id off a ``get_ddg`` page and then not use it — and the Neo4j backend accepts
+        it (its ``:GoCanNode`` lookup does not care which kind of node it found), which made this
+        a parity gap rather than a shared limitation. Python's ``get_source`` names the same two
+        forms in its own contract.
 
         ``span.bytes`` are **UTF-8 byte** offsets, so a non-ASCII module is sliced on the encoded
         bytes and decoded back (an ASCII module is indexed directly, paying nothing), the same way
         the TS ``_Spanned.code`` property does. Slicing the ``str`` by character index would drift
         on any file with a multibyte character before the span.
         """
-        entry = self._source_of.get(node_id)
+        entry = self._source_of.get(node_id) or self._body_source_of(node_id)
         if entry is None:
-            raise CodeanalyzerExecutionException(f"no source for {node_id!r}: not a type, callable or field of application " f"{self.application_name!r}")
+            raise CodeanalyzerExecutionException(
+                f"no source for {node_id!r}: not a type, callable, field or body node of application {self.application_name!r}"
+            )
         mod, node = entry
         if node.span is None:
             raise CodeanalyzerExecutionException(f"node {node_id!r} carries no span, so it has no source text")
@@ -361,6 +371,31 @@ class GoCodeanalyzer(GoAnalysisBackend):
             encoded = mod.source.encode("utf-8")
             self._module_bytes[mod.id] = encoded
         return encoded[b0:b1].decode("utf-8")
+
+    def _body_source_of(self, node_id: str) -> "tuple | None":
+        """``(module, body node)`` for a body-node id, or ``None`` if nothing owns it.
+
+        The owner is found with :func:`~cldk.analysis.go.ids.split_body_node_id` rather than by
+        splitting on ``@`` — trap 1: a library stand-in's own id holds ``/@external/`` before the
+        vertex ``@``. A stand-in has no module and so no text, which this reports as "not found"
+        rather than as a module lookup that would fail further on.
+
+        Not indexed eagerly: the body-node ids outnumber the durable ones by a wide margin (3,324
+        against 319 on the analyzer's own corpus), and ``get_source`` on one is the uncommon case,
+        so the prefix walk is paid per call instead of the index being paid per application.
+        """
+        hit = split_body_node_id(node_id, self._dataflow_owners)
+        if hit is None:
+            return None
+        cid, key = hit
+        owner, _tid, path = self._dataflow_owners[cid]
+        if not path:  # a stand-in: synthesized, so there is no source file behind it
+            return None
+        node = (owner.body or {}).get(key) or (owner.body or {}).get(key.lstrip("@"))
+        if node is None:
+            return None
+        entry = self._source_of.get(cid)
+        return (entry[0], node) if entry else None
 
     # =====================================================================================
     # L3/L4 DATAFLOW. See :class:`~cldk.analysis.go.backend.GoAnalysisBackend` for the contract and
@@ -392,7 +427,7 @@ class GoCodeanalyzer(GoAnalysisBackend):
 
         One guard for the per-callable graphs and the slices: they come from the same analyzer pass
         and go dark together. It **raises** rather than returning empty because at a shallower level
-        an empty answer would mean "not analysed" while looking exactly like "no dependence" (D7).
+        an empty answer would mean "not analyzed" while looking exactly like "no dependence" (D7).
         """
         if self._level < self._DATAFLOW_LEVEL:
             raise CodeanalyzerUsageException(
