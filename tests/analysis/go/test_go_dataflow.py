@@ -73,28 +73,10 @@ def backend(httpsql):
 
 
 # ======================================================================================
-# The parse blocker (#436's first commit): GoType.kind is a Literal, so a kind the SDK
-# does not list fails the WHOLE document rather than dropping a field.
+# The L3/L4 overlays survive validation. The *parse blocker* that shipped alongside them
+# (GoType.kind omitting "alias") is a model-level fact about -a 1 output with nothing to
+# do with dataflow, so it is pinned in test_go_analysis.py beside the other model tests.
 # ======================================================================================
-
-
-def test_all_four_type_kinds_parse():
-    """``type Alias = int`` made ``GoAnalysis(**doc)`` raise, which blocked ``-a 1`` output from any
-    project declaring an alias — nothing to do with dataflow. All four kinds must load."""
-    analysis = GoAnalysis.model_validate_json(FOUR_KINDS.read_text(encoding="utf-8"))
-    kinds = {ty.kind for module in analysis.application.symbol_table.values() for ty in module.types.values()}
-    assert kinds == {"struct", "interface", "defined", "alias"}
-
-
-def test_a_fifth_kind_is_refused_loudly_rather_than_dropped():
-    """The ``Literal`` is deliberate, not an oversight: a kind the analyzer adds must be a visible
-    failure here and not a value silently coerced or ignored, because every accessor keyed on
-    ``kind`` would then be quietly wrong. ``extra="ignore"`` does not cover a ``Literal``."""
-    doc = json.loads(FOUR_KINDS.read_text(encoding="utf-8"))
-    module = next(iter(doc["application"]["symbol_table"].values()))
-    next(iter(module["types"].values()))["kind"] = "type_parameter"
-    with pytest.raises(Exception, match="kind"):
-        GoAnalysis(**doc)
 
 
 def test_the_level_four_fixture_round_trips_losslessly():

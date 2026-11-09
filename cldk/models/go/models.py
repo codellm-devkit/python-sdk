@@ -281,11 +281,15 @@ class GoType(_NullSafeBase):
     discriminated by ``kind`` rather than a ``Union`` of subclasses. ``base_types`` are embedded
     types; ``fields`` are the struct's data fields (empty for every other kind).
 
-    The four kinds the analyzer emits (``symbol_table.go:432``): ``struct``, ``interface``,
-    ``defined`` (``type Celsius float64``) and ``alias`` (``type Alias = int``). This is a
-    ``Literal`` rather than an open ``str`` so a *new* kind is a loud failure and not a silent
-    mis-read — ``extra="ignore"`` does not cover a ``Literal`` mismatch, which is exactly why the
-    narrower spelling refused to parse real ``-a 1`` output (python-sdk#436).
+    The four kinds the analyzer emits (``internal/syntactic_analysis/symbol_table.go``):
+    ``struct``, ``interface``, ``defined`` (``type Celsius float64``) and ``alias``
+    (``type Alias = int``).
+
+    This stays a ``Literal`` rather than an open ``str`` so a *new* kind is a loud failure and not
+    a silent mis-read — but note what that costs: ``extra="ignore"`` does not cover a ``Literal``
+    mismatch, so an unlisted kind fails the **whole document**, not just the one type. That is why
+    omitting ``alias`` refused real ``-a 1`` output from any project declaring a type alias
+    (python-sdk#436), independently of the analysis level or the dataflow overlays.
     """
 
     id: str
