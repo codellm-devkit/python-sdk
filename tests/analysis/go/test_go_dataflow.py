@@ -16,6 +16,7 @@ the Cypher is checked, because four of its bugs were invisible from this side.
 """
 
 import json
+from collections import Counter
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -380,6 +381,62 @@ def test_a_path_reads_as_a_sequence_of_justified_hops(httpsql):
 def test_max_paths_caps_witnesses_and_says_so(httpsql):
     capped = httpsql.paths_between("id", SINK_ARG, src_within="sqlRepo.Find", dst_within=SINK, max_paths=1)
     assert len(capped.paths) <= 1
+
+
+def test_reach_expands_each_node_exactly_once(backend):
+    """``_reach`` must add to ``seen`` *inside* the level, not after it.
+
+    The obvious spelling builds the level as a comprehension and updates ``seen`` afterwards, so
+    ``seen`` does not yet contain the level being built: a node with k predecessors in the current
+    frontier is appended k times, and the next level expands every copy. The frontier then tracks
+    the number of **paths** rather than the number of nodes.
+
+    Only cost reveals it, because a set cannot hold duplicates and the answer stays correct —
+    measured on the memos corpus (208,293 source nodes, 743,154 edges), 151,417,783 frontier
+    expansions at depth 8 against 670,450, 83.65s against 0.11s, and unbounded it never terminated.
+    ``depth=None`` is the default on ``paths_between`` / ``flows_to_*`` / ``taint``, so the unusable
+    case was the default one.
+
+    Pinned by counting expansions rather than by timing, which would be flaky, and rather than by
+    frontier size, which this fixture is too small to blow up: the adjacency is wrapped so every
+    lookup is recorded, and a correct walk looks each node up at most once.
+    """
+    forward = backend._sdg[0]["forward"]
+    seeds = [r for r in backend._port_refs if forward.get(r)]
+    assert seeds, "fixture has no port with an outgoing edge"
+
+    class Counting(dict):
+        def __init__(self, inner):
+            super().__init__(inner)
+            self.fetches = Counter()
+
+        def get(self, key, default=None):
+            self.fetches[key] += 1
+            return super().get(key, default)
+
+    for ref in seeds:
+        counting = Counting(forward)
+        backend._sdg[0]["forward"] = counting
+        try:
+            backend._reach(ref, "forward", None)
+        finally:
+            backend._sdg[0]["forward"] = forward
+        repeats = {k: n for k, n in counting.fetches.items() if n > 1}
+        assert not repeats, f"{ref}: {len(repeats)} node(s) expanded more than once, e.g. {next(iter(repeats.items()))}"
+
+
+def test_reach_is_monotone_and_terminates_unbounded(backend):
+    """An unbounded reach must terminate and contain every bounded one.
+
+    The frontier bug made the unbounded case non-terminating on a real application while every
+    bounded case still answered, so a suite that only ever passed a `depth` would not have seen it.
+    """
+    for ref in [r for r in backend._port_refs if backend._sdg[0]["forward"].get(r)][:12]:
+        unbounded = backend._reach(ref, "forward", None)
+        for depth in (1, 2, 3):
+            assert backend._reach(ref, "forward", depth) <= unbounded, f"{ref}: depth={depth} escapes the unbounded reach"
+        # And the walk is a fixed point: one more hop than the graph's diameter adds nothing.
+        assert backend._reach(ref, "forward", len(unbounded) + 1) == unbounded
 
 
 def test_the_two_slices_are_complementary(httpsql):
