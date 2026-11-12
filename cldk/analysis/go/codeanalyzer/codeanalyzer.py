@@ -49,7 +49,7 @@ from cldk.analysis.commons.bounds import (
     check_page_size,
     edge_page,
 )
-from cldk.analysis.commons.graphs import call_reaches, cone_sinks, flow_path, shortest_walks, slice_resolved, under_callable
+from cldk.analysis.commons.graphs import call_reaches, cone_sinks, flow_path, reach, shortest_walks, slice_resolved, under_callable
 from cldk.analysis.commons.levels import analyzer_level
 from cldk.analysis.commons.resolve import (
     CallableCandidate,
@@ -727,39 +727,13 @@ class GoCodeanalyzer(GoAnalysisBackend):
     def _reach(self, ref: str, direction: str, depth: int | None) -> set:
         """The node ids reachable from ``ref`` in at most ``depth`` hops.
 
-        Level-by-level rather than a plain stack, because ``depth`` is a hop budget and a
-        depth-first walk cannot count hops without revisiting. Shared by the slices and by the two
-        flow predicates, so "reachable" means one thing on this backend.
-
-        **A node enters the next frontier once, which is the whole point of adding to ``seen``
-        inside the loop rather than after it.** The obvious spelling builds the level as a
-        comprehension and updates ``seen`` afterwards::
-
-            nxt = [d for src in frontier for d in edges.get(src, ()) if d not in seen]
-            seen.update(nxt)
-
-        That is correct but not usable: ``seen`` does not yet contain the level being built, so a
-        node with *k* predecessors in the current frontier is appended *k* times and the next level
-        expands every copy. The frontier then tracks the number of **paths** rather than the number
-        of nodes. Measured on memos (208,293 source nodes, 743,154 edges), over 250 ports: identical
-        answers at every depth — duplicates cannot change a set — but 151,417,783 frontier
-        expansions at depth 8 against 670,450, which is 83.65s against 0.11s, and unbounded it does
-        not terminate at all. Since ``depth=None`` is the default on
-        :meth:`paths_between`, :meth:`flows_to_call`, :meth:`flows_to_argument` and :meth:`taint`,
-        the unusable case was the default one.
+        One line over :func:`~cldk.analysis.commons.graphs.reach`, which is where the walk and the
+        reason for its shape live: it is a graph algorithm over an adjacency of strings and knows no
+        language. This method stays because the *direction* is a backend concern — which half of the
+        cached adjacency to read — and because the slices and both flow predicates call it, so
+        "reachable" means one thing here.
         """
-        edges = self._sdg[0][direction]
-        seen, frontier, hops = {ref}, [ref], 0
-        while frontier and (depth is None or hops < depth):
-            nxt = []
-            for src in frontier:
-                for d in edges.get(src, ()):
-                    if d not in seen:
-                        seen.add(d)
-                        nxt.append(d)
-            frontier = nxt
-            hops += 1
-        return seen
+        return reach(self._sdg[0][direction], ref, depth)
 
     def _slice_from(self, root: SliceNode, direction: str, depth: int | None, max_nodes: int) -> Slice:
         """:meth:`_reach`'s closure from ``root``, described and capped as the graph's is.
