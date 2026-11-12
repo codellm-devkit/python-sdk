@@ -13,7 +13,7 @@ an optional read-only Neo4j backend — selected by the *type* of the `backend=`
 | Java | `CLDK.java(...)` (needs the `cldk[java]` extra) | `JCodeanalyzer` (the `codeanalyzer-java` 3.2.0 wheel's jar on its bundled JVM, subprocess, `-a 1..4` — no jar in this repo, no JDK download) | `JNeo4jBackend` (graphs emitted by ≥ 3.2.0, probed at attach) | `cldk/models/java/` (schema v2 mirror) + `projections.py` |
 | Python | `CLDK.python(...)` | `PyCodeanalyzer` (in-process `codeanalyzer-python`) | `PyNeo4jBackend` | re-exported from `codeanalyzer-python` |
 | TypeScript (+ JavaScript modules) | `CLDK.typescript(...)` | `TSCodeanalyzer` (`codeanalyzer-typescript` 1.6.0 binary from the wheel, subprocess; `-a 1..4`, but `--emit neo4j` takes no `-a` and is always full depth) | `TSNeo4jBackend` (graphs emitted by ≥ 1.5.2; older refused at attach) | `cldk/models/typescript/` (schema v2 mirror) |
-| Go | `CLDK.go(...)` | `GoCodeanalyzer` (`cango` binary, subprocess, `-a 1..2` only — no L3/L4; `--analysis-schema 2` mandatory or it emits legacy v1; binary via `$CODEANALYZER_GO_BIN` or the `codeanalyzer-go` wheel — **no release cut yet, so the version pin is deferred**) | `GoNeo4jBackend` (lazy Cypher over the `GO_`-prefixed graph; **not** an eager rebuild — Go graphs reach enterprise scale) | `cldk/models/go/` (schema v2 mirror; **no `projections.py`** — out of SDK3 scope) |
+| Go | `CLDK.go(...)` | `GoCodeanalyzer` (the `codeanalyzer-go` 0.3.0 wheel's `cango` binary, subprocess, `-a 1..4`; binary via `$CODEANALYZER_GO_BIN` or the wheel) | `GoNeo4jBackend` (lazy Cypher over the `GO_`-prefixed graph; **not** an eager rebuild — Go graphs reach enterprise scale) | `cldk/models/go/` (schema v2 mirror, L1–L4; **no `projections.py`** — out of SDK3 scope) |
 
 **Java, since leg 3a (#310):** the models are an `extra="forbid"` mirror of canonical schema v2, so
 a 1.x `analysis.json` (and a pre-3.0.1 Neo4j graph) is refused, not parsed; `get_call_graph()` keys
@@ -44,6 +44,43 @@ adding `exhausted` (pairs searched to exhaustion: the refutation `paths_between`
 absence claim in the result; `max_paths` caps per pair, never per call. The source/sink/sanitizer
 vocabulary is the caller's — no framework catalogue ships. Java shares the `formal_in` dependence
 probe above, so `taint` refuses on the same analyses the four verbs do.
+
+**All four languages, since #436:** the reachability walk every local backend's slices and flow
+predicates run is **`commons.graphs.reach`**, lifted out of four byte-identical copies for the
+reason that lifted `shortest_walks` in leg 2.5b — it is a graph algorithm over an adjacency of
+strings and knows no language. Each backend's `_reach` is a one-liner over it, keeping only
+`direction` as its own concern. The lift carried a fix: a node must enter the next frontier **once**,
+and the spelling in all four copies appended it once per predecessor, so the frontier tracked path
+count rather than node count — answers were always right (a set holds no duplicates), but an
+unbounded walk did not terminate on a real application, and `depth=None` is the default on
+`paths_between` / `flows_to_*` / `taint`. Measured on nats-server: 151,417,783 frontier expansions
+at depth 8 against 670,450. **Known limitation, #446:** `shortest_walks` still cannot produce a
+witness for a flow `flows_to_*` confirms on a large application — its replay prunes on BFS layer
+boundaries but not toward the sink.
+
+**Go, since #436 (the L3/L4 train):** the dataflow surface, with `PythonAnalysisBackend`'s names and
+signatures — `get_cfg`/`get_cdg`/`get_ddg`, `resolve_callable`/`resolve_value`,
+`slice_backward`/`slice_forward`/`backward_cone`, `reaches`/`paths_between`,
+`flows_to_call`/`flows_to_argument`, `taint`, `get_external_symbols`, `get_degraded`, `describe`.
+`taint` is concrete on `GoAnalysisBackend`, so neither backend owns the policy; the port-connectivity
+gate is Java's, declared on the ABC and implemented on both. Both backends answer identically
+including the miss paths — measured on a live graph (`test_go_neo4j_live.py`), which is where four
+Cypher bugs surfaced that the local side could not see.
+
+Four Go-specific traps live in **`cldk/analysis/go/ids.py`**, each a rule that holds for Python or
+TypeScript and *not* for Go, so a shared helper would be confidently wrong rather than absent:
+a body-node id must never be split on its first `@` (a stand-in's own id holds `/@external/` before
+the vertex `@`; the naive split mis-owns every external vertex); a formal resolves by its own `of`,
+never by ordinal into `parameters[]`, because a method's `formal_in:0` is the receiver; a global's
+module half is slash-separated, so the spelling a Go programmer writes (`libflow.Last`) needs the
+package-qualified name as a second match name; and `degraded[]` — **envelope** scope, beside
+`application`, not on it — is the honesty signal, which voids every `exhausted` certification rather
+than refusing (a returned path over an approximated graph is still a real may-flow). `cango`'s own
+renames matter too: the Neo4j projection spells `of` as `var`, `parent` as `call_node`, and the CFG
+relationship as `GO_CFG_NEXT`. The `GoType.kind` Literal carries all four kinds the analyzer emits
+(`struct`/`interface`/`defined`/`alias`) — before #436 an `alias` failed the whole document, which
+blocked even `-a 1`. `Diagnostic.code` gained `analysis_degraded` (language-neutral, closed Literal,
+published contract).
 
 The legacy `CLDK(language="<lang>").analysis(...)` entry still works as a compat shim. Adding a
 language means a new factory method + facade + backend ABC/impl(s) + models + tests — **update this

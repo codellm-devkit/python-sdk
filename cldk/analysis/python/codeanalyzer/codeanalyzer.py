@@ -64,7 +64,7 @@ from dataclasses import replace
 from cldk.analysis.commons.keys import module_scope
 from cldk.analysis.commons.identity import resolve_identity, validate_identity
 from cldk.analysis import AnalysisLevel
-from cldk.analysis.commons.graphs import call_reaches, under_callable
+from cldk.analysis.commons.graphs import call_reaches, reach, under_callable
 from cldk.analysis.commons.levels import ANALYZER_LEVELS, LEVEL_NAMES, analyzer_level
 from cldk.analysis.commons.resolve import CallableCandidate, body_node_kind, resolve_callable_signature, resolve_value_name, resolve_within, value_candidate
 from cldk.analysis.commons.results import BodyRef, CallableRef, Diagnostic, EdgePage, EntrypointCoverage, FlowPath, FlowPaths, LocateResult, ModuleRef, Slice, SliceNode, TypeRef
@@ -1333,18 +1333,17 @@ class PyCodeanalyzer(PythonAnalysisBackend):
     def _reach(self, ref: str, direction: str, depth: int | None) -> set:
         """The set of node ids reachable from ``ref`` in at most ``depth`` hops.
 
-        Level-by-level rather than a plain stack, because ``depth`` is a hop budget and a
-        depth-first walk cannot count hops without revisiting. Shared by the slices and by the two
-        mixed flow queries so "reachable" means one thing on this backend.
+        Shared by the slices and by the two mixed flow queries so "reachable" means one thing on
+        this backend.
+
+        The walk is :func:`~cldk.analysis.commons.graphs.reach`, lifted there with its
+        measurements (python-sdk#436). The level-by-level shape and the reason a node must enter
+        the frontier exactly once live with it; the spelling that was here appended a node once per
+        predecessor, which left an unbounded walk non-terminating on a real application while every
+        answer it did return was correct. ``direction`` stays a backend concern -- which half of the
+        cached adjacency to read.
         """
-        edges = self._sdg()[0][direction]
-        seen, frontier, hops = {ref}, [ref], 0
-        while frontier and (depth is None or hops < depth):
-            nxt = [d for src in frontier for d in edges.get(src, ()) if d not in seen]
-            seen.update(nxt)
-            frontier = nxt
-            hops += 1
-        return seen
+        return reach(self._sdg()[0][direction], ref, depth)
 
     def _slice_from(self, root: SliceNode, direction: str, depth: int | None, max_nodes: int) -> Slice:
         """:meth:`_reach`'s closure from ``root``, described and capped like the graph's.

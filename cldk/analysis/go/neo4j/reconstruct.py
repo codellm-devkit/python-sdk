@@ -32,9 +32,9 @@ answers the few accessors that need them from the relationships instead.
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Mapping, Optional
+from typing import Any, List, Mapping, Optional
 
-from cldk.models.go import GoBodyNode, GoCallable, GoField, GoMetrics, GoModule, GoSpan, GoType
+from cldk.models.go import GoBodyNode, GoCallable, GoDegraded, GoExternalSymbol, GoField, GoMetrics, GoModule, GoSpan, GoType
 
 Props = Mapping[str, Any]
 
@@ -94,9 +94,52 @@ def field(props: Props) -> GoField:
 
 
 def body_node(props: Props) -> GoBodyNode:
+    """A :class:`GoBodyNode` from a ``:GoBodyNode`` node.
+
+    **Two props are renamed on the wire** (``internal/neo4j/schema.go``), which is the whole reason
+    this function is not a splat: the JSON's ``of`` is projected as the property **``var``** (for
+    parity with Python's ``:PyBodyNode.var``), and the JSON's ``parent`` as **``call_node``**.
+    Reading them under their JSON names would silently leave every L4 vertex with ``of=None`` — and
+    ``of`` is what resolves a formal, so a backend reading it wrong would resolve no value at all.
+    """
     return GoBodyNode(
+        id=props.get("id"),
         kind=props.get("kind", "call"),
         callee=props.get("callee"),
+        of=props.get("var"),
+        parent=props.get("call_node"),
         is_goroutine=bool(props.get("is_goroutine", False)),
+        is_deferred=bool(props.get("is_deferred", False)),
         span=_span(props),
     )
+
+
+def external(props: Props) -> GoExternalSymbol:
+    """A :class:`GoExternalSymbol` from a ``:GoExternal`` node.
+
+    The node carries ``name``/``module``/``signature``/``path`` only; ``parameters``, ``receiver``
+    and the stand-in ``body`` are not node properties — the body is the ``GO_HAS_BODY_NODE``
+    relationship, which the backend follows where it needs the vertices. So a reconstructed
+    stand-in has those at their empty default rather than an invented value.
+    """
+    return GoExternalSymbol(
+        id=props["id"],
+        kind=props.get("kind", "external"),
+        name=props.get("name", ""),
+        module=props.get("module", ""),
+        signature=props.get("signature"),
+    )
+
+
+def degraded(raw: str | None) -> List[GoDegraded]:
+    """The degradation markers from ``:GoApplication.degraded_json``.
+
+    One JSON string on the wire, like ``span_json``: a Bolt property stays scalar, so the list is
+    carried encoded. Absent (a clean run) means ``[]`` — and the projector *clears* the property on
+    a clean lazy push rather than leaving a stale one (``internal/neo4j/bolt.go``'s
+    ``clearedAppProps``), so an absent value here is a positive statement that nothing degraded,
+    not merely an unknown.
+    """
+    if not raw:
+        return []
+    return [GoDegraded(**d) for d in json.loads(raw)]
