@@ -68,7 +68,7 @@ from cldk.analysis.go.backend import (
     VIA,
     GoAnalysisBackend,
 )
-from cldk.analysis.go.ids import body_node_id, callable_match_names, external_signature, go_value_names, pick_declaration, split_body_node_id
+from cldk.analysis.go.ids import body_node_id, callable_match_names, external_signature, go_value_names, longest_first, pick_declaration, split_body_node_id
 from cldk.models.go import (
     GoAnalysis,
     GoApplication,
@@ -372,6 +372,16 @@ class GoCodeanalyzer(GoAnalysisBackend):
             self._module_bytes[mod.id] = encoded
         return encoded[b0:b1].decode("utf-8")
 
+    @cached_property
+    def _owner_ids_longest_first(self) -> Tuple[str, ...]:
+        """Every owner id, longest first — the candidate order a body-node id is split against.
+
+        Cached because the order is a property of the application, not of the node being looked up:
+        computing it inside the lookup sorted 5,955 ids on every ``get_source`` of a body-node id
+        on nats-server.
+        """
+        return longest_first(self._dataflow_owners)
+
     def _body_source_of(self, node_id: str) -> "tuple | None":
         """``(module, body node)`` for a body-node id, or ``None`` if nothing owns it.
 
@@ -380,11 +390,15 @@ class GoCodeanalyzer(GoAnalysisBackend):
         vertex ``@``. A stand-in has no module and so no text, which this reports as "not found"
         rather than as a module lookup that would fail further on.
 
-        Not indexed eagerly: the body-node ids outnumber the durable ones by a wide margin (3,324
-        against 319 on the analyzer's own corpus), and ``get_source`` on one is the uncommon case,
+        Not indexed eagerly: the body-node ids outnumber the durable ones by a wide margin (1.69
+        **million** against 5,955 on nats-server), and ``get_source`` on one is the uncommon case,
         so the prefix walk is paid per call instead of the index being paid per application.
+
+        The *candidate order*, though, is paid once — :attr:`_owner_ids_longest_first`. It used to
+        be sorted inside the lookup, which made a bulk ``get_source`` over a page's endpoints sort
+        every callable id per endpoint.
         """
-        hit = split_body_node_id(node_id, self._dataflow_owners)
+        hit = split_body_node_id(node_id, self._owner_ids_longest_first)
         if hit is None:
             return None
         cid, key = hit

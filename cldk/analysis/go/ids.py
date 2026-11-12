@@ -52,6 +52,20 @@ def body_node_id(callable_id: str, body_key: str) -> str:
     return f"{callable_id}{body_key}" if body_key.startswith("@") else f"{callable_id}@{body_key}"
 
 
+def longest_first(callable_ids: Iterable[str]) -> Tuple[str, ...]:
+    """``callable_ids`` ordered longest first — the order :func:`split_body_node_id` needs.
+
+    Longest first because a callable id can be a proper prefix of a nested closure's
+    (``…flow.Closure`` and ``…flow.Closure.closure_1``), so the shorter would otherwise claim the
+    longer's vertices. Ties are broken by the id itself, so the order is total and a lookup is
+    reproducible rather than dependent on dict iteration.
+
+    Separate from the lookup so a backend computes it **once** per application instead of once per
+    node: see :func:`split_body_node_id`'s ``callable_ids``.
+    """
+    return tuple(sorted(callable_ids, key=lambda cid: (-len(cid), cid)))
+
+
 def split_body_node_id(node_id: str, callable_ids: Iterable[str]) -> Tuple[str, str] | None:
     """``(callable id, body key)`` for ``node_id``, or ``None`` if no known callable owns it.
 
@@ -72,15 +86,18 @@ def split_body_node_id(node_id: str, callable_ids: Iterable[str]) -> Tuple[str, 
 
     Args:
         node_id: A body node's absolute ``can://`` id.
-        callable_ids: Every callable id in the application, stand-ins included. Order is
-            irrelevant; this sorts.
+        callable_ids: Every callable id in the application, stand-ins included, **already ordered
+            longest first** — :func:`longest_first` is what produces that order, and a backend
+            should compute it once rather than per call. Sorting here instead cost a sort of every
+            callable id on every lookup, which on nats-server (5,955 callables) made a bulk
+            ``get_source`` over a page's endpoints quadratic; the eval surfaced it.
 
     Returns:
         ``(callable_id, body_key)`` where ``body_node_id(*result) == node_id``, or ``None`` when no
         candidate owns it — a miss is returned, not raised, because the callers here are describing
         a walk's nodes and an unknown node is a node to skip, not an error to propagate.
     """
-    for cid in sorted(callable_ids, key=len, reverse=True):
+    for cid in callable_ids:
         if not node_id.startswith(cid) or node_id == cid:
             continue
         rest = node_id[len(cid) :]
