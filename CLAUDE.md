@@ -45,6 +45,19 @@ absence claim in the result; `max_paths` caps per pair, never per call. The sour
 vocabulary is the caller's — no framework catalogue ships. Java shares the `formal_in` dependence
 probe above, so `taint` refuses on the same analyses the four verbs do.
 
+**All four languages, since #436:** the reachability walk every local backend's slices and flow
+predicates run is **`commons.graphs.reach`**, lifted out of four byte-identical copies for the
+reason that lifted `shortest_walks` in leg 2.5b — it is a graph algorithm over an adjacency of
+strings and knows no language. Each backend's `_reach` is a one-liner over it, keeping only
+`direction` as its own concern. The lift carried a fix: a node must enter the next frontier **once**,
+and the spelling in all four copies appended it once per predecessor, so the frontier tracked path
+count rather than node count — answers were always right (a set holds no duplicates), but an
+unbounded walk did not terminate on a real application, and `depth=None` is the default on
+`paths_between` / `flows_to_*` / `taint`. Measured on nats-server: 151,417,783 frontier expansions
+at depth 8 against 670,450. **Known limitation, #446:** `shortest_walks` still cannot produce a
+witness for a flow `flows_to_*` confirms on a large application — its replay prunes on BFS layer
+boundaries but not toward the sink.
+
 **Go, since #436 (the L3/L4 train):** the dataflow surface, with `PythonAnalysisBackend`'s names and
 signatures — `get_cfg`/`get_cdg`/`get_ddg`, `resolve_callable`/`resolve_value`,
 `slice_backward`/`slice_forward`/`backward_cone`, `reaches`/`paths_between`,
