@@ -53,7 +53,7 @@ from cldk.analysis.commons.bounds import (
     check_page_size,
     edge_page,
 )
-from cldk.analysis.commons.graphs import call_reaches, cone_sinks, flow_path, shortest_walks, slice_resolved, under_callable
+from cldk.analysis.commons.graphs import call_reaches, cone_sinks, flow_path, reach, shortest_walks, slice_resolved, under_callable
 from cldk.analysis.commons.keys import body_key_column, resolve_module_key
 from cldk.analysis.commons.levels import ANALYZER_LEVELS, LEVEL_NAMES, analyzer_level
 from cldk.analysis.commons.resolve import CallableCandidate, resolve_callable_signature, resolve_value_name, resolve_within
@@ -1186,18 +1186,16 @@ class TSCodeanalyzer(TSAnalysisBackend):
     def _reach(self, ref: str, direction: str, depth: int | None) -> set:
         """The set of node ids reachable from ``ref`` in at most ``depth`` hops.
 
-        Level-by-level rather than a plain stack, because ``depth`` is a hop budget and a
-        depth-first walk cannot count hops without revisiting. Shared by the slices and by the two
-        flow predicates so "reachable" means one thing on this backend.
+        Shared by the slices and by the two flow predicates so "reachable" means one thing on this
+        backend.
+
+        The walk is :func:`~cldk.analysis.commons.graphs.reach`, lifted there with its
+        measurements (python-sdk#436). The level-by-level shape and the reason a node must enter
+        the frontier exactly once live with it; the spelling that was here appended a node once per
+        predecessor, which left an unbounded walk non-terminating on a real application while every
+        answer it did return was correct. ``direction`` stays a backend concern.
         """
-        edges = self._sdg[0][direction]
-        seen, frontier, hops = {ref}, [ref], 0
-        while frontier and (depth is None or hops < depth):
-            nxt = [d for src in frontier for d in edges.get(src, ()) if d not in seen]
-            seen.update(nxt)
-            frontier = nxt
-            hops += 1
-        return seen
+        return reach(self._sdg[0][direction], ref, depth)
 
     def _slice_node(self, ref: str) -> SliceNode:
         """One reached body node in the caller's vocabulary.

@@ -422,6 +422,53 @@ def flow_path(nodes: Sequence[SliceNode], edges: Sequence[Tuple[str, "str | None
     return FlowPath(hops=[PathHop(frm=nodes[i], to=nodes[i + 1], via=via[rel], var=var, prov=list(prov or [])) for i, (rel, var, prov) in enumerate(edges)])
 
 
+def reach(edges: Mapping[str, Mapping[str, Sequence[tuple]]], src: str, depth: "int | None") -> set:
+    """The node ids reachable from ``src`` over ``edges`` in at most ``depth`` hops.
+
+    ``edges`` is one direction of the ``{src: {dst: [label]}}`` adjacency each local backend
+    builds -- only the keys are read, so the labels are ignored here. ``depth`` of ``None`` is the
+    whole cone.
+
+    Level-by-level rather than a plain stack, because ``depth`` is a hop budget and a depth-first
+    walk cannot count hops without revisiting. Every local backend's slices and flow predicates go
+    through this, so "reachable" means one thing per language *and* across them.
+
+    **A node enters the next frontier once**, which is why ``seen`` is added to inside the level
+    rather than after it. The obvious spelling builds the level as a comprehension and updates
+    ``seen`` afterwards::
+
+        nxt = [d for src in frontier for d in edges.get(src, ()) if d not in seen]
+        seen.update(nxt)
+
+    That is correct and unusable. ``seen`` does not yet contain the level being built, so a node
+    with *k* predecessors in the current frontier is appended *k* times and the next level expands
+    every copy: the frontier tracks the number of **paths**, not the number of nodes. A set cannot
+    hold duplicates, so the answer never changes -- which is exactly why it survived in four
+    separate copies of this function until an evaluation against a real application measured the
+    cost. On the ``memos`` corpus (208,293 source nodes, 743,154 edges), over 250 ports: identical
+    reachable sets at every depth, and 151,417,783 frontier expansions at depth 8 against 670,450
+    -- 83.65s against 0.11s -- while unbounded it did not terminate at all. ``depth=None`` is the
+    default on ``paths_between`` / ``flows_to_call`` / ``flows_to_argument`` / ``taint``, so the
+    unusable case was the default one (python-sdk#436).
+
+    Lifted out of the four language backends for :func:`shortest_walks`' reason, and with its
+    history as the argument: it is a graph algorithm over an adjacency of strings and knows no
+    language, and four copies were four places to drift -- which is how one bug came to live in
+    all of them.
+    """
+    seen, frontier, hops = {src}, [src], 0
+    while frontier and (depth is None or hops < depth):
+        nxt = []
+        for node in frontier:
+            for d in edges.get(node, ()):
+                if d not in seen:
+                    seen.add(d)
+                    nxt.append(d)
+        frontier = nxt
+        hops += 1
+    return seen
+
+
 def shortest_walks(
     edges: Mapping[str, Mapping[str, Sequence[tuple]]],
     src: str,

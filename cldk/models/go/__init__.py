@@ -15,12 +15,19 @@
 ################################################################################
 
 """Go model package — a pydantic mirror of the ``codeanalyzer-go`` (``cango``) ``analysis.json``
-(schema v2, L1/L2).
+(schema v2, L1 through L4).
 
 Go is the SDK's first class-less, type-centric facade: :class:`GoType` is one model discriminated
-by a ``kind`` field (``struct`` | ``interface``), never a class; package-level ``functions`` are
-kept distinct from receiver ``methods``. No ``projections.py`` yet — the overview models the
-Java/TS siblings ship are out of this train's SDK3 scope and add purely additively later.
+by a ``kind`` field (``struct`` | ``interface`` | ``defined`` | ``alias``), never a class;
+package-level ``functions`` are kept distinct from receiver ``methods``. No ``projections.py`` yet
+— the overview models the Java/TS siblings ship are out of this train's SDK3 scope and add purely
+additively later.
+
+The dataflow substrate (python-sdk#436) is the L3 intraprocedural graphs
+(:class:`GoCfgEdge` / :class:`GoCdgEdge` / :class:`GoDdgEdge` on a callable) plus the L4
+interprocedural layer: :class:`GoSummaryEdge` per call site, :class:`GoParamEdge`
+(``param_in``/``param_out``) and :class:`GoExternalSymbol` stand-ins on the application, and
+:class:`GoDegraded` on the envelope.
 """
 
 from .models import (
@@ -30,12 +37,19 @@ from .models import (
     GoBodyNode,
     GoCallable,
     GoCallGraphEdge,
+    GoCdgEdge,
+    GoCfgEdge,
+    GoDdgEdge,
+    GoDegraded,
+    GoExternalSymbol,
     GoField,
     GoImport,
     GoMetrics,
     GoModule,
     GoParam,
+    GoParamEdge,
     GoSpan,
+    GoSummaryEdge,
     GoType,
 )
 
@@ -46,11 +60,18 @@ __all__ = [
     "GoBodyNode",
     "GoCallable",
     "GoCallGraphEdge",
+    "GoCdgEdge",
+    "GoCfgEdge",
+    "GoDdgEdge",
+    "GoDegraded",
+    "GoExternalSymbol",
     "GoField",
     "GoImport",
     "GoMetrics",
     "GoModule",
     "GoParam",
+    "GoParamEdge",
     "GoSpan",
+    "GoSummaryEdge",
     "GoType",
 ]

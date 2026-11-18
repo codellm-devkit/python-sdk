@@ -41,7 +41,7 @@ from pydantic import ValidationError
 from cldk.analysis.commons.identity import resolve_identity, validate_identity, cache_matches
 from cldk.analysis import AnalysisLevel
 from cldk.analysis.commons.bounds import DEFAULT_PAGE_SIZE, check_page_size, edge_page
-from cldk.analysis.commons.graphs import flow_path, shortest_walks, slice_resolved, under_callable
+from cldk.analysis.commons.graphs import flow_path, reach, shortest_walks, slice_resolved, under_callable
 from cldk.analysis.commons.levels import ANALYZER_LEVELS, LEVEL_NAMES, analyzer_level
 from cldk.analysis.commons.results import Diagnostic, EdgePage, FlowPath, FlowPaths, Slice, SliceNode
 from cldk.analysis.java.backend import (
@@ -547,17 +547,15 @@ class JCodeanalyzer(JavaAnalysisBackend):
         return self._sdg_cache
 
     def _reach(self, ref: str, direction: str, depth: int | None) -> set:
-        """The set of node ids reachable from ``ref`` in at most ``depth`` hops. Level by level
-        rather than a plain stack, because ``depth`` is a hop budget and a depth-first walk cannot
-        count hops without revisiting."""
-        edges = self._sdg()[0][direction]
-        seen, frontier, hops = {ref}, [ref], 0
-        while frontier and (depth is None or hops < depth):
-            nxt = [d for src in frontier for d in edges.get(src, ()) if d not in seen]
-            seen.update(nxt)
-            frontier = nxt
-            hops += 1
-        return seen
+        """The set of node ids reachable from ``ref`` in at most ``depth`` hops.
+
+        The walk is :func:`~cldk.analysis.commons.graphs.reach`, lifted there with its
+        measurements (python-sdk#436). The level-by-level shape and the reason a node must enter
+        the frontier exactly once live with it; the spelling that was here appended a node once per
+        predecessor, which left an unbounded walk non-terminating on a real application while every
+        answer it did return was correct. ``direction`` stays a backend concern.
+        """
+        return reach(self._sdg()[0][direction], ref, depth)
 
     def _value_slice(self, root: SliceNode, *, backward: bool, depth: int | None, max_nodes: int) -> Slice:
         """See :meth:`JavaAnalysisBackend._value_slice`. The whole closure is computed and then cut,

@@ -1,0 +1,22 @@
+// Package kinds declares one of each of the four type kinds the analyzer emits,
+// which is what the SDK's GoType.kind Literal has to accept (python-sdk#436).
+package kinds
+
+// S is a struct.
+type S struct{ N int }
+
+// I is an interface.
+type I interface{ M() int }
+
+// Celsius is a *defined* type (a new named type over an existing one).
+type Celsius float64
+
+// Alias is an *alias* (the same type under a second name) -- the kind that made
+// GoAnalysis(**doc) raise before #436.
+type Alias = int
+
+// M satisfies I.
+func (s S) M() int { return s.N }
+
+// Use keeps every declaration reachable.
+func Use(c Celsius, a Alias) int { return int(c) + a }

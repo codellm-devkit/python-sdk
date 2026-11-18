@@ -486,3 +486,94 @@ def test_the_local_acceptance_domain_is_delimited_too(module, cls):
     src = inspect.getsource(getattr(importlib.import_module(module), cls)._edge_vars_in)
     assert "under_callable(" in src, "the acceptance domain stopped delimiting; a sibling callable's vars leak in"
     assert ".startswith(" not in src, "a bare prefix accepts a variable the delimited cut cannot sever"
+
+
+# -----[ reach: the walk every local backend shares (python-sdk#436) ]-----
+#
+# Lifted out of four byte-identical copies, which is how one bug came to live in all of them:
+# each built the level as a comprehension and updated ``seen`` afterwards, so a node with k
+# predecessors in the current frontier was appended k times and the next level expanded every
+# copy. The reachable SET never changed -- a set cannot hold duplicates -- so only cost showed it.
+
+
+def _diamond_chain(levels):
+    """``n0 -> {a,b} -> n1 -> {a,b} -> n2 ...``: two predecessors per node, every level.
+
+    The shape the bug is quadratic-or-worse on, and small enough to assert exactly: ``1 + 3*levels``
+    nodes, but ``2**levels`` distinct paths from the head, so a frontier that counts paths rather
+    than nodes grows exponentially while the answer stays the same size.
+    """
+    edges = {}
+    for lvl in range(levels):
+        a, b, nxt = f"a{lvl}", f"b{lvl}", f"n{lvl + 1}"
+        edges[f"n{lvl}"] = {a: [()], b: [()]}
+        edges[a] = {nxt: [()]}
+        edges[b] = {nxt: [()]}
+    return edges, 1 + 3 * levels
+
+
+def test_reach_expands_each_node_at_most_once():
+    """The invariant, pinned by counting lookups rather than by timing.
+
+    18 levels is 55 nodes and 262,144 paths; the old walk made 1,048,573 frontier expansions for
+    them where this makes 55. Counting is the non-flaky way to say that.
+    """
+    from cldk.analysis.commons.graphs import reach
+
+    edges, expected = _diamond_chain(18)
+
+    class Counting(dict):
+        def __init__(self, inner):
+            super().__init__(inner)
+            self.fetches = {}
+
+        def get(self, key, default=None):
+            self.fetches[key] = self.fetches.get(key, 0) + 1
+            return super().get(key, default)
+
+    counting = Counting(edges)
+    got = reach(counting, "n0", None)
+    assert len(got) == expected
+    repeats = {k: n for k, n in counting.fetches.items() if n > 1}
+    assert not repeats, f"reach re-expanded {len(repeats)} node(s), e.g. {next(iter(repeats.items()))}"
+
+
+def test_reach_is_bounded_monotone_and_reaches_a_fixed_point():
+    """``depth`` is a hop budget: each bound contains the shallower ones, and past the graph's
+    diameter the answer stops growing. Unbounded must equal the fixed point, not exceed it."""
+    from cldk.analysis.commons.graphs import reach
+
+    edges, expected = _diamond_chain(6)
+    sizes = [len(reach(edges, "n0", d)) for d in range(1, 14)]
+    assert sizes == sorted(sizes), f"reach is not monotone in depth: {sizes}"
+    assert sizes[-1] == expected == len(reach(edges, "n0", None))
+    for d in range(1, 14):
+        assert reach(edges, "n0", d) <= reach(edges, "n0", None)
+
+
+def test_reach_handles_a_cycle_and_an_unknown_seed():
+    """A cycle must terminate (``seen`` is the guard, not the depth bound), and a seed with no
+    outgoing edges is its own reach rather than an error -- ``reaches(x, x)``'s zero-hop rule is
+    ``call_reaches``' business, not this walk's."""
+    from cldk.analysis.commons.graphs import reach
+
+    cyclic = {"a": {"b": [()]}, "b": {"c": [()]}, "c": {"a": [()]}}
+    assert reach(cyclic, "a", None) == {"a", "b", "c"}
+    assert reach({}, "lonely", None) == {"lonely"}
+    assert reach(cyclic, "a", 1) == {"a", "b"}
+
+
+def test_every_local_backend_delegates_to_the_shared_walk():
+    """No backend may keep its own copy: four copies were four places to drift, and they did."""
+    import inspect
+
+    from cldk.analysis.go.codeanalyzer import GoCodeanalyzer
+    from cldk.analysis.java.codeanalyzer import JCodeanalyzer
+    from cldk.analysis.python.codeanalyzer import PyCodeanalyzer
+    from cldk.analysis.typescript.codeanalyzer import TSCodeanalyzer
+
+    for cls in (PyCodeanalyzer, JCodeanalyzer, TSCodeanalyzer, GoCodeanalyzer):
+        src = inspect.getsource(cls._reach)
+        code = [ln.strip() for ln in src.splitlines() if ln.strip()]
+        assert any(ln.startswith("return reach(") for ln in code), f"{cls.__name__}._reach does not delegate"
+        assert not any("while frontier" in ln for ln in code), f"{cls.__name__}._reach still carries its own walk"

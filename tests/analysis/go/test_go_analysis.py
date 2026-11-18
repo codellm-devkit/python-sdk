@@ -270,3 +270,44 @@ def test_real_corpus_call_graph_dangling_free(litestream_facade):
     assert g.number_of_edges() == 3082
     for src, dst in g.edges():
         assert "id" in g.nodes[src] and "id" in g.nodes[dst]
+
+
+# -----[ GoType.kind accepts every kind the analyzer emits ]-----
+#
+# ``kind`` is a ``Literal``, and ``extra="ignore"`` does not cover a ``Literal`` mismatch: an
+# unlisted kind fails the WHOLE document rather than dropping one field. So the listed set has to
+# be exactly the analyzer's, and a gap there is not a cosmetic omission — it is a project that does
+# not load at all. These live here rather than with the dataflow tests because the fact is about
+# ``-a 1`` output and the model that mirrors it, not about the L3/L4 overlays.
+FOUR_KINDS = Path(__file__).resolve().parents[2] / "resources" / "go" / "dataflow" / "four_type_kinds.json"
+
+
+def test_all_four_type_kinds_parse():
+    """``type Alias = int`` and ``type Celsius float64`` are ordinary Go, and cango emits them as
+    ``alias`` / ``defined`` (``internal/syntactic_analysis/symbol_table.go``). Listing only
+    ``struct``/``interface``/``defined`` made ``GoAnalysis`` refuse real ``-a 1`` output from any
+    project declaring an alias — nothing to do with the analysis level or the dataflow overlays.
+    """
+    from cldk.models.go import GoAnalysis
+
+    analysis = GoAnalysis.model_validate_json(FOUR_KINDS.read_text(encoding="utf-8"))
+    kinds = {ty.kind for module in analysis.application.symbol_table.values() for ty in module.types.values()}
+    assert kinds == {"struct", "interface", "defined", "alias"}
+
+
+def test_an_unknown_fifth_kind_still_fails_loudly():
+    """The ``Literal`` is a deliberate choice, not an oversight, so this pins the cost side of it:
+    a kind the analyzer adds must be a *visible* failure rather than a value silently coerced or
+    ignored, because every accessor keyed on ``kind`` would otherwise be quietly wrong.
+
+    Which is also why the fix was to list the missing kind rather than to widen the field to
+    ``str``: widening would have turned this failure into silence for every future kind too.
+    """
+    from cldk.models.go import GoAnalysis
+    from pydantic import ValidationError
+
+    doc = json.loads(FOUR_KINDS.read_text(encoding="utf-8"))
+    module = next(iter(doc["application"]["symbol_table"].values()))
+    next(iter(module["types"].values()))["kind"] = "type_parameter"
+    with pytest.raises(ValidationError, match="kind"):
+        GoAnalysis(**doc)
