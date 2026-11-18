@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v2.2.0-rc.1] - 2026-11-18
+
+### Added
+
+- **Go dataflow surface on both backends** (`python-sdk#436`, `#444`). `CLDK.go(...)` now exposes
+  `get_cfg` / `get_cdg` / `get_ddg`, `resolve_callable` / `resolve_value`, `slice_backward` /
+  `slice_forward` / `backward_cone`, `reaches` / `paths_between`, `flows_to_call` /
+  `flows_to_argument`, `taint`, `get_external_symbols`, `get_degraded` and `describe`. The
+  signatures are the same as Python's. The local backend and the Neo4j backend give the same answers.
+- Go models carry the L3/L4 fields: body-node `id` / `of` / `parent` / `is_deferred`,
+  per-callable `cfg` / `cdg` / `ddg` / `summary`, `param_in` / `param_out`, `external_symbols` and
+  the envelope-scope `degraded`.
+- `Diagnostic.code` gains `analysis_degraded`. Go's `taint` files it when `get_degraded()` is
+  non-empty, and certifies no pair as `exhausted`.
+
+### Changed
+
+- The local Go backend accepts analysis levels 1 to 4. Before, it capped each request at `-a 2`.
+- The reachability walk is now one shared function, `cldk.analysis.commons.graphs.reach`. All
+  local backends use it. Each node now enters the next frontier once. Before, an unbounded walk
+  did not stop on large applications.
+
+### Fixed
+
+- `GoType.kind` accepts `"alias"`. Before, `-a 1` output from a project that declares a type alias
+  failed to parse.
+
+### Known gaps
+
+- Go does not yet have `locate`, the bulk projections, the call-graph verbs, `get_imports`,
+  `get_modules` or `get_dependencies` on the facade (`python-sdk#447`).
+- `codeanalyzer-go#30`: global-to-global `summary` edges are missing. A walk with a depth limit
+  can stop before it finds a path.
+
 ## [v2.1.0] - 2026-10-31
 
 - Add namespace/application bindings to Python, Java, JavaScript/TypeScript and Go backends.
