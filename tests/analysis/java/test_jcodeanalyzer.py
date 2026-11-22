@@ -581,3 +581,49 @@ def test_facade_reuses_language_keyed_cache(analysis_json_fixture, tmp_path):
         )
     assert not run_mock.called
     assert len(analysis.get_symbol_table()) == 138
+
+
+def _with_a_vendored_copy(payload: str) -> tuple[str, str, str]:
+    """``payload`` with its first compilation unit copied under a second path: one qualified name,
+    declared in two files, as two services vendoring one library would (#420)."""
+    data = json.loads(payload)
+    table = data["application"]["symbol_table"]
+    path, unit = next(iter(table.items()))
+    copy_path = "vendored/" + path
+    table[copy_path] = json.loads(json.dumps(unit).replace(path, copy_path))
+    qualified = (unit.get("package") + "." if unit.get("package") else "") + next(iter(unit["types"]))
+    return json.dumps(data), qualified, copy_path
+
+
+def test_duplicate_qualified_names_load_and_raise_only_where_queried(test_fixture, analysis_json):
+    """An application with one name in two files loads; only a query for that name refuses (#420)."""
+    payload, contested, copy_path = _with_a_vendored_copy(analysis_json)
+    analyzer, _ = _analyzer(payload, project_dir=test_fixture)        # construction succeeds
+    assert len(analyzer.get_symbol_table()) == len(json.loads(analysis_json)["application"]["symbol_table"]) + 1
+    with pytest.raises(CodeanalyzerExecutionException) as raised:
+        analyzer.get_class(contested)
+    assert contested in str(raised.value) and copy_path in str(raised.value)
+    assert "codeanalyzer-java emitted" not in str(raised.value)      # the source tree, not the emitter
+    with pytest.raises(CodeanalyzerExecutionException):
+        analyzer.get_java_file(contested)
+    with pytest.raises(CodeanalyzerExecutionException):
+        analyzer.get_all_classes()                                   # an answer keyed by every name
+    others = [u for u in json.loads(analysis_json)["application"]["symbol_table"].values() if u["types"]][1:]
+    assert others, "the fixture needs a second, uncontested unit"
+    other = others[0]
+    other_name = (other["package"] + "." if other.get("package") else "") + next(iter(other["types"]))
+    assert analyzer.get_class(other_name) is not None                # uncontested names answer as before
+
+
+def test_assigning_a_name_replaces_every_declaration_of_it():
+    """``index[name] = value`` leaves that one declaration, so a contested name becomes answerable."""
+    from cldk.analysis.java.backend import NameIndex
+    index = NameIndex()
+    index.add("x.A", 1, "a/A.java")
+    index.add("x.A", 2, "b/A.java")
+    with pytest.raises(CodeanalyzerExecutionException):
+        index["x.A"]
+    index["x.A"] = 3
+    assert index["x.A"] == 3 and index.contested() == {}
+    del index["x.A"]
+    assert "x.A" not in index

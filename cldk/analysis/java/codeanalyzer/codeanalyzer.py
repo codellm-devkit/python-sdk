@@ -53,7 +53,7 @@ from cldk.analysis.java.backend import (
     CallingLines,
     CRUDRow,
     JavaAnalysisBackend,
-    duplicate_type_name,
+    index_types,
     java_body_node_id,
     unhomed_endpoint,
 )
@@ -351,25 +351,8 @@ class JCodeanalyzer(JavaAnalysisBackend):
         """Flatten the containment tree once: every type (top-level, nested, local/anonymous) by
         its source-spelled qualified name, its file, and every callable by its ``can://`` id — the
         join that turns a wire call-graph endpoint into the ``"<type fqn>.<signature>"`` node key."""
-        self._types: Dict[str, JType] = {}
-        self._file_of: Dict[str, str] = {}
-        self._callables: Dict[str, Tuple[JType, JCallable]] = {}
-        for path, unit in self.application.symbol_table.items():
-            for t in unit.types.values():
-                self._add_type(t, path)
-
-    def _add_type(self, t: JType, path: str) -> None:
-        name = t.qualified_name
-        if name in self._types:
-            raise CodeanalyzerExecutionException(duplicate_type_name(name))
-        self._types[name] = t
-        self._file_of[name] = path
-        for c in t.callables.values():
-            self._callables[c.id] = (t, c)
-            for lt in c.types.values():
-                self._add_type(lt, path)
-        for nt in t.types.values():
-            self._add_type(nt, path)
+        # A name declared in several files loads; only a query keyed by it refuses (#420).
+        self._types, self._file_of, self._callables = index_types(self.application.symbol_table)
 
     @staticmethod
     def _detail(klass: str, c: JCallable) -> JMethodDetail:

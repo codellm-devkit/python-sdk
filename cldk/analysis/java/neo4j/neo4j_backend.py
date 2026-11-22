@@ -133,7 +133,7 @@ from cldk.analysis.java.backend import (
     CallingLines,
     CRUDRow,
     JavaAnalysisBackend,
-    duplicate_type_name,
+    index_types,
     unhomed_endpoint,
     VIEW_DISPATCH_UNRESOLVED_JSON_ONLY,
 )
@@ -666,32 +666,11 @@ class JNeo4jBackend(JavaAnalysisBackend):
         return self._application
 
     @cached_property
-    def _idx(self) -> Tuple[Dict[str, JType], Dict[str, str], Dict[str, Tuple[JType, JCallable]]]:
-        """The containment tree flattened once: every type (top-level, nested, local/anonymous) by
-        its source-spelled qualified name, its file, and every callable by its ``can://`` id — the
-        join that turns a call-graph endpoint into the ``"<type fqn>.<signature>"`` node key.
-        Mirrors :meth:`JCodeanalyzer._index`."""
-        types: Dict[str, JType] = {}
-        file_of: Dict[str, str] = {}
-        callables: Dict[str, Tuple[JType, JCallable]] = {}
-
-        def add(t: JType, path: str) -> None:
-            name = t.qualified_name
-            if name in types:
-                raise CodeanalyzerExecutionException(duplicate_type_name(name))
-            types[name] = t
-            file_of[name] = path
-            for c in t.callables.values():
-                callables[c.id] = (t, c)
-                for local in c.types.values():
-                    add(local, path)
-            for nested in t.types.values():
-                add(nested, path)
-
-        for path, unit in self._application.symbol_table.items():
-            for t in unit.types.values():
-                add(t, path)
-        return types, file_of, callables
+    def _idx(self) -> Tuple[Mapping[str, JType], Mapping[str, str], Dict[str, Tuple[JType, JCallable]]]:
+        """The containment tree flattened once, as :meth:`JCodeanalyzer._index` flattens it (both
+        call :func:`index_types`): a name declared in several files is kept, and only a query keyed
+        by it refuses (#420)."""
+        return index_types(self._application.symbol_table)
 
     @property
     def _types(self) -> Dict[str, JType]:

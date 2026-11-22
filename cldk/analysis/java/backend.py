@@ -50,7 +50,8 @@ from __future__ import annotations
 import re
 from abc import abstractmethod
 from functools import cached_property
-from typing import ClassVar, Collection, Dict, Iterable, List, Mapping, NamedTuple, Optional, Sequence, Set, Tuple, Union
+import logging
+from typing import Any, ClassVar, Collection, Dict, Iterable, Iterator, List, Mapping, NamedTuple, Optional, Sequence, Set, Tuple, TypeVar, Union
 
 import networkx as nx
 
@@ -127,6 +128,8 @@ from cldk.models.java.models import (
 )
 from cldk.models.java.projections import JCallableOverview, JClassOverview
 from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException, CodeanalyzerUsageException, SelectorNotInGraph
+
+logger = logging.getLogger(__name__)
 
 # A CRUD query row: the owning type + callable and the operations found within it.
 CRUDRow = Dict[str, Union[JType, JCallable, List[JCRUDOperation]]]
@@ -525,12 +528,92 @@ class _Addressing(NamedTuple):
     candidates: List[CallableCandidate]
 
 
-def duplicate_type_name(qualified_name: str) -> str:
-    """The defect message for two declarations that spell one qualified name — which would make a
-    ``get_call_graph()`` node key and a ``get_class()`` key ambiguous, so it is surfaced rather than
-    letting the second silently shadow the first. Both backends raise this text, identically, and
-    it names only the qualified name: a ``can://`` id must not appear in a message (E6)."""
-    return f"type qualified name {qualified_name!r} is declared twice: codeanalyzer-java emitted two declarations that spell one name"
+def duplicate_type_name(qualified_name: str, files: Sequence[str] = ()) -> str:
+    """The message for a query keyed by a qualified name that more than one file declares — which
+    would make a ``get_call_graph()`` node key and a ``get_class()`` key ambiguous, so it is
+    surfaced rather than letting one copy silently shadow the others. The duplication is in the
+    source tree (vendored copies of one library, say), not the analyzer's doing (#420). Both
+    backends raise this text, identically, and it names the qualified name and the files: a
+    ``can://`` id must not appear in a message (E6)."""
+    where = f" ({', '.join(sorted(files))})" if files else ""
+    return (f"type qualified name {qualified_name!r} is declared in more than one file{where}: "
+            "the name is ambiguous, so a query keyed by it cannot be answered")
+
+
+V = TypeVar("V")
+
+
+class NameIndex(Mapping[str, V]):
+    """Values by qualified type name, where one name may be declared in several files (#420).
+
+    The application always loads: every declaration is kept, under its name, with its file. A name
+    with one declaration answers as a plain mapping would; looking up a contested one, directly or
+    by iterating values (``dict(index)``, ``.items()``), raises :func:`duplicate_type_name` with the
+    competing files. Membership and iteration over names never raise.
+    """
+
+    def __init__(self) -> None:
+        self._entries: Dict[str, List[Tuple[V, str]]] = {}
+
+    def add(self, name: str, value: V, path: str) -> None:
+        self._entries.setdefault(name, []).append((value, path))
+
+    def __getitem__(self, name: str) -> V:
+        entries = self._entries[name]
+        if len(entries) > 1:
+            raise CodeanalyzerExecutionException(duplicate_type_name(name, [p for _, p in entries]))
+        return entries[0][0]
+
+    def __setitem__(self, name: str, value: V) -> None:
+        """Replace every declaration of ``name`` with this one (its file unknown)."""
+        self._entries[name] = [(value, "")]
+
+    def __delitem__(self, name: str) -> None:
+        del self._entries[name]
+
+    def __contains__(self, name: object) -> bool:
+        return name in self._entries
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._entries)
+
+    def __len__(self) -> int:
+        return len(self._entries)
+
+    def contested(self) -> Dict[str, List[str]]:
+        """Every name declared in more than one file, with its files."""
+        return {name: sorted(p for _, p in entries)
+                for name, entries in self._entries.items() if len(entries) > 1}
+
+
+def index_types(symbol_table: Mapping[str, Any]) -> Tuple["NameIndex[Any]", "NameIndex[str]", Dict[str, Tuple[Any, Any]]]:
+    """The containment tree flattened once, for both backends: every type (top-level, nested,
+    local/anonymous) and its file by source-spelled qualified name, and every callable by its
+    ``can://`` id, which is unique per copy. Contested names are logged here, once, and refuse only
+    the queries keyed by them (#420)."""
+    types: NameIndex[Any] = NameIndex()
+    file_of: NameIndex[str] = NameIndex()
+    callables: Dict[str, Tuple[Any, Any]] = {}
+
+    def add(t: Any, path: str) -> None:
+        types.add(t.qualified_name, t, path)
+        file_of.add(t.qualified_name, path, path)
+        for c in t.callables.values():
+            callables[c.id] = (t, c)
+            for local in c.types.values():
+                add(local, path)
+        for nested in t.types.values():
+            add(nested, path)
+
+    for path, unit in symbol_table.items():
+        for t in unit.types.values():
+            add(t, path)
+    contested = types.contested()
+    if contested:
+        name, files = next(iter(sorted(contested.items())))
+        logger.warning(f"{len(contested)} type qualified name(s) are declared in more than one file "
+                       f"(e.g. {name!r} in {', '.join(files)}); queries keyed by those names raise")
+    return types, file_of, callables
 
 
 def unhomed_endpoint(node_id: str) -> str:

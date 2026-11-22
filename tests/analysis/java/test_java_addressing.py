@@ -512,3 +512,21 @@ def test_the_two_backends_agree_on_every_answer_here(analysis_json):
         with pytest.raises(Exception) as ga:
             graph.resolve_callable(name)
         assert type(la.value) is type(ga.value) and str(la.value) == str(ga.value)
+
+
+@pytest.mark.parametrize("build", ["local", "graph"])
+def test_both_backends_load_duplicates_and_refuse_at_the_same_query(build, analysis_json):
+    """One name in two files: both backends load, and both refuse at the query keyed by it (#420)."""
+    import json
+
+    from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
+    from tests.analysis.java.test_jcodeanalyzer import _with_a_vendored_copy
+
+    payload, contested, copy_path = _with_a_vendored_copy(analysis_json)
+    backend = (_local if build == "local" else _graph)(payload)
+    with pytest.raises(CodeanalyzerExecutionException) as raised:
+        backend.get_class(contested)
+    assert copy_path in str(raised.value)
+    other = [u for u in json.loads(analysis_json)["application"]["symbol_table"].values() if u["types"]][1]
+    name = (other["package"] + "." if other.get("package") else "") + next(iter(other["types"]))
+    assert backend.get_class(name) is not None
