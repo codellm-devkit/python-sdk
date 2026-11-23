@@ -122,6 +122,7 @@ SURFACE = {
     "resolve_callable": "(self, name: 'str', *, in_class: 'str | None' = None, in_module: 'str | None' = None) -> 'SliceNode'",
     "resolve_value": "(self, name: 'str', *, within: 'str') -> 'SliceNode'",
     "get_compilation_units": "(self) -> 'List[JCompilationUnit]'",
+    "get_class_declarations": "(self, qualified_class_name: 'str') -> 'Dict[str, JType]'",
     "get_constructors": "(self, qualified_class_name: 'str') -> 'Dict[str, JCallable]'",
     "get_entry_point_classes": "(self) -> 'Dict[str, JType]'",
     "get_entry_point_methods": "(self) -> 'Dict[str, Dict[str, JCallable]]'",
