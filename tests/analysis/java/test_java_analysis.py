@@ -1165,3 +1165,18 @@ def test_get_comments_in_a_class_miss_returns_empty_list(test_fixture, analysis_
         )
 
         assert java_analysis.backend.get_comments_in_a_class("com.example.NoSuchClass") == []
+
+
+def test_get_class_declarations_reads_every_copy_of_a_contested_name(test_fixture, analysis_json):
+    """``get_class`` refuses a name declared in two files; ``get_class_declarations`` returns each
+    copy by file (#420)."""
+    from tests.analysis.java.test_jcodeanalyzer import _with_a_vendored_copy
+
+    payload, contested, copy_path = _with_a_vendored_copy(analysis_json)
+    with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
+        run_mock.side_effect = _write_java_output(payload)
+        # Eager: an earlier test's cached analysis of the same fixture must not be reused.
+        java_analysis = JavaAnalysis(project_dir=test_fixture, backend=_BK, analysis_level=AnalysisLevel.symbol_table, target_files=None, eager_analysis=True)
+        copies = java_analysis.get_class_declarations(contested)
+        assert copy_path in copies and len(copies) == 2
+        assert java_analysis.get_class_declarations("com.example.NoSuchClass") == {}

@@ -51,7 +51,7 @@ import re
 from abc import abstractmethod
 from functools import cached_property
 import logging
-from typing import Any, ClassVar, Collection, Dict, Iterable, Iterator, List, Mapping, NamedTuple, Optional, Sequence, Set, Tuple, TypeVar, Union
+from typing import Any, Callable, ClassVar, Collection, Dict, Iterable, Iterator, List, Mapping, NamedTuple, Optional, Sequence, Set, Tuple, TypeVar, Union
 
 import networkx as nx
 
@@ -522,10 +522,11 @@ class _Addressing(NamedTuple):
     """The application, indexed the four ways the addressing surface reads it — built once per
     backend, from the same :class:`JApplication` both backends hold."""
 
-    by_key: Dict[str, _Addressed]
+    by_key: "NameIndex[_Addressed]"
     by_id: Dict[str, _Addressed]
     by_path: Dict[str, List[_Addressed]]
     candidates: List[CallableCandidate]
+    rows: List[_Addressed]
 
 
 def duplicate_type_name(qualified_name: str, files: Sequence[str] = ()) -> str:
@@ -540,20 +541,33 @@ def duplicate_type_name(qualified_name: str, files: Sequence[str] = ()) -> str:
             "the name is ambiguous, so a query keyed by it cannot be answered")
 
 
+def duplicate_callable_key(key: str, files: Sequence[str] = ()) -> str:
+    """The message for a ``"<type fqn>.<signature>"`` key that callables in more than one file
+    spell (#420): each copy answers to ``"<key>@<file>"`` instead, the spelling
+    :meth:`~JavaAnalysisBackend.get_callables_overview` and ``get_call_graph()`` use for it."""
+    where = f" ({', '.join(sorted(files))})" if files else ""
+    return (f"callable {key!r} is declared in more than one file{where}: the key is ambiguous; "
+            f"name one copy as '<key>@<file>'")
+
+
 V = TypeVar("V")
 
 
 class NameIndex(Mapping[str, V]):
-    """Values by qualified type name, where one name may be declared in several files (#420).
+    """Values by qualified name, where one name may be declared in several files (#420).
 
     The application always loads: every declaration is kept, under its name, with its file. A name
-    with one declaration answers as a plain mapping would; looking up a contested one, directly or
-    by iterating values (``dict(index)``, ``.items()``), raises :func:`duplicate_type_name` with the
-    competing files. Membership and iteration over names never raise.
+    with one declaration answers as a plain mapping would. Looking up a contested one raises
+    ``refuse(name, files)`` (by default :func:`duplicate_type_name`) — directly, through ``.get()``
+    (which returns ``None`` only for an absent name), or by iterating values (``dict(index)``,
+    ``.items()``). Membership, ``len`` (a count of names) and iteration over names never raise;
+    :meth:`entries` and :meth:`declarations` read every copy, and :meth:`select` answers a filter
+    that refuses only when a contested name passes it.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, refuse: Callable[[str, Sequence[str]], str] = duplicate_type_name) -> None:
         self._entries: Dict[str, List[Tuple[V, str]]] = {}
+        self._refuse = refuse
 
     def add(self, name: str, value: V, path: str) -> None:
         self._entries.setdefault(name, []).append((value, path))
@@ -561,12 +575,14 @@ class NameIndex(Mapping[str, V]):
     def __getitem__(self, name: str) -> V:
         entries = self._entries[name]
         if len(entries) > 1:
-            raise CodeanalyzerExecutionException(duplicate_type_name(name, [p for _, p in entries]))
+            raise CodeanalyzerExecutionException(self._refuse(name, [p for _, p in entries]))
         return entries[0][0]
 
     def __setitem__(self, name: str, value: V) -> None:
-        """Replace every declaration of ``name`` with this one (its file unknown)."""
-        self._entries[name] = [(value, "")]
+        """Replace every declaration of ``name`` with this one, in the file of the first, or
+        ``""`` for a name that had none."""
+        old = self._entries.get(name)
+        self._entries[name] = [(value, old[0][1] if old else "")]
 
     def __delitem__(self, name: str) -> None:
         del self._entries[name]
@@ -585,21 +601,43 @@ class NameIndex(Mapping[str, V]):
         return {name: sorted(p for _, p in entries)
                 for name, entries in self._entries.items() if len(entries) > 1}
 
+    def declarations(self, name: str) -> Dict[str, V]:
+        """Every declaration of ``name``, by file; empty when nothing declares it."""
+        return {path: value for value, path in self._entries.get(name, ())}
 
-def index_types(symbol_table: Mapping[str, Any]) -> Tuple["NameIndex[Any]", "NameIndex[str]", Dict[str, Tuple[Any, Any]]]:
+    def entries(self) -> Iterator[Tuple[str, V, str]]:
+        """``(name, value, file)`` for every declaration, contested names included."""
+        for name, entries in self._entries.items():
+            for value, path in entries:
+                yield name, value, path
+
+    def select(self, keep: Callable[[V], bool]) -> Dict[str, V]:
+        """The declarations ``keep`` accepts, by name. Refuses only when a contested name has a
+        declaration ``keep`` accepts, since that name could not be one key of the answer."""
+        out: Dict[str, V] = {}
+        for name, entries in self._entries.items():
+            if any(keep(value) for value, _ in entries):
+                out[name] = self[name]
+        return out
+
+
+def index_types(symbol_table: Mapping[str, Any]) -> Tuple["NameIndex[Any]", "NameIndex[str]", Dict[str, Tuple[Any, Any]], Dict[str, str]]:
     """The containment tree flattened once, for both backends: every type (top-level, nested,
-    local/anonymous) and its file by source-spelled qualified name, and every callable by its
-    ``can://`` id, which is unique per copy. Contested names are logged here, once, and refuse only
-    the queries keyed by them (#420)."""
+    local/anonymous) and its file by source-spelled qualified name, every callable by its
+    ``can://`` id, which is unique per copy, and each callable's file by that id. A callable's file
+    is never looked up by its owner's name, which two copies share. Contested names are logged
+    here, once, and refuse only the queries keyed by them (#420)."""
     types: NameIndex[Any] = NameIndex()
     file_of: NameIndex[str] = NameIndex()
     callables: Dict[str, Tuple[Any, Any]] = {}
+    callable_file: Dict[str, str] = {}
 
     def add(t: Any, path: str) -> None:
         types.add(t.qualified_name, t, path)
         file_of.add(t.qualified_name, path, path)
         for c in t.callables.values():
             callables[c.id] = (t, c)
+            callable_file[c.id] = path
             for local in c.types.values():
                 add(local, path)
         for nested in t.types.values():
@@ -613,7 +651,7 @@ def index_types(symbol_table: Mapping[str, Any]) -> Tuple["NameIndex[Any]", "Nam
         name, files = next(iter(sorted(contested.items())))
         logger.warning(f"{len(contested)} type qualified name(s) are declared in more than one file "
                        f"(e.g. {name!r} in {', '.join(files)}); queries keyed by those names raise")
-    return types, file_of, callables
+    return types, file_of, callables, callable_file
 
 
 def unhomed_endpoint(node_id: str) -> str:
@@ -675,8 +713,8 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         """Every callable of the application, indexed for addressing — built once, lazily.
 
         Reads the flattened containment index each backend already builds for the call graph
-        (``_callables``: ``can://`` id → ``(owning type, callable)``; ``_file_of``: type qualified
-        name → module key), so there is no third walk of the tree and no way for the addressing
+        (``_callables``: ``can://`` id → ``(owning type, callable)``; ``_callable_file``: ``can://``
+        id → module key), so there is no third walk of the tree and no way for the addressing
         domain to disagree with the one :meth:`get_call_graph` homes its endpoints on.
 
         The candidate domain is **every callable the analyzer emitted** (J-6): initializers,
@@ -690,18 +728,44 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         # callable: J-2's rule reads the *unit* (its declared package and the types it declares),
         # and daytrader8 has 1,216 callables across 138 of them.
         module_names = {path: java_module_dotted(unit.package, unit.types) for path, unit in symbol_table.items()}
-        by_key: Dict[str, _Addressed] = {}
+        # A key two copies spell (#420) names neither: each copy's row answers to
+        # ``"<key>@<file>"``, and the bare key stays in ``by_key`` only to refuse with both files
+        # (resolving it by name is an ambiguity between the two copies instead).
+        spelled: Dict[str, int] = {}
+        for owner, c in self._callables.values():
+            key = f"{owner.qualified_name}.{c.signature}"
+            spelled[key] = spelled.get(key, 0) + 1
+        by_key: NameIndex[_Addressed] = NameIndex(duplicate_callable_key)
         by_id: Dict[str, _Addressed] = {}
         by_path: Dict[str, List[_Addressed]] = {}
         candidates: List[CallableCandidate] = []
-        for owner, c in self._callables.values():
-            path = self._file_of[owner.qualified_name]
-            row = _Addressed(f"{owner.qualified_name}.{c.signature}", owner, c, path)
-            by_key[row.key] = row
+        rows: List[_Addressed] = []
+        for callable_id, (owner, c) in self._callables.items():
+            path = self._callable_file[callable_id]
+            key = f"{owner.qualified_name}.{c.signature}"
+            row = _Addressed(key if spelled[key] == 1 else f"{key}@{path}", owner, c, path)
+            by_key.add(row.key, row, path)
+            if row.key != key:
+                by_key.add(key, row, path)
             by_id[c.id] = row
             by_path.setdefault(path, []).append(row)
-            candidates.append(CallableCandidate(row.key, owner.qualified_name, path, java_callable_names(row.key), module_names.get(path, ())))
-        return _Addressing(by_key, by_id, by_path, candidates)
+            rows.append(row)
+            # A contested copy is reported, and answers, as ``"<key>@<file>"`` too, so an ambiguity
+            # lists one spelling per copy and either that spelling or ``in_module=`` resolves it.
+            names = java_callable_names(key) + ((row.key,) if row.key != key else ())
+            candidates.append(CallableCandidate(row.key, owner.qualified_name, path, names, module_names.get(path, ())))
+        return _Addressing(by_key, by_id, by_path, candidates, rows)
+
+    def _node_key(self, node_id: str) -> Tuple[str, "JMethodDetail"]:
+        """The (call-graph node key, method detail) a call-graph endpoint id resolves to: the
+        callable's addressing key, so a copy of a contested key is its own node (#420). Every
+        endpoint the analyzer emits is homed on the tree; one that is not is the analyzer's defect,
+        surfaced rather than skipped, named by the signature and module key its id spells, never
+        by the id (E6)."""
+        row = self._addressing.by_id.get(node_id)
+        if row is None:
+            raise CodeanalyzerExecutionException(unhomed_endpoint(node_id))
+        return row.key, JMethodDetail(method_declaration=row.callable.declaration, klass=row.type.qualified_name, method=row.callable)
 
     # -----[ locate ]-----
     def locate(self, path: str, line: int) -> LocateResult:
@@ -1099,7 +1163,7 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         because all of them are addressable and a projection that quietly omits one is a name that
         resolves to nothing for a reason the caller cannot see.
         """
-        return [JCallableOverview.of(row.key, row.type, row.callable, path=row.path) for row in self._addressing.by_key.values()]
+        return [JCallableOverview.of(row.key, row.type, row.callable, path=row.path) for row in self._addressing.rows]
 
     def get_method_bodies(self, signatures: List[str]) -> Dict[str, str]:
         """Source bodies for the given callables, keyed by the key that named them.
@@ -1166,7 +1230,7 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         ``Dict[str, JType]`` shape (J-4); the two never disagree about which types are marked,
         because both read the one flattened index.
         """
-        return [JClassOverview.of(t, path=self._file_of[name], qualified_name=name) for name, t in self._types.items() if t.is_entrypoint_class]
+        return [JClassOverview.of(t, path=path, qualified_name=name) for name, t, path in self._types.entries() if t.is_entrypoint_class]
 
     def get_entrypoint_coverage(self) -> EntrypointCoverage:
         """The entrypoint pass's own coverage and failure record, identically on both backends.
@@ -1490,7 +1554,7 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         return list(found.enum_constants)
 
     def _of_kind(self, kind: str) -> Dict[str, JType]:
-        return {name: t for name, t in self._types.items() if t.kind == kind}
+        return self._types.select(lambda t: t.kind == kind)
 
     # =====================================================================================
     # The six 1.x accessors leg 3 deferred (#366). Each is implemented **once, here**, over what
@@ -2466,6 +2530,13 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         """Call-graph edges out of a class, computed from the symbol table's call sites only."""
 
     # -----[ classes / methods / fields ]-----
+    def get_class_declarations(self, qualified_class_name: str) -> Dict[str, JType]:
+        """Every declaration of a qualified type name, by file: one entry for most names, several
+        where copies of one library are vendored across source roots (#420), and none for a name
+        the application does not declare. Never raises; :meth:`get_class` refuses a contested
+        name, and this is how to read each copy."""
+        return self._types.declarations(qualified_class_name)
+
     @abstractmethod
     def get_all_sub_classes(self, qualified_class_name: str) -> Dict[str, JType]:
         """Classes that extend/implement the given class."""

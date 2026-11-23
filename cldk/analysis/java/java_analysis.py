@@ -627,6 +627,22 @@ class JavaAnalysis:
 
         return self.backend.get_class(qualified_class_name)
 
+    def get_class_declarations(self, qualified_class_name: str) -> Dict[str, JType]:
+        """Return every declaration of a qualified class name, by file.
+
+        Most names have one. Where copies of one library are vendored across source roots, a name
+        is declared in several files: :meth:`get_class` then raises, since the name alone does
+        not say which copy is meant, and this returns each copy.
+
+        Args:
+            qualified_class_name: The fully qualified name of the class.
+
+        Returns:
+            A dictionary mapping each repo-relative file path that declares the name to its
+            :class:`~cldk.models.java.JType`. Empty if no file declares it.
+        """
+        return self.backend.get_class_declarations(qualified_class_name)
+
     def get_method(self, qualified_class_name: str, qualified_method_name: str) -> JCallable | None:
         """Return a specific method by class and method signature.
 

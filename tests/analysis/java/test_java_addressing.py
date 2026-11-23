@@ -530,3 +530,128 @@ def test_both_backends_load_duplicates_and_refuse_at_the_same_query(build, analy
     other = [u for u in json.loads(analysis_json)["application"]["symbol_table"].values() if u["types"]][1]
     name = (other["package"] + "." if other.get("package") else "") + next(iter(other["types"]))
     assert backend.get_class(name) is not None
+
+
+# ---- one qualified name in two files (#420) ------------------------------------------------------
+MARKET = f"{BEANS_PKG}.MarketSummaryDataBean"
+MARKET_COPY_FILE = "vendored/" + MARKET_BEAN_FILE
+GAIN = f"{MARKET}.getGainPercent()"
+
+
+def _vendored(payload: str, path: str = MARKET_BEAN_FILE) -> str:
+    """``payload`` with the unit at ``path`` copied under ``vendored/``, as two services vendoring
+    one library would: the copy's ids spell its own path, and so do the call edges inside it."""
+    import json
+
+    data = json.loads(payload)
+    app = data["application"]
+    copy = "vendored/" + path
+    app["symbol_table"][copy] = json.loads(json.dumps(app["symbol_table"][path]).replace(path, copy))
+    inside = f"/java/{path}/"
+    copied = [json.loads(json.dumps(e).replace(path, copy)) for e in app.get("call_graph") or [] if inside in e["src"] and inside in e["dst"]]
+    if copied:
+        app["call_graph"] = app["call_graph"] + copied
+    return json.dumps(data)
+
+
+def _build(build: str, payload: str):
+    return (_local if build == "local" else _graph)(payload)
+
+
+@pytest.mark.parametrize("build", ["local", "graph"])
+def test_duplicates_leave_every_uncontested_callable_addressable(build, analysis_json):
+    """A contested name refuses only the queries keyed by it: ``locate`` and ``resolve_callable``
+    still answer for every other callable, and for a position in either copy's file (#420)."""
+    backend = _build(build, _vendored(analysis_json))
+    assert backend.locate(TRADE_DIRECT_FILE, 650).callable.signature == "cancelOrder(java.lang.Integer, boolean)"
+    assert backend.resolve_callable(CANCEL_INT_BOOL).callable == CANCEL_INT_BOOL
+    gain = backend.get_class_declarations(MARKET)[MARKET_COPY_FILE].callables["getGainPercent()"]
+    found = backend.locate(MARKET_COPY_FILE, gain.start_line)
+    assert found.callable.signature == "getGainPercent()" and found.module.path == MARKET_COPY_FILE
+
+
+@pytest.mark.parametrize("build", ["local", "graph"])
+def test_a_key_both_copies_declare_refuses_and_its_path_spelling_answers(build, analysis_json):
+    """``<fqn>.<signature>`` declared in both files names neither: resolving it is an ambiguity
+    that lists each copy, and a lookup keyed by it refuses with both files. Each copy answers to
+    ``<fqn>.<signature>@<file>``, the spelling the overview and the call graph use, and to
+    ``in_module=`` (#420)."""
+    from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
+
+    backend = _build(build, _vendored(analysis_json))
+    with pytest.raises(AmbiguousName) as ambiguous:
+        backend.resolve_callable(GAIN)
+    assert f"{GAIN}@{MARKET_BEAN_FILE}" in str(ambiguous.value) and f"{GAIN}@{MARKET_COPY_FILE}" in str(ambiguous.value)
+    assert backend.resolve_callable(f"{GAIN}@{MARKET_COPY_FILE}").file == MARKET_COPY_FILE
+    narrowed = backend.resolve_callable(GAIN, in_module=MARKET_COPY_FILE)
+    assert (narrowed.callable, narrowed.file) == (f"{GAIN}@{MARKET_COPY_FILE}", MARKET_COPY_FILE)
+    with pytest.raises(CodeanalyzerExecutionException) as raised:
+        backend.get_source(GAIN)
+    assert MARKET_BEAN_FILE in str(raised.value) and MARKET_COPY_FILE in str(raised.value)
+    keys = {o.key: o.path for o in backend.get_callables_overview() if o.owner == MARKET}
+    assert keys[f"{GAIN}@{MARKET_BEAN_FILE}"] == MARKET_BEAN_FILE
+    assert keys[f"{GAIN}@{MARKET_COPY_FILE}"] == MARKET_COPY_FILE
+    assert GAIN not in keys
+    copy = backend.get_source(f"{GAIN}@{MARKET_COPY_FILE}")
+    assert "gainPercent" in copy and copy == backend.get_source(f"{GAIN}@{MARKET_BEAN_FILE}")
+    assert CANCEL_INT_BOOL in {o.key for o in backend.get_callables_overview()}
+
+
+@pytest.mark.parametrize("build", ["local", "graph"])
+def test_the_call_graph_keeps_each_copy_apart(build, analysis_json_a4):
+    """Two copies' callables are two nodes each, keyed ``<fqn>.<signature>@<file>``, and each
+    copy keeps its own edges; uncontested keys are unchanged (#420)."""
+    plain = _build(build, analysis_json_a4).get_call_graph()
+    graph = _build(build, _vendored(analysis_json_a4)).get_call_graph()
+    market = [n for n in plain.nodes if n.startswith(MARKET + ".")]
+    assert market, "a4 needs calls inside MarketSummaryDataBean"
+    copied = sum(1 for s, d in plain.edges if s in market and d in market)
+    assert graph.number_of_edges() == plain.number_of_edges() + copied
+    for key in market:
+        assert key not in graph
+        assert f"{key}@{MARKET_BEAN_FILE}" in graph and f"{key}@{MARKET_COPY_FILE}" in graph
+    others = [n for n in plain.nodes if n not in market]
+    assert others and all(n in graph for n in others)
+
+
+@pytest.mark.parametrize("build", ["local", "graph"])
+def test_filtered_answers_refuse_only_when_a_contested_name_is_in_them(build, analysis_json):
+    """A name-keyed answer refuses only if a contested name would be a key of it; an answer that
+    carries each entry's file lists every copy; the unfiltered ``get_all_classes`` refuses (#420)."""
+    from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
+
+    backend = _build(build, _vendored(analysis_json))
+    assert MARKET not in backend.get_all_entry_point_classes()            # the bean is not one
+    assert backend.get_all_entry_point_classes()
+    with pytest.raises(CodeanalyzerExecutionException):
+        backend.get_all_classes()
+    resource = "src/main/java/com/ibm/websphere/samples/daytrader/jaxrs/BroadcastResource.java"
+    name = "com.ibm.websphere.samples.daytrader.jaxrs.BroadcastResource"
+    backend = _build(build, _vendored(analysis_json, resource))
+    with pytest.raises(CodeanalyzerExecutionException) as raised:
+        backend.get_all_entry_point_classes()
+    assert name in str(raised.value)
+    paths = sorted(o.path for o in backend.get_entrypoint_classes() if o.qualified_name == name)
+    assert paths == [resource, "vendored/" + resource]
+
+
+@pytest.mark.parametrize("build", ["local", "graph"])
+def test_class_declarations_list_every_copy_by_file(build, analysis_json):
+    backend = _build(build, _vendored(analysis_json))
+    copies = backend.get_class_declarations(MARKET)
+    assert sorted(copies) == [MARKET_BEAN_FILE, MARKET_COPY_FILE]
+    assert all(t.qualified_name == MARKET for t in copies.values())
+    assert list(backend.get_class_declarations(f"{DIRECT_PKG}.TradeDirect")) == [TRADE_DIRECT_FILE]
+    assert backend.get_class_declarations("no.such.Type") == {}
+
+
+@pytest.mark.parametrize("build", ["local", "graph"])
+def test_duplicates_are_logged_once_when_the_index_is_built(build, analysis_json, caplog):
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="cldk.analysis.java.backend"):
+        backend = _build(build, _vendored(analysis_json))
+        backend.get_class(f"{DIRECT_PKG}.TradeDirect")
+        backend.get_class(f"{DIRECT_PKG}.TradeDirect")
+    warned = [r.getMessage() for r in caplog.records if "more than one file" in r.getMessage()]
+    assert len(warned) == 1 and MARKET in warned[0] and MARKET_COPY_FILE in warned[0]

@@ -133,8 +133,8 @@ from cldk.analysis.java.backend import (
     CallingLines,
     CRUDRow,
     JavaAnalysisBackend,
+    NameIndex,
     index_types,
-    unhomed_endpoint,
     VIEW_DISPATCH_UNRESOLVED_JSON_ONLY,
 )
 from cldk.analysis.java.neo4j import reconstruct as R
@@ -666,23 +666,27 @@ class JNeo4jBackend(JavaAnalysisBackend):
         return self._application
 
     @cached_property
-    def _idx(self) -> Tuple[Mapping[str, JType], Mapping[str, str], Dict[str, Tuple[JType, JCallable]]]:
+    def _idx(self) -> Tuple[NameIndex[JType], NameIndex[str], Dict[str, Tuple[JType, JCallable]], Dict[str, str]]:
         """The containment tree flattened once, as :meth:`JCodeanalyzer._index` flattens it (both
         call :func:`index_types`): a name declared in several files is kept, and only a query keyed
         by it refuses (#420)."""
         return index_types(self._application.symbol_table)
 
     @property
-    def _types(self) -> Dict[str, JType]:
+    def _types(self) -> NameIndex[JType]:
         return self._idx[0]
 
     @property
-    def _file_of(self) -> Dict[str, str]:
+    def _file_of(self) -> NameIndex[str]:
         return self._idx[1]
 
     @property
     def _callables(self) -> Dict[str, Tuple[JType, JCallable]]:
         return self._idx[2]
+
+    @property
+    def _callable_file(self) -> Dict[str, str]:
+        return self._idx[3]
 
     # -----[ the addressing surface (leg 3b) — the three facts the shared implementation needs ]-----
     #: The one statement leg 3b's Task 1 adds. Anchored on the **bare** ``:JBodyNode`` label and a
@@ -760,8 +764,8 @@ class JNeo4jBackend(JavaAnalysisBackend):
     def _unit_of(self, callable_id: str) -> JCompilationUnit | None:
         """The compilation unit a callable was declared in, or ``None`` when it has no file — which
         is every ``@external`` callable, and nothing else."""
-        owner = self._callables.get(callable_id)
-        return None if owner is None else self._application.symbol_table.get(self._file_of.get(owner[0].qualified_name, ""))
+        path = self._callable_file.get(callable_id)
+        return None if path is None else self._application.symbol_table.get(path)
 
     def _body_source(self, node: JBodyNode) -> str | None:
         """See :meth:`JavaAnalysisBackend._body_source` — a real slice of the owning module's
@@ -1170,15 +1174,9 @@ class JNeo4jBackend(JavaAnalysisBackend):
         return JMethodDetail(method_declaration=c.declaration, klass=klass, method=c)
 
     def _node_of(self, node_id: str) -> Tuple[str, JMethodDetail]:
-        """The (node key, method detail) a call-graph endpoint id resolves to. Every endpoint the
-        projection writes is homed on the tree; one that is not is a defect, surfaced rather than
-        skipped — named by the signature and module key its id spells, never by the id (E6), in the
-        same words the in-memory backend uses."""
-        try:
-            t, c = self._idx[2][node_id]
-        except KeyError:
-            raise CodeanalyzerExecutionException(unhomed_endpoint(node_id)) from None
-        return f"{t.qualified_name}.{c.signature}", self._detail(t.qualified_name, c)
+        """The (node key, method detail) a call-graph endpoint id resolves to: see
+        :meth:`JavaAnalysisBackend._node_key`, which both backends share."""
+        return self._node_key(node_id)
 
     def get_call_graph(self) -> nx.DiGraph:
         """Build (and cache) the call graph keyed by ``"<type fqn>.<signature>"`` (J-1): node attrs
@@ -1358,7 +1356,7 @@ class JNeo4jBackend(JavaAnalysisBackend):
         return method.parameters if method is not None else []
 
     def get_all_sub_classes(self, qualified_class_name: str) -> Dict[str, JType]:
-        return {name: t for name, t in self._types.items() if qualified_class_name in t.extends_list or qualified_class_name in t.implements_list}
+        return self._types.select(lambda t: qualified_class_name in t.extends_list or qualified_class_name in t.implements_list)
 
     def get_all_fields(self, qualified_class_name: str) -> List[JField]:
         klass = self.get_class(qualified_class_name)
@@ -1386,7 +1384,7 @@ class JNeo4jBackend(JavaAnalysisBackend):
         return result
 
     def get_all_entry_point_classes(self) -> Dict[str, JType]:
-        return {name: t for name, t in self._types.items() if t.is_entrypoint_class}
+        return self._types.select(lambda t: t.is_entrypoint_class)
 
     # -----[ CRUD (J-4) ]-----
     def get_all_crud_operations(self) -> List[CRUDRow]:
@@ -1474,8 +1472,7 @@ class JNeo4jBackend(JavaAnalysisBackend):
         same file.
         """
         out: Dict[str, List[JComment]] = {}
-        for name, t in self._types.items():
-            path = self._idx[1][name]
+        for _, t, path in self._types.entries():
             javadoc = list(t.comments)
             javadoc += [c for member in t.callables.values() for c in member.comments]
             javadoc += [c for f in t.fields.values() for c in f.comments]

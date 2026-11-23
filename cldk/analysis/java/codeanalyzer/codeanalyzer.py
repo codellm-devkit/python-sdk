@@ -55,7 +55,6 @@ from cldk.analysis.java.backend import (
     JavaAnalysisBackend,
     index_types,
     java_body_node_id,
-    unhomed_endpoint,
 )
 from cldk.models.java import JGraphEdges
 from cldk.models.java.models import (
@@ -352,22 +351,16 @@ class JCodeanalyzer(JavaAnalysisBackend):
         its source-spelled qualified name, its file, and every callable by its ``can://`` id — the
         join that turns a wire call-graph endpoint into the ``"<type fqn>.<signature>"`` node key."""
         # A name declared in several files loads; only a query keyed by it refuses (#420).
-        self._types, self._file_of, self._callables = index_types(self.application.symbol_table)
+        self._types, self._file_of, self._callables, self._callable_file = index_types(self.application.symbol_table)
 
     @staticmethod
     def _detail(klass: str, c: JCallable) -> JMethodDetail:
         return JMethodDetail(method_declaration=c.declaration, klass=klass, method=c)
 
     def _node_of(self, node_id: str) -> Tuple[str, JMethodDetail]:
-        """The (node key, method detail) a call-graph endpoint id resolves to. Every endpoint the
-        analyzer emits is homed on the tree; one that is not is the analyzer's defect, surfaced
-        rather than skipped — named by the signature and module key its id spells, never by the id
-        (E6), in the same words the Neo4j backend uses."""
-        try:
-            t, c = self._callables[node_id]
-        except KeyError:
-            raise CodeanalyzerExecutionException(unhomed_endpoint(node_id)) from None
-        return f"{t.qualified_name}.{c.signature}", self._detail(t.qualified_name, c)
+        """The (node key, method detail) a call-graph endpoint id resolves to: see
+        :meth:`JavaAnalysisBackend._node_key`, which both backends share."""
+        return self._node_key(node_id)
 
     def _is_external(self, node_id: str) -> bool:
         """An ``@external/…`` endpoint (a call target outside the project). 3a keeps the 1.x
@@ -844,7 +837,7 @@ class JCodeanalyzer(JavaAnalysisBackend):
         return method.parameters if method is not None else []
 
     def get_all_sub_classes(self, qualified_class_name: str) -> Dict[str, JType]:
-        return {name: t for name, t in self._types.items() if qualified_class_name in t.extends_list or qualified_class_name in t.implements_list}
+        return self._types.select(lambda t: qualified_class_name in t.extends_list or qualified_class_name in t.implements_list)
 
     def get_all_fields(self, qualified_class_name: str) -> List[JField]:
         klass = self.get_class(qualified_class_name)
@@ -872,7 +865,7 @@ class JCodeanalyzer(JavaAnalysisBackend):
         return result
 
     def get_all_entry_point_classes(self) -> Dict[str, JType]:
-        return {name: t for name, t in self._types.items() if t.is_entrypoint_class}
+        return self._types.select(lambda t: t.is_entrypoint_class)
 
     # -----[ CRUD (J-4) ]-----
     def get_all_crud_operations(self) -> List[CRUDRow]:

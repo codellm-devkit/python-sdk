@@ -625,5 +625,8 @@ def test_assigning_a_name_replaces_every_declaration_of_it():
         index["x.A"]
     index["x.A"] = 3
     assert index["x.A"] == 3 and index.contested() == {}
+    assert index.declarations("x.A") == {"a/A.java": 3}              # the first declaration's file
+    index["x.B"] = 4
+    assert index.declarations("x.B") == {"": 4}                      # a new name has none
     del index["x.A"]
     assert "x.A" not in index
