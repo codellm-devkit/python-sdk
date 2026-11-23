@@ -655,3 +655,65 @@ def test_duplicates_are_logged_once_when_the_index_is_built(build, analysis_json
         backend.get_class(f"{DIRECT_PKG}.TradeDirect")
     warned = [r.getMessage() for r in caplog.records if "more than one file" in r.getMessage()]
     assert len(warned) == 1 and MARKET in warned[0] and MARKET_COPY_FILE in warned[0]
+
+
+@pytest.mark.parametrize("build", ["local", "graph"])
+def test_whole_application_callable_answers_with_a_contested_name(build, analysis_json):
+    """Callable-keyed answers key each copy ``<key>@<file>``; a filtered, class-keyed answer refuses
+    only when a contested class is in it; the unfiltered class-keyed ones still refuse (#420)."""
+    from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
+
+    backend = _build(build, _vendored(analysis_json))
+    variables = backend.get_variables()
+    assert f"{GAIN}@{MARKET_BEAN_FILE}" in variables and f"{GAIN}@{MARKET_COPY_FILE}" in variables
+    assert GAIN not in variables and CANCEL_INT_BOOL in variables
+    plain = _build(build, analysis_json).get_variables()
+    assert len(variables) == len(plain) + sum(1 for k in plain if k.startswith(MARKET + "."))
+    entry = backend.get_all_entry_point_methods()
+    assert entry and MARKET not in entry
+    for unfiltered in (backend.get_all_methods_in_application, backend.get_class_hierarchy):
+        with pytest.raises(CodeanalyzerExecutionException):
+            unfiltered()
+    resource = "src/main/java/com/ibm/websphere/samples/daytrader/jaxrs/BroadcastResource.java"
+    with pytest.raises(CodeanalyzerExecutionException):
+        _build(build, _vendored(analysis_json, resource)).get_all_entry_point_methods()
+
+
+@pytest.mark.parametrize("build", ["local", "graph"])
+def test_call_graph_queries_on_a_contested_key_refuse_and_its_copies_answer(build, analysis_json_a4):
+    """A contested ``(class, signature)`` refuses, naming both files, rather than answering ``{}``;
+    ``<signature>@<file>`` asks about one copy; a contested class refuses ``get_class_call_graph``
+    rather than merging both copies' edges (#420)."""
+    from cldk.utils.exceptions.exceptions import CodeanalyzerExecutionException
+
+    plain = _build(build, analysis_json_a4)
+    backend = _build(build, _vendored(analysis_json_a4))
+    with pytest.raises(CodeanalyzerExecutionException) as raised:
+        backend.get_all_callers(MARKET, "getOpenTSIA()", using_symbol_table=False)
+    assert MARKET_COPY_FILE in str(raised.value)
+    with pytest.raises(CodeanalyzerExecutionException):
+        backend.get_all_callees(MARKET, "getOpenTSIA()", using_symbol_table=False)
+    want = plain.get_all_callers(MARKET, "getOpenTSIA()", using_symbol_table=False)["caller_details"]
+    copy = backend.get_all_callers(MARKET, f"getOpenTSIA()@{MARKET_COPY_FILE}", using_symbol_table=False)["caller_details"]
+    assert want and sorted(d["caller_method"].method.signature for d in copy) == sorted(d["caller_method"].method.signature for d in want)
+    assert all(d["caller_method"].method.id.find("/vendored/") > 0 for d in copy)
+    with pytest.raises(CodeanalyzerExecutionException):
+        backend.get_class_call_graph(MARKET)
+    trade = f"{DIRECT_PKG}.TradeDirect"
+    pairs = lambda edges: sorted((s.klass, s.method.signature, t.klass, t.method.signature) for s, t in edges)  # noqa: E731
+    assert pairs(backend.get_class_call_graph(trade)) == pairs(plain.get_class_call_graph(trade))
+
+
+@pytest.mark.parametrize("build", ["local", "graph"])
+def test_the_symbol_table_call_graph_answers_for_uncontested_classes(build, analysis_json_a4):
+    """The symbol-table call graph does not follow a contested name, so a question about an
+    uncontested class answers as it did without the copy (#420)."""
+    plain = _build(build, analysis_json_a4)
+    backend = _build(build, _vendored(analysis_json_a4))
+    trade = f"{DIRECT_PKG}.TradeDirect"
+    pairs = lambda edges: sorted((s.klass, s.method.signature, t.klass, t.method.signature) for s, t in edges)  # noqa: E731
+    want = pairs(plain.get_class_call_graph_using_symbol_table(trade))
+    assert want and pairs(backend.get_class_call_graph_using_symbol_table(trade)) == want
+    called = sorted({t for _, _, k, t in want if k == trade})
+    callers = lambda b, sig: sorted(d["caller_method"].method.signature for d in b.get_all_callers(trade, sig, using_symbol_table=True).get("caller_details", []))  # noqa: E731
+    assert called and all(callers(backend, sig) == callers(plain, sig) for sig in called)

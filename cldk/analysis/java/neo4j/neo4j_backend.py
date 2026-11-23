@@ -1215,8 +1215,9 @@ class JNeo4jBackend(JavaAnalysisBackend):
         return json.dumps(rows)
 
     def get_all_callers(self, target_class_name: str, target_method_signature: str, using_symbol_table: bool) -> Dict:
-        cg = self._symbol_table_call_graph(target_class_name, target_method_signature, is_target=True) if using_symbol_table else self.get_call_graph()
         key = f"{target_class_name}.{target_method_signature}"
+        self._refuse_contested_key(key)  # a signature may name one copy as "<signature>@<file>" (#420)
+        cg = self._symbol_table_call_graph(target_class_name, target_method_signature, is_target=True) if using_symbol_table else self.get_call_graph()
         if key not in cg:
             return {}
         return {
@@ -1225,8 +1226,9 @@ class JNeo4jBackend(JavaAnalysisBackend):
         }
 
     def get_all_callees(self, source_class_name: str, source_method_signature: str, using_symbol_table: bool) -> Dict:
-        cg = self._symbol_table_call_graph(source_class_name, source_method_signature) if using_symbol_table else self.get_call_graph()
         key = f"{source_class_name}.{source_method_signature}"
+        self._refuse_contested_key(key)  # a signature may name one copy as "<signature>@<file>" (#420)
+        cg = self._symbol_table_call_graph(source_class_name, source_method_signature) if using_symbol_table else self.get_call_graph()
         if key not in cg:
             return {}
         return {
@@ -1244,6 +1246,10 @@ class JNeo4jBackend(JavaAnalysisBackend):
         return [(cg.nodes[s]["method_detail"], cg.nodes[t]["method_detail"]) for s, t in cg.edges(seeds)]
 
     def get_class_call_graph(self, qualified_class_name: str, method_name: str | None = None) -> List[Tuple[JMethodDetail, JMethodDetail]]:
+        # Seeded by class name, so a contested one would merge its copies' edges: refuse (#420).
+        self.get_class(qualified_class_name)
+        if method_name is not None:
+            self._refuse_contested_key(f"{qualified_class_name}.{method_name}")
         return self._edges_out_of(self.get_call_graph(), qualified_class_name, method_name)
 
     def get_class_call_graph_using_symbol_table(self, qualified_class_name: str, method_signature: str | None = None) -> List[Tuple[JMethodDetail, JMethodDetail]]:
@@ -1260,8 +1266,10 @@ class JNeo4jBackend(JavaAnalysisBackend):
         cg = nx.DiGraph()
         lines = CallingLines()
         edges = self._st_edges_into(qualified_class_name, method_signature) if is_target else self._st_edges_from(qualified_class_name, method_signature)
+        by_id = self._addressing.by_id
         for source, target in edges:
-            src, dst = f"{source.klass}.{source.method.signature}", f"{target.klass}.{target.method.signature}"
+            # Keyed as the declared call graph is, so a copy of a contested key is its own node.
+            src, dst = by_id[source.method.id].key, by_id[target.method.id].key
             cg.add_node(src, method_detail=source, kind="callable")
             cg.add_node(dst, method_detail=target, kind="callable")
             cg.add_edge(src, dst, type="CALL_DEP", weight=1, calling_lines=lines.of(source.method, target.method))
@@ -1278,7 +1286,7 @@ class JNeo4jBackend(JavaAnalysisBackend):
             sources = [source] if source is not None else []
         for source in sources:
             for call_site in source.call_sites:
-                target, target_class = self._resolve_call_site(qualified_class_name, call_site)
+                target, target_class = self._resolve_call_site(klass, call_site)
                 if target is not None:
                     yield self._detail(qualified_class_name, source), self._detail(target_class, target)
 
@@ -1288,32 +1296,34 @@ class JNeo4jBackend(JavaAnalysisBackend):
             return
         for owner, source in self._idx[2].values():
             for call_site in source.call_sites:
-                found, found_class = self._resolve_call_site(owner.qualified_name, call_site)
+                found, found_class = self._resolve_call_site(owner, call_site)
                 if found is not None and found_class == target_class_name and call_site.callee_signature == target_method_signature:
                     yield self._detail(owner.qualified_name, source), self._detail(target_class_name, target)
 
-    def _resolve_call_site(self, owner_class_name: str, call_site: JCallSite) -> Tuple[JCallable | None, str]:
+    def _resolve_call_site(self, owner: JType, call_site: JCallSite) -> Tuple[JCallable | None, str]:
         """The (declaration, declaring class) a call site names, or ``(None, "")``: an explicit
         receiver type is followed only when it is a project class; an implicit receiver means the
-        owning class (and its ``extends`` chain)."""
+        owning class (and its ``extends`` chain). A receiver or supertype name declared in more than
+        one file is not followed, since the call site does not say which copy it means (#420)."""
         if not call_site.callee_signature:
             return None, ""
         if call_site.receiver_type:
-            if self.get_class(call_site.receiver_type) is None:
+            receiver = self._unique_type(call_site.receiver_type)
+            if receiver is None:
                 return None, ""
-            return self._find_in_hierarchy(call_site.receiver_type, call_site.callee_signature)
-        return self._find_in_hierarchy(owner_class_name, call_site.callee_signature)
+            return self._find_in_hierarchy(receiver, call_site.callee_signature)
+        return self._find_in_hierarchy(owner, call_site.callee_signature)
 
-    def _find_in_hierarchy(self, qualified_class_name: str, method_signature: str) -> Tuple[JCallable | None, str]:
+    def _find_in_hierarchy(self, klass: JType, method_signature: str) -> Tuple[JCallable | None, str]:
         """The concrete declaration of ``method_signature`` on the class or up its ``extends``
         chain; interface declarations are not call-graph targets and are skipped."""
-        klass = self.get_class(qualified_class_name)
-        method = self.get_method(qualified_class_name, method_signature)
-        if method is not None and klass is not None and not klass.is_interface:
-            return method, qualified_class_name
-        if klass is not None:
-            for parent in klass.extends_list:
-                found, found_class = self._find_in_hierarchy(parent, method_signature)
+        method = klass.callables.get(method_signature)
+        if method is not None and not klass.is_interface:
+            return method, klass.qualified_name
+        for parent in klass.extends_list:
+            parent_type = self._unique_type(parent)
+            if parent_type is not None:
+                found, found_class = self._find_in_hierarchy(parent_type, method_signature)
                 if found is not None:
                     return found, found_class
         return None, ""
@@ -1376,12 +1386,9 @@ class JNeo4jBackend(JavaAnalysisBackend):
 
     # -----[ entry points ]-----
     def get_all_entry_point_methods(self) -> Dict[str, Dict[str, JCallable]]:
-        result: Dict[str, Dict[str, JCallable]] = {}
-        for name, methods in self.get_all_methods_in_application().items():
-            entrypoints = {sig: c for sig, c in methods.items() if c.is_entrypoint}
-            if entrypoints:
-                result[name] = entrypoints
-        return result
+        # Filtered, so it refuses only when a contested class declares an entry point (#420).
+        marked = self._types.select(lambda t: any(c.is_entrypoint for c in t.callable_declarations.values()))
+        return {name: {sig: c for sig, c in t.callable_declarations.items() if c.is_entrypoint} for name, t in marked.items()}
 
     def get_all_entry_point_classes(self) -> Dict[str, JType]:
         return self._types.select(lambda t: t.is_entrypoint_class)

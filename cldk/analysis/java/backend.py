@@ -756,6 +756,18 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
             candidates.append(CallableCandidate(row.key, owner.qualified_name, path, names, module_names.get(path, ())))
         return _Addressing(by_key, by_id, by_path, candidates, rows)
 
+    def _refuse_contested_key(self, key: str) -> None:
+        """Raise :func:`duplicate_callable_key` when callables in more than one file spell ``key``
+        (#420): the question does not say which copy it is about. ``"<key>@<file>"`` names one
+        copy and passes, as does a key spelled once or not at all."""
+        self._addressing.by_key.get(key)
+
+    def _unique_type(self, qualified_name: str) -> JType | None:
+        """The one type declaring ``qualified_name``, or ``None`` when no type or several do. For
+        resolution that has no file to go on, where a contested name names no particular copy."""
+        found = self._types.declarations(qualified_name)
+        return next(iter(found.values())) if len(found) == 1 else None
+
     def _node_key(self, node_id: str) -> Tuple[str, "JMethodDetail"]:
         """The (call-graph node key, method detail) a call-graph endpoint id resolves to: the
         callable's addressing key, so a copy of a contested key is its own node (#420). Every
@@ -1616,10 +1628,13 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         are placeholders over the graph, as they are everywhere else on this surface -- so compare
         variables on ``name``/``type``/``start_line``.
         """
+        # Keyed by each callable's addressing key, so a copy of a contested key is ``<key>@<file>``
+        # (#420); walked type by type, which is the order the 1.x dict had.
+        by_id = self._addressing.by_id
         return {
-            f"{klass}.{signature}": sorted(c.local_variables, key=lambda v: (v.start_line, v.name))
-            for klass, methods in self.get_all_methods_in_application().items()
-            for signature, c in methods.items()
+            by_id[c.id].key: sorted(c.local_variables, key=lambda v: (v.start_line, v.name))
+            for _, t, _ in self._types.entries()
+            for c in t.callable_declarations.values()
         }
 
     def get_class_hierarchy(self) -> nx.DiGraph:
@@ -1649,7 +1664,8 @@ class JavaAnalysisBackend(AnalysisBackend[JApplication, JCompilationUnit, JType,
         every ``:JType``, so both backends read the same list.
 
         A type that neither extends nor is extended is an isolated node rather than a missing one,
-        which is why the nodes are added before the edges.
+        which is why the nodes are added before the edges. Nodes are type names, so like
+        :meth:`get_all_classes` this refuses when a name is declared in more than one file (#420).
         """
         graph = nx.DiGraph()
         for name, declared in self.get_all_classes().items():

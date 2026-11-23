@@ -1029,7 +1029,8 @@ class JavaAnalysis:
 
         Returns:
             A dictionary mapping ``"<type fqn>.<signature>"`` — the call-graph node key of J-1,
-            unique application-wide — to the callable's ``code``. Note that ``code`` is the body
+            unique application-wide; ``"<type fqn>.<signature>@<file>"`` for each copy of a key
+            declared in more than one file — to the callable's ``code``. Note that ``code`` is the body
             block off ``analysis.json`` and the whole declaration off the Neo4j projection
             (:attr:`~cldk.models.java.models.JCallable.code`).
 
@@ -1037,12 +1038,11 @@ class JavaAnalysis:
             :meth:`get_methods_with_annotations`: For finding methods with
                 any annotation.
         """
-        return {
-            f"{klass}.{signature}": callable_.code
-            for klass, methods in self.get_methods().items()
-            for signature, callable_ in methods.items()
-            if any(d.name.rsplit(".", 1)[-1] in _TEST_ANNOTATIONS for d in callable_.decorators)
-        }
+        # Per callable, not per class, so a class name declared in more than one file does not
+        # refuse it; each copy of a contested key is "<key>@<file>" (#420).
+        keys = [o.key for o in self.backend.get_callables_overview() if any(d.rsplit(".", 1)[-1] in _TEST_ANNOTATIONS for d in o.decorators)]
+        bodies = self.backend.get_method_bodies(keys)
+        return {key: bodies.get(key) for key in keys}
 
     def get_calling_lines(self, target_method_name: str) -> List[int]:
         """Return line numbers where a method is called.

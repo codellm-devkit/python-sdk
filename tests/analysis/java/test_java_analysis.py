@@ -1180,3 +1180,15 @@ def test_get_class_declarations_reads_every_copy_of_a_contested_name(test_fixtur
         copies = java_analysis.get_class_declarations(contested)
         assert copy_path in copies and len(copies) == 2
         assert java_analysis.get_class_declarations("com.example.NoSuchClass") == {}
+
+
+def test_get_test_methods_answers_with_a_contested_name(test_fixture, analysis_json):
+    """A contested class name does not refuse ``get_test_methods``, whose answer is keyed by
+    callable (#420)."""
+    from tests.analysis.java.test_jcodeanalyzer import _with_a_vendored_copy
+
+    payload, _, _ = _with_a_vendored_copy(analysis_json)
+    with patch("cldk.analysis.java.codeanalyzer.codeanalyzer.subprocess.run") as run_mock:
+        run_mock.side_effect = _write_java_output(payload)
+        java_analysis = JavaAnalysis(project_dir=test_fixture, backend=_BK, analysis_level=AnalysisLevel.symbol_table, target_files=None, eager_analysis=True)
+        assert isinstance(java_analysis.get_test_methods(), dict)
